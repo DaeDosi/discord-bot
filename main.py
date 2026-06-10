@@ -3,7 +3,7 @@ import asyncio
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-from database.db import init_db, close_db
+from database import init_db, close_db
 
 load_dotenv()
 
