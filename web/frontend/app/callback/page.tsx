@@ -18,6 +18,22 @@ function CallbackInner() {
     if (handledRef.current) return;
     handledRef.current = true;
 
+    const error = params.get("error");
+    if (error) {
+      setStatus("error");
+      setErrMsg(`Discord 인증 거부: ${error}`);
+      return;
+    }
+
+    // 백엔드가 직접 token을 전달한 경우 (GET /auth/callback 경유)
+    const token = params.get("token");
+    if (token) {
+      localStorage.setItem("token", token);
+      router.replace("/dashboard");
+      return;
+    }
+
+    // 프론트엔드가 code를 받아 백엔드에 직접 교환하는 경우
     const code = params.get("code");
     if (!code) {
       setStatus("error");
@@ -32,9 +48,8 @@ function CallbackInner() {
       })
       .catch((e: Error) => {
         setStatus("error");
-        // 백엔드 미실행 vs 인증 실패 구분
         if (e.message.includes("fetch") || e.message.includes("network")) {
-          setErrMsg("백엔드 서버(포트 8000)에 연결할 수 없습니다.\nuvicorn을 실행했는지 확인해주세요.");
+          setErrMsg("백엔드 서버에 연결할 수 없습니다.\n환경변수 NEXT_PUBLIC_API_URL을 확인해주세요.");
         } else {
           setErrMsg(e.message || "인증에 실패했습니다.");
         }

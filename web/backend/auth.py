@@ -5,7 +5,8 @@ from jose import jwt, JWTError
 
 DISCORD_CLIENT_ID     = os.getenv("DISCORD_CLIENT_ID", "")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
-DISCORD_REDIRECT_URI  = os.getenv("DISCORD_REDIRECT_URI", "http://localhost:3000/callback")
+DISCORD_REDIRECT_URI  = os.getenv("DISCORD_REDIRECT_URI", "http://localhost:8000/auth/callback")
+FRONTEND_URL          = os.getenv("FRONTEND_URL", "http://localhost:3000")
 JWT_SECRET            = os.getenv("JWT_SECRET", "change-me")
 JWT_ALGORITHM         = "HS256"
 JWT_EXPIRE_HOURS      = 24 * 7  # 7일
