@@ -1,7 +1,8 @@
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -38,6 +39,11 @@ app.include_router(auth_router)
 app.include_router(guilds_router)
 app.include_router(settings_router)
 app.include_router(chzzk_router)
+
+
+@app.get("/auth/callback")
+async def auth_callback_compat(request: Request):
+    return RedirectResponse(url=f"/api/auth/callback?{request.url.query}", status_code=307)
 
 
 @app.get("/")
