@@ -1,4 +1,5 @@
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +10,7 @@ load_dotenv()
 
 from database import init_db
 from auth import exchange_code, get_discord_user, create_jwt, FRONTEND_URL
+from chzzk_monitor import start_monitor
 from routers.auth_router     import router as auth_router
 from routers.guilds_router   import router as guilds_router
 from routers.settings_router import router as settings_router
@@ -18,6 +20,7 @@ from routers.chzzk_router    import router as chzzk_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    asyncio.create_task(start_monitor())
     yield
 
 
