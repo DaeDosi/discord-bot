@@ -22,17 +22,31 @@ def _discord_headers() -> dict:
     }
 
 
-async def _fetch_live_detail(chzzk_id: str) -> dict | None:
-    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/live-detail"
+async def _fetch_channel_info(chzzk_id: str) -> dict | None:
+    """채널 기본 정보 (openLive 포함). 채널 없으면 None."""
+    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}"
     async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=10) as client:
         resp = await client.get(url)
         if resp.status_code != 200:
-            _log(f"치지직 API 오류 ({chzzk_id}): HTTP {resp.status_code}")
+            _log(f"채널 정보 오류 ({chzzk_id}): HTTP {resp.status_code}")
+            return None
+        return resp.json().get("content")
+
+
+async def _fetch_live_detail(chzzk_id: str) -> dict | None:
+    """라이브 상세. 오프라인이면 500 → offline 마커 반환."""
+    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/live-detail"
+    async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=10) as client:
+        resp = await client.get(url)
+        if resp.status_code == 500:
+            # 치지직 API는 방송 오프라인일 때 500을 반환함 → 정상 오프라인 처리
+            return {"status": "CLOSE"}
+        if resp.status_code != 200:
+            _log(f"라이브 상세 오류 ({chzzk_id}): HTTP {resp.status_code} {resp.text[:200]}")
             return None
         content = resp.json().get("content")
-        if content is None:
-            _log(f"치지직 응답에 content 없음 ({chzzk_id}): {resp.text[:200]}")
-        return content
+        # content가 None이면 오프라인
+        return content if content is not None else {"status": "CLOSE"}
 
 
 async def _send_discord_message(channel_id: int, content: str, embed: dict) -> str | None:
@@ -125,7 +139,7 @@ async def check_once_debug() -> list[dict]:
         try:
             live = await _fetch_live_detail(row["chzzk_channel_id"])
             if live is None:
-                entry["error"] = "치지직 API 응답 없음"
+                entry["error"] = "치지직 API 응답 없음 (채널 ID 확인 필요)"
             else:
                 entry["api_status"] = live.get("status")
                 entry["api_is_live"] = live.get("status") == "OPEN"
