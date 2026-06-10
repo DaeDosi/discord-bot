@@ -140,3 +140,27 @@ async def delete_subscription(guild_id: str, sub_id: int,
 async def debug_status(user: dict = Depends(get_current_user)):
     """각 구독의 DB 상태와 치지직 API 실시간 상태를 비교해서 반환"""
     return await check_once_debug()
+
+
+@router.get("/debug/raw/{chzzk_id}")
+async def debug_raw(chzzk_id: str, user: dict = Depends(get_current_user)):
+    """치지직 API 응답 원본을 그대로 반환"""
+    async with httpx.AsyncClient(
+        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}, timeout=10
+    ) as client:
+        live_resp = await client.get(
+            f"https://api.chzzk.naver.com/service/v1/channels/{chzzk_id}/live-detail"
+        )
+        info_resp = await client.get(
+            f"https://api.chzzk.naver.com/service/v1/channels/{chzzk_id}"
+        )
+    return {
+        "live_detail": {
+            "status_code": live_resp.status_code,
+            "body": live_resp.json() if live_resp.status_code == 200 else live_resp.text[:500],
+        },
+        "channel_info": {
+            "status_code": info_resp.status_code,
+            "body": info_resp.json() if info_resp.status_code == 200 else info_resp.text[:500],
+        },
+    }
