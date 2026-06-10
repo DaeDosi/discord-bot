@@ -1,0 +1,31 @@
+# ── 환경 변수 (절대 커밋 금지) ────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Python ───────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.Python
+
+# ── Database ─────────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+
+# ── Next.js ──────────────────────────────────────────────
+web/frontend/.next/
+web/frontend/node_modules/
+web/frontend/out/
+
+# ── OS ───────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ──────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
