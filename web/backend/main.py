@@ -1,13 +1,10 @@
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../"))
-
-import asyncio
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "../../.env"))
+load_dotenv()
 
 from database import init_db
 from routers.auth_router     import router as auth_router
