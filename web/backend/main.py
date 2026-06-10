@@ -43,3 +43,9 @@ app.include_router(chzzk_router)
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "Discord Bot Dashboard API"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
