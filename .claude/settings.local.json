@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem *)",
+      "Bash(gh repo *)",
+      "Bash(gh api *)",
+      "Skill(update-config)"
+    ]
+  }
+}
