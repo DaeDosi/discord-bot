@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from typing import Optional
 from deps import get_current_user
 from database import get_db
+from chzzk_monitor import check_once_debug
 
 router = APIRouter(prefix="/api/chzzk", tags=["chzzk"])
 
@@ -132,3 +133,10 @@ async def delete_subscription(guild_id: str, sub_id: int,
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="구독을 찾을 수 없습니다.")
     return {"ok": True}
+
+
+# ── 디버그: 현재 라이브 상태 체크 ────────────────────────────────────────────
+@router.get("/debug/status")
+async def debug_status(user: dict = Depends(get_current_user)):
+    """각 구독의 DB 상태와 치지직 API 실시간 상태를 비교해서 반환"""
+    return await check_once_debug()
