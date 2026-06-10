@@ -24,8 +24,10 @@ export interface GuildConfig {
 }
 
 export interface Channel {
-  id:   string;
-  name: string;
+  id:       string;
+  name:     string;
+  type:     number; // 0=text, 2=voice, 4=category, 5=announcement, 15=forum
+  position: number;
 }
 
 export interface Role {

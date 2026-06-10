@@ -49,15 +49,26 @@ async def list_guilds(user: dict = Depends(get_current_user)):
 
 @router.get("/{guild_id}/channels")
 async def get_channels(guild_id: str, user: dict = Depends(get_current_user)):
+    if not BOT_TOKEN:
+        raise HTTPException(status_code=500, detail="봇 토큰이 설정되지 않았습니다.")
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"{DISCORD_API}/guilds/{guild_id}/channels", headers=BOT_HEADERS
         )
-        if resp.status_code != 200:
+        if resp.status_code == 403:
+            raise HTTPException(status_code=403, detail="봇이 해당 서버에 없거나 권한이 없습니다.")
+        if resp.status_code == 404:
             raise HTTPException(status_code=404, detail="서버를 찾을 수 없습니다.")
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=f"Discord API 오류: {resp.text}")
         channels = resp.json()
-    # 텍스트 채널만 (type=0)
-    return [{"id": c["id"], "name": c["name"]} for c in channels if c["type"] == 0]
+    # 카테고리(4), 텍스트(0), 음성(2), 공지(5), 포럼(15) 포함
+    ALLOWED_TYPES = {0, 2, 4, 5, 15}
+    return [
+        {"id": c["id"], "name": c["name"], "type": c["type"], "position": c.get("position", 0)}
+        for c in sorted(channels, key=lambda c: c.get("position", 0))
+        if c["type"] in ALLOWED_TYPES
+    ]
 
 
 @router.get("/{guild_id}/roles")
