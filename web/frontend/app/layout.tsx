@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "NexBot Dashboard",
-  description: "올인원 디스코드 봇 관리 대시보드",
+  title: "NexBot - 디스코드 봇 대시보드",
+  description: "치지직 방송 알림, 레벨링, 서버 관리를 하나의 대시보드로",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

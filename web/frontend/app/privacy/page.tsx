@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Bot, ChevronRight } from "lucide-react";
+import Footer from "@/components/Footer";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
@@ -339,6 +340,7 @@ export default function PrivacyPage() {
           </Link>
         </div>
       </main>
+      <Footer />
     </div>
   );
 }

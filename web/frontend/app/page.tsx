@@ -7,6 +7,7 @@ import {
   LogOut, ChevronRight, ArrowRight, Hash,
 } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
+import Footer from "@/components/Footer";
 import { api } from "@/lib/api";
 import type { User } from "@/lib/types";
 
@@ -346,7 +347,13 @@ export default function HomePage() {
             <Bot size={20} className="text-accent" />
             NexBot
           </Link>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            <Link
+              href="/guide"
+              className="hidden sm:block text-sm text-muted hover:text-fg transition-colors mr-1"
+            >
+              사용 방법
+            </Link>
             <ThemeToggle />
             {user
               ? <ProfileDropdown user={user} />
@@ -498,22 +505,7 @@ export default function HomePage() {
         ))}
       </section>
 
-      {/* ── Footer ── */}
-      <footer className="border-t border-border">
-        <div className="max-w-6xl mx-auto px-5 py-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-2 text-sm text-muted">
-            <Bot size={16} className="text-accent" />
-            <span className="font-semibold text-fg">NexBot</span>
-            <span>— Discord 봇 대시보드</span>
-          </div>
-          <div className="flex items-center gap-5">
-            <Link href="/privacy" className="text-sm text-muted/60 hover:text-muted transition-colors">
-              개인정보처리방침
-            </Link>
-            <p className="text-sm text-muted/60">© 2026 NexBot. All rights reserved.</p>
-          </div>
-        </div>
-      </footer>
+      <Footer />
     </div>
   );
 }

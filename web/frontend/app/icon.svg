@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Background -->
+  <rect width="32" height="32" rx="8" fill="#5865F2"/>
+  <!-- Antenna -->
+  <circle cx="16" cy="4.5" r="2" fill="white"/>
+  <rect x="14.5" y="6" width="3" height="5.5" rx="1.5" fill="white"/>
+  <!-- Head -->
+  <rect x="5.5" y="11.5" width="21" height="15.5" rx="4.5" fill="white"/>
+  <!-- Eyes -->
+  <circle cx="11.5" cy="17.5" r="2.5" fill="#5865F2"/>
+  <circle cx="20.5" cy="17.5" r="2.5" fill="#5865F2"/>
+  <!-- Eye glints -->
+  <circle cx="12.3" cy="16.7" r="0.8" fill="white"/>
+  <circle cx="21.3" cy="16.7" r="0.8" fill="white"/>
+  <!-- Mouth -->
+  <rect x="11" y="22.5" width="10" height="2.5" rx="1.25" fill="#5865F2"/>
+</svg>
