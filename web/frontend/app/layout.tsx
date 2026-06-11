@@ -17,6 +17,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             if (t === 'light') document.documentElement.classList.add('light');
           } catch(e) {}
         ` }} />
+        {/* Google AdSense */}
+        <script
+          async
+          src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-9117458586315582"
+          crossOrigin="anonymous"
+        />
       </head>
       <body>{children}</body>
     </html>
