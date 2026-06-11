@@ -58,19 +58,23 @@ async def _send_discord_message(channel_id: int, content: str, embed: dict) -> s
         return None
 
 
-async def _send_live_notification(row, live: dict):
-    channel_info = live.get("channel", {})
-    title     = live.get("liveTitle", "방송 시작!")
-    category  = live.get("liveCategoryValue", "")
-    viewers   = live.get("concurrentUserCount", 0)
+async def _send_live_notification(row, live: dict, info: dict):
+    channel_info = live.get("channel") or {}
+    title     = live.get("liveTitle") or "방송 시작!"
+    category  = live.get("liveCategoryValue") or ""
+    viewers   = live.get("concurrentUserCount") or 0
     thumbnail = live.get("liveImageUrl") or ""
-    avatar    = channel_info.get("channelImageUrl") or ""
-    name      = channel_info.get("channelName") or row["chzzk_name"] or "알 수 없음"
+    avatar    = channel_info.get("channelImageUrl") or info.get("channelImageUrl") or ""
+    name      = channel_info.get("channelName") or info.get("channelName") or row["chzzk_name"] or "알 수 없음"
     chzzk_url = f"https://chzzk.naver.com/live/{row['chzzk_channel_id']}"
 
-    embed = {
-        "title":       f"🔴 {name} 방송 시작!",
-        "description": f"**[{title}]({chzzk_url})**",
+    author: dict = {"name": f"🔴 {name} 방송 시작!", "url": chzzk_url}
+    if avatar:
+        author["icon_url"] = avatar
+
+    embed: dict = {
+        "author":      author,
+        "title":       title,
         "url":         chzzk_url,
         "color":       0x03C75A,
         "fields": [
@@ -81,8 +85,6 @@ async def _send_live_notification(row, live: dict):
     }
     if thumbnail:
         embed["image"] = {"url": f"{thumbnail}?t={int(time.time())}"}
-    if avatar:
-        embed["thumbnail"] = {"url": avatar}
 
     mention_id = row["mention_role_id"]
     if row["custom_message"]:
@@ -99,10 +101,16 @@ async def _send_live_notification(row, live: dict):
         _log(f"라이브 알림 전송 완료: {name} → ch={row['discord_channel']}")
 
 
-async def _send_offline_notification(row, live: dict):
-    name  = row["chzzk_name"] or "알 수 없음"
+async def _send_offline_notification(row, info: dict):
+    name   = info.get("channelName") or row["chzzk_name"] or "알 수 없음"
+    avatar = info.get("channelImageUrl") or ""
+
+    author: dict = {"name": f"⚫ {name} 방송 종료"}
+    if avatar:
+        author["icon_url"] = avatar
+
     embed = {
-        "title":  f"⚫ {name} 방송 종료",
+        "author": author,
         "color":  0x636E72,
         "footer": {"text": "치지직 라이브 알림"},
     }
@@ -176,17 +184,10 @@ async def _check_once():
             _log(f"  {name}: DB={was_live} openLive={now_live}")
 
             if now_live and not was_live:
-                # 알림용 상세 정보는 live-detail에서 추가로 조회 (실패해도 기본 정보로 전송)
                 detail = await _fetch_live_detail(row["chzzk_channel_id"]) or {}
-                # live-detail에 channel 정보가 없으면 channel info에서 보충
-                if not detail.get("channel"):
-                    detail["channel"] = {
-                        "channelName":     info.get("channelName"),
-                        "channelImageUrl": info.get("channelImageUrl"),
-                    }
-                await _send_live_notification(row, detail)
+                await _send_live_notification(row, detail, info)
             elif not now_live and was_live:
-                await _send_offline_notification(row, {})
+                await _send_offline_notification(row, info)
 
             await db.execute(
                 "UPDATE chzzk_subscriptions SET is_live=? WHERE id=?",
