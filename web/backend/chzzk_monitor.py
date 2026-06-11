@@ -1,7 +1,7 @@
 import os
 import asyncio
-import time
 import httpx
+from datetime import datetime, timezone
 from database import get_db
 
 CHZZK_API     = "https://api.chzzk.naver.com"
@@ -45,7 +45,23 @@ async def _fetch_live_detail(chzzk_id: str) -> dict | None:
 
 async def _send_discord_message(channel_id: int, content: str, embed: dict) -> str | None:
     """메시지 전송 후 오류 문자열 반환 (성공 시 None)"""
-    payload: dict = {"embeds": [embed]}
+    chzzk_url = embed.get("url", "")
+    payload: dict = {
+        "embeds": [embed],
+        "components": [
+            {
+                "type": 1,
+                "components": [
+                    {
+                        "type":  2,
+                        "style": 5,
+                        "label": "방송 바로가기",
+                        "url":   chzzk_url,
+                    }
+                ],
+            }
+        ] if chzzk_url else [],
+    }
     if content:
         payload["content"] = content
     async with httpx.AsyncClient(headers=_discord_headers(), timeout=10) as client:
@@ -60,36 +76,29 @@ async def _send_discord_message(channel_id: int, content: str, embed: dict) -> s
 
 async def _send_live_notification(row, live: dict, info: dict):
     channel_info = live.get("channel") or {}
-    title     = live.get("liveTitle") or "방송 시작!"
-    category  = live.get("liveCategoryValue") or ""
-    viewers   = live.get("concurrentUserCount") or 0
+    title     = live.get("liveTitle") or "방송 중"
+    category  = live.get("liveCategoryValue") or "없음"
     thumbnail = live.get("liveImageUrl") or ""
-    avatar    = channel_info.get("channelImageUrl") or info.get("channelImageUrl") or ""
     name      = channel_info.get("channelName") or info.get("channelName") or row["chzzk_name"] or "알 수 없음"
     chzzk_url = f"https://chzzk.naver.com/live/{row['chzzk_channel_id']}"
-
-    author: dict = {"name": f"🔴 {name} 방송 시작!", "url": chzzk_url}
-    if avatar:
-        author["icon_url"] = avatar
+    now_iso   = datetime.now(timezone.utc).isoformat()
 
     embed: dict = {
-        "author":      author,
-        "title":       title,
+        "title":       f"[{name}]님이 방송을 시작했습니다!",
         "url":         chzzk_url,
-        "color":       0x03C75A,
+        "description": f"**{title}**\n{name} 님이 방송을 시작했습니다.",
+        "color":       0x00FFA3,
         "fields": [
-            {"name": "카테고리", "value": category or "없음", "inline": True},
-            {"name": "시청자",   "value": f"{viewers:,}명",   "inline": True},
+            {"name": "카테고리", "value": category, "inline": False},
         ],
-        "footer": {"text": "치지직 라이브 알림"},
+        "footer":    {"text": "chzzk.junah.dev"},
+        "timestamp": now_iso,
     }
     if thumbnail:
-        embed["image"] = {"url": f"{thumbnail}?t={int(time.time())}"}
+        embed["image"] = {"url": thumbnail}
 
-    if bool(row["mention_everyone"]):
-        content = f"@everyone **{name}**님이 방송을 시작했습니다!"
-    else:
-        content = f"**{name}**님이 방송을 시작했습니다!"
+    mention = "@everyone " if bool(row["mention_everyone"]) else ""
+    content = f"{mention}[{name}]님이 방송을 시작했습니다!"
 
     err = await _send_discord_message(row["discord_channel"], content, embed)
     if err:
@@ -99,17 +108,13 @@ async def _send_live_notification(row, live: dict, info: dict):
 
 
 async def _send_offline_notification(row, info: dict):
-    name   = info.get("channelName") or row["chzzk_name"] or "알 수 없음"
-    avatar = info.get("channelImageUrl") or ""
-
-    author: dict = {"name": f"⚫ {name} 방송 종료"}
-    if avatar:
-        author["icon_url"] = avatar
-
+    name    = info.get("channelName") or row["chzzk_name"] or "알 수 없음"
+    now_iso = datetime.now(timezone.utc).isoformat()
     embed = {
-        "author": author,
-        "color":  0x636E72,
-        "footer": {"text": "치지직 라이브 알림"},
+        "title":     f"[{name}]님이 방송을 종료했습니다.",
+        "color":     0x636E72,
+        "footer":    {"text": "chzzk.junah.dev"},
+        "timestamp": now_iso,
     }
     err = await _send_discord_message(row["discord_channel"], "", embed)
     if err:

@@ -95,36 +95,35 @@ class ChzzkCog(commands.Cog):
             return
 
         channel_info = live.get("channel", {})
-        title = live.get("liveTitle", "방송 시작!")
-        category = live.get("liveCategoryValue", "")
-        viewers = live.get("concurrentUserCount", 0)
-        thumbnail = live.get("liveImageUrl", "")
-        avatar = channel_info.get("channelImageUrl", "")
-        name = channel_info.get("channelName", row["chzzk_name"] or "알 수 없음")
+        title     = live.get("liveTitle") or "방송 중"
+        category  = live.get("liveCategoryValue") or "없음"
+        thumbnail = live.get("liveImageUrl") or ""
+        name      = channel_info.get("channelName") or row["chzzk_name"] or "알 수 없음"
         chzzk_url = f"https://chzzk.naver.com/live/{row['chzzk_channel_id']}"
 
         embed = discord.Embed(
-            title=f"🔴 {name} 방송 시작!",
-            description=f"**[{title}]({chzzk_url})**",
-            color=0x03C75A,
-            url=chzzk_url
+            title=f"[{name}]님이 방송을 시작했습니다!",
+            url=chzzk_url,
+            description=f"**{title}**\n{name} 님이 방송을 시작했습니다.",
+            color=0x00FFA3,
+            timestamp=discord.utils.utcnow(),
         )
+        embed.add_field(name="카테고리", value=category, inline=False)
         if thumbnail:
-            embed.set_image(url=thumbnail + f"?t={int(__import__('time').time())}")
-        if avatar:
-            embed.set_thumbnail(url=avatar)
-        embed.add_field(name="카테고리", value=category or "없음", inline=True)
-        embed.add_field(name="시청자", value=f"{viewers:,}명", inline=True)
-        embed.set_footer(text="치지직 라이브 알림")
+            embed.set_image(url=thumbnail)
+        embed.set_footer(text="chzzk.junah.dev")
 
-        mention = ""
-        if row["mention_role_id"]:
-            role = guild.get_role(row["mention_role_id"])
-            if role:
-                mention = f"{role.mention} "
+        mention = "@everyone " if bool(row.get("mention_everyone")) else ""
+        content = f"{mention}[{name}]님이 방송을 시작했습니다!"
 
-        custom_msg = row["custom_message"] or f"{mention}**{name}**님이 방송을 시작했습니다!"
-        await ch.send(content=custom_msg, embed=embed)
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(
+            label="방송 바로가기",
+            url=chzzk_url,
+            style=discord.ButtonStyle.link,
+        ))
+
+        await ch.send(content=content, embed=embed, view=view)
 
     async def _send_offline_notification(self, row, live: dict):
         guild = self.bot.get_guild(row["guild_id"])
@@ -136,10 +135,11 @@ class ChzzkCog(commands.Cog):
 
         name = row["chzzk_name"] or "알 수 없음"
         embed = discord.Embed(
-            title=f"⚫ {name} 방송 종료",
-            color=0x636e72
+            title=f"[{name}]님이 방송을 종료했습니다.",
+            color=0x636E72,
+            timestamp=discord.utils.utcnow(),
         )
-        embed.set_footer(text="치지직 라이브 알림")
+        embed.set_footer(text="chzzk.junah.dev")
         await ch.send(embed=embed)
 
     @monitor_loop.before_loop
