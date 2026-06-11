@@ -19,9 +19,11 @@ class ModerationCog(commands.Cog):
         # {(guild_id, user_id): [timestamp, ...]}
         self._msg_cache: dict[tuple, list[tuple[float, str]]] = {}
         self.check_unmutes.start()
+        self.cleanup_msg_cache.start()
 
     def cog_unload(self):
         self.check_unmutes.cancel()
+        self.cleanup_msg_cache.cancel()
 
     # ── 로그 헬퍼 ────────────────────────────────────────────────────────────
     async def send_log(self, guild: discord.Guild, embed: discord.Embed):
@@ -358,6 +360,21 @@ class ModerationCog(commands.Cog):
 
     @check_unmutes.before_loop
     async def before_check_unmutes(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(hours=1)
+    async def cleanup_msg_cache(self):
+        """스팸 감지 캐시에서 1시간 이상 메시지가 없는 키를 정리합니다."""
+        now = time.time()
+        stale = [
+            k for k, msgs in self._msg_cache.items()
+            if not msgs or now - max(t for t, _ in msgs) > 3600
+        ]
+        for k in stale:
+            del self._msg_cache[k]
+
+    @cleanup_msg_cache.before_loop
+    async def before_cleanup(self):
         await self.bot.wait_until_ready()
 
     # ── 오류 핸들러 ───────────────────────────────────────────────────────────

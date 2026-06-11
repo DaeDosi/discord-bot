@@ -1,10 +1,7 @@
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../"))
-
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
-from deps import get_current_user
+from deps import get_current_user, require_guild_admin
 from database import get_db
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -24,7 +21,11 @@ class GuildConfig(BaseModel):
 
 
 @router.get("/{guild_id}")
-async def get_config(guild_id: str, user: dict = Depends(get_current_user)):
+async def get_config(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
     db = await get_db()
     row = await (await db.execute(
         "SELECT * FROM guild_config WHERE guild_id=?", (int(guild_id),)
@@ -35,8 +36,12 @@ async def get_config(guild_id: str, user: dict = Depends(get_current_user)):
 
 
 @router.put("/{guild_id}")
-async def update_config(guild_id: str, cfg: GuildConfig,
-                        user: dict = Depends(get_current_user)):
+async def update_config(
+    guild_id: str,
+    cfg: GuildConfig,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
     db = await get_db()
     await db.execute(
         """INSERT INTO guild_config
@@ -77,7 +82,11 @@ class LevelReward(BaseModel):
 
 
 @router.get("/{guild_id}/level-rewards")
-async def get_level_rewards(guild_id: str, user: dict = Depends(get_current_user)):
+async def get_level_rewards(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
     db = await get_db()
     rows = await (await db.execute(
         "SELECT level, role_id FROM level_rewards WHERE guild_id=? ORDER BY level",
@@ -87,8 +96,12 @@ async def get_level_rewards(guild_id: str, user: dict = Depends(get_current_user
 
 
 @router.post("/{guild_id}/level-rewards")
-async def add_level_reward(guild_id: str, reward: LevelReward,
-                           user: dict = Depends(get_current_user)):
+async def add_level_reward(
+    guild_id: str,
+    reward: LevelReward,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
     db = await get_db()
     await db.execute(
         """INSERT INTO level_rewards(guild_id, level, role_id) VALUES(?,?,?)
@@ -100,8 +113,12 @@ async def add_level_reward(guild_id: str, reward: LevelReward,
 
 
 @router.delete("/{guild_id}/level-rewards/{level}")
-async def delete_level_reward(guild_id: str, level: int,
-                               user: dict = Depends(get_current_user)):
+async def delete_level_reward(
+    guild_id: str,
+    level: int,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
     db = await get_db()
     await db.execute(
         "DELETE FROM level_rewards WHERE guild_id=? AND level=?",
@@ -113,7 +130,11 @@ async def delete_level_reward(guild_id: str, level: int,
 
 # ── 리더보드 ─────────────────────────────────────────────────────────────────
 @router.get("/{guild_id}/leaderboard")
-async def get_leaderboard(guild_id: str, user: dict = Depends(get_current_user)):
+async def get_leaderboard(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
     db = await get_db()
     rows = await (await db.execute(
         "SELECT user_id, xp, level FROM user_xp WHERE guild_id=? ORDER BY xp DESC LIMIT 20",

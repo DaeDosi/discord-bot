@@ -72,17 +72,19 @@ class ChzzkCog(commands.Cog):
 
         for row in rows:
             try:
-                live = await fetch_live_detail(row["chzzk_channel_id"])
-                if live is None:
+                # live-detail은 방송 중일 때만 유효 → openLive로 온/오프 판단
+                info = await fetch_channel_info(row["chzzk_channel_id"])
+                if info is None:
                     continue
 
-                now_live = live.get("status") == "OPEN"
+                now_live = bool(info.get("openLive", False))
                 was_live = bool(row["is_live"])
 
                 if now_live and not was_live:
+                    live = await fetch_live_detail(row["chzzk_channel_id"]) or {}
                     await self._send_live_notification(row, live)
                 elif not now_live and was_live:
-                    await self._send_offline_notification(row, live)
+                    await self._send_offline_notification(row)
 
                 await db.execute(
                     "UPDATE chzzk_subscriptions SET is_live=? WHERE id=?",
@@ -134,7 +136,7 @@ class ChzzkCog(commands.Cog):
 
         await ch.send(content=content, embed=embed, view=view)
 
-    async def _send_offline_notification(self, row, live: dict):
+    async def _send_offline_notification(self, row):
         guild = self.bot.get_guild(row["guild_id"])
         if not guild:
             return

@@ -6,13 +6,27 @@ DB_PATH = os.getenv("DATABASE_URL", "sqlite:///./bot.db").replace("sqlite:///", 
 _db: aiosqlite.Connection | None = None
 
 
+async def _new_connection() -> aiosqlite.Connection:
+    conn = await aiosqlite.connect(DB_PATH)
+    conn.row_factory = aiosqlite.Row
+    await conn.execute("PRAGMA journal_mode=WAL")
+    await conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
 async def get_db() -> aiosqlite.Connection:
     global _db
+    if _db is not None:
+        try:
+            await _db.execute("SELECT 1")
+        except Exception:
+            try:
+                await _db.close()
+            except Exception:
+                pass
+            _db = None
     if _db is None:
-        _db = await aiosqlite.connect(DB_PATH)
-        _db.row_factory = aiosqlite.Row
-        await _db.execute("PRAGMA journal_mode=WAL")
-        await _db.execute("PRAGMA foreign_keys=ON")
+        _db = await _new_connection()
     return _db
 
 
@@ -63,6 +77,9 @@ async def init_db():
             reason     TEXT    NOT NULL,
             created_at REAL    NOT NULL
         );
+
+        CREATE INDEX IF NOT EXISTS idx_warnings_guild_user
+            ON warnings(guild_id, user_id);
 
         CREATE TABLE IF NOT EXISTS mutes (
             guild_id   INTEGER NOT NULL,

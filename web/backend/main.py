@@ -8,8 +8,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from urllib.parse import quote
 from database import init_db
-from auth import exchange_code, get_discord_user, create_jwt, FRONTEND_URL
+from auth import exchange_code, get_discord_user, create_jwt, FRONTEND_URL, verify_oauth_state
 from chzzk_monitor import start_monitor
 from routers.auth_router     import router as auth_router
 from routers.guilds_router   import router as guilds_router
@@ -44,9 +45,11 @@ app.include_router(stats_router)
 
 
 @app.get("/auth/callback")
-async def auth_callback_compat(code: str = None, error: str = None):
+async def auth_callback_compat(code: str = None, state: str = None, error: str = None):
     if error:
-        return RedirectResponse(f"{FRONTEND_URL}/login?error={error}")
+        return RedirectResponse(f"{FRONTEND_URL}/login?error={quote(error)}")
+    if not verify_oauth_state(state):
+        return RedirectResponse(f"{FRONTEND_URL}/login?error=invalid_state")
     if not code:
         return RedirectResponse(f"{FRONTEND_URL}/login?error=no_code")
     try:
@@ -61,7 +64,7 @@ async def auth_callback_compat(code: str = None, error: str = None):
         )
         return RedirectResponse(f"{FRONTEND_URL}/callback?token={jwt_token}")
     except Exception as e:
-        return RedirectResponse(f"{FRONTEND_URL}/login?error={str(e)}")
+        return RedirectResponse(f"{FRONTEND_URL}/login?error={quote(str(e))}")
 
 
 @app.get("/")
