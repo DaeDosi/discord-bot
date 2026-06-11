@@ -9,7 +9,7 @@ DISCORD_REDIRECT_URI  = os.getenv("DISCORD_REDIRECT_URI", "http://localhost:8000
 FRONTEND_URL          = os.getenv("FRONTEND_URL", "http://localhost:3000")
 JWT_SECRET            = os.getenv("JWT_SECRET", "change-me")
 JWT_ALGORITHM         = "HS256"
-JWT_EXPIRE_HOURS      = 24 * 7  # 7일
+JWT_EXPIRE_HOURS      = 24 * 30  # 30일
 
 DISCORD_API = "https://discord.com/api/v10"
 OAUTH_URL   = "https://discord.com/api/oauth2/authorize"

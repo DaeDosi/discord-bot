@@ -104,13 +104,15 @@ class ChzzkCog(commands.Cog):
         name      = channel_info.get("channelName") or row["chzzk_name"] or "알 수 없음"
         chzzk_url = f"https://chzzk.naver.com/live/{row['chzzk_channel_id']}"
 
+        avatar = channel_info.get("channelImageUrl") or ""
         embed = discord.Embed(
-            title=f"[{name}]님이 방송을 시작했습니다!",
+            title=title,
             url=chzzk_url,
-            description=f"**{title}**\n{name} 님이 방송을 시작했습니다.",
             color=0x00FFA3,
             timestamp=discord.utils.utcnow(),
         )
+        embed.set_author(name=f"[{name}]님이 방송을 시작했습니다!", url=chzzk_url,
+                         icon_url=avatar or None)
         embed.add_field(name="카테고리", value=category, inline=False)
         if thumbnail:
             embed.set_image(url=thumbnail)
@@ -248,13 +250,15 @@ class ChzzkCog(commands.Cog):
         category  = live.get("liveCategoryValue") or "없음"
         thumbnail = live.get("liveImageUrl") or ""
 
+        avatar = info.get("channelImageUrl") or ""
         embed = discord.Embed(
-            title=f"[{name}]님이 방송을 시작했습니다!",
+            title=title,
             url=chzzk_url,
-            description=f"**{title}**\n{name} 님이 방송을 시작했습니다.",
             color=0x00FFA3,
             timestamp=discord.utils.utcnow(),
         )
+        embed.set_author(name=f"[{name}]님이 방송을 시작했습니다!", url=chzzk_url,
+                         icon_url=avatar or None)
         embed.add_field(name="카테고리", value=category, inline=False)
         if thumbnail:
             embed.set_image(url=thumbnail)

@@ -1,8 +1,8 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { Shield, Zap, Radio, Star, ArrowRight, Bot, LogOut, LayoutDashboard } from "lucide-react";
+import { Shield, Zap, Radio, Star, ArrowRight, Bot, LogOut, LayoutDashboard, ChevronDown } from "lucide-react";
 import type { User } from "@/lib/types";
 
 const features = [
@@ -31,6 +31,8 @@ const features = [
 export default function LandingPage() {
   const [user, setUser] = useState<User | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -41,10 +43,22 @@ export default function LandingPage() {
     } catch { /* ignore */ }
   }, []);
 
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [dropdownOpen]);
+
   const logout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("discord_user");
     setUser(null);
+    setDropdownOpen(false);
   };
 
   const inviteUrl = `https://discord.com/oauth2/authorize?client_id=${process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID}&permissions=8&scope=bot%20applications.commands`;
@@ -61,10 +75,10 @@ export default function LandingPage() {
 
           {mounted && (
             user ? (
-              /* 로그인 상태 */
-              <div className="flex items-center gap-3">
-                <Link
-                  href="/dashboard"
+              /* 로그인 상태 — 프로필 드롭다운 */
+              <div className="relative" ref={dropdownRef}>
+                <button
+                  onClick={() => setDropdownOpen((v) => !v)}
                   className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-bg-hover transition-colors"
                 >
                   {user.avatar ? (
@@ -76,22 +90,33 @@ export default function LandingPage() {
                     </div>
                   )}
                   <span className="text-sm text-white hidden sm:block">{user.username}</span>
-                </Link>
-                <Link href="/dashboard" className="btn-primary text-sm">
-                  <LayoutDashboard size={14} /> 대시보드
-                </Link>
-                <button
-                  onClick={logout}
-                  className="p-2 text-muted hover:text-white rounded-lg hover:bg-bg-hover transition-colors"
-                  title="로그아웃"
-                >
-                  <LogOut size={16} />
+                  <ChevronDown size={14} className={`text-muted transition-transform ${dropdownOpen ? "rotate-180" : ""}`} />
                 </button>
+
+                {dropdownOpen && (
+                  <div className="absolute right-0 mt-1 w-44 rounded-xl border border-border bg-bg-card shadow-lg overflow-hidden z-50">
+                    <Link
+                      href="/dashboard"
+                      onClick={() => setDropdownOpen(false)}
+                      className="flex items-center gap-2 px-4 py-2.5 text-sm text-white hover:bg-bg-hover transition-colors"
+                    >
+                      <LayoutDashboard size={15} className="text-accent" />
+                      대시보드
+                    </Link>
+                    <button
+                      onClick={logout}
+                      className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-danger hover:bg-bg-hover transition-colors border-t border-border"
+                    >
+                      <LogOut size={15} />
+                      로그아웃
+                    </button>
+                  </div>
+                )}
               </div>
             ) : (
               /* 비로그인 상태 */
               <Link href="/login" className="btn-primary text-sm">
-                대시보드 시작 <ArrowRight size={16} />
+                로그인 <ArrowRight size={16} />
               </Link>
             )
           )}

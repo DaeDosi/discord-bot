@@ -86,11 +86,16 @@ async def _send_live_notification(row, live: dict, info: dict):
     chzzk_url = f"https://chzzk.naver.com/live/{row['chzzk_channel_id']}"
     now_iso   = datetime.now(timezone.utc).isoformat()
 
+    avatar = (live.get("channel") or {}).get("channelImageUrl") or info.get("channelImageUrl") or ""
+    author: dict = {"name": f"[{name}]님이 방송을 시작했습니다!", "url": chzzk_url}
+    if avatar:
+        author["icon_url"] = avatar
+
     embed: dict = {
-        "title":       f"[{name}]님이 방송을 시작했습니다!",
-        "url":         chzzk_url,
-        "description": f"**{title}**\n{name} 님이 방송을 시작했습니다.",
-        "color":       0x00FFA3,
+        "author":    author,
+        "title":     title,
+        "url":       chzzk_url,
+        "color":     0x00FFA3,
         "fields": [
             {"name": "카테고리", "value": category, "inline": False},
         ],
