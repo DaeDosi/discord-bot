@@ -42,7 +42,7 @@ html.light {
 /* ── Component classes ────────────────────────────────────────────────── */
 @layer components {
   .card {
-    @apply bg-bg-card rounded-xl border border-border p-6;
+    @apply bg-bg-card rounded-xl border border-border p-4 md:p-6;
   }
   .btn-primary {
     @apply bg-accent hover:bg-accent-hover text-white font-medium px-4 py-2 rounded-lg

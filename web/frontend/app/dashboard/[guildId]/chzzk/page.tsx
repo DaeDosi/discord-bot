@@ -235,7 +235,7 @@ export default function ChzzkPage() {
         />
       )}
 
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
           <h1 className="text-xl font-bold text-white flex items-center gap-2">
             <Radio size={20} className="text-chzzk" /> 치지직 알림
@@ -245,7 +245,7 @@ export default function ChzzkPage() {
           </p>
         </div>
         {!selected && (
-          <button onClick={() => setShowSearch(true)} className="btn-primary">
+          <button onClick={() => setShowSearch(true)} className="btn-primary md:shrink-0">
             <Plus size={16} /> 스트리머 추가
           </button>
         )}

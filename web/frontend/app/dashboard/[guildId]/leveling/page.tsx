@@ -76,15 +76,15 @@ export default function LevelingPage() {
         </div>
 
         {/* 추가 폼 */}
-        <div className="flex gap-3 pt-2 border-t border-border">
+        <div className="flex flex-col md:flex-row gap-3 pt-2 border-t border-border">
           <input
             type="number" min="1" max="500"
-            className="input w-28"
+            className="input md:w-28"
             placeholder="레벨"
             value={newLevel}
             onChange={(e) => setNewLevel(e.target.value)}
           />
-          <select className="select flex-1" value={newRole} onChange={(e) => setNewRole(e.target.value)}>
+          <select className="select md:flex-1" value={newRole} onChange={(e) => setNewRole(e.target.value)}>
             <option value="">역할 선택...</option>
             {roles.map((r) => <option key={r.id} value={r.id}>@{r.name}</option>)}
           </select>
