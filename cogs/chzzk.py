@@ -213,6 +213,62 @@ class ChzzkCog(commands.Cog):
             embed=success("구독 해제", f"치지직 채널 구독이 해제되었습니다."), ephemeral=True
         )
 
+    # ── /test-chzzk-alert ────────────────────────────────────────────────────
+    @app_commands.command(name="test-chzzk-alert", description="치지직 방송 알림 테스트 메시지를 전송합니다.")
+    @app_commands.describe(
+        channel="테스트 알림을 보낼 Discord 채널",
+        streamer="테스트할 스트리머 이름 (치지직 채널 ID 또는 이름)",
+    )
+    @is_mod_or_admin()
+    async def test_chzzk_alert(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        streamer: str,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        # 스트리머 이름으로 검색해서 실제 정보 가져오기
+        results = await search_channels(streamer)
+        info = next(
+            (r.get("channel", {}) for r in results
+             if r.get("channel", {}).get("channelName", "").lower() == streamer.lower()),
+            results[0].get("channel", {}) if results else {}
+        )
+
+        # 검색 결과가 없으면 입력값을 그대로 사용
+        name      = info.get("channelName") or streamer
+        chzzk_id  = info.get("channelId") or "test"
+        chzzk_url = f"https://chzzk.naver.com/live/{chzzk_id}"
+
+        embed = discord.Embed(
+            title=f"[{name}]님이 방송을 시작했습니다!",
+            url=chzzk_url,
+            description=f"**[테스트] 방송 제목입니다**\n{name} 님이 방송을 시작했습니다.",
+            color=0x00FFA3,
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="카테고리", value="테스트 카테고리", inline=False)
+        if info.get("channelImageUrl"):
+            embed.set_thumbnail(url=info["channelImageUrl"])
+        embed.set_footer(text="chzzk.junah.dev")
+
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(
+            label="방송 바로가기",
+            url=chzzk_url,
+            style=discord.ButtonStyle.link,
+        ))
+
+        await channel.send(
+            content=f"[{name}]님이 방송을 시작했습니다!",
+            embed=embed,
+            view=view,
+        )
+        await interaction.followup.send(
+            f"✅ {channel.mention} 채널에 테스트 알림을 전송했습니다.", ephemeral=True
+        )
+
     # ── /chzzk-list ───────────────────────────────────────────────────────────
     @app_commands.command(name="chzzk-list", description="구독 중인 치지직 채널 목록을 확인합니다.")
     async def chzzk_list(self, interaction: discord.Interaction):
