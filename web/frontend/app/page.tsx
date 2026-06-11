@@ -67,7 +67,9 @@ export default function LandingPage() {
               Discord로 시작하기 <ArrowRight size={18} />
             </Link>
             <a
-              href={process.env.NEXT_PUBLIC_BOT_INVITE || "#"}
+              href={`https://discord.com/oauth2/authorize?client_id=${process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID}&permissions=8&scope=bot%20applications.commands`}
+              target="_blank"
+              rel="noreferrer"
               className="btn-secondary px-6 py-3 text-base"
             >
               봇 초대하기

@@ -1,14 +1,20 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { Settings, Plus, Server } from "lucide-react";
+import { Settings, Plus, Server, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Guild } from "@/lib/types";
 
-const BOT_INVITE = process.env.NEXT_PUBLIC_BOT_INVITE || "#";
+const CLIENT_ID = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID || "";
 
-function GuildCard({ guild }: { guild: Guild }) {
+function getBotInviteUrl(guildId?: string) {
+  const base = `https://discord.com/oauth2/authorize?client_id=${CLIENT_ID}&permissions=8&scope=bot%20applications.commands`;
+  if (!guildId) return base;
+  return `${base}&guild_id=${guildId}&disable_guild_select=true`;
+}
+
+function GuildCard({ guild, onInvite }: { guild: Guild; onInvite: (guildId: string) => void }) {
   return (
     <div className="card flex items-center gap-4 hover:border-accent/30 transition-colors">
       {guild.icon ? (
@@ -34,14 +40,12 @@ function GuildCard({ guild }: { guild: Guild }) {
           <Settings size={14} /> 관리
         </Link>
       ) : (
-        <a
-          href={`${BOT_INVITE}&guild_id=${guild.id}`}
-          target="_blank"
-          rel="noreferrer"
+        <button
+          onClick={() => onInvite(guild.id)}
           className="btn-secondary text-sm shrink-0"
         >
           <Plus size={14} /> 봇 초대
-        </a>
+        </button>
       )}
     </div>
   );
@@ -50,19 +54,52 @@ function GuildCard({ guild }: { guild: Guild }) {
 export default function DashboardPage() {
   const [guilds, setGuilds]   = useState<Guild[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    api.guilds.list()
-      .then(setGuilds)
-      .finally(() => setLoading(false));
+  const loadGuilds = useCallback(async () => {
+    const data = await api.guilds.list().catch(() => []);
+    setGuilds(data);
+    setLoading(false);
+    setRefreshing(false);
   }, []);
+
+  useEffect(() => { loadGuilds(); }, [loadGuilds]);
+
+  // 초대 창을 팝업으로 열고, 닫히면 자동으로 목록 갱신
+  const handleInvite = (guildId: string) => {
+    const url = getBotInviteUrl(guildId);
+    const popup = window.open(url, "bot-invite", "width=500,height=800");
+    if (!popup) {
+      // 팝업 차단 시 새 탭으로 열기
+      window.open(url, "_blank");
+      return;
+    }
+    const timer = setInterval(() => {
+      if (popup.closed) {
+        clearInterval(timer);
+        setRefreshing(true);
+        // 봇이 서버에 반영되는 시간을 고려해 1.5초 후 갱신
+        setTimeout(() => loadGuilds(), 1500);
+      }
+    }, 500);
+  };
 
   const withBot    = guilds.filter((g) => g.has_bot);
   const withoutBot = guilds.filter((g) => !g.has_bot);
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-10">
-      <h1 className="text-2xl font-bold text-white mb-1">내 서버</h1>
+      <div className="flex items-center justify-between mb-1">
+        <h1 className="text-2xl font-bold text-white">내 서버</h1>
+        <button
+          onClick={() => { setRefreshing(true); loadGuilds(); }}
+          disabled={refreshing}
+          className="p-2 text-muted hover:text-white transition-colors rounded-lg hover:bg-bg-hover"
+          title="새로고침"
+        >
+          <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
+        </button>
+      </div>
       <p className="text-muted mb-8">관리자 권한이 있는 서버만 표시됩니다.</p>
 
       {loading ? (
@@ -79,7 +116,7 @@ export default function DashboardPage() {
                 봇 설치된 서버
               </h2>
               <div className="space-y-3">
-                {withBot.map((g) => <GuildCard key={g.id} guild={g} />)}
+                {withBot.map((g) => <GuildCard key={g.id} guild={g} onInvite={handleInvite} />)}
               </div>
             </section>
           )}
@@ -89,7 +126,7 @@ export default function DashboardPage() {
                 봇 미설치 서버
               </h2>
               <div className="space-y-3">
-                {withoutBot.map((g) => <GuildCard key={g.id} guild={g} />)}
+                {withoutBot.map((g) => <GuildCard key={g.id} guild={g} onInvite={handleInvite} />)}
               </div>
             </section>
           )}
