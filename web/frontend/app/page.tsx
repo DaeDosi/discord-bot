@@ -3,432 +3,534 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import {
-  Shield, Zap, Radio, Star, ArrowRight, Bot, Hash,
-  LogOut, LayoutDashboard, ChevronDown, Server, Users, Clock,
+  Bot, Shield, TrendingUp, Radio, Smile,
+  LogOut, ChevronRight, ArrowRight, Hash,
 } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
+import { api } from "@/lib/api";
 import type { User } from "@/lib/types";
 
-/* ── Scroll reveal ──────────────────────────────────────────────────────── */
+// ── Hooks ──────────────────────────────────────────────────────────────────────
+
+function useTypewriter(words: string[], speed = 70, pause = 1800) {
+  const [display, setDisplay] = useState("");
+  const [wordIdx, setWordIdx] = useState(0);
+  const [charIdx, setCharIdx] = useState(0);
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    const word = words[wordIdx % words.length];
+    const delay = deleting ? speed / 2 : charIdx === word.length ? pause : speed;
+    const t = setTimeout(() => {
+      if (!deleting && charIdx < word.length) {
+        setDisplay(word.slice(0, charIdx + 1));
+        setCharIdx(c => c + 1);
+      } else if (!deleting && charIdx === word.length) {
+        setDeleting(true);
+      } else if (deleting && charIdx > 0) {
+        setDisplay(word.slice(0, charIdx - 1));
+        setCharIdx(c => c - 1);
+      } else {
+        setDeleting(false);
+        setWordIdx(i => i + 1);
+      }
+    }, delay);
+    return () => clearTimeout(t);
+  }, [charIdx, deleting, wordIdx, words, speed, pause]);
+
+  return display;
+}
+
 function useReveal() {
   useEffect(() => {
     const els = document.querySelectorAll<HTMLElement>(".reveal");
     const io = new IntersectionObserver(
-      (entries) =>
-        entries.forEach((e) => {
-          if (e.isIntersecting) { e.target.classList.add("visible"); io.unobserve(e.target); }
-        }),
-      { threshold: 0.08, rootMargin: "0px 0px -50px 0px" }
+      (entries) => entries.forEach(e => e.isIntersecting && e.target.classList.add("visible")),
+      { threshold: 0.12 }
     );
-    els.forEach((el) => io.observe(el));
+    els.forEach(el => io.observe(el));
     return () => io.disconnect();
   }, []);
 }
 
-/* ── Typewriter ─────────────────────────────────────────────────────────── */
-function useTypewriter(text: string, delay = 500, speed = 75) {
-  const [displayed, setDisplayed] = useState("");
-  const [done, setDone]           = useState(false);
-  useEffect(() => {
-    let i = 0;
-    const start = setTimeout(() => {
-      const tick = setInterval(() => {
-        i++;
-        setDisplayed(text.slice(0, i));
-        if (i >= text.length) { clearInterval(tick); setDone(true); }
-      }, speed);
-      return () => clearInterval(tick);
-    }, delay);
-    return () => clearTimeout(start);
-  }, [text, delay, speed]);
-  return { displayed, done };
-}
+// ── Sub-components ─────────────────────────────────────────────────────────────
 
-/* ── Feature data ───────────────────────────────────────────────────────── */
-const FEATURES = [
-  {
-    icon: Shield,
-    title: "강력한 관리 기능",
-    desc: "경고, 뮤트, 밴, 자동 관리까지. 로그는 지정 채널에 자동으로 기록됩니다.",
-  },
-  {
-    icon: Zap,
-    title: "레벨링 시스템",
-    desc: "채팅 활동에 따라 XP를 지급하고, 레벨업 시 역할을 자동으로 부여합니다.",
-  },
-  {
-    icon: Radio,
-    title: "치지직 방송 알림",
-    desc: "원하는 스트리머가 방송을 시작하면 1분 이내에 Discord 채널로 알림을 전송합니다.",
-  },
-  {
-    icon: Star,
-    title: "반응 역할",
-    desc: "이모지 반응으로 역할을 자동 부여·회수하는 셀프 역할 시스템을 설정하세요.",
-  },
-];
-
-/* ── Page ───────────────────────────────────────────────────────────────── */
-export default function LandingPage() {
-  const [user, setUser]         = useState<User | null>(null);
-  const [mounted, setMounted]   = useState(false);
-  const [dropOpen, setDropOpen] = useState(false);
-  const dropRef                 = useRef<HTMLDivElement>(null);
-
-  useReveal();
-  const { displayed: typed, done: typeDone } = useTypewriter("새로운 기준", 700, 80);
+function ProfileDropdown({ user }: { user: User }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setMounted(true);
-    try {
-      const cached = localStorage.getItem("discord_user");
-      const token  = localStorage.getItem("token");
-      if (cached && token) setUser(JSON.parse(cached));
-    } catch { /* ignore */ }
-  }, []);
-
-  useEffect(() => {
-    if (!dropOpen) return;
-    const h = (e: MouseEvent) => {
-      if (dropRef.current && !dropRef.current.contains(e.target as Node))
-        setDropOpen(false);
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, [dropOpen]);
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
 
   const logout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("discord_user");
-    setUser(null);
-    setDropOpen(false);
+    window.location.href = "/";
   };
 
-  const inviteUrl = `https://discord.com/oauth2/authorize?client_id=${process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID}&permissions=8&scope=bot%20applications.commands`;
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-2 px-3 py-1.5 rounded-full
+                   hover:bg-bg-hover border border-transparent hover:border-border
+                   transition-all"
+      >
+        {user.avatar
+          ? <Image src={user.avatar} alt={user.username} width={28} height={28} className="rounded-full" />
+          : <div className="w-7 h-7 rounded-full bg-accent/20 flex items-center justify-center">
+              <Bot size={13} className="text-accent" />
+            </div>}
+        <span className="text-sm text-fg hidden sm:block">{user.username}</span>
+        <ChevronRight size={13} className={`text-muted transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full mt-2 w-44 bg-bg-card border border-border rounded-xl
+                        shadow-2xl shadow-black/40 py-1.5 z-50 animate-fade-in">
+          <Link
+            href="/dashboard"
+            className="flex items-center gap-2.5 px-4 py-2.5 text-sm text-fg hover:bg-bg-hover transition-colors"
+            onClick={() => setOpen(false)}
+          >
+            <Bot size={14} className="text-accent" /> 대시보드
+          </Link>
+          <div className="h-px bg-border mx-3 my-1" />
+          <button
+            onClick={logout}
+            className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-danger hover:bg-danger/8 transition-colors"
+          >
+            <LogOut size={14} /> 로그아웃
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Mockup: terminal
+function TerminalMockup() {
+  const cmds = [
+    { cmd: "/warn", args: "@유저 욕설 사용", ok: true },
+    { cmd: "/mute", args: "@유저 30m 도배", ok: true },
+    { cmd: "/clear", args: "100", ok: true },
+    { cmd: "/ban", args: "@유저 반복 위반", ok: true },
+  ];
+  return (
+    <div className="bg-[#0b0d14] rounded-2xl border border-white/8 p-5
+                    shadow-2xl shadow-black/60 w-full max-w-sm font-mono text-sm">
+      <div className="flex items-center gap-2 mb-5">
+        <div className="flex gap-1.5">
+          <div className="w-2.5 h-2.5 rounded-full bg-red-500/60" />
+          <div className="w-2.5 h-2.5 rounded-full bg-yellow-400/60" />
+          <div className="w-2.5 h-2.5 rounded-full bg-green-500/60" />
+        </div>
+        <span className="text-[11px] text-white/20 ml-2">NexBot — 서버 관리</span>
+      </div>
+      <div className="space-y-2.5">
+        {cmds.map(({ cmd, args, ok }) => (
+          <div key={cmd + args} className="flex items-center gap-2">
+            <span className="text-[#5865f2]/40 text-xs select-none">$</span>
+            <span className="text-[#818cf8]">{cmd}</span>
+            <span className="text-white/40">{args}</span>
+            {ok && <span className="ml-auto text-[#57f287] text-xs">✓</span>}
+          </div>
+        ))}
+        <div className="flex items-center gap-2 opacity-30 pt-1">
+          <span className="text-[#5865f2]/40 text-xs">$</span>
+          <span className="inline-block w-1.5 h-4 bg-[#5865f2]/60 animate-pulse" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Mockup: leaderboard
+function LeaderboardMockup() {
+  const rows = [
+    { medal: "🥇", name: "스타플레이어", lv: 42, xp: 8400, pct: 84 },
+    { medal: "🥈", name: "레벨업러너", lv: 38, xp: 7600, pct: 76 },
+    { medal: "🥉", name: "꾸준한멤버", lv: 31, xp: 6200, pct: 62 },
+  ];
+  return (
+    <div className="bg-bg-card rounded-2xl border border-border p-5 shadow-xl w-full max-w-sm">
+      <div className="flex items-center justify-between mb-5">
+        <p className="text-xs font-bold text-muted uppercase tracking-widest">리더보드</p>
+        <span className="text-[11px] text-accent px-2 py-0.5 rounded-full bg-accent/10">이번 주</span>
+      </div>
+      <div className="space-y-4">
+        {rows.map(({ medal, name, lv, xp, pct }) => (
+          <div key={name}>
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-base leading-none">{medal}</span>
+              <span className="text-sm text-fg font-medium flex-1">{name}</span>
+              <span className="text-xs text-muted">Lv.{lv}</span>
+              <span className="text-xs text-muted/60">{xp.toLocaleString()} XP</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-bg overflow-hidden">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-[#5865f2] to-[#818cf8]"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Mockup: Discord embed (Chzzk notification)
+function ChzzkEmbedMockup() {
+  return (
+    <div className="rounded-2xl overflow-hidden border border-white/8 shadow-2xl shadow-black/60 w-full max-w-sm"
+         style={{ background: "#313338" }}>
+      <div className="flex items-center gap-2 px-4 py-2.5" style={{ background: "#2b2d31" }}>
+        <Hash size={11} style={{ color: "#80848e" }} />
+        <span className="text-[11px]" style={{ color: "#80848e" }}>알림-채널</span>
+      </div>
+      <div className="p-4">
+        <div className="flex gap-3">
+          <div className="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center"
+               style={{ background: "rgba(88,101,242,0.2)" }}>
+            <Bot size={16} style={{ color: "#5865f2" }} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-sm font-semibold text-white">NexBot</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold text-white"
+                    style={{ background: "#5865f2" }}>BOT</span>
+            </div>
+            <div className="rounded-lg border-l-[3px] p-3"
+                 style={{ background: "#2b2d31", borderLeftColor: "#03c75a" }}>
+              <p className="text-white text-[13px] font-semibold mb-1 leading-snug">
+                오늘의 하이라이트 게임 방송!
+              </p>
+              <p className="text-[12px] mb-3" style={{ color: "#b5bac1" }}>
+                스트리머님이 방송을 시작했습니다.
+              </p>
+              <div className="rounded-md h-16 flex items-center justify-center gap-2"
+                   style={{ background: "#1e1f22" }}>
+                <Radio size={12} style={{ color: "#03c75a" }} />
+                <span className="text-[11px]" style={{ color: "#03c75a" }}>LIVE</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Mockup: reaction roles
+function ReactionRolesMockup() {
+  const roles = [
+    { emoji: "😊", label: "일반 멤버", active: true },
+    { emoji: "🎮", label: "게이머", active: true },
+    { emoji: "🎨", label: "아티스트", active: false },
+    { emoji: "📢", label: "공지 수신", active: true },
+  ];
+  return (
+    <div className="bg-bg-card rounded-2xl border border-border p-5 shadow-xl w-full max-w-sm">
+      <p className="text-xs font-bold text-muted uppercase tracking-widest mb-4">역할 선택</p>
+      <div className="space-y-2">
+        {roles.map(({ emoji, label, active }) => (
+          <div
+            key={label}
+            className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-colors ${
+              active ? "bg-accent/8 border-accent/20" : "border-border"
+            }`}
+          >
+            <span className="text-xl leading-none">{emoji}</span>
+            <span className="text-sm text-fg flex-1">{label}</span>
+            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center transition-colors ${
+              active ? "bg-accent border-accent" : "border-border"
+            }`}>
+              {active && <span className="text-white text-[9px] font-bold leading-none">✓</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Main Page ──────────────────────────────────────────────────────────────────
+
+export default function HomePage() {
+  const [user, setUser] = useState<User | null>(null);
+  const [loginUrl, setLoginUrl] = useState<string | null>(null);
+  const [stats, setStats] = useState<{ guilds: number; chzzk_subscriptions: number } | null>(null);
+
+  const typed = useTypewriter(["스마트하게.", "쉽게.", "빠르게."]);
+  useReveal();
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("discord_user");
+      if (raw) setUser(JSON.parse(raw));
+    } catch {}
+
+    api.auth.getLoginUrl()
+      .then(d => setLoginUrl(d.url))
+      .catch(() => {});
+
+    api.stats.get()
+      .then(d => setStats(d))
+      .catch(() => {});
+  }, []);
+
+  const features: {
+    icon: React.ReactNode;
+    title: string;
+    desc: string;
+    detail: string;
+    mockup: React.ReactNode;
+    flip: boolean;
+  }[] = [
+    {
+      icon: <Shield size={22} className="text-accent" />,
+      title: "서버 관리",
+      desc: "강력한 관리 도구",
+      detail:
+        "경고, 뮤트, 차단, 메시지 삭제까지 슬래시 커맨드 하나로 빠르게 처리하세요. 웹 대시보드에서 권한과 설정을 한눈에 관리할 수 있습니다.",
+      mockup: <TerminalMockup />,
+      flip: false,
+    },
+    {
+      icon: <TrendingUp size={22} className="text-accent" />,
+      title: "레벨링 시스템",
+      desc: "활동 기반 성장",
+      detail:
+        "채팅 활동에 따라 자동으로 XP가 쌓이고 레벨이 오릅니다. 리더보드로 멤버들의 참여도를 높이고, 레벨별 역할 보상으로 커뮤니티를 활성화하세요.",
+      mockup: <LeaderboardMockup />,
+      flip: true,
+    },
+    {
+      icon: <Radio size={22} className="text-accent" />,
+      title: "치지직 알림",
+      desc: "실시간 방송 알림",
+      detail:
+        "치지직 스트리머의 방송 시작을 실시간으로 감지해 Discord 채널에 자동 알림을 보냅니다. 방송 제목, 카테고리, 썸네일이 포함된 임베드 메시지를 받아보세요.",
+      mockup: <ChzzkEmbedMockup />,
+      flip: false,
+    },
+    {
+      icon: <Smile size={22} className="text-accent" />,
+      title: "리액션 역할",
+      desc: "셀프 역할 선택",
+      detail:
+        "멤버가 이모지를 클릭해 직접 역할을 선택할 수 있습니다. 관심사나 게임별 역할을 멤버 스스로 관리하게 해 서버 운영 부담을 줄이세요.",
+      mockup: <ReactionRolesMockup />,
+      flip: true,
+    },
+  ];
+
+  const statsDisplay = [
+    { value: stats ? `${stats.guilds}+` : null, label: "등록 서버" },
+    { value: stats ? `${stats.chzzk_subscriptions}+` : null, label: "치지직 구독" },
+    { value: "24/7", label: "안정 운영" },
+  ];
 
   return (
-    <div className="min-h-screen flex flex-col bg-bg text-fg">
-
-      {/* ── Navbar ────────────────────────────────────────────────────── */}
-      <nav className="border-b border-border bg-bg/80 backdrop-blur-xl sticky top-0 z-50">
-        <div className="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2.5 font-bold text-lg">
-            <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center shadow-md shadow-accent/30">
-              <Bot size={16} className="text-white" />
-            </div>
-            <span className="text-fg">NexBot</span>
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            <ThemeToggle />
-            {mounted && (
-              user ? (
-                <div className="relative" ref={dropRef}>
-                  <button
-                    onClick={() => setDropOpen((v) => !v)}
-                    className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl
-                               hover:bg-bg-hover transition-colors ml-1"
-                  >
-                    {user.avatar ? (
-                      <Image src={user.avatar} alt={user.username}
-                             width={26} height={26} className="rounded-full" />
-                    ) : (
-                      <div className="w-6 h-6 rounded-full bg-accent/20 flex items-center justify-center">
-                        <Bot size={12} className="text-accent" />
-                      </div>
-                    )}
-                    <span className="text-sm text-fg hidden sm:block">{user.username}</span>
-                    <ChevronDown size={12} className={`text-muted transition-transform duration-200
-                                                       ${dropOpen ? "rotate-180" : ""}`} />
-                  </button>
-                  {dropOpen && (
-                    <div className="absolute right-0 mt-2 w-44 rounded-2xl border border-border
-                                    bg-bg-card shadow-2xl overflow-hidden z-50 animate-fade-in">
-                      <Link href="/dashboard" onClick={() => setDropOpen(false)}
-                        className="flex items-center gap-2.5 px-4 py-3 text-sm text-fg
-                                   hover:bg-bg-hover transition-colors">
-                        <LayoutDashboard size={14} className="text-accent" />
-                        대시보드
-                      </Link>
-                      <button onClick={logout}
-                        className="w-full flex items-center gap-2.5 px-4 py-3 text-sm text-danger
-                                   hover:bg-bg-hover transition-colors border-t border-border">
-                        <LogOut size={14} />
-                        로그아웃
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <Link href="/login" className="btn-primary text-sm ml-1 rounded-xl">
-                  로그인 <ArrowRight size={14} />
-                </Link>
-              )
-            )}
-          </div>
-        </div>
-      </nav>
-
-      {/* ── Hero ──────────────────────────────────────────────────────── */}
-      <section className="relative overflow-hidden">
-        {/* Dot grid */}
-        <div className="pointer-events-none absolute inset-0" aria-hidden
-          style={{
-            backgroundImage:
-              "radial-gradient(circle, rgba(88,101,242,0.12) 1px, transparent 1px)",
-            backgroundSize: "30px 30px",
-          }}
-        />
-        {/* Ambient glow */}
-        <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
-          <div className="absolute -top-40 left-1/3 w-[600px] h-[600px]
-                          bg-accent/10 rounded-full blur-[130px] -translate-x-1/2" />
-          <div className="absolute top-1/2 right-0 translate-x-1/4 w-[400px] h-[400px]
-                          bg-accent/6 rounded-full blur-[100px]" />
-        </div>
-
-        <div className="relative z-10 max-w-6xl mx-auto px-5 py-24 lg:py-36
-                        flex flex-col lg:flex-row items-center gap-14 lg:gap-10">
-
-          {/* ── Left: copy ─────────────────────────────────────────────── */}
-          <div className="flex-1 text-center lg:text-left animate-fade-up">
-            {/* Badge */}
-            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs
-                            font-semibold bg-accent/10 text-accent border border-accent/20 mb-7">
-              <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-              Discord Bot Dashboard
-            </div>
-
-            {/* Headline */}
-            <h1 className="text-5xl sm:text-6xl lg:text-[4.5rem] font-extrabold
-                           tracking-tight leading-[1.07] mb-5">
-              서버 관리의
-              <br />
-              {/* Typewriter gradient text — invisible placeholder prevents layout shift */}
-              <span className="relative inline-block">
-                <span className="invisible select-none">새로운 기준</span>
-                <span className="absolute inset-0 bg-gradient-to-r from-accent via-[#818cf8]
-                                 to-[#a5b4fc] bg-clip-text text-transparent whitespace-nowrap">
-                  {typed}
-                </span>
-                {!typeDone && (
-                  <span className="absolute text-accent/70"
-                        style={{ left: `${typed.length * 1}em` }}>
-                    |
-                  </span>
-                )}
-              </span>
-            </h1>
-
-            <p className="text-muted text-lg leading-relaxed mb-9 max-w-md mx-auto lg:mx-0">
-              관리, 레벨링, 치지직 방송 알림까지 —<br className="hidden sm:block" />
-              하나의 봇으로 모든 것을 해결하세요.
-            </p>
-
-            {/* CTAs */}
-            <div className="flex gap-3 flex-wrap justify-center lg:justify-start mb-10">
-              {mounted && user ? (
-                <Link href="/dashboard"
-                  className="btn-primary px-6 py-2.5 text-[15px] rounded-xl
-                             shadow-lg shadow-accent/20 hover:shadow-accent/30">
-                  대시보드 <ArrowRight size={16} />
-                </Link>
-              ) : (
-                <Link href="/login"
-                  className="btn-primary px-6 py-2.5 text-[15px] rounded-xl
-                             shadow-lg shadow-accent/20 hover:shadow-accent/30">
-                  Discord로 시작 <ArrowRight size={16} />
-                </Link>
-              )}
-              <a href={inviteUrl} target="_blank" rel="noreferrer"
-                 className="btn-secondary px-6 py-2.5 text-[15px] rounded-xl">
-                봇 초대하기
-              </a>
-            </div>
-
-            {/* Stats */}
-            <div className="flex gap-8 justify-center lg:justify-start">
-              {[
-                { icon: <Server size={13} className="text-accent/70" />, v: "50+",    l: "서버" },
-                { icon: <Users  size={13} className="text-accent/70" />, v: "1,000+", l: "사용자" },
-                { icon: <Clock  size={13} className="text-accent/70" />, v: "24/7",   l: "안정 운영" },
-              ].map(({ icon, v, l }) => (
-                <div key={l} className="flex items-start gap-1.5">
-                  <div className="mt-1">{icon}</div>
-                  <div>
-                    <div className="text-xl font-bold text-fg leading-none">{v}</div>
-                    <div className="text-xs text-muted mt-0.5">{l}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* ── Right: Discord window mockup ─────────────────────────── */}
-          <div className="flex-shrink-0 w-full max-w-[360px] hidden md:block"
-               style={{ animation: "fadeUp 0.7s ease 0.2s both" }}>
-            <div className="relative">
-              <div className="rounded-2xl overflow-hidden border border-white/8
-                              shadow-2xl shadow-black/50" style={{ background: "#313338" }}>
-                {/* Window bar */}
-                <div className="flex items-center gap-3 px-4 py-3"
-                     style={{ background: "#2b2d31" }}>
-                  <div className="flex gap-1.5">
-                    {["#ff5f57","#ffbd2e","#28ca41"].map(c => (
-                      <div key={c} className="w-3 h-3 rounded-full" style={{ background: c }} />
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-1.5 ml-1.5">
-                    <Hash size={12} style={{ color: "#80848e" }} />
-                    <span className="text-xs" style={{ color: "#80848e" }}>알림-채널</span>
-                  </div>
-                </div>
-
-                {/* Message */}
-                <div className="p-4">
-                  <div className="flex gap-3">
-                    <div className="w-10 h-10 rounded-full flex-shrink-0 flex items-center
-                                    justify-center" style={{ background: "rgba(88,101,242,0.25)" }}>
-                      <Bot size={18} className="text-accent" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <span className="text-sm font-semibold text-white">NexBot</span>
-                        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded text-white"
-                              style={{ background: "#5865f2" }}>BOT</span>
-                        <span className="text-xs" style={{ color: "#6d6f78" }}>오늘 오후 3:42</span>
-                      </div>
-
-                      {/* Embed */}
-                      <div className="rounded-lg overflow-hidden border-l-[3px]"
-                           style={{ background: "#2b2d31", borderLeftColor: "#03c75a" }}>
-                        <div className="p-3">
-                          <div className="flex items-center gap-1.5 mb-1.5">
-                            <div className="w-4 h-4 rounded-full"
-                                 style={{ background: "rgba(3,199,90,0.3)" }} />
-                            <span className="text-xs font-semibold"
-                                  style={{ color: "#03c75a" }}>스트리머이름</span>
-                          </div>
-                          <p className="text-white text-[13px] font-semibold leading-snug">
-                            지금 진행 중인 방송 제목입니다!
-                          </p>
-                          <p className="text-xs mt-1 mb-2.5" style={{ color: "#b5bac1" }}>
-                            스트리머이름님이 방송을 시작했습니다.
-                          </p>
-                          <div className="rounded-md h-16 flex items-center justify-center"
-                               style={{ background: "#1e1f22" }}>
-                            <div className="flex items-center gap-1.5">
-                              <Radio size={10} style={{ color: "#03c75a" }} />
-                              <span className="text-xs font-medium" style={{ color: "#03c75a" }}>
-                                LIVE
-                              </span>
-                            </div>
-                          </div>
-                          <div className="mt-2 text-xs" style={{ color: "#b5bac1" }}>
-                            <span className="font-medium">카테고리</span>
-                            <span style={{ color: "#72767d" }}> · 게임 / 콘텐츠</span>
-                          </div>
-                          <p className="text-[10px] mt-1.5" style={{ color: "#4e5058" }}>
-                            chzzk.junah.dev
-                          </p>
-                        </div>
-                      </div>
-
-                      <button className="mt-2 text-xs px-3 py-1.5 rounded text-white
-                                         flex items-center gap-1"
-                              style={{ background: "#4e5058" }}>
-                        방송 바로가기 <ArrowRight size={10} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* LIVE pill */}
-              <div className="absolute -top-2.5 -right-2.5 flex items-center gap-1.5
-                              bg-danger text-white text-[11px] font-bold
-                              px-2.5 py-1 rounded-full shadow-lg shadow-danger/30">
-                <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-                LIVE
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ── Features ─────────────────────────────────────────────────── */}
-      <section className="py-28 px-5 border-t border-border">
-        <div className="max-w-5xl mx-auto">
-
-          {/* Section label */}
-          <div className="text-center mb-16 reveal">
-            <p className="text-xs font-bold tracking-[0.25em] uppercase text-accent mb-4">
-              Features
-            </p>
-            <h2 className="text-4xl sm:text-5xl font-extrabold text-fg tracking-tight mb-4">
-              필요한 모든 것,<br />
-              <span className="bg-gradient-to-r from-accent to-[#818cf8]
-                               bg-clip-text text-transparent">
-                하나의 봇으로
-              </span>
-            </h2>
-            <p className="text-muted text-base max-w-sm mx-auto leading-relaxed">
-              복잡한 설정 없이 웹 대시보드에서 클릭 한 번으로 모든 기능을 사용하세요.
-            </p>
-          </div>
-
-          {/* 2 × 2 card grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-            {FEATURES.map(({ icon: Icon, title, desc }, i) => (
-              <div
-                key={title}
-                className={`reveal reveal-delay-${i + 1} group relative bg-bg-card rounded-2xl
-                            border border-border p-7 overflow-hidden
-                            hover:border-accent/30 hover:-translate-y-0.5
-                            transition-all duration-250`}
-              >
-                {/* Hover glow */}
-                <div className="absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100
-                                transition-opacity duration-300 pointer-events-none"
-                     style={{
-                       background:
-                         "radial-gradient(600px circle at var(--mx,50%) var(--my,50%), rgba(88,101,242,0.07), transparent 60%)",
-                     }} />
-
-                {/* Content */}
-                <div className="relative z-10">
-                  <div className="w-11 h-11 rounded-xl bg-accent/10 flex items-center
-                                  justify-center mb-5 ring-1 ring-accent/15
-                                  group-hover:bg-accent/15 transition-colors duration-200">
-                    <Icon size={20} className="text-accent" />
-                  </div>
-                  <h3 className="text-lg font-bold text-fg mb-2.5 tracking-tight">
-                    {title}
-                  </h3>
-                  <p className="text-muted text-sm leading-relaxed">{desc}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ── Footer ───────────────────────────────────────────────────── */}
-      <footer className="border-t border-border py-8 px-5 mt-auto">
-        <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center
-                        justify-between gap-4">
-          <div className="flex items-center gap-2.5 font-semibold text-fg">
-            <div className="w-7 h-7 rounded-lg bg-accent/15 flex items-center justify-center">
-              <Bot size={13} className="text-accent" />
-            </div>
+    <div className="min-h-screen bg-bg text-fg">
+      {/* ── Navbar ── */}
+      <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
+        <div className="max-w-6xl mx-auto px-5 flex items-center justify-between" style={{ height: 60 }}>
+          <Link href="/" className="flex items-center gap-2 font-bold text-[17px] text-fg">
+            <Bot size={20} className="text-accent" />
             NexBot
+          </Link>
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            {user
+              ? <ProfileDropdown user={user} />
+              : loginUrl
+                ? <a href={loginUrl}
+                     className="flex items-center gap-1.5 text-sm font-medium px-4 py-2
+                                bg-accent hover:bg-accent-hover text-white rounded-lg transition-colors">
+                    로그인 <ArrowRight size={13} />
+                  </a>
+                : null}
           </div>
-          <p className="text-sm text-muted">© 2026 NexBot. All rights reserved.</p>
-          <div className="flex items-center gap-5 text-sm text-muted">
-            <a href={inviteUrl} target="_blank" rel="noreferrer"
-               className="hover:text-fg transition-colors">봇 초대</a>
-            <Link href="/login" className="hover:text-fg transition-colors">로그인</Link>
+        </div>
+      </header>
+
+      {/* ── Hero ── */}
+      <section className="relative flex flex-col items-center justify-center
+                          min-h-[calc(100vh-60px)] px-5 text-center overflow-hidden">
+        {/* Grid background */}
+        <div className="absolute inset-0 pointer-events-none select-none">
+          <div
+            className="absolute inset-0"
+            style={{
+              backgroundImage:
+                "linear-gradient(rgb(var(--color-border-rgb)/0.4) 1px, transparent 1px), linear-gradient(90deg, rgb(var(--color-border-rgb)/0.4) 1px, transparent 1px)",
+              backgroundSize: "60px 60px",
+            }}
+          />
+          <div className="absolute inset-0 bg-gradient-to-b from-bg via-transparent to-bg" />
+        </div>
+
+        {/* Glow orb */}
+        <div
+          className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2
+                     w-[600px] h-[400px] rounded-full pointer-events-none"
+          style={{ background: "radial-gradient(ellipse, rgba(88,101,242,0.12) 0%, transparent 70%)" }}
+        />
+
+        <div className="relative z-10 max-w-3xl mx-auto">
+          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full
+                          border border-accent/30 bg-accent/8 text-accent text-sm
+                          mb-8 animate-fade-in">
+            <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+            Discord 봇 대시보드
           </div>
+
+          <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold leading-tight tracking-tight mb-6
+                         animate-fade-up">
+            Discord 서버를<br />
+            <span className="bg-gradient-to-r from-[#5865f2] via-[#818cf8] to-[#a5b4fc]
+                             bg-clip-text text-transparent">
+              {typed}
+              <span className="inline-block w-0.5 h-[0.85em] bg-[#818cf8]/80 ml-0.5 align-middle animate-pulse" />
+            </span>
+          </h1>
+
+          <p
+            className="text-lg text-muted max-w-xl mx-auto mb-10 leading-relaxed animate-fade-up"
+            style={{ animationDelay: "0.1s" }}
+          >
+            관리, 레벨링, 치지직 알림, 리액션 역할까지.<br />
+            하나의 봇으로, 하나의 대시보드로.
+          </p>
+
+          <div
+            className="flex flex-wrap items-center justify-center gap-3 animate-fade-up"
+            style={{ animationDelay: "0.2s" }}
+          >
+            {loginUrl
+              ? <a href={loginUrl}
+                   className="flex items-center gap-2 px-6 py-3 bg-accent hover:bg-accent-hover
+                              text-white font-semibold rounded-xl transition-colors shadow-lg shadow-accent/25">
+                  Discord로 시작하기 <ArrowRight size={16} />
+                </a>
+              : <Link href="/dashboard"
+                      className="flex items-center gap-2 px-6 py-3 bg-accent hover:bg-accent-hover
+                                 text-white font-semibold rounded-xl transition-colors shadow-lg shadow-accent/25">
+                  대시보드 열기 <ArrowRight size={16} />
+                </Link>}
+            <a
+              href="https://github.com"
+              target="_blank" rel="noreferrer"
+              className="flex items-center gap-2 px-6 py-3 border border-border
+                         hover:border-accent/40 text-fg rounded-xl transition-colors
+                         hover:bg-bg-hover font-medium"
+            >
+              GitHub
+            </a>
+          </div>
+        </div>
+
+        {/* Scroll indicator */}
+        <div
+          className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5
+                     text-muted/40 animate-fade-in"
+          style={{ animationDelay: "0.8s" }}
+        >
+          <span className="text-[11px] tracking-widest uppercase">Scroll</span>
+          <div className="w-px h-8 bg-gradient-to-b from-muted/30 to-transparent" />
+        </div>
+      </section>
+
+      {/* ── Stats ── */}
+      <section className="border-y border-border bg-bg-card/40">
+        <div className="max-w-4xl mx-auto px-5 py-12 grid grid-cols-3 gap-8 text-center">
+          {statsDisplay.map(({ value, label }, i) => (
+            <div key={label} className={`reveal reveal-delay-${i + 1}`}>
+              <p className={`text-4xl font-bold mb-1 ${
+                value
+                  ? "bg-gradient-to-r from-[#5865f2] to-[#818cf8] bg-clip-text text-transparent"
+                  : "text-muted/30 animate-pulse"
+              }`}>
+                {value ?? "—"}
+              </p>
+              <p className="text-sm text-muted">{label}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ── Features ── */}
+      <section className="max-w-6xl mx-auto px-5 py-24 space-y-28">
+        <div className="text-center reveal mb-4">
+          <p className="text-sm font-semibold text-accent uppercase tracking-widest mb-3">기능</p>
+          <h2 className="text-3xl sm:text-4xl font-bold text-fg">하나의 봇으로 모든 것을</h2>
+        </div>
+
+        {features.map(({ icon, title, desc, detail, mockup, flip }) => (
+          <div
+            key={title}
+            className={`reveal flex flex-col ${
+              flip ? "lg:flex-row-reverse" : "lg:flex-row"
+            } items-center gap-12 lg:gap-20`}
+          >
+            <div className="flex-1 max-w-lg">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
+                  {icon}
+                </div>
+                <span className="text-sm font-semibold text-accent uppercase tracking-wider">{desc}</span>
+              </div>
+              <h3 className="text-2xl sm:text-3xl font-bold text-fg mb-4">{title}</h3>
+              <p className="text-muted leading-relaxed text-[15px]">{detail}</p>
+            </div>
+
+            <div className="flex-1 flex justify-center lg:justify-end">
+              {mockup}
+            </div>
+          </div>
+        ))}
+      </section>
+
+      {/* ── CTA ── */}
+      <section className="relative py-28 text-center overflow-hidden">
+        <div className="absolute inset-0 pointer-events-none">
+          <div className="absolute inset-0 bg-gradient-to-r from-transparent via-accent/5 to-transparent" />
+        </div>
+        <div className="relative z-10 max-w-2xl mx-auto px-5 reveal">
+          <h2 className="text-3xl sm:text-4xl font-bold mb-4">지금 바로 시작하세요</h2>
+          <p className="text-muted mb-8 text-[15px] leading-relaxed">
+            Discord 계정으로 바로 로그인하고<br />
+            무료로 서버에 NexBot을 추가하세요.
+          </p>
+          {loginUrl && (
+            <a
+              href={loginUrl}
+              className="inline-flex items-center gap-2 px-8 py-3.5 bg-accent hover:bg-accent-hover
+                         text-white font-semibold rounded-xl transition-colors shadow-lg shadow-accent/30
+                         text-[15px]"
+            >
+              Discord로 로그인 <ArrowRight size={16} />
+            </a>
+          )}
+        </div>
+      </section>
+
+      {/* ── Footer ── */}
+      <footer className="border-t border-border">
+        <div className="max-w-6xl mx-auto px-5 py-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-2 text-sm text-muted">
+            <Bot size={16} className="text-accent" />
+            <span className="font-semibold text-fg">NexBot</span>
+            <span>— Discord 봇 대시보드</span>
+          </div>
+          <p className="text-sm text-muted/60">© 2024 NexBot. All rights reserved.</p>
         </div>
       </footer>
     </div>

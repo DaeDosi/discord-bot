@@ -66,6 +66,10 @@ export const api = {
       ),
   },
 
+  stats: {
+    get: () => fetch(`${BASE}/api/stats`).then(r => r.json()) as Promise<{ guilds: number; chzzk_subscriptions: number }>,
+  },
+
   chzzk: {
     search:  (keyword: string) =>
       request<import("./types").ChzzkSearchResult[]>(`/api/chzzk/search?keyword=${encodeURIComponent(keyword)}`),
