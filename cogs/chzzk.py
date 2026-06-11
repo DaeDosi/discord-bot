@@ -35,7 +35,9 @@ async def fetch_live_detail(chzzk_id: str) -> dict | None:
         content = data.get("content")
         if content and content.get("liveImageUrl"):
             url = content["liveImageUrl"]
-            url = url.replace("%7Btype%7D", "1280x720").replace("{type}", "1280x720")
+            url = url.replace("_{type}", "_1080")
+            url = url.replace("%7Btype%7D", "1280x720")
+            url = url.replace("{type}", "1280x720")
             content["liveImageUrl"] = url
         return content
 

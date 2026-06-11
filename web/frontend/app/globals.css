@@ -3,19 +3,43 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Theme variables ─────────────────────────────────────────────────── */
+:root {
+  /* Dark mode (default) */
+  --color-bg:       #0f1117;
+  --color-bg-card:  #1a1d27;
+  --color-bg-hover: #1e2232;
+  --color-border:   #2d3048;
+  --color-muted:    #8b8fa8;
+  --color-fg:       #e2e8f0;
+}
+
+html.light {
+  /* Light mode */
+  --color-bg:       #f0f2f5;
+  --color-bg-card:  #ffffff;
+  --color-bg-hover: #e8eaee;
+  --color-border:   #dce0e8;
+  --color-muted:    #5e6278;
+  --color-fg:       #1e2228;
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────── */
 @layer base {
   * { box-sizing: border-box; }
   body {
-    background-color: #0f1117;
-    color: #e2e8f0;
+    background-color: var(--color-bg);
+    color: var(--color-fg);
     font-family: "Pretendard", "Inter", sans-serif;
     -webkit-font-smoothing: antialiased;
+    transition: background-color 0.25s ease, color 0.25s ease;
   }
   ::-webkit-scrollbar { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-track { background: #0f1117; }
-  ::-webkit-scrollbar-thumb { background: #2d3048; border-radius: 3px; }
+  ::-webkit-scrollbar-track { background: var(--color-bg); }
+  ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
 }
 
+/* ── Component classes ────────────────────────────────────────────────── */
 @layer components {
   .card {
     @apply bg-bg-card rounded-xl border border-border p-6;
@@ -25,7 +49,7 @@
            transition-colors duration-150 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed;
   }
   .btn-secondary {
-    @apply bg-bg-hover hover:bg-border text-white font-medium px-4 py-2 rounded-lg
+    @apply bg-bg-hover hover:bg-border text-fg font-medium px-4 py-2 rounded-lg
            transition-colors duration-150 flex items-center gap-2;
   }
   .btn-danger {
@@ -33,11 +57,11 @@
            transition-colors duration-150 flex items-center gap-2;
   }
   .input {
-    @apply w-full bg-bg border border-border rounded-lg px-3 py-2 text-white
+    @apply w-full bg-bg border border-border rounded-lg px-3 py-2 text-fg
            placeholder-muted focus:outline-none focus:border-accent transition-colors;
   }
   .select {
-    @apply w-full bg-bg border border-border rounded-lg px-3 py-2 text-white
+    @apply w-full bg-bg border border-border rounded-lg px-3 py-2 text-fg
            focus:outline-none focus:border-accent transition-colors appearance-none cursor-pointer;
   }
   .label {
@@ -52,3 +76,18 @@
            bg-muted/10 text-muted border border-border;
   }
 }
+
+/* ── Scroll animation ─────────────────────────────────────────────────── */
+.reveal {
+  opacity: 0;
+  transform: translateY(28px);
+  transition: opacity 0.55s ease, transform 0.55s ease;
+}
+.reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.reveal-delay-1 { transition-delay: 0.1s; }
+.reveal-delay-2 { transition-delay: 0.2s; }
+.reveal-delay-3 { transition-delay: 0.3s; }
+.reveal-delay-4 { transition-delay: 0.4s; }

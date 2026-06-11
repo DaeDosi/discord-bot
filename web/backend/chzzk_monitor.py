@@ -43,7 +43,9 @@ async def _fetch_live_detail(chzzk_id: str) -> dict | None:
         content = resp.json().get("content")
         if content and content.get("liveImageUrl"):
             url = content["liveImageUrl"]
-            url = url.replace("%7Btype%7D", "1280x720").replace("{type}", "1280x720")
+            url = url.replace("_{type}", "_1080")          # junah bot format
+            url = url.replace("%7Btype%7D", "1280x720")    # URL-encoded fallback
+            url = url.replace("{type}", "1280x720")         # plain fallback
             content["liveImageUrl"] = url
         return content
 

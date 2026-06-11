@@ -7,8 +7,9 @@ from database import init_db, close_db
 
 load_dotenv()
 
-TOKEN    = os.getenv("DISCORD_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID", 0))
+TOKEN         = os.getenv("DISCORD_TOKEN")
+OWNER_ID      = int(os.getenv("OWNER_ID", 0))
+TEST_GUILD_ID = int(os.getenv("TEST_GUILD_ID", 0))
 
 COGS = [
     "cogs.admin",
@@ -41,9 +42,15 @@ class AllInOneBot(commands.Bot):
                 print(f"  ✓ {cog}")
             except Exception as e:
                 print(f"  ✗ {cog}: {e}")
-        # 글로벌 슬래시 커맨드 동기화
+        # 특정 길드에 즉시 동기화 (TEST_GUILD_ID 설정 시)
+        if TEST_GUILD_ID:
+            guild_obj = discord.Object(id=TEST_GUILD_ID)
+            self.tree.copy_global_to(guild=guild_obj)
+            await self.tree.sync(guild=guild_obj)
+            print(f"길드 {TEST_GUILD_ID}에 슬래시 커맨드 즉시 동기화 완료")
+        # 글로벌 동기화 (전파에 최대 1시간 소요)
         synced = await self.tree.sync()
-        print(f"슬래시 커맨드 {len(synced)}개 동기화 완료")
+        print(f"슬래시 커맨드 {len(synced)}개 글로벌 동기화 완료")
 
     async def on_ready(self):
         print(f"\n봇 준비 완료: {self.user} (ID: {self.user.id})")

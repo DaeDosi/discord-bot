@@ -29,7 +29,15 @@ function CallbackInner() {
     const token = params.get("token");
     if (token) {
       localStorage.setItem("token", token);
-      router.replace("/dashboard");
+      // 유저 정보를 미리 캐싱해 어느 페이지에서든 즉시 로그인 상태 표시
+      api.auth.me()
+        .then((u) => {
+          localStorage.setItem("discord_user", JSON.stringify(u));
+        })
+        .catch(() => { /* 실패해도 토큰은 저장됨 */ })
+        .finally(() => {
+          router.replace("/dashboard");
+        });
       return;
     }
 
