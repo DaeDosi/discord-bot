@@ -10,15 +10,21 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        bg:      { DEFAULT: "var(--color-bg)", card: "var(--color-bg-card)", hover: "var(--color-bg-hover)" },
+        // CSS variable colors — RGB channel format supports /opacity modifiers
+        bg: {
+          DEFAULT: "rgb(var(--color-bg-rgb) / <alpha-value>)",
+          card:    "rgb(var(--color-bg-card-rgb) / <alpha-value>)",
+          hover:   "rgb(var(--color-bg-hover-rgb) / <alpha-value>)",
+        },
+        border: "rgb(var(--color-border-rgb) / <alpha-value>)",
+        muted:  "rgb(var(--color-muted-rgb) / <alpha-value>)",
+        fg:     "rgb(var(--color-fg-rgb) / <alpha-value>)",
+        // Hardcoded brand colors (opacity already works)
         accent:  { DEFAULT: "#5865F2", hover: "#4752C4", light: "#7289DA" },
-        border:  "var(--color-border)",
         success: "#57F287",
         warning: "#FEE75C",
         danger:  "#ED4245",
         chzzk:   "#03C75A",
-        muted:   "var(--color-muted)",
-        fg:      "var(--color-fg)",
       },
       fontFamily: {
         sans: ["Pretendard", "Inter", "sans-serif"],
@@ -36,16 +42,11 @@ const config: Config = {
           "0%, 100%": { transform: "translateY(0px)" },
           "50%":      { transform: "translateY(-8px)" },
         },
-        shimmer: {
-          "0%":   { backgroundPosition: "-200% center" },
-          "100%": { backgroundPosition: "200% center" },
-        },
       },
       animation: {
-        "fade-up":   "fadeUp 0.6s ease forwards",
-        "fade-in":   "fadeIn 0.4s ease forwards",
-        "float":     "float 3s ease-in-out infinite",
-        "shimmer":   "shimmer 2.5s linear infinite",
+        "fade-up": "fadeUp 0.6s ease forwards",
+        "fade-in": "fadeIn 0.4s ease forwards",
+        "float":   "float 3s ease-in-out infinite",
       },
     },
   },

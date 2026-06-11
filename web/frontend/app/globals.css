@@ -3,40 +3,40 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── Theme variables ─────────────────────────────────────────────────── */
+/* ── Theme variables (RGB channel format for Tailwind opacity support) ── */
 :root {
-  /* Dark mode (default) */
-  --color-bg:       #0f1117;
-  --color-bg-card:  #1a1d27;
-  --color-bg-hover: #1e2232;
-  --color-border:   #2d3048;
-  --color-muted:    #8b8fa8;
-  --color-fg:       #e2e8f0;
+  /* Dark mode — default */
+  --color-bg-rgb:       15 17 23;      /* #0f1117 */
+  --color-bg-card-rgb:  26 29 39;      /* #1a1d27 */
+  --color-bg-hover-rgb: 30 34 50;      /* #1e2232 */
+  --color-border-rgb:   45 48 72;      /* #2d3048 */
+  --color-muted-rgb:    139 143 168;   /* #8b8fa8 */
+  --color-fg-rgb:       226 232 240;   /* #e2e8f0 */
 }
 
 html.light {
   /* Light mode */
-  --color-bg:       #f0f2f5;
-  --color-bg-card:  #ffffff;
-  --color-bg-hover: #e8eaee;
-  --color-border:   #dce0e8;
-  --color-muted:    #5e6278;
-  --color-fg:       #1e2228;
+  --color-bg-rgb:       240 242 245;   /* #f0f2f5 */
+  --color-bg-card-rgb:  255 255 255;   /* #ffffff */
+  --color-bg-hover-rgb: 232 234 238;   /* #e8eaee */
+  --color-border-rgb:   220 224 232;   /* #dce0e8 */
+  --color-muted-rgb:    94 98 120;     /* #5e6278 */
+  --color-fg-rgb:       30 34 40;      /* #1e2228 */
 }
 
 /* ── Base ─────────────────────────────────────────────────────────────── */
 @layer base {
   * { box-sizing: border-box; }
   body {
-    background-color: var(--color-bg);
-    color: var(--color-fg);
+    background-color: rgb(var(--color-bg-rgb));
+    color: rgb(var(--color-fg-rgb));
     font-family: "Pretendard", "Inter", sans-serif;
     -webkit-font-smoothing: antialiased;
     transition: background-color 0.25s ease, color 0.25s ease;
   }
   ::-webkit-scrollbar { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-track { background: var(--color-bg); }
-  ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+  ::-webkit-scrollbar-track { background: rgb(var(--color-bg-rgb)); }
+  ::-webkit-scrollbar-thumb { background: rgb(var(--color-border-rgb)); border-radius: 3px; }
 }
 
 /* ── Component classes ────────────────────────────────────────────────── */
@@ -49,8 +49,8 @@ html.light {
            transition-colors duration-150 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed;
   }
   .btn-secondary {
-    @apply bg-bg-hover hover:bg-border text-fg font-medium px-4 py-2 rounded-lg
-           transition-colors duration-150 flex items-center gap-2;
+    @apply bg-bg-hover text-fg font-medium px-4 py-2 rounded-lg
+           transition-colors duration-150 flex items-center gap-2 hover:opacity-80;
   }
   .btn-danger {
     @apply bg-danger/10 hover:bg-danger/20 text-danger font-medium px-4 py-2 rounded-lg
@@ -73,7 +73,7 @@ html.light {
   }
   .badge-offline {
     @apply inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium
-           bg-muted/10 text-muted border border-border;
+           bg-bg-hover text-muted border border-border;
   }
 }
 
