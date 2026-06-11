@@ -35,12 +35,15 @@ async def _fetch_channel_info(chzzk_id: str) -> dict | None:
 
 async def _fetch_live_detail(chzzk_id: str) -> dict | None:
     """라이브 상세 (제목·썸네일·시청자 등). 실패해도 None만 반환."""
-    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/live-detail"
+    url = f"{CHZZK_API}/service/v2/channels/{chzzk_id}/live-detail"
     async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=10) as client:
         resp = await client.get(url)
         if resp.status_code != 200:
             return None
-        return resp.json().get("content")
+        content = resp.json().get("content")
+        if content and content.get("liveImageUrl"):
+            content["liveImageUrl"] = content["liveImageUrl"].replace("{type}", "1280x720")
+        return content
 
 
 async def _send_discord_message(channel_id: int, content: str, embed: dict) -> str | None:

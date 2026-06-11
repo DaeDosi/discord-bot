@@ -1,6 +1,9 @@
 "use client";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Shield, Zap, Radio, Star, ArrowRight, Bot } from "lucide-react";
+import Image from "next/image";
+import { Shield, Zap, Radio, Star, ArrowRight, Bot, LogOut, LayoutDashboard } from "lucide-react";
+import type { User } from "@/lib/types";
 
 const features = [
   {
@@ -26,6 +29,26 @@ const features = [
 ];
 
 export default function LandingPage() {
+  const [user, setUser] = useState<User | null>(null);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+    try {
+      const cached = localStorage.getItem("discord_user");
+      const token  = localStorage.getItem("token");
+      if (cached && token) setUser(JSON.parse(cached));
+    } catch { /* ignore */ }
+  }, []);
+
+  const logout = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("discord_user");
+    setUser(null);
+  };
+
+  const inviteUrl = `https://discord.com/oauth2/authorize?client_id=${process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID}&permissions=8&scope=bot%20applications.commands`;
+
   return (
     <div className="min-h-screen flex flex-col">
       {/* Navbar */}
@@ -35,15 +58,48 @@ export default function LandingPage() {
             <Bot size={22} className="text-accent" />
             <span>NexBot</span>
           </div>
-          <Link href="/login" className="btn-primary text-sm">
-            대시보드 시작 <ArrowRight size={16} />
-          </Link>
+
+          {mounted && (
+            user ? (
+              /* 로그인 상태 */
+              <div className="flex items-center gap-3">
+                <Link
+                  href="/dashboard"
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-bg-hover transition-colors"
+                >
+                  {user.avatar ? (
+                    <Image src={user.avatar} alt={user.username}
+                           width={28} height={28} className="rounded-full" />
+                  ) : (
+                    <div className="w-7 h-7 rounded-full bg-accent/20 flex items-center justify-center">
+                      <Bot size={14} className="text-accent" />
+                    </div>
+                  )}
+                  <span className="text-sm text-white hidden sm:block">{user.username}</span>
+                </Link>
+                <Link href="/dashboard" className="btn-primary text-sm">
+                  <LayoutDashboard size={14} /> 대시보드
+                </Link>
+                <button
+                  onClick={logout}
+                  className="p-2 text-muted hover:text-white rounded-lg hover:bg-bg-hover transition-colors"
+                  title="로그아웃"
+                >
+                  <LogOut size={16} />
+                </button>
+              </div>
+            ) : (
+              /* 비로그인 상태 */
+              <Link href="/login" className="btn-primary text-sm">
+                대시보드 시작 <ArrowRight size={16} />
+              </Link>
+            )
+          )}
         </div>
       </nav>
 
       {/* Hero */}
       <section className="flex-1 flex flex-col items-center justify-center text-center px-4 py-24 relative overflow-hidden">
-        {/* glow */}
         <div className="absolute inset-0 pointer-events-none">
           <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2
                           w-[600px] h-[400px] bg-accent/10 rounded-full blur-3xl" />
@@ -63,11 +119,17 @@ export default function LandingPage() {
             관리, 레벨링, 치지직 알림까지. 웹 대시보드에서 클릭 한 번으로 모든 설정을 완성하세요.
           </p>
           <div className="flex gap-4 justify-center flex-wrap">
-            <Link href="/login" className="btn-primary px-6 py-3 text-base">
-              Discord로 시작하기 <ArrowRight size={18} />
-            </Link>
+            {mounted && user ? (
+              <Link href="/dashboard" className="btn-primary px-6 py-3 text-base">
+                대시보드 바로가기 <ArrowRight size={18} />
+              </Link>
+            ) : (
+              <Link href="/login" className="btn-primary px-6 py-3 text-base">
+                Discord로 시작하기 <ArrowRight size={18} />
+              </Link>
+            )}
             <a
-              href={`https://discord.com/oauth2/authorize?client_id=${process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID}&permissions=8&scope=bot%20applications.commands`}
+              href={inviteUrl}
               target="_blank"
               rel="noreferrer"
               className="btn-secondary px-6 py-3 text-base"
@@ -98,9 +160,15 @@ export default function LandingPage() {
       <section className="py-20 px-4 border-t border-border text-center">
         <h2 className="text-3xl font-bold mb-4">지금 바로 시작하세요</h2>
         <p className="text-muted mb-8">무료로 봇을 초대하고 대시보드에서 설정하세요.</p>
-        <Link href="/login" className="btn-primary mx-auto px-8 py-3 text-base inline-flex">
-          Discord 로그인 <ArrowRight size={18} />
-        </Link>
+        {mounted && user ? (
+          <Link href="/dashboard" className="btn-primary mx-auto px-8 py-3 text-base inline-flex">
+            대시보드 바로가기 <ArrowRight size={18} />
+          </Link>
+        ) : (
+          <Link href="/login" className="btn-primary mx-auto px-8 py-3 text-base inline-flex">
+            Discord 로그인 <ArrowRight size={18} />
+          </Link>
+        )}
       </section>
 
       <footer className="border-t border-border py-6 text-center text-muted text-sm">

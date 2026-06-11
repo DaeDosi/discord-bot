@@ -19,11 +19,14 @@ export default function LoginPage() {
 
   useEffect(() => {
     const clientId = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID;
-    if (!clientId) {
-      setError(true);
+    if (!clientId) { setError(true); return; }
+
+    // 이미 로그인 상태면 대시보드로 바로 이동
+    if (localStorage.getItem("token") && localStorage.getItem("discord_user")) {
+      window.location.replace("/dashboard");
       return;
     }
-    // 짧게 딜레이 후 리다이렉트 (로딩 UI 표시)
+
     const t = setTimeout(() => {
       window.location.href = buildOAuthUrl();
     }, 300);

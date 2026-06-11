@@ -26,13 +26,16 @@ async def fetch_channel_info(chzzk_id: str) -> dict | None:
 
 
 async def fetch_live_detail(chzzk_id: str) -> dict | None:
-    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/live-detail"
+    url = f"{CHZZK_API}/service/v2/channels/{chzzk_id}/live-detail"
     async with httpx.AsyncClient(headers=HEADERS, timeout=10) as client:
         resp = await client.get(url)
         if resp.status_code != 200:
             return None
         data = resp.json()
-        return data.get("content")
+        content = data.get("content")
+        if content and content.get("liveImageUrl"):
+            content["liveImageUrl"] = content["liveImageUrl"].replace("{type}", "1280x720")
+        return content
 
 
 async def search_channels(keyword: str) -> list[dict]:
@@ -228,29 +231,33 @@ class ChzzkCog(commands.Cog):
     ):
         await interaction.response.defer(ephemeral=True)
 
-        # 스트리머 이름으로 검색해서 실제 정보 가져오기
-        results = await search_channels(streamer)
-        info = next(
+        # 이름으로 검색 → channelId 획득
+        results   = await search_channels(streamer)
+        info      = next(
             (r.get("channel", {}) for r in results
              if r.get("channel", {}).get("channelName", "").lower() == streamer.lower()),
-            results[0].get("channel", {}) if results else {}
+            results[0].get("channel", {}) if results else {},
         )
-
-        # 검색 결과가 없으면 입력값을 그대로 사용
-        name      = info.get("channelName") or streamer
-        chzzk_id  = info.get("channelId") or "test"
+        name     = info.get("channelName") or streamer
+        chzzk_id = info.get("channelId") or streamer
         chzzk_url = f"https://chzzk.naver.com/live/{chzzk_id}"
+
+        # 실제 방송 정보 조회 (v2 API)
+        live      = await fetch_live_detail(chzzk_id) or {}
+        title     = live.get("liveTitle") or "[테스트] 방송 제목"
+        category  = live.get("liveCategoryValue") or "없음"
+        thumbnail = live.get("liveImageUrl") or ""
 
         embed = discord.Embed(
             title=f"[{name}]님이 방송을 시작했습니다!",
             url=chzzk_url,
-            description=f"**[테스트] 방송 제목입니다**\n{name} 님이 방송을 시작했습니다.",
+            description=f"**{title}**\n{name} 님이 방송을 시작했습니다.",
             color=0x00FFA3,
             timestamp=discord.utils.utcnow(),
         )
-        embed.add_field(name="카테고리", value="테스트 카테고리", inline=False)
-        if info.get("channelImageUrl"):
-            embed.set_thumbnail(url=info["channelImageUrl"])
+        embed.add_field(name="카테고리", value=category, inline=False)
+        if thumbnail:
+            embed.set_image(url=thumbnail)
         embed.set_footer(text="chzzk.junah.dev")
 
         view = discord.ui.View()
@@ -266,7 +273,9 @@ class ChzzkCog(commands.Cog):
             view=view,
         )
         await interaction.followup.send(
-            f"✅ {channel.mention} 채널에 테스트 알림을 전송했습니다.", ephemeral=True
+            f"✅ {channel.mention} 채널에 테스트 알림을 전송했습니다.\n"
+            f"방송 제목: `{title}` | 카테고리: `{category}`",
+            ephemeral=True,
         )
 
     # ── /chzzk-list ───────────────────────────────────────────────────────────
