@@ -34,19 +34,13 @@ async def _fetch_channel_info(chzzk_id: str) -> dict | None:
 
 
 async def _fetch_live_detail(chzzk_id: str) -> dict | None:
-    """라이브 상세. 오프라인이면 500 → offline 마커 반환."""
+    """라이브 상세 (제목·썸네일·시청자 등). 실패해도 None만 반환."""
     url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/live-detail"
     async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=10) as client:
         resp = await client.get(url)
-        if resp.status_code == 500:
-            # 치지직 API는 방송 오프라인일 때 500을 반환함 → 정상 오프라인 처리
-            return {"status": "CLOSE"}
         if resp.status_code != 200:
-            _log(f"라이브 상세 오류 ({chzzk_id}): HTTP {resp.status_code} {resp.text[:200]}")
             return None
-        content = resp.json().get("content")
-        # content가 None이면 오프라인
-        return content if content is not None else {"status": "CLOSE"}
+        return resp.json().get("content")
 
 
 async def _send_discord_message(channel_id: int, content: str, embed: dict) -> str | None:
@@ -137,13 +131,16 @@ async def check_once_debug() -> list[dict]:
             "db_is_live":      bool(row["is_live"]),
         }
         try:
-            live = await _fetch_live_detail(row["chzzk_channel_id"])
-            if live is None:
-                entry["error"] = "치지직 API 응답 없음 (채널 ID 확인 필요)"
+            info = await _fetch_channel_info(row["chzzk_channel_id"])
+            if info is None:
+                entry["error"] = "채널 정보 없음 (채널 ID 확인 필요)"
             else:
-                entry["api_status"] = live.get("status")
-                entry["api_is_live"] = live.get("status") == "OPEN"
-                entry["live_title"]  = live.get("liveTitle")
+                now_live = bool(info.get("openLive", False))
+                entry["open_live"]   = now_live
+                entry["api_is_live"] = now_live
+                if now_live:
+                    detail = await _fetch_live_detail(row["chzzk_channel_id"])
+                    entry["live_title"] = detail.get("liveTitle") if detail else None
         except Exception as e:
             entry["error"] = str(e)
         results.append(entry)
@@ -165,20 +162,31 @@ async def _check_once():
     _log(f"구독 {len(rows)}개 체크 중...")
     for row in rows:
         try:
-            live = await _fetch_live_detail(row["chzzk_channel_id"])
-            if live is None:
+            name = row["chzzk_name"] or row["chzzk_channel_id"]
+
+            # 라이브 여부는 channel info의 openLive로 판단 (live-detail은 500 오류 잦음)
+            info = await _fetch_channel_info(row["chzzk_channel_id"])
+            if info is None:
+                _log(f"  채널 정보 없음, 건너뜀: {name}")
                 continue
 
-            now_live = live.get("status") == "OPEN"
+            now_live = bool(info.get("openLive", False))
             was_live = bool(row["is_live"])
-            name     = row["chzzk_name"] or row["chzzk_channel_id"]
 
-            _log(f"  {name}: DB={was_live} API={now_live} (status={live.get('status')!r})")
+            _log(f"  {name}: DB={was_live} openLive={now_live}")
 
             if now_live and not was_live:
-                await _send_live_notification(row, live)
+                # 알림용 상세 정보는 live-detail에서 추가로 조회 (실패해도 기본 정보로 전송)
+                detail = await _fetch_live_detail(row["chzzk_channel_id"]) or {}
+                # live-detail에 channel 정보가 없으면 channel info에서 보충
+                if not detail.get("channel"):
+                    detail["channel"] = {
+                        "channelName":     info.get("channelName"),
+                        "channelImageUrl": info.get("channelImageUrl"),
+                    }
+                await _send_live_notification(row, detail)
             elif not now_live and was_live:
-                await _send_offline_notification(row, live)
+                await _send_offline_notification(row, {})
 
             await db.execute(
                 "UPDATE chzzk_subscriptions SET is_live=? WHERE id=?",
