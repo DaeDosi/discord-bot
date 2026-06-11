@@ -498,30 +498,6 @@ export default function HomePage() {
         ))}
       </section>
 
-      {/* ── CTA ── */}
-      <section className="relative py-28 text-center overflow-hidden">
-        <div className="absolute inset-0 pointer-events-none">
-          <div className="absolute inset-0 bg-gradient-to-r from-transparent via-accent/5 to-transparent" />
-        </div>
-        <div className="relative z-10 max-w-2xl mx-auto px-5 reveal">
-          <h2 className="text-3xl sm:text-4xl font-bold mb-4">지금 바로 시작하세요</h2>
-          <p className="text-muted mb-8 text-[15px] leading-relaxed">
-            Discord 계정으로 바로 로그인하고<br />
-            무료로 서버에 NexBot을 추가하세요.
-          </p>
-          {loginUrl && (
-            <a
-              href={loginUrl}
-              className="inline-flex items-center gap-2 px-8 py-3.5 bg-accent hover:bg-accent-hover
-                         text-white font-semibold rounded-xl transition-colors shadow-lg shadow-accent/30
-                         text-[15px]"
-            >
-              Discord로 로그인 <ArrowRight size={16} />
-            </a>
-          )}
-        </div>
-      </section>
-
       {/* ── Footer ── */}
       <footer className="border-t border-border">
         <div className="max-w-6xl mx-auto px-5 py-8 flex flex-col sm:flex-row items-center justify-between gap-4">
@@ -530,7 +506,12 @@ export default function HomePage() {
             <span className="font-semibold text-fg">NexBot</span>
             <span>— Discord 봇 대시보드</span>
           </div>
-          <p className="text-sm text-muted/60">© 2024 NexBot. All rights reserved.</p>
+          <div className="flex items-center gap-5">
+            <Link href="/privacy" className="text-sm text-muted/60 hover:text-muted transition-colors">
+              개인정보처리방침
+            </Link>
+            <p className="text-sm text-muted/60">© 2026 NexBot. All rights reserved.</p>
+          </div>
         </div>
       </footer>
     </div>
