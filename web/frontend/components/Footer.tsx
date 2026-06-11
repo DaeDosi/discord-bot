@@ -24,7 +24,7 @@ const COLUMNS: {
   {
     heading: "법적 고지",
     links: [
-      { label: "이용약관", href: "#" },
+      { label: "이용약관", href: "/terms" },
       { label: "개인정보처리방침", href: "/privacy" },
       { label: "쿠키 정책", href: "#" },
     ],

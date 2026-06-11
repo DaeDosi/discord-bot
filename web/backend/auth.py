@@ -75,11 +75,29 @@ async def get_discord_user(access_token: str) -> dict:
 
 
 async def get_discord_guilds(access_token: str) -> list[dict]:
+    """Discord /users/@me/guilds를 페이지네이션으로 전부 수집."""
     headers = {"Authorization": f"Bearer {access_token}"}
+    guilds: list[dict] = []
+    after: str | None = None
     async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{DISCORD_API}/users/@me/guilds", headers=headers)
-        resp.raise_for_status()
-        return resp.json()
+        while True:
+            params: dict = {"limit": 200}
+            if after:
+                params["after"] = after
+            resp = await client.get(
+                f"{DISCORD_API}/users/@me/guilds",
+                headers=headers,
+                params=params,
+            )
+            resp.raise_for_status()
+            batch: list[dict] = resp.json()
+            if not batch:
+                break
+            guilds.extend(batch)
+            if len(batch) < 200:
+                break
+            after = batch[-1]["id"]
+    return guilds
 
 
 def create_jwt(user_id: str, username: str, avatar: str, access_token: str) -> str:

@@ -421,17 +421,22 @@ export default function HomePage() {
             className="flex flex-wrap items-center justify-center gap-3 animate-fade-up"
             style={{ animationDelay: "0.2s" }}
           >
-            {loginUrl
-              ? <a href={loginUrl}
-                   className="flex items-center gap-2 px-6 py-3 bg-accent hover:bg-accent-hover
-                              text-white font-semibold rounded-xl transition-colors shadow-lg shadow-accent/25">
-                  Discord로 시작하기 <ArrowRight size={16} />
-                </a>
-              : <Link href="/dashboard"
+            {user
+              ? <Link href="/dashboard"
                       className="flex items-center gap-2 px-6 py-3 bg-accent hover:bg-accent-hover
                                  text-white font-semibold rounded-xl transition-colors shadow-lg shadow-accent/25">
                   대시보드 열기 <ArrowRight size={16} />
-                </Link>}
+                </Link>
+              : loginUrl
+                ? <a href={loginUrl}
+                     className="flex items-center gap-2 px-6 py-3 bg-accent hover:bg-accent-hover
+                                text-white font-semibold rounded-xl transition-colors shadow-lg shadow-accent/25">
+                    Discord로 시작하기 <ArrowRight size={16} />
+                  </a>
+                : <div className="flex items-center gap-2 px-6 py-3 bg-accent/30 text-white/40
+                                  font-semibold rounded-xl cursor-wait select-none">
+                    Discord로 시작하기 <ArrowRight size={16} />
+                  </div>}
             <a
               href="https://github.com"
               target="_blank" rel="noreferrer"

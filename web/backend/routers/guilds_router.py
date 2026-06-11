@@ -42,7 +42,7 @@ async def list_guilds(user: dict = Depends(get_current_user)):
             "has_bot": g["id"] in bot_guilds,
         }
         for g in user_guilds
-        if has_manage_guild(int(g.get("permissions", 0)))
+        if g.get("owner") or has_manage_guild(int(g.get("permissions") or 0))
     ]
     return admin_guilds
 
