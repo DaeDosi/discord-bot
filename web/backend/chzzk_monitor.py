@@ -86,11 +86,8 @@ async def _send_live_notification(row, live: dict, info: dict):
     if thumbnail:
         embed["image"] = {"url": f"{thumbnail}?t={int(time.time())}"}
 
-    mention_id = row["mention_role_id"]
-    if row["custom_message"]:
-        content = row["custom_message"]
-    elif mention_id:
-        content = f"<@&{mention_id}> **{name}**님이 방송을 시작했습니다!"
+    if bool(row["mention_everyone"]):
+        content = f"@everyone **{name}**님이 방송을 시작했습니다!"
     else:
         content = f"**{name}**님이 방송을 시작했습니다!"
 
@@ -126,7 +123,7 @@ async def check_once_debug() -> list[dict]:
     db = await get_db()
     rows = await (await db.execute(
         "SELECT id, guild_id, discord_channel, chzzk_channel_id, chzzk_name, "
-        "is_live, mention_role_id, custom_message FROM chzzk_subscriptions"
+        "is_live, mention_everyone FROM chzzk_subscriptions"
     )).fetchall()
 
     results = []
@@ -160,7 +157,7 @@ async def _check_once():
     db = await get_db()
     rows = await (await db.execute(
         "SELECT id, guild_id, discord_channel, chzzk_channel_id, chzzk_name, "
-        "is_live, mention_role_id, custom_message FROM chzzk_subscriptions"
+        "is_live, mention_everyone FROM chzzk_subscriptions"
     )).fetchall()
 
     if not rows:

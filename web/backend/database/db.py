@@ -89,7 +89,17 @@ async def init_db():
             is_live          INTEGER DEFAULT 0,
             mention_role_id  INTEGER,
             custom_message   TEXT,
+            mention_everyone INTEGER DEFAULT 0,
             UNIQUE(guild_id, chzzk_channel_id)
         );
     """)
     await db.commit()
+
+    # 기존 DB에 새 컬럼 추가 (이미 있으면 무시)
+    try:
+        await db.execute(
+            "ALTER TABLE chzzk_subscriptions ADD COLUMN mention_everyone INTEGER DEFAULT 0"
+        )
+        await db.commit()
+    except Exception:
+        pass

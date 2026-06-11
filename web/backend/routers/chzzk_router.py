@@ -56,8 +56,8 @@ class SubCreate(BaseModel):
     chzzk_channel_id: str
     chzzk_name:       str
     chzzk_image_url:  Optional[str] = None
-    mention_role_id:  Optional[str] = None
-    custom_message:   Optional[str] = None
+    mention_everyone: bool = False
+    is_live:          bool = False
 
 
 @router.post("/{guild_id}/subscriptions")
@@ -68,14 +68,14 @@ async def add_subscription(guild_id: str, body: SubCreate,
         await db.execute(
             """INSERT INTO chzzk_subscriptions
                (guild_id, discord_channel, chzzk_channel_id, chzzk_name,
-                chzzk_image_url, mention_role_id, custom_message)
+                chzzk_image_url, mention_everyone, is_live)
                VALUES (?,?,?,?,?,?,?)""",
             (
                 int(guild_id), int(body.discord_channel),
                 body.chzzk_channel_id, body.chzzk_name,
                 body.chzzk_image_url,
-                int(body.mention_role_id) if body.mention_role_id else None,
-                body.custom_message,
+                int(body.mention_everyone),
+                int(body.is_live),
             )
         )
         await db.commit()

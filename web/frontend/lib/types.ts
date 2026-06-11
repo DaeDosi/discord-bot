@@ -48,8 +48,7 @@ export interface ChzzkSubscription {
   chzzk_name:       string;
   chzzk_image_url:  string | null;
   is_live:          number;
-  mention_role_id:  number | null;
-  custom_message:   string | null;
+  mention_everyone: number;
 }
 
 export interface ChzzkSearchResult {
