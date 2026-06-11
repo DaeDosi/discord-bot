@@ -34,7 +34,9 @@ async def fetch_live_detail(chzzk_id: str) -> dict | None:
         data = resp.json()
         content = data.get("content")
         if content and content.get("liveImageUrl"):
-            content["liveImageUrl"] = content["liveImageUrl"].replace("{type}", "1280x720")
+            url = content["liveImageUrl"]
+            url = url.replace("%7Btype%7D", "1280x720").replace("{type}", "1280x720")
+            content["liveImageUrl"] = url
         return content
 
 
@@ -108,11 +110,11 @@ class ChzzkCog(commands.Cog):
         embed = discord.Embed(
             title=title,
             url=chzzk_url,
+            description=f"[{name}]님이 방송을 시작했습니다.",
             color=0x00FFA3,
             timestamp=discord.utils.utcnow(),
         )
-        embed.set_author(name=f"[{name}]님이 방송을 시작했습니다!", url=chzzk_url,
-                         icon_url=avatar or None)
+        embed.set_author(name=name, url=chzzk_url, icon_url=avatar or None)
         embed.add_field(name="카테고리", value=category, inline=False)
         if thumbnail:
             embed.set_image(url=thumbnail)
@@ -254,11 +256,11 @@ class ChzzkCog(commands.Cog):
         embed = discord.Embed(
             title=title,
             url=chzzk_url,
+            description=f"[{name}]님이 방송을 시작했습니다.",
             color=0x00FFA3,
             timestamp=discord.utils.utcnow(),
         )
-        embed.set_author(name=f"[{name}]님이 방송을 시작했습니다!", url=chzzk_url,
-                         icon_url=avatar or None)
+        embed.set_author(name=name, url=chzzk_url, icon_url=avatar or None)
         embed.add_field(name="카테고리", value=category, inline=False)
         if thumbnail:
             embed.set_image(url=thumbnail)

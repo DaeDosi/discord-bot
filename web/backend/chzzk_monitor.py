@@ -42,7 +42,9 @@ async def _fetch_live_detail(chzzk_id: str) -> dict | None:
             return None
         content = resp.json().get("content")
         if content and content.get("liveImageUrl"):
-            content["liveImageUrl"] = content["liveImageUrl"].replace("{type}", "1280x720")
+            url = content["liveImageUrl"]
+            url = url.replace("%7Btype%7D", "1280x720").replace("{type}", "1280x720")
+            content["liveImageUrl"] = url
         return content
 
 
@@ -87,15 +89,18 @@ async def _send_live_notification(row, live: dict, info: dict):
     now_iso   = datetime.now(timezone.utc).isoformat()
 
     avatar = (live.get("channel") or {}).get("channelImageUrl") or info.get("channelImageUrl") or ""
-    author: dict = {"name": f"[{name}]님이 방송을 시작했습니다!", "url": chzzk_url}
+    author: dict = {"name": name, "url": chzzk_url}
     if avatar:
         author["icon_url"] = avatar
 
+    _log(f"  썸네일 URL: {thumbnail!r}")
+
     embed: dict = {
-        "author":    author,
-        "title":     title,
-        "url":       chzzk_url,
-        "color":     0x00FFA3,
+        "author":      author,
+        "title":       title,
+        "url":         chzzk_url,
+        "description": f"[{name}]님이 방송을 시작했습니다.",
+        "color":       0x00FFA3,
         "fields": [
             {"name": "카테고리", "value": category, "inline": False},
         ],

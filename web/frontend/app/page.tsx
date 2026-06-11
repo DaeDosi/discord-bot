@@ -181,21 +181,6 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* CTA */}
-      <section className="py-20 px-4 border-t border-border text-center">
-        <h2 className="text-3xl font-bold mb-4">지금 바로 시작하세요</h2>
-        <p className="text-muted mb-8">무료로 봇을 초대하고 대시보드에서 설정하세요.</p>
-        {mounted && user ? (
-          <Link href="/dashboard" className="btn-primary mx-auto px-8 py-3 text-base inline-flex">
-            대시보드 바로가기 <ArrowRight size={18} />
-          </Link>
-        ) : (
-          <Link href="/login" className="btn-primary mx-auto px-8 py-3 text-base inline-flex">
-            Discord 로그인 <ArrowRight size={18} />
-          </Link>
-        )}
-      </section>
-
       <footer className="border-t border-border py-6 text-center text-muted text-sm">
         © 2026 NexBot. All rights reserved.
       </footer>
