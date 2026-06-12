@@ -1,7 +1,12 @@
 import aiosqlite
 import os
 
-DB_PATH = os.getenv("DATABASE_URL", "sqlite:///./bot.db").replace("sqlite:///", "")
+# __file__ = discord_workspace/database/db.py  → 프로젝트 루트 = 한 단계 위
+_HERE         = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_HERE, ".."))
+
+_raw = os.getenv("DATABASE_URL", "sqlite:///./bot.db").replace("sqlite:///", "")
+DB_PATH = _raw if os.path.isabs(_raw) else os.path.normpath(os.path.join(_PROJECT_ROOT, _raw))
 
 _db: aiosqlite.Connection | None = None
 

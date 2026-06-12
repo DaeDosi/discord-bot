@@ -152,7 +152,12 @@ async def get_verification_config(
     )).fetchone()
     if not row:
         return {}
-    return dict(row)
+    d = dict(row)
+    # Discord 스노우플레이크는 JS Number.MAX_SAFE_INTEGER 초과 → 문자열로 반환
+    for key in ("verification_channel", "unverified_role_id", "verified_role_id"):
+        if d.get(key) is not None:
+            d[key] = str(d[key])
+    return d
 
 
 @router.put("/{guild_id}/verification")
