@@ -20,8 +20,8 @@ NAVER_REDIRECT_URI  = os.getenv(
     "http://localhost:8000/api/chzzk-auth/callback",
 )
 
-NAVER_AUTH_URL    = "https://nid.naver.com/oauth2.0/authorize"
-NAVER_TOKEN_URL   = "https://nid.naver.com/oauth2.0/token"
+NAVER_AUTH_URL  = "https://nid.naver.com/oauth2.0/authorize"
+NAVER_TOKEN_URL = "https://nid.naver.com/oauth2.0/token"
 
 
 def _build_state(guild_id: str, discord_user_id: str) -> str:
@@ -34,15 +34,21 @@ def _build_state(guild_id: str, discord_user_id: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
+def _err(msg: str, guild_id: str = "") -> RedirectResponse:
+    gid = f"&guild_id={quote(guild_id)}" if guild_id else ""
+    return RedirectResponse(f"{FRONTEND_URL}/verify?error={quote(msg)}{gid}")
+
+
 @router.get("/login")
 async def chzzk_login(
     guild_id:        str = Query(...),
     discord_user_id: str = Query(...),
 ):
     if not NAVER_CLIENT_ID:
-        return RedirectResponse(
-            f"{FRONTEND_URL}/verify?error=naver_not_configured&guild_id={quote(guild_id)}"
-        )
+        return _err("naver_not_configured", guild_id)
+    if not discord_user_id:
+        return _err("discord_not_logged_in", guild_id)
+
     state  = _build_state(guild_id, discord_user_id)
     params = {
         "response_type": "code",
@@ -62,16 +68,20 @@ async def chzzk_callback(
     if error:
         return RedirectResponse(f"{FRONTEND_URL}/verify?error={quote(error)}")
     if not code or not state:
-        return RedirectResponse(f"{FRONTEND_URL}/verify?error=missing_params")
+        return _err("missing_params")
 
+    # ── state 검증 ──────────────────────────────────────────────────────────
     try:
         state_data      = jwt.decode(state, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         guild_id        = state_data["guild_id"]
         discord_user_id = state_data["user_id"]
     except JWTError:
-        return RedirectResponse(f"{FRONTEND_URL}/verify?error=invalid_state")
+        return _err("invalid_state")
 
-    # 네이버 code → access_token 교환
+    if not discord_user_id:
+        return _err("discord_user_missing", guild_id)
+
+    # ── 네이버 code → access_token 교환 ─────────────────────────────────────
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             token_resp = await client.get(
@@ -86,37 +96,49 @@ async def chzzk_callback(
             )
             token_data   = token_resp.json()
             access_token = token_data.get("access_token")
+    except Exception as e:
+        print(f"[chzzk-auth] Naver token request failed: {e}")
+        return _err("oauth_failed", guild_id)
 
-            if not access_token:
-                return RedirectResponse(
-                    f"{FRONTEND_URL}/verify?error=token_failed&guild_id={quote(guild_id)}"
-                )
-    except Exception:
-        return RedirectResponse(
-            f"{FRONTEND_URL}/verify?error=oauth_failed&guild_id={quote(guild_id)}"
+    if not access_token:
+        print(f"[chzzk-auth] No access_token in response: {token_data}")
+        return _err("token_failed", guild_id)
+
+    # ── DB에 인증 이력 기록 ──────────────────────────────────────────────────
+    try:
+        db = await get_db()
+        await db.execute(
+            """INSERT INTO chzzk_verifications(guild_id, user_id, verified_at) VALUES(?,?,?)
+               ON CONFLICT(guild_id, user_id) DO UPDATE SET verified_at=excluded.verified_at""",
+            (int(guild_id), int(discord_user_id), time.time()),
         )
+        await db.commit()
+    except Exception as e:
+        print(f"[chzzk-auth] DB write failed: {e}")
+        return _err("db_error", guild_id)
 
-    # DB에 인증 이력 기록
-    db = await get_db()
-    await db.execute(
-        """INSERT INTO chzzk_verifications(guild_id, user_id, verified_at) VALUES(?,?,?)
-           ON CONFLICT(guild_id, user_id) DO UPDATE SET verified_at=excluded.verified_at""",
-        (int(guild_id), int(discord_user_id), time.time()),
-    )
-    await db.commit()
-
-    # Discord 역할 교체
+    # ── Discord 역할 교체 ────────────────────────────────────────────────────
     cfg = await (await db.execute(
         "SELECT verified_role_id, unverified_role_id FROM guild_config WHERE guild_id=?",
         (int(guild_id),),
     )).fetchone()
 
-    if cfg:
-        if cfg["unverified_role_id"]:
-            await _remove_role(guild_id, discord_user_id, str(cfg["unverified_role_id"]))
-        if cfg["verified_role_id"]:
-            await _add_role(guild_id, discord_user_id, str(cfg["verified_role_id"]))
+    if not cfg:
+        print(f"[chzzk-auth] guild_config not found for guild {guild_id}")
+        return _err("guild_not_configured", guild_id)
 
-    return RedirectResponse(
-        f"{FRONTEND_URL}/verify?success=1&guild_id={quote(guild_id)}"
-    )
+    if not cfg["verified_role_id"]:
+        print(f"[chzzk-auth] verified_role_id not set for guild {guild_id}")
+        return _err("role_not_configured", guild_id)
+
+    if cfg["unverified_role_id"]:
+        ok = await _remove_role(guild_id, discord_user_id, str(cfg["unverified_role_id"]))
+        if not ok:
+            print(f"[chzzk-auth] Failed to remove unverified role for user {discord_user_id}")
+
+    ok = await _add_role(guild_id, discord_user_id, str(cfg["verified_role_id"]))
+    if not ok:
+        print(f"[chzzk-auth] Failed to add verified role for user {discord_user_id}")
+        return _err("role_assign_failed", guild_id)
+
+    return RedirectResponse(f"{FRONTEND_URL}/verify?success=1&guild_id={quote(guild_id)}")

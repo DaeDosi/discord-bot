@@ -10,12 +10,18 @@ const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 type Status = "loading" | "unauthenticated" | "ready" | "verifying" | "success" | "error";
 
 const ERROR_MESSAGES: Record<string, string> = {
-  naver_not_configured: "서버에 네이버 OAuth 설정이 되어 있지 않습니다. 관리자에게 문의하세요.",
-  token_failed:         "네이버 인증 토큰 발급에 실패했습니다. 다시 시도해주세요.",
-  oauth_failed:         "네이버 OAuth 처리 중 오류가 발생했습니다. 다시 시도해주세요.",
-  missing_params:       "필수 파라미터가 누락되었습니다. 디스코드 서버에서 다시 링크를 클릭해주세요.",
-  invalid_state:        "보안 토큰이 만료되었습니다. 다시 시도해주세요.",
-  access_denied:        "네이버 로그인이 취소되었습니다.",
+  naver_not_configured:  "서버에 네이버 OAuth 설정이 되어 있지 않습니다. 관리자에게 문의하세요.",
+  token_failed:          "네이버 인증 토큰 발급에 실패했습니다. 다시 시도해주세요.",
+  oauth_failed:          "네이버 OAuth 처리 중 오류가 발생했습니다. 다시 시도해주세요.",
+  missing_params:        "필수 파라미터가 누락되었습니다. 디스코드 서버에서 다시 링크를 클릭해주세요.",
+  invalid_state:         "보안 토큰이 만료되었습니다. 다시 시도해주세요.",
+  access_denied:         "네이버 로그인이 취소되었습니다.",
+  discord_not_logged_in: "Discord 로그인이 필요합니다. 먼저 Discord로 로그인해주세요.",
+  discord_user_missing:  "Discord 사용자 정보가 없습니다. 다시 로그인 후 시도해주세요.",
+  db_error:              "서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+  guild_not_configured:  "서버 설정이 없습니다. 웹 대시보드에서 입장 인증 설정을 완료해주세요.",
+  role_not_configured:   "인증됨 역할이 설정되지 않았습니다. 웹 대시보드에서 역할을 지정해주세요.",
+  role_assign_failed:    "역할 부여에 실패했습니다. 봇의 역할이 인증 역할보다 높은 위치에 있는지 확인해주세요.",
 };
 
 function VerifyContent() {
