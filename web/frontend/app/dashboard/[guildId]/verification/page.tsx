@@ -81,8 +81,8 @@ export default function VerificationPage() {
         <h1 className="text-xl font-bold text-white">입장 인증</h1>
         <p className="text-muted text-sm mt-1">
           신규 멤버 입장 인증 흐름을 설정합니다.
-          채널·역할 초기 지정은 Discord에서 <code className="text-accent">/setup</code> 명령어로,
-          임베드 전송은 <code className="text-accent">/embed</code> 명령어로 실행하세요.
+          설정 저장 후 Discord에서 <code className="text-accent">/입장메시지설정</code> 명령어를 실행하면
+          아래 설정값으로 입장 채널에 인증 임베드가 전송(또는 수정)됩니다.
         </p>
       </div>
 
@@ -157,7 +157,7 @@ export default function VerificationPage() {
           onChange={(e) => set("verification_message")(e.target.value)}
         />
         <p className="text-xs text-muted/60">
-          메시지 수정 후 Discord에서 <code className="text-accent">/embed</code> 를 실행하면 기존 임베드가 업데이트됩니다.
+          메시지 수정 후 Discord에서 <code className="text-accent">/입장메시지설정</code> 을 실행하면 기존 임베드가 업데이트됩니다.
         </p>
       </div>
 

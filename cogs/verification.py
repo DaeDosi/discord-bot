@@ -31,33 +31,48 @@ class VerifyView(discord.ui.View):
                 "인증 설정을 찾을 수 없습니다. 관리자에게 문의하세요.", ephemeral=True
             )
 
-        member = interaction.user
+        member     = interaction.user
+        bot_member = interaction.guild.me
 
-        if row["verified_role_id"]:
-            verified_role = interaction.guild.get_role(row["verified_role_id"])
-            if verified_role and verified_role in member.roles:
+        unverified_role = interaction.guild.get_role(row["unverified_role_id"]) if row["unverified_role_id"] else None
+        verified_role   = interaction.guild.get_role(row["verified_role_id"])   if row["verified_role_id"]   else None
+
+        if verified_role and verified_role in member.roles:
+            return await interaction.response.send_message(
+                "이미 인증된 상태입니다.", ephemeral=True
+            )
+
+        # 봇 역할 관리 권한 확인
+        if not bot_member.guild_permissions.manage_roles:
+            return await interaction.response.send_message(
+                "⚠️ 봇에 **역할 관리** 권한이 없습니다.\n"
+                "서버 설정 > 역할에서 봇 역할의 **역할 관리** 권한을 활성화해주세요.",
+                ephemeral=True,
+            )
+
+        # 역할 위계 확인 (봇 최상위 역할 > 부여할 역할)
+        if verified_role and bot_member.top_role <= verified_role:
+            return await interaction.response.send_message(
+                f"⚠️ 봇의 역할이 **{verified_role.name}** 보다 낮습니다.\n"
+                "서버 설정 > 역할 목록에서 봇 역할을 인증 역할보다 **위로** 이동해주세요.",
+                ephemeral=True,
+            )
+
+        if unverified_role and unverified_role in member.roles:
+            try:
+                await member.remove_roles(unverified_role, reason="입장 인증 완료")
+            except discord.Forbidden:
+                pass
+
+        if verified_role:
+            try:
+                await member.add_roles(verified_role, reason="입장 인증 완료")
+            except discord.Forbidden:
                 return await interaction.response.send_message(
-                    "이미 인증된 상태입니다.", ephemeral=True
+                    "⚠️ 역할 부여에 실패했습니다.\n"
+                    "봇 역할이 인증 역할보다 위에 있는지 서버 관리자에게 확인을 요청하세요.",
+                    ephemeral=True,
                 )
-
-        if row["unverified_role_id"]:
-            unverified_role = interaction.guild.get_role(row["unverified_role_id"])
-            if unverified_role and unverified_role in member.roles:
-                try:
-                    await member.remove_roles(unverified_role, reason="입장 인증 완료")
-                except discord.Forbidden:
-                    pass
-
-        if row["verified_role_id"]:
-            verified_role = interaction.guild.get_role(row["verified_role_id"])
-            if verified_role:
-                try:
-                    await member.add_roles(verified_role, reason="입장 인증 완료")
-                except discord.Forbidden:
-                    return await interaction.response.send_message(
-                        "봇 권한이 부족해 역할을 부여할 수 없습니다. 관리자에게 문의하세요.",
-                        ephemeral=True,
-                    )
 
         await interaction.response.send_message("✅ 인증이 완료되었습니다!", ephemeral=True)
 
@@ -129,79 +144,13 @@ class VerificationCog(commands.Cog):
         except discord.Forbidden:
             pass
 
-    # ── /setup ───────────────────────────────────────────────────────────────
-    @app_commands.command(name="setup", description="입장 채널·미인증 역할·인증됨 역할을 초기 지정합니다.")
-    @app_commands.describe(
-        channel="입장 인증 메시지를 보낼 채널",
-        unverified_role="신규 입장 시 자동 부여할 미인증 역할",
-        verified_role="인증 완료 후 부여할 역할",
+    # ── /입장메시지설정 ──────────────────────────────────────────────────────
+    @app_commands.command(
+        name="입장메시지설정",
+        description="웹 대시보드 설정값으로 입장 인증 임베드를 채널에 전송(또는 수정)합니다.",
     )
     @app_commands.default_permissions(administrator=True)
-    async def setup_cmd(
-        self,
-        interaction: discord.Interaction,
-        channel: discord.TextChannel,
-        unverified_role: discord.Role,
-        verified_role: discord.Role,
-    ):
-        db = await get_db()
-
-        # 치지직 인증 활성화 여부 + 본인 인증 확인
-        row = await (await db.execute(
-            "SELECT use_chzzk_verification FROM guild_config WHERE guild_id=?",
-            (interaction.guild_id,)
-        )).fetchone()
-
-        if row and row["use_chzzk_verification"]:
-            is_verified = await (await db.execute(
-                "SELECT 1 FROM chzzk_verifications WHERE guild_id=? AND user_id=?",
-                (interaction.guild_id, interaction.user.id)
-            )).fetchone()
-
-            if not is_verified:
-                verify_url = (
-                    f"{FRONTEND_URL}/verify"
-                    f"?guild_id={interaction.guild_id}&user_id={interaction.user.id}"
-                )
-                view = discord.ui.View()
-                view.add_item(discord.ui.Button(
-                    label="치지직으로 인증하기",
-                    url=verify_url,
-                    style=discord.ButtonStyle.link,
-                    emoji="📺",
-                ))
-                return await interaction.response.send_message(
-                    f"{interaction.user.mention} `/setup` 명령어를 사용하려면 먼저 치지직 인증이 필요합니다.",
-                    view=view,
-                )
-
-        await db.execute(
-            """INSERT INTO guild_config
-               (guild_id, verification_channel, unverified_role_id, verified_role_id)
-               VALUES(?,?,?,?)
-               ON CONFLICT(guild_id) DO UPDATE SET
-                   verification_channel = excluded.verification_channel,
-                   unverified_role_id   = excluded.unverified_role_id,
-                   verified_role_id     = excluded.verified_role_id""",
-            (interaction.guild_id, channel.id, unverified_role.id, verified_role.id)
-        )
-        await db.commit()
-
-        await interaction.response.send_message(
-            embed=success(
-                "✅ 인증 설정 완료",
-                f"채널: {channel.mention}\n"
-                f"미인증 역할: {unverified_role.mention}\n"
-                f"인증됨 역할: {verified_role.mention}\n\n"
-                f"나머지 상세 설정은 웹 대시보드에서 변경하세요.",
-            ),
-            ephemeral=True,
-        )
-
-    # ── /embed ───────────────────────────────────────────────────────────────
-    @app_commands.command(name="embed", description="입장 채널에 인증 임베드를 전송(또는 수정)합니다.")
-    @app_commands.default_permissions(administrator=True)
-    async def embed_cmd(self, interaction: discord.Interaction):
+    async def 입장메시지설정_cmd(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
         db = await get_db()
@@ -215,7 +164,7 @@ class VerificationCog(commands.Cog):
 
         if not row or not row["verification_channel"]:
             return await interaction.followup.send(
-                embed=error("설정 없음", "`/setup` 명령어로 먼저 입장 채널을 지정해주세요.")
+                embed=error("설정 없음", "웹 대시보드 > **입장 인증**에서 먼저 채널을 설정해주세요.")
             )
 
         ch = interaction.guild.get_channel(row["verification_channel"])
@@ -227,7 +176,6 @@ class VerificationCog(commands.Cog):
         embed, view = _build_embed_and_view(interaction.guild, row)
         sent_msg: discord.Message | None = None
 
-        # 기존 메시지가 있으면 수정, 없으면 새로 전송
         if row["verification_embed_msg_id"]:
             try:
                 existing = await ch.fetch_message(row["verification_embed_msg_id"])
@@ -244,7 +192,6 @@ class VerificationCog(commands.Cog):
                     embed=error("권한 없음", f"{ch.mention} 채널에 메시지를 보낼 권한이 없습니다.")
                 )
 
-        # 메시지 ID 저장
         await db.execute(
             """INSERT INTO guild_config(guild_id, verification_embed_msg_id) VALUES(?,?)
                ON CONFLICT(guild_id) DO UPDATE SET
@@ -253,8 +200,9 @@ class VerificationCog(commands.Cog):
         )
         await db.commit()
 
+        action = "수정" if row["verification_embed_msg_id"] else "전송"
         await interaction.followup.send(
-            embed=success("임베드 전송 완료", f"{ch.mention}에 인증 임베드를 {'수정' if row['verification_embed_msg_id'] else '전송'}했습니다.")
+            embed=success("임베드 전송 완료", f"{ch.mention}에 인증 임베드를 {action}했습니다.")
         )
 
     # ── 에러 핸들러 ───────────────────────────────────────────────────────────
