@@ -141,11 +141,12 @@ async def init_db():
     # 기존 DB에 새 컬럼 추가 (이미 있으면 무시)
     for sql in [
         "ALTER TABLE chzzk_subscriptions ADD COLUMN mention_everyone INTEGER DEFAULT 0",
-        "ALTER TABLE guild_config ADD COLUMN verification_channel    INTEGER",
-        "ALTER TABLE guild_config ADD COLUMN unverified_role_id      INTEGER",
-        "ALTER TABLE guild_config ADD COLUMN verified_role_id        INTEGER",
-        "ALTER TABLE guild_config ADD COLUMN use_chzzk_verification  INTEGER DEFAULT 0",
-        "ALTER TABLE guild_config ADD COLUMN verification_message    TEXT DEFAULT ''",
+        "ALTER TABLE guild_config ADD COLUMN verification_channel      INTEGER",
+        "ALTER TABLE guild_config ADD COLUMN unverified_role_id        INTEGER",
+        "ALTER TABLE guild_config ADD COLUMN verified_role_id          INTEGER",
+        "ALTER TABLE guild_config ADD COLUMN use_chzzk_verification    INTEGER DEFAULT 0",
+        "ALTER TABLE guild_config ADD COLUMN verification_message      TEXT DEFAULT ''",
+        "ALTER TABLE guild_config ADD COLUMN verification_embed_msg_id INTEGER",
     ]:
         try:
             await db.execute(sql)

@@ -51,6 +51,14 @@ export interface ChzzkSubscription {
   mention_everyone: number;
 }
 
+export interface VerificationConfig {
+  verification_channel?:   string | null;
+  unverified_role_id?:     string | null;
+  verified_role_id?:       string | null;
+  use_chzzk_verification?: boolean;
+  verification_message?:   string;
+}
+
 export interface ChzzkSearchResult {
   channelId:       string;
   channelName:     string;

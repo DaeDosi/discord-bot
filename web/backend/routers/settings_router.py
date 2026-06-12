@@ -128,6 +128,65 @@ async def delete_level_reward(
     return {"ok": True}
 
 
+# ── 인증 설정 ────────────────────────────────────────────────────────────────
+class VerificationConfig(BaseModel):
+    verification_channel:   Optional[str] = None
+    unverified_role_id:     Optional[str] = None
+    verified_role_id:       Optional[str] = None
+    use_chzzk_verification: bool = False
+    verification_message:   str  = ""
+
+
+@router.get("/{guild_id}/verification")
+async def get_verification_config(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    row = await (await db.execute(
+        """SELECT verification_channel, unverified_role_id, verified_role_id,
+                  use_chzzk_verification, verification_message
+           FROM guild_config WHERE guild_id=?""",
+        (int(guild_id),)
+    )).fetchone()
+    if not row:
+        return {}
+    return dict(row)
+
+
+@router.put("/{guild_id}/verification")
+async def update_verification_config(
+    guild_id: str,
+    cfg: VerificationConfig,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO guild_config
+           (guild_id, verification_channel, unverified_role_id, verified_role_id,
+            use_chzzk_verification, verification_message)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(guild_id) DO UPDATE SET
+               verification_channel   = excluded.verification_channel,
+               unverified_role_id     = excluded.unverified_role_id,
+               verified_role_id       = excluded.verified_role_id,
+               use_chzzk_verification = excluded.use_chzzk_verification,
+               verification_message   = excluded.verification_message""",
+        (
+            int(guild_id),
+            int(cfg.verification_channel)   if cfg.verification_channel   else None,
+            int(cfg.unverified_role_id)     if cfg.unverified_role_id     else None,
+            int(cfg.verified_role_id)       if cfg.verified_role_id       else None,
+            int(cfg.use_chzzk_verification),
+            cfg.verification_message,
+        )
+    )
+    await db.commit()
+    return {"ok": True}
+
+
 # ── 리더보드 ─────────────────────────────────────────────────────────────────
 @router.get("/{guild_id}/leaderboard")
 async def get_leaderboard(

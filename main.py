@@ -13,7 +13,6 @@ OWNER_ID      = int(os.getenv("OWNER_ID", 0))
 TEST_GUILD_ID = int(os.getenv("TEST_GUILD_ID", 0))
 
 COGS = [
-    "cogs.admin",
     "cogs.welcome",
     "cogs.leveling",
     "cogs.moderation",

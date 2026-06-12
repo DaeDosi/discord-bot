@@ -64,6 +64,10 @@ export const api = {
       request<{ user_id: string; xp: number; level: number }[]>(
         `/api/settings/${gid}/leaderboard`
       ),
+    getVerification: (gid: string) =>
+      request<import("./types").VerificationConfig>(`/api/settings/${gid}/verification`),
+    saveVerification: (gid: string, data: import("./types").VerificationConfig) =>
+      request(`/api/settings/${gid}/verification`, { method: "PUT", body: JSON.stringify(data) }),
   },
 
   stats: {
