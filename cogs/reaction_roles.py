@@ -10,7 +10,7 @@ class ReactionRolesCog(commands.Cog):
         self.bot = bot
 
     # ── /reactionrole add ─────────────────────────────────────────────────────
-    @app_commands.command(name="reactionrole", description="특정 메시지에 반응 역할을 추가합니다.")
+    @app_commands.command(name="반응역할", description="특정 메시지에 반응 역할을 추가합니다.")
     @app_commands.describe(
         message_id="대상 메시지 ID",
         emoji="사용할 이모지",
@@ -46,7 +46,7 @@ class ReactionRolesCog(commands.Cog):
         )
 
     # ── /reactionrole-remove ──────────────────────────────────────────────────
-    @app_commands.command(name="reactionrole-remove", description="메시지의 반응 역할을 제거합니다.")
+    @app_commands.command(name="반응역할제거", description="메시지의 반응 역할을 제거합니다.")
     @app_commands.describe(message_id="대상 메시지 ID", emoji="제거할 이모지")
     @is_admin()
     async def reactionrole_remove(self, interaction: discord.Interaction,
@@ -62,7 +62,7 @@ class ReactionRolesCog(commands.Cog):
         )
 
     # ── /reactionrole-list ────────────────────────────────────────────────────
-    @app_commands.command(name="reactionrole-list", description="서버의 반응 역할 목록을 확인합니다.")
+    @app_commands.command(name="반응역할목록", description="서버의 반응 역할 목록을 확인합니다.")
     @is_admin()
     async def reactionrole_list(self, interaction: discord.Interaction):
         db = await get_db()

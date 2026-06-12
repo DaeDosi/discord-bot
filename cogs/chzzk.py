@@ -158,7 +158,7 @@ class ChzzkCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     # ── /chzzk-subscribe ─────────────────────────────────────────────────────
-    @app_commands.command(name="chzzk-subscribe", description="치지직 채널 방송 알림을 구독합니다.")
+    @app_commands.command(name="치지직구독", description="치지직 채널 방송 알림을 구독합니다.")
     @app_commands.describe(
         chzzk_id="치지직 채널 ID (URL의 마지막 부분)",
         notify_channel="알림을 받을 Discord 채널",
@@ -206,7 +206,7 @@ class ChzzkCog(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     # ── /chzzk-unsubscribe ────────────────────────────────────────────────────
-    @app_commands.command(name="chzzk-unsubscribe", description="치지직 채널 알림 구독을 해제합니다.")
+    @app_commands.command(name="치지직구독해제", description="치지직 채널 알림 구독을 해제합니다.")
     @app_commands.describe(chzzk_id="해제할 치지직 채널 ID")
     @is_mod_or_admin()
     async def chzzk_unsubscribe(self, interaction: discord.Interaction, chzzk_id: str):
@@ -225,7 +225,7 @@ class ChzzkCog(commands.Cog):
         )
 
     # ── /test-chzzk-alert ────────────────────────────────────────────────────
-    @app_commands.command(name="test-chzzk-alert", description="치지직 방송 알림 테스트 메시지를 전송합니다.")
+    @app_commands.command(name="치지직알림테스트", description="치지직 방송 알림 테스트 메시지를 전송합니다.")
     @app_commands.describe(
         channel="테스트 알림을 보낼 Discord 채널",
         streamer="테스트할 스트리머 이름 (치지직 채널 ID 또는 이름)",
@@ -289,7 +289,7 @@ class ChzzkCog(commands.Cog):
         )
 
     # ── /chzzk-list ───────────────────────────────────────────────────────────
-    @app_commands.command(name="chzzk-list", description="구독 중인 치지직 채널 목록을 확인합니다.")
+    @app_commands.command(name="치지직목록", description="구독 중인 치지직 채널 목록을 확인합니다.")
     async def chzzk_list(self, interaction: discord.Interaction):
         db = await get_db()
         rows = await (await db.execute(

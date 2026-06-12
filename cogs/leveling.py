@@ -121,7 +121,7 @@ class LevelingCog(commands.Cog):
         await target_ch.send(embed=embed)
 
     # ── /rank ─────────────────────────────────────────────────────────────────
-    @app_commands.command(name="rank", description="자신(또는 다른 멤버)의 레벨과 XP를 확인합니다.")
+    @app_commands.command(name="랭크", description="자신(또는 다른 멤버)의 레벨과 XP를 확인합니다.")
     @app_commands.describe(member="확인할 멤버 (기본: 자신)")
     async def rank(self, interaction: discord.Interaction, member: discord.Member | None = None):
         target = member or interaction.user
@@ -161,7 +161,7 @@ class LevelingCog(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     # ── /leaderboard ──────────────────────────────────────────────────────────
-    @app_commands.command(name="leaderboard", description="서버 레벨 랭킹 상위 10명을 확인합니다.")
+    @app_commands.command(name="리더보드", description="서버 레벨 랭킹 상위 10명을 확인합니다.")
     async def leaderboard(self, interaction: discord.Interaction):
         db = await get_db()
         rows = await (await db.execute(
@@ -183,7 +183,7 @@ class LevelingCog(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     # ── /set-xp ───────────────────────────────────────────────────────────────
-    @app_commands.command(name="set-xp", description="[관리자] 특정 멤버의 XP를 설정합니다.")
+    @app_commands.command(name="xp설정", description="[관리자] 특정 멤버의 XP를 설정합니다.")
     @app_commands.describe(member="대상 멤버", xp="설정할 XP")
     @app_commands.default_permissions(administrator=True)
     async def set_xp(self, interaction: discord.Interaction,

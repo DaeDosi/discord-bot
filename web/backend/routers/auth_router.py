@@ -14,12 +14,14 @@ async def login():
 
 @router.get("/callback")
 async def oauth_callback(
-    code: str = Query(...),
+    code: str = Query(None),
     state: str = Query(None),
     error: str = Query(None),
 ):
     if error:
-        return RedirectResponse(f"{FRONTEND_URL}/login?error={quote(error)}")
+        return RedirectResponse(f"{FRONTEND_URL}/")
+    if not code:
+        return RedirectResponse(f"{FRONTEND_URL}/login?error=no_code")
     if not verify_oauth_state(state):
         return RedirectResponse(f"{FRONTEND_URL}/login?error=invalid_state")
     try:

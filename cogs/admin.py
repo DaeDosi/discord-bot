@@ -10,7 +10,7 @@ class AdminCog(commands.Cog):
         self.bot = bot
 
     # ── /set-modrole ────────────────────────────────────────────────────────
-    @app_commands.command(name="set-modrole", description="봇 중재 명령어를 사용할 역할을 지정합니다.")
+    @app_commands.command(name="중재자역할설정", description="봇 중재 명령어를 사용할 역할을 지정합니다.")
     @app_commands.describe(role="중재자(Moderator) 역할")
     @is_admin()
     async def set_modrole(self, interaction: discord.Interaction, role: discord.Role):
@@ -27,7 +27,7 @@ class AdminCog(commands.Cog):
         )
 
     # ── /set-welcome ────────────────────────────────────────────────────────
-    @app_commands.command(name="set-welcome", description="환영 메시지를 보낼 채널을 설정합니다.")
+    @app_commands.command(name="환영채널설정", description="환영 메시지를 보낼 채널을 설정합니다.")
     @app_commands.describe(channel="환영 메시지 채널")
     @is_admin()
     async def set_welcome(self, interaction: discord.Interaction, channel: discord.TextChannel):
@@ -44,7 +44,7 @@ class AdminCog(commands.Cog):
         )
 
     # ── /set-goodbye ────────────────────────────────────────────────────────
-    @app_commands.command(name="set-goodbye", description="퇴장 메시지를 보낼 채널을 설정합니다.")
+    @app_commands.command(name="퇴장채널설정", description="퇴장 메시지를 보낼 채널을 설정합니다.")
     @app_commands.describe(channel="퇴장 메시지 채널")
     @is_admin()
     async def set_goodbye(self, interaction: discord.Interaction, channel: discord.TextChannel):
@@ -61,7 +61,7 @@ class AdminCog(commands.Cog):
         )
 
     # ── /set-logchannel ──────────────────────────────────────────────────────
-    @app_commands.command(name="set-logchannel", description="중재 로그를 기록할 채널을 설정합니다.")
+    @app_commands.command(name="로그채널설정", description="중재 로그를 기록할 채널을 설정합니다.")
     @app_commands.describe(channel="로그 채널")
     @is_admin()
     async def set_logchannel(self, interaction: discord.Interaction, channel: discord.TextChannel):
@@ -78,7 +78,7 @@ class AdminCog(commands.Cog):
         )
 
     # ── /set-autorole ────────────────────────────────────────────────────────
-    @app_commands.command(name="set-autorole", description="신규 가입자에게 자동 부여할 역할을 설정합니다.")
+    @app_commands.command(name="자동역할설정", description="신규 가입자에게 자동 부여할 역할을 설정합니다.")
     @app_commands.describe(role="자동 부여 역할")
     @is_admin()
     async def set_autorole(self, interaction: discord.Interaction, role: discord.Role):
@@ -95,7 +95,7 @@ class AdminCog(commands.Cog):
         )
 
     # ── /set-levelup-channel ─────────────────────────────────────────────────
-    @app_commands.command(name="set-levelup-channel", description="레벨업 알림 채널을 설정합니다. (채널 없음=현재 채널)")
+    @app_commands.command(name="레벨업채널설정", description="레벨업 알림 채널을 설정합니다. (채널 없음=현재 채널)")
     @app_commands.describe(channel="레벨업 알림 채널 (비워두면 현재 채널)")
     @is_admin()
     async def set_levelup_channel(self, interaction: discord.Interaction,
@@ -112,7 +112,7 @@ class AdminCog(commands.Cog):
         await interaction.response.send_message(embed=success("레벨업 채널 설정", desc), ephemeral=True)
 
     # ── /add-level-reward ────────────────────────────────────────────────────
-    @app_commands.command(name="add-level-reward", description="특정 레벨 달성 시 부여할 역할을 설정합니다.")
+    @app_commands.command(name="레벨보상추가", description="특정 레벨 달성 시 부여할 역할을 설정합니다.")
     @app_commands.describe(level="달성 레벨", role="부여할 역할")
     @is_admin()
     async def add_level_reward(self, interaction: discord.Interaction,
@@ -130,7 +130,7 @@ class AdminCog(commands.Cog):
         )
 
     # ── /remove-level-reward ─────────────────────────────────────────────────
-    @app_commands.command(name="remove-level-reward", description="레벨 보상 역할을 제거합니다.")
+    @app_commands.command(name="레벨보상제거", description="레벨 보상 역할을 제거합니다.")
     @app_commands.describe(level="제거할 레벨")
     @is_admin()
     async def remove_level_reward(self, interaction: discord.Interaction,
@@ -146,7 +146,7 @@ class AdminCog(commands.Cog):
         )
 
     # ── /set-badwords ────────────────────────────────────────────────────────
-    @app_commands.command(name="set-badwords", description="자동 필터링할 금지어를 설정합니다. (쉼표 구분)")
+    @app_commands.command(name="금지어설정", description="자동 필터링할 금지어를 설정합니다. (쉼표 구분)")
     @app_commands.describe(words="금지어 목록 (예: 욕설1,욕설2)")
     @is_admin()
     async def set_badwords(self, interaction: discord.Interaction, words: str):
@@ -164,7 +164,7 @@ class AdminCog(commands.Cog):
         )
 
     # ── /config ──────────────────────────────────────────────────────────────
-    @app_commands.command(name="config", description="현재 서버의 봇 설정 상태를 확인합니다.")
+    @app_commands.command(name="설정확인", description="현재 서버의 봇 설정 상태를 확인합니다.")
     @is_admin()
     async def config(self, interaction: discord.Interaction):
         db = await get_db()
