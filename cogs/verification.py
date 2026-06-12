@@ -7,6 +7,9 @@ from utils import error, success
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
+_DEFAULT_COLOR = 0x5865F2
+_DEFAULT_TITLE = "🔐 입장 인증"
+
 
 # ── Persistent View (재시작 후에도 동작) ─────────────────────────────────────
 
@@ -42,7 +45,6 @@ class VerifyView(discord.ui.View):
                 "이미 인증된 상태입니다.", ephemeral=True
             )
 
-        # 봇 역할 관리 권한 확인
         if not bot_member.guild_permissions.manage_roles:
             return await interaction.response.send_message(
                 "⚠️ 봇에 **역할 관리** 권한이 없습니다.\n"
@@ -50,7 +52,6 @@ class VerifyView(discord.ui.View):
                 ephemeral=True,
             )
 
-        # 역할 위계 확인 (봇 최상위 역할 > 부여할 역할)
         if verified_role and bot_member.top_role <= verified_role:
             return await interaction.response.send_message(
                 f"⚠️ 봇의 역할이 **{verified_role.name}** 보다 낮습니다.\n"
@@ -79,21 +80,34 @@ class VerifyView(discord.ui.View):
 
 # ── 인증 임베드 빌더 ──────────────────────────────────────────────────────────
 
+def _parse_color(color_str: str | None) -> int:
+    if not color_str:
+        return _DEFAULT_COLOR
+    try:
+        return int(color_str.lstrip("#"), 16)
+    except (ValueError, AttributeError):
+        return _DEFAULT_COLOR
+
+
 def _build_embed_and_view(guild: discord.Guild, row: dict) -> tuple[discord.Embed, discord.ui.View]:
-    msg = (row["verification_message"] or "").strip() or "아래 버튼을 눌러 입장을 확인해 주세요."
+    msg   = (row.get("verification_message") or "").strip() or "아래 버튼을 눌러 입장을 확인해 주세요."
+    title = (row.get("embed_title") or "").strip() or _DEFAULT_TITLE
+    color = _parse_color(row.get("embed_color"))
+
     embed = discord.Embed(
-        title="🔐 입장 인증",
+        title=title,
         description=msg,
-        color=0x5865F2,
+        color=color,
         timestamp=discord.utils.utcnow(),
     )
     embed.set_footer(text=guild.name)
 
-    if row["use_chzzk_verification"]:
+    if row.get("use_chzzk_verification"):
+        verify_url = f"{FRONTEND_URL}/verify?guild_id={guild.id}"
         view = discord.ui.View()
         view.add_item(discord.ui.Button(
-            label="치지직으로 인증하기",
-            url=f"{FRONTEND_URL}/verify",
+            label="인증하기",
+            url=verify_url,
             style=discord.ButtonStyle.link,
             emoji="📺",
         ))
@@ -115,7 +129,8 @@ class VerificationCog(commands.Cog):
         db = await get_db()
         row = await (await db.execute(
             """SELECT verification_channel, unverified_role_id,
-                      use_chzzk_verification, verification_message
+                      use_chzzk_verification, verification_message,
+                      embed_color, embed_title
                FROM guild_config WHERE guild_id=?""",
             (member.guild.id,)
         )).fetchone()
@@ -157,7 +172,7 @@ class VerificationCog(commands.Cog):
         row = await (await db.execute(
             """SELECT verification_channel, unverified_role_id, verified_role_id,
                       use_chzzk_verification, verification_message,
-                      verification_embed_msg_id
+                      verification_embed_msg_id, embed_color, embed_title
                FROM guild_config WHERE guild_id=?""",
             (interaction.guild_id,)
         )).fetchone()

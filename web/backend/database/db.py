@@ -154,6 +154,8 @@ async def init_db():
         "ALTER TABLE guild_config ADD COLUMN use_chzzk_verification    INTEGER DEFAULT 0",
         "ALTER TABLE guild_config ADD COLUMN verification_message      TEXT DEFAULT ''",
         "ALTER TABLE guild_config ADD COLUMN verification_embed_msg_id INTEGER",
+        "ALTER TABLE guild_config ADD COLUMN embed_color TEXT DEFAULT '#5865F2'",
+        "ALTER TABLE guild_config ADD COLUMN embed_title TEXT DEFAULT '🔐 입장 인증'",
     ]:
         try:
             await db.execute(sql)

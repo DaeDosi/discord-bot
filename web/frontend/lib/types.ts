@@ -57,6 +57,8 @@ export interface VerificationConfig {
   verified_role_id?:       string | null;
   use_chzzk_verification?: boolean;
   verification_message?:   string;
+  embed_color?:            string;
+  embed_title?:            string;
 }
 
 export interface ChzzkSearchResult {

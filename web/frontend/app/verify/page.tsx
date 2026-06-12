@@ -9,16 +9,41 @@ const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 type Status = "loading" | "unauthenticated" | "ready" | "verifying" | "success" | "error";
 
-function VerifyContent() {
-  const params   = useSearchParams();
-  const guildId  = params.get("guild_id") || "";
-  const userId   = params.get("user_id") || "";
+const ERROR_MESSAGES: Record<string, string> = {
+  naver_not_configured: "서버에 네이버 OAuth 설정이 되어 있지 않습니다. 관리자에게 문의하세요.",
+  token_failed:         "네이버 인증 토큰 발급에 실패했습니다. 다시 시도해주세요.",
+  oauth_failed:         "네이버 OAuth 처리 중 오류가 발생했습니다. 다시 시도해주세요.",
+  missing_params:       "필수 파라미터가 누락되었습니다. 디스코드 서버에서 다시 링크를 클릭해주세요.",
+  invalid_state:        "보안 토큰이 만료되었습니다. 다시 시도해주세요.",
+  access_denied:        "네이버 로그인이 취소되었습니다.",
+};
 
-  const [status,      setStatus]      = useState<Status>("loading");
-  const [message,     setMessage]     = useState("");
-  const [username,    setUsername]    = useState("");
+function VerifyContent() {
+  const params  = useSearchParams();
+  const guildId = params.get("guild_id") || "";
+
+  const [status,   setStatus]   = useState<Status>("loading");
+  const [message,  setMessage]  = useState("");
+  const [username, setUsername] = useState("");
 
   useEffect(() => {
+    // Naver OAuth 완료 후 리다이렉트 처리
+    const success = params.get("success");
+    const errorKey = params.get("error");
+
+    if (success === "1") {
+      setStatus("success");
+      setMessage("인증이 완료되었습니다.");
+      return;
+    }
+
+    if (errorKey) {
+      setStatus("error");
+      setMessage(ERROR_MESSAGES[errorKey] || `오류: ${errorKey}`);
+      return;
+    }
+
+    // Discord 로그인 상태 확인
     const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     const raw   = typeof window !== "undefined" ? localStorage.getItem("discord_user") : null;
 
@@ -33,39 +58,28 @@ function VerifyContent() {
     } catch {
       setStatus("unauthenticated");
     }
-  }, []);
+  }, [params]);
 
   const goDiscordLogin = async () => {
+    // 로그인 후 이 페이지로 돌아오도록 현재 URL 저장
+    localStorage.setItem("auth_return_url", window.location.href);
     try {
       const d = await api.auth.getLoginUrl();
       window.location.href = d.url;
     } catch {}
   };
 
-  const handleVerify = async () => {
+  const handleChzzkVerify = () => {
     if (!guildId) {
       setStatus("error");
-      setMessage("guild_id가 누락되었습니다. 디스코드 서버에서 다시 링크를 클릭해 주세요.");
+      setMessage("guild_id가 없습니다. 디스코드 서버의 인증 링크를 다시 클릭해주세요.");
       return;
     }
     setStatus("verifying");
-    try {
-      const token = localStorage.getItem("token");
-      const res   = await fetch(`${BASE}/api/verify/${guildId}`, {
-        method:  "POST",
-        headers: {
-          Authorization:  `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "오류가 발생했습니다.");
-      setStatus("success");
-      setMessage(data.message || "인증이 완료되었습니다.");
-    } catch (e: unknown) {
-      setStatus("error");
-      setMessage(e instanceof Error ? e.message : "오류가 발생했습니다.");
-    }
+    const userStr = localStorage.getItem("discord_user");
+    const userId  = userStr ? (JSON.parse(userStr).id as string) : "";
+    window.location.href =
+      `${BASE}/api/chzzk-auth/login?guild_id=${encodeURIComponent(guildId)}&discord_user_id=${encodeURIComponent(userId)}`;
   };
 
   return (
@@ -101,21 +115,21 @@ function VerifyContent() {
             <div className="text-center space-y-2">
               <p className="text-sm text-muted leading-relaxed">
                 <span className="text-fg font-medium">{username || "사용자"}</span>님,
-                아래 버튼을 눌러 서버 입장을 확인하세요.
+                아래 버튼을 눌러 네이버 로그인을 완료하면 서버 입장 인증이 처리됩니다.
               </p>
               {!guildId && (
                 <p className="text-xs text-danger">
-                  ⚠️ guild_id가 없습니다. 디스코드 서버의 인증 링크를 다시 클릭해 주세요.
+                  ⚠️ guild_id가 없습니다. 디스코드 서버의 인증 링크를 다시 클릭해주세요.
                 </p>
               )}
             </div>
             <button
-              onClick={handleVerify}
+              onClick={handleChzzkVerify}
               disabled={!guildId}
               className="w-full py-2.5 bg-accent hover:bg-accent-hover disabled:opacity-40
                          text-white rounded-xl text-sm font-medium transition-colors"
             >
-              📺 인증하기
+              📺 치지직(네이버)으로 인증하기
             </button>
           </>
         )}
@@ -123,7 +137,7 @@ function VerifyContent() {
         {status === "verifying" && (
           <div className="flex flex-col items-center gap-3">
             <Loader2 size={28} className="text-accent animate-spin" />
-            <p className="text-muted text-sm">인증 처리 중...</p>
+            <p className="text-muted text-sm">네이버 로그인 페이지로 이동 중...</p>
           </div>
         )}
 
@@ -147,13 +161,18 @@ function VerifyContent() {
               <p className="font-semibold text-fg">오류 발생</p>
               <p className="text-sm text-muted">{message}</p>
             </div>
-            <button
-              onClick={() => setStatus("ready")}
-              className="w-full py-2.5 border border-border text-fg rounded-xl text-sm
-                         hover:bg-bg-hover transition-colors"
-            >
-              다시 시도
-            </button>
+            {guildId && (
+              <button
+                onClick={() => {
+                  setStatus("ready");
+                  setMessage("");
+                }}
+                className="w-full py-2.5 border border-border text-fg rounded-xl text-sm
+                           hover:bg-bg-hover transition-colors"
+              >
+                다시 시도
+              </button>
+            )}
           </>
         )}
 

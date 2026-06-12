@@ -5,6 +5,9 @@ import { Save, CheckCircle, ToggleLeft, ToggleRight } from "lucide-react";
 import { api } from "@/lib/api";
 import type { VerificationConfig, Channel, Role } from "@/lib/types";
 
+const DEFAULT_COLOR = "#5865F2";
+const DEFAULT_TITLE = "🔐 입장 인증";
+
 function SelectField({
   label, value, onChange, options, placeholder, description,
 }: {
@@ -32,7 +35,10 @@ function SelectField({
 export default function VerificationPage() {
   const { guildId } = useParams<{ guildId: string }>();
 
-  const [cfg, setCfg]           = useState<VerificationConfig>({});
+  const [cfg, setCfg]           = useState<VerificationConfig>({
+    embed_color: DEFAULT_COLOR,
+    embed_title: DEFAULT_TITLE,
+  });
   const [channels, setChannels] = useState<Channel[]>([]);
   const [roles, setRoles]       = useState<Role[]>([]);
   const [saving, setSaving]     = useState(false);
@@ -47,11 +53,13 @@ export default function VerificationPage() {
     ]).then(([v, ch, r]) => {
       setCfg({
         ...v,
-        verification_channel: v.verification_channel ? String(v.verification_channel) : "",
-        unverified_role_id:   v.unverified_role_id   ? String(v.unverified_role_id)   : "",
-        verified_role_id:     v.verified_role_id     ? String(v.verified_role_id)     : "",
+        verification_channel:   v.verification_channel ? String(v.verification_channel) : "",
+        unverified_role_id:     v.unverified_role_id   ? String(v.unverified_role_id)   : "",
+        verified_role_id:       v.verified_role_id     ? String(v.verified_role_id)     : "",
         use_chzzk_verification: Boolean(v.use_chzzk_verification),
         verification_message:   v.verification_message ?? "",
+        embed_color:            v.embed_color || DEFAULT_COLOR,
+        embed_title:            v.embed_title || DEFAULT_TITLE,
       });
       setChannels(ch.filter((c) => c.type === 0 || c.type === 5));
       setRoles(r);
@@ -60,6 +68,12 @@ export default function VerificationPage() {
 
   const set = (key: keyof VerificationConfig) => (v: string | boolean) =>
     setCfg((p) => ({ ...p, [key]: v }));
+
+  const handleColorText = (val: string) => {
+    if (/^#?[0-9A-Fa-f]{0,6}$/.test(val)) {
+      set("embed_color")(val.startsWith("#") ? val : `#${val}`);
+    }
+  };
 
   const save = async () => {
     setSaving(true);
@@ -104,7 +118,7 @@ export default function VerificationPage() {
             placeholder="채널 선택..."
             description="인증 임베드가 전송될 채널"
           />
-          <div /> {/* spacer */}
+          <div />
           <SelectField
             label="미인증 역할"
             value={cfg.unverified_role_id || ""}
@@ -135,12 +149,54 @@ export default function VerificationPage() {
           <div>
             <p className="text-sm font-medium text-white">치지직 연동 인증</p>
             <p className="text-xs text-muted mt-0.5">
-              ON이면 웹사이트 치지직 인증 링크 버튼, OFF이면 즉시 확인 버튼
+              ON이면 네이버 로그인을 통한 치지직 인증, OFF이면 즉시 확인 버튼
             </p>
           </div>
           {cfg.use_chzzk_verification
             ? <ToggleRight size={28} className="text-accent shrink-0" />
             : <ToggleLeft  size={28} className="text-muted  shrink-0" />}
+        </div>
+      </div>
+
+      {/* 임베드 디자인 */}
+      <div className="card space-y-4">
+        <h2 className="font-semibold text-white">임베드 디자인</h2>
+
+        <div>
+          <label className="label">임베드 제목</label>
+          <input
+            type="text"
+            className="input"
+            placeholder={DEFAULT_TITLE}
+            value={cfg.embed_title || ""}
+            onChange={(e) => set("embed_title")(e.target.value)}
+            maxLength={100}
+          />
+        </div>
+
+        <div>
+          <label className="label">임베드 색상</label>
+          <div className="flex items-center gap-3">
+            <input
+              type="color"
+              value={/^#[0-9A-Fa-f]{6}$/.test(cfg.embed_color || "") ? cfg.embed_color! : DEFAULT_COLOR}
+              onChange={(e) => set("embed_color")(e.target.value)}
+              className="w-10 h-10 rounded-lg border border-border cursor-pointer p-0.5 bg-transparent"
+            />
+            <input
+              type="text"
+              value={cfg.embed_color || ""}
+              onChange={(e) => handleColorText(e.target.value)}
+              className="input w-32 font-mono uppercase"
+              placeholder={DEFAULT_COLOR}
+              maxLength={7}
+            />
+            <div
+              className="w-8 h-8 rounded-lg border border-border shrink-0"
+              style={{ backgroundColor: /^#[0-9A-Fa-f]{6}$/.test(cfg.embed_color || "") ? cfg.embed_color : DEFAULT_COLOR }}
+            />
+          </div>
+          <p className="text-xs text-muted mt-1.5">예: #5865F2 (Discord 파란색), #FF0000 (빨간색)</p>
         </div>
       </div>
 

@@ -36,7 +36,10 @@ function CallbackInner() {
         })
         .catch(() => { /* 실패해도 토큰은 저장됨 */ })
         .finally(() => {
-          router.replace("/dashboard");
+          // 로그인 전 페이지(예: /verify?guild_id=...)로 복귀
+          const returnUrl = localStorage.getItem("auth_return_url");
+          localStorage.removeItem("auth_return_url");
+          router.replace(returnUrl || "/dashboard");
         });
       return;
     }

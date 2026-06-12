@@ -135,6 +135,8 @@ class VerificationConfig(BaseModel):
     verified_role_id:       Optional[str] = None
     use_chzzk_verification: bool = False
     verification_message:   str  = ""
+    embed_color:            str  = "#5865F2"
+    embed_title:            str  = "🔐 입장 인증"
 
 
 @router.get("/{guild_id}/verification")
@@ -146,7 +148,8 @@ async def get_verification_config(
     db = await get_db()
     row = await (await db.execute(
         """SELECT verification_channel, unverified_role_id, verified_role_id,
-                  use_chzzk_verification, verification_message
+                  use_chzzk_verification, verification_message,
+                  embed_color, embed_title
            FROM guild_config WHERE guild_id=?""",
         (int(guild_id),)
     )).fetchone()
@@ -157,6 +160,9 @@ async def get_verification_config(
     for key in ("verification_channel", "unverified_role_id", "verified_role_id"):
         if d.get(key) is not None:
             d[key] = str(d[key])
+    # NULL 기본값 처리
+    d["embed_color"] = d.get("embed_color") or "#5865F2"
+    d["embed_title"] = d.get("embed_title") or "🔐 입장 인증"
     return d
 
 
@@ -171,14 +177,16 @@ async def update_verification_config(
     await db.execute(
         """INSERT INTO guild_config
            (guild_id, verification_channel, unverified_role_id, verified_role_id,
-            use_chzzk_verification, verification_message)
-           VALUES (?,?,?,?,?,?)
+            use_chzzk_verification, verification_message, embed_color, embed_title)
+           VALUES (?,?,?,?,?,?,?,?)
            ON CONFLICT(guild_id) DO UPDATE SET
                verification_channel   = excluded.verification_channel,
                unverified_role_id     = excluded.unverified_role_id,
                verified_role_id       = excluded.verified_role_id,
                use_chzzk_verification = excluded.use_chzzk_verification,
-               verification_message   = excluded.verification_message""",
+               verification_message   = excluded.verification_message,
+               embed_color            = excluded.embed_color,
+               embed_title            = excluded.embed_title""",
         (
             int(guild_id),
             int(cfg.verification_channel)   if cfg.verification_channel   else None,
@@ -186,6 +194,8 @@ async def update_verification_config(
             int(cfg.verified_role_id)       if cfg.verified_role_id       else None,
             int(cfg.use_chzzk_verification),
             cfg.verification_message,
+            cfg.embed_color or "#5865F2",
+            cfg.embed_title or "🔐 입장 인증",
         )
     )
     await db.commit()
