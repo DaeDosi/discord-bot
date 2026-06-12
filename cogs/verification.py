@@ -89,7 +89,8 @@ def _parse_color(color_str: str | None) -> int:
         return _DEFAULT_COLOR
 
 
-def _build_embed_and_view(guild: discord.Guild, row: dict) -> tuple[discord.Embed, discord.ui.View]:
+def _build_embed_and_view(guild: discord.Guild, row) -> tuple[discord.Embed, discord.ui.View]:
+    row   = dict(row)  # sqlite3.Row → dict (supports .get())
     msg   = (row.get("verification_message") or "").strip() or "아래 버튼을 눌러 입장을 확인해 주세요."
     title = (row.get("embed_title") or "").strip() or _DEFAULT_TITLE
     color = _parse_color(row.get("embed_color"))
