@@ -266,7 +266,7 @@ function ReactionRolesMockup() {
 export default function HomePage() {
   const [user, setUser] = useState<User | null>(null);
   const [loginUrl, setLoginUrl] = useState<string | null>(null);
-  const [stats, setStats] = useState<{ guilds: number; chzzk_subscriptions: number } | null>(null);
+  const [stats, setStats] = useState<{ guilds: number; chzzk_subscriptions: number; today_visitors: number } | null>(null);
 
   const typed = useTypewriter(["스마트하게.", "쉽게.", "빠르게."]);
   useReveal();
@@ -284,6 +284,8 @@ export default function HomePage() {
     api.stats.get()
       .then(d => setStats(d))
       .catch(() => {});
+
+    api.stats.visit().catch(() => {});
   }, []);
 
   const features: {
@@ -335,7 +337,7 @@ export default function HomePage() {
   const statsDisplay = [
     { value: stats ? `${stats.guilds}+` : null, label: "등록 서버" },
     { value: stats ? `${stats.chzzk_subscriptions}+` : null, label: "치지직 구독" },
-    { value: "24/7", label: "안정 운영" },
+    { value: stats ? `${stats.today_visitors}` : null, label: "오늘 방문자" },
   ];
 
   return (

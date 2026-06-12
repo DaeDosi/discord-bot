@@ -67,7 +67,13 @@ export const api = {
   },
 
   stats: {
-    get: () => fetch(`${BASE}/api/stats`).then(r => r.json()) as Promise<{ guilds: number; chzzk_subscriptions: number }>,
+    get: () => fetch(`${BASE}/api/stats`).then(r => r.json()) as Promise<{
+      guilds: number;
+      chzzk_subscriptions: number;
+      today_visitors: number;
+    }>,
+    visit: () => fetch(`${BASE}/api/stats/visit`, { method: "POST" })
+      .then(r => r.json()) as Promise<{ today_visitors: number }>,
   },
 
   chzzk: {

@@ -108,5 +108,33 @@ async def init_db():
             custom_message   TEXT,
             UNIQUE(guild_id, chzzk_channel_id)
         );
+
+        CREATE TABLE IF NOT EXISTS chzzk_verifications (
+            guild_id    INTEGER NOT NULL,
+            user_id     INTEGER NOT NULL,
+            verified_at REAL    NOT NULL,
+            PRIMARY KEY (guild_id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS bot_stats (
+            id         INTEGER PRIMARY KEY,
+            guilds     INTEGER DEFAULT 0,
+            chzzk_subs INTEGER DEFAULT 0,
+            updated_at REAL    DEFAULT 0
+        );
     """)
+    await db.commit()
+
+    # 기존 DB에 새 컬럼 추가 (이미 있으면 무시)
+    for sql in [
+        "ALTER TABLE guild_config ADD COLUMN verification_channel  INTEGER",
+        "ALTER TABLE guild_config ADD COLUMN unverified_role_id    INTEGER",
+        "ALTER TABLE guild_config ADD COLUMN verified_role_id      INTEGER",
+        "ALTER TABLE guild_config ADD COLUMN use_chzzk_verification INTEGER DEFAULT 0",
+        "ALTER TABLE guild_config ADD COLUMN verification_message  TEXT DEFAULT ''",
+    ]:
+        try:
+            await db.execute(sql)
+        except Exception:
+            pass
     await db.commit()

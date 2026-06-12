@@ -17,6 +17,7 @@ from routers.guilds_router   import router as guilds_router
 from routers.settings_router import router as settings_router
 from routers.chzzk_router    import router as chzzk_router
 from routers.stats_router    import router as stats_router
+from routers.verify_router   import router as verify_router
 
 
 @asynccontextmanager
@@ -42,6 +43,7 @@ app.include_router(guilds_router)
 app.include_router(settings_router)
 app.include_router(chzzk_router)
 app.include_router(stats_router)
+app.include_router(verify_router)
 
 
 @app.get("/auth/callback")

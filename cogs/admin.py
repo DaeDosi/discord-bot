@@ -2,7 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from database import get_db
-from utils import is_admin, success, error, info
+from utils import is_admin_verified, success, error, info
 
 
 class AdminCog(commands.Cog):
@@ -12,7 +12,7 @@ class AdminCog(commands.Cog):
     # ── /set-modrole ────────────────────────────────────────────────────────
     @app_commands.command(name="중재자역할설정", description="봇 중재 명령어를 사용할 역할을 지정합니다.")
     @app_commands.describe(role="중재자(Moderator) 역할")
-    @is_admin()
+    @is_admin_verified()
     async def set_modrole(self, interaction: discord.Interaction, role: discord.Role):
         db = await get_db()
         await db.execute(
@@ -29,7 +29,7 @@ class AdminCog(commands.Cog):
     # ── /set-welcome ────────────────────────────────────────────────────────
     @app_commands.command(name="환영채널설정", description="환영 메시지를 보낼 채널을 설정합니다.")
     @app_commands.describe(channel="환영 메시지 채널")
-    @is_admin()
+    @is_admin_verified()
     async def set_welcome(self, interaction: discord.Interaction, channel: discord.TextChannel):
         db = await get_db()
         await db.execute(
@@ -46,7 +46,7 @@ class AdminCog(commands.Cog):
     # ── /set-goodbye ────────────────────────────────────────────────────────
     @app_commands.command(name="퇴장채널설정", description="퇴장 메시지를 보낼 채널을 설정합니다.")
     @app_commands.describe(channel="퇴장 메시지 채널")
-    @is_admin()
+    @is_admin_verified()
     async def set_goodbye(self, interaction: discord.Interaction, channel: discord.TextChannel):
         db = await get_db()
         await db.execute(
@@ -63,7 +63,7 @@ class AdminCog(commands.Cog):
     # ── /set-logchannel ──────────────────────────────────────────────────────
     @app_commands.command(name="로그채널설정", description="중재 로그를 기록할 채널을 설정합니다.")
     @app_commands.describe(channel="로그 채널")
-    @is_admin()
+    @is_admin_verified()
     async def set_logchannel(self, interaction: discord.Interaction, channel: discord.TextChannel):
         db = await get_db()
         await db.execute(
@@ -80,7 +80,7 @@ class AdminCog(commands.Cog):
     # ── /set-autorole ────────────────────────────────────────────────────────
     @app_commands.command(name="자동역할설정", description="신규 가입자에게 자동 부여할 역할을 설정합니다.")
     @app_commands.describe(role="자동 부여 역할")
-    @is_admin()
+    @is_admin_verified()
     async def set_autorole(self, interaction: discord.Interaction, role: discord.Role):
         db = await get_db()
         await db.execute(
@@ -97,7 +97,7 @@ class AdminCog(commands.Cog):
     # ── /set-levelup-channel ─────────────────────────────────────────────────
     @app_commands.command(name="레벨업채널설정", description="레벨업 알림 채널을 설정합니다. (채널 없음=현재 채널)")
     @app_commands.describe(channel="레벨업 알림 채널 (비워두면 현재 채널)")
-    @is_admin()
+    @is_admin_verified()
     async def set_levelup_channel(self, interaction: discord.Interaction,
                                   channel: discord.TextChannel | None = None):
         ch_id = channel.id if channel else None
@@ -114,7 +114,7 @@ class AdminCog(commands.Cog):
     # ── /add-level-reward ────────────────────────────────────────────────────
     @app_commands.command(name="레벨보상추가", description="특정 레벨 달성 시 부여할 역할을 설정합니다.")
     @app_commands.describe(level="달성 레벨", role="부여할 역할")
-    @is_admin()
+    @is_admin_verified()
     async def add_level_reward(self, interaction: discord.Interaction,
                                 level: app_commands.Range[int, 1, 500], role: discord.Role):
         db = await get_db()
@@ -132,7 +132,7 @@ class AdminCog(commands.Cog):
     # ── /remove-level-reward ─────────────────────────────────────────────────
     @app_commands.command(name="레벨보상제거", description="레벨 보상 역할을 제거합니다.")
     @app_commands.describe(level="제거할 레벨")
-    @is_admin()
+    @is_admin_verified()
     async def remove_level_reward(self, interaction: discord.Interaction,
                                    level: app_commands.Range[int, 1, 500]):
         db = await get_db()
@@ -148,7 +148,7 @@ class AdminCog(commands.Cog):
     # ── /set-badwords ────────────────────────────────────────────────────────
     @app_commands.command(name="금지어설정", description="자동 필터링할 금지어를 설정합니다. (쉼표 구분)")
     @app_commands.describe(words="금지어 목록 (예: 욕설1,욕설2)")
-    @is_admin()
+    @is_admin_verified()
     async def set_badwords(self, interaction: discord.Interaction, words: str):
         cleaned = ",".join(w.strip() for w in words.split(",") if w.strip())
         db = await get_db()
@@ -165,7 +165,7 @@ class AdminCog(commands.Cog):
 
     # ── /config ──────────────────────────────────────────────────────────────
     @app_commands.command(name="설정확인", description="현재 서버의 봇 설정 상태를 확인합니다.")
-    @is_admin()
+    @is_admin_verified()
     async def config(self, interaction: discord.Interaction):
         db = await get_db()
         row = await (await db.execute(
@@ -215,9 +215,13 @@ class AdminCog(commands.Cog):
     async def cog_app_command_error(self, interaction: discord.Interaction,
                                      err: app_commands.AppCommandError):
         if isinstance(err, app_commands.MissingPermissions):
-            await interaction.response.send_message(
-                embed=error("권한 부족", "이 명령어는 관리자만 사용할 수 있습니다."), ephemeral=True
-            )
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    embed=error("권한 부족", "이 명령어는 관리자만 사용할 수 있습니다."), ephemeral=True
+                )
+        elif isinstance(err, app_commands.CheckFailure):
+            # 체크 프레디케이트가 이미 응답을 보낸 경우 (치지직 인증 안내 등)
+            pass
         else:
             raise err
 

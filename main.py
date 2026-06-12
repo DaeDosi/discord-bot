@@ -1,9 +1,10 @@
 import os
+import time
 import asyncio
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
-from database import init_db, close_db
+from database import init_db, close_db, get_db
 
 load_dotenv()
 
@@ -18,15 +19,16 @@ COGS = [
     "cogs.moderation",
     "cogs.reaction_roles",
     "cogs.chzzk",
+    "cogs.verification",
 ]
 
 
 class AllInOneBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
-        intents.members     = True
+        intents.members         = True
         intents.message_content = True
-        intents.reactions   = True
+        intents.reactions       = True
         super().__init__(
             command_prefix=commands.when_mentioned,
             intents=intents,
@@ -42,6 +44,11 @@ class AllInOneBot(commands.Bot):
                 print(f"  ✓ {cog}")
             except Exception as e:
                 print(f"  ✗ {cog}: {e}")
+
+        # Persistent View 등록 (봇 재시작 후에도 버튼이 동작하도록)
+        from cogs.verification import VerifyView
+        self.add_view(VerifyView())
+
         # 특정 길드에 즉시 동기화 (TEST_GUILD_ID 설정 시)
         if TEST_GUILD_ID:
             guild_obj = discord.Object(id=TEST_GUILD_ID)
@@ -51,6 +58,8 @@ class AllInOneBot(commands.Bot):
         # 글로벌 동기화 (전파에 최대 1시간 소요)
         synced = await self.tree.sync()
         print(f"슬래시 커맨드 {len(synced)}개 글로벌 동기화 완료")
+
+        self.update_stats.start()
 
     async def on_ready(self):
         print(f"\n봇 준비 완료: {self.user} (ID: {self.user.id})")
@@ -65,8 +74,35 @@ class AllInOneBot(commands.Bot):
         print(f"서버 참가: {guild.name} (ID: {guild.id})")
 
     async def close(self):
+        self.update_stats.cancel()
         await close_db()
         await super().close()
+
+    # ── 30분 통계 자동 업데이트 ───────────────────────────────────────────────
+    @tasks.loop(minutes=30)
+    async def update_stats(self):
+        try:
+            db = await get_db()
+            guilds = len(self.guilds)
+            row = await (await db.execute(
+                "SELECT COUNT(*) FROM chzzk_subscriptions"
+            )).fetchone()
+            chzzk_subs = int(row[0]) if row else 0
+            await db.execute(
+                """INSERT INTO bot_stats(id, guilds, chzzk_subs, updated_at) VALUES(1,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       guilds     = excluded.guilds,
+                       chzzk_subs = excluded.chzzk_subs,
+                       updated_at = excluded.updated_at""",
+                (guilds, chzzk_subs, time.time())
+            )
+            await db.commit()
+        except Exception as e:
+            print(f"[stats] 업데이트 실패: {e}")
+
+    @update_stats.before_loop
+    async def before_update_stats(self):
+        await self.wait_until_ready()
 
 
 async def main():
