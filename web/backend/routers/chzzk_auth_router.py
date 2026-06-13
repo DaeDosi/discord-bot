@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import secrets
 import httpx
@@ -13,21 +14,38 @@ from routers.verify_router import _add_role, _remove_role
 
 router = APIRouter(prefix="/api/chzzk-auth", tags=["chzzk-auth"])
 
-NAVER_CLIENT_ID     = os.getenv("NAVER_CLIENT_ID", "")
-NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
-NAVER_REDIRECT_URI  = os.getenv(
-    "NAVER_REDIRECT_URI",
+CHZZK_CLIENT_ID     = os.getenv("CHZZK_CLIENT_ID", "")
+CHZZK_CLIENT_SECRET = os.getenv("CHZZK_CLIENT_SECRET", "")
+CHZZK_REDIRECT_URI  = os.getenv(
+    "CHZZK_REDIRECT_URI",
     "http://localhost:8000/api/chzzk-auth/callback",
 )
 
-NAVER_AUTH_URL      = "https://nid.naver.com/oauth2.0/authorize"
-NAVER_TOKEN_URL     = "https://nid.naver.com/oauth2.0/token"
-DISCORD_API         = "https://discord.com/api/v10"
-_BOT_TOKEN          = os.getenv("DISCORD_TOKEN", "")
+CHZZK_AUTH_URL  = "https://chzzk.naver.com/account-interlock"
+CHZZK_TOKEN_URL = "https://chzzk.naver.com/auth/v1/token"
+CHZZK_USER_URL  = "https://api.chzzk.naver.com/open/v1/users/me"
+DISCORD_API     = "https://discord.com/api/v10"
+_BOT_TOKEN      = os.getenv("DISCORD_TOKEN", "")
+
+
+async def _get_chzzk_channel_name(access_token: str) -> str | None:
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(
+                CHZZK_USER_URL,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            print(f"[chzzk-auth] users/me status={resp.status_code} body={resp.text[:300]}")
+            if resp.status_code == 200:
+                name = resp.json().get("channelName")
+                print(f"[chzzk-auth] channelName={name!r}")
+                return name or None
+    except Exception as e:
+        print(f"[chzzk-auth] users/me error: {e}")
+    return None
 
 
 async def _set_discord_nickname(guild_id: str, user_id: str, nickname: str) -> None:
-    import json
     url = f"{DISCORD_API}/guilds/{guild_id}/members/{user_id}"
     headers = {
         "Authorization": f"Bot {_BOT_TOKEN}",
@@ -38,18 +56,17 @@ async def _set_discord_nickname(guild_id: str, user_id: str, nickname: str) -> N
             resp = await client.patch(
                 url, headers=headers, content=json.dumps({"nick": nickname})
             )
-            print(f"[chzzk-auth] Discord nick PATCH status={resp.status_code} body={resp.text[:200]}")
+            print(f"[chzzk-auth] Discord PATCH nick status={resp.status_code} body={resp.text[:300]}")
     except Exception as e:
-        print(f"[chzzk-auth] Discord nick PATCH error: {e}")
+        print(f"[chzzk-auth] Discord PATCH nick error: {e}")
 
 
-def _build_state(guild_id: str, discord_user_id: str, chzzk_name: str = "") -> str:
+def _build_state(guild_id: str, discord_user_id: str) -> str:
     payload = {
-        "guild_id":   guild_id,
-        "user_id":    discord_user_id,
-        "chzzk_name": chzzk_name,
-        "exp":        datetime.utcnow() + timedelta(minutes=15),
-        "nonce":      secrets.token_hex(8),
+        "guild_id": guild_id,
+        "user_id":  discord_user_id,
+        "exp":      datetime.utcnow() + timedelta(minutes=15),
+        "nonce":    secrets.token_hex(8),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -63,22 +80,19 @@ def _err(msg: str, guild_id: str = "") -> RedirectResponse:
 async def chzzk_login(
     guild_id:        str = Query(...),
     discord_user_id: str = Query(...),
-    chzzk_name:      str = Query(""),
 ):
-    if not NAVER_CLIENT_ID:
-        return _err("naver_not_configured", guild_id)
+    if not CHZZK_CLIENT_ID:
+        return _err("chzzk_not_configured", guild_id)
     if not discord_user_id:
         return _err("discord_not_logged_in", guild_id)
 
-    state  = _build_state(guild_id, discord_user_id, chzzk_name)
+    state  = _build_state(guild_id, discord_user_id)
     params = {
-        "response_type": "code",
-        "client_id":     NAVER_CLIENT_ID,
-        "redirect_uri":  NAVER_REDIRECT_URI,
-        "state":         state,
-        "scope":         "nickname name",
+        "clientId":    CHZZK_CLIENT_ID,
+        "redirectUri": CHZZK_REDIRECT_URI,
+        "state":       state,
     }
-    return RedirectResponse(f"{NAVER_AUTH_URL}?{urlencode(params)}")
+    return RedirectResponse(f"{CHZZK_AUTH_URL}?{urlencode(params)}")
 
 
 @router.get("/callback")
@@ -97,35 +111,38 @@ async def chzzk_callback(
         state_data      = jwt.decode(state, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         guild_id        = state_data["guild_id"]
         discord_user_id = state_data["user_id"]
-        chzzk_name      = state_data.get("chzzk_name", "")
     except JWTError:
         return _err("invalid_state")
 
     if not discord_user_id:
         return _err("discord_user_missing", guild_id)
 
-    # ── 네이버 code → access_token 교환 ─────────────────────────────────────
+    # ── Chzzk code → access_token 교환 ──────────────────────────────────────
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            token_resp = await client.get(
-                NAVER_TOKEN_URL,
-                params={
-                    "grant_type":    "authorization_code",
-                    "client_id":     NAVER_CLIENT_ID,
-                    "client_secret": NAVER_CLIENT_SECRET,
-                    "code":          code,
-                    "state":         state,
+            token_resp = await client.post(
+                CHZZK_TOKEN_URL,
+                json={
+                    "grantType":    "authorization_code",
+                    "clientId":     CHZZK_CLIENT_ID,
+                    "clientSecret": CHZZK_CLIENT_SECRET,
+                    "code":         code,
+                    "state":        state,
                 },
             )
+            print(f"[chzzk-auth] token status={token_resp.status_code} body={token_resp.text[:300]}")
             token_data   = token_resp.json()
-            access_token = token_data.get("access_token")
+            access_token = token_data.get("accessToken")
     except Exception as e:
-        print(f"[chzzk-auth] Naver token request failed: {e}")
+        print(f"[chzzk-auth] token request failed: {e}")
         return _err("oauth_failed", guild_id)
 
     if not access_token:
-        print(f"[chzzk-auth] No access_token in response: {token_data}")
+        print(f"[chzzk-auth] No accessToken in response: {token_data}")
         return _err("token_failed", guild_id)
+
+    # ── 치지직 채널명 조회 ────────────────────────────────────────────────────
+    channel_name = await _get_chzzk_channel_name(access_token)
 
     # ── DB에 인증 이력 기록 ──────────────────────────────────────────────────
     try:
@@ -165,8 +182,9 @@ async def chzzk_callback(
         return _err("role_assign_failed", guild_id)
 
     # ── 치지직 채널명 → Discord 서버 닉네임 설정 ────────────────────────────
-    if chzzk_name:
-        await _set_discord_nickname(guild_id, discord_user_id, chzzk_name)
-        print(f"[chzzk-auth] Set Discord nickname to {chzzk_name!r} for user {discord_user_id}")
+    if channel_name:
+        await _set_discord_nickname(guild_id, discord_user_id, channel_name)
+    else:
+        print(f"[chzzk-auth] No channel name found, skipping nickname change")
 
     return RedirectResponse(f"{FRONTEND_URL}/verify?success=1&guild_id={quote(guild_id)}")

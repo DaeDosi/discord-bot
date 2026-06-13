@@ -10,9 +10,10 @@ const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 type Status = "loading" | "unauthenticated" | "ready" | "verifying" | "success" | "error";
 
 const ERROR_MESSAGES: Record<string, string> = {
+  chzzk_not_configured:  "서버에 치지직 OAuth 설정이 되어 있지 않습니다. 관리자에게 문의하세요.",
   naver_not_configured:  "서버에 네이버 OAuth 설정이 되어 있지 않습니다. 관리자에게 문의하세요.",
-  token_failed:          "네이버 인증 토큰 발급에 실패했습니다. 다시 시도해주세요.",
-  oauth_failed:          "네이버 OAuth 처리 중 오류가 발생했습니다. 다시 시도해주세요.",
+  token_failed:          "치지직 인증 토큰 발급에 실패했습니다. 다시 시도해주세요.",
+  oauth_failed:          "치지직 OAuth 처리 중 오류가 발생했습니다. 다시 시도해주세요.",
   missing_params:        "필수 파라미터가 누락되었습니다. 디스코드 서버에서 다시 링크를 클릭해주세요.",
   invalid_state:         "보안 토큰이 만료되었습니다. 다시 시도해주세요.",
   access_denied:         "네이버 로그인이 취소되었습니다.",
@@ -28,10 +29,9 @@ function VerifyContent() {
   const params  = useSearchParams();
   const guildId = params.get("guild_id") || "";
 
-  const [status,     setStatus]     = useState<Status>("loading");
-  const [message,    setMessage]    = useState("");
-  const [username,   setUsername]   = useState("");
-  const [chzzkName,  setChzzkName]  = useState("");
+  const [status,   setStatus]   = useState<Status>("loading");
+  const [message,  setMessage]  = useState("");
+  const [username, setUsername] = useState("");
 
   useEffect(() => {
     // Naver OAuth 완료 후 리다이렉트 처리
@@ -82,15 +82,11 @@ function VerifyContent() {
       setMessage("guild_id가 없습니다. 디스코드 서버의 인증 링크를 다시 클릭해주세요.");
       return;
     }
-    if (!chzzkName.trim()) {
-      setMessage("치지직 채널명을 입력해주세요.");
-      return;
-    }
     setStatus("verifying");
     const userStr = localStorage.getItem("discord_user");
     const userId  = userStr ? (JSON.parse(userStr).id as string) : "";
     window.location.href =
-      `${BASE}/api/chzzk-auth/login?guild_id=${encodeURIComponent(guildId)}&discord_user_id=${encodeURIComponent(userId)}&chzzk_name=${encodeURIComponent(chzzkName.trim())}`;
+      `${BASE}/api/chzzk-auth/login?guild_id=${encodeURIComponent(guildId)}&discord_user_id=${encodeURIComponent(userId)}`;
   };
 
   return (
@@ -126,8 +122,8 @@ function VerifyContent() {
             <div className="text-center space-y-2">
               <p className="text-sm text-muted leading-relaxed">
                 <span className="text-fg font-medium">{username || "사용자"}</span>님,
-                치지직 채널명을 입력 후 네이버로 인증해주세요.
-                인증 완료 시 채널명이 Discord 닉네임으로 자동 설정됩니다.
+                아래 버튼을 눌러 치지직 로그인을 완료하면 서버 입장 인증이 처리되고
+                치지직 채널명이 Discord 닉네임으로 자동 설정됩니다.
               </p>
               {!guildId && (
                 <p className="text-xs text-danger">
@@ -135,22 +131,13 @@ function VerifyContent() {
                 </p>
               )}
             </div>
-            <input
-              type="text"
-              value={chzzkName}
-              onChange={e => { setChzzkName(e.target.value); setMessage(""); }}
-              placeholder="치지직 채널명 (예: 고아람1)"
-              className="w-full px-3 py-2.5 rounded-xl bg-bg border border-border text-fg
-                         text-sm placeholder:text-muted focus:outline-none focus:border-accent"
-            />
-            {message && <p className="text-xs text-danger -mt-3">{message}</p>}
             <button
               onClick={handleChzzkVerify}
               disabled={!guildId}
               className="w-full py-2.5 bg-accent hover:bg-accent-hover disabled:opacity-40
                          text-white rounded-xl text-sm font-medium transition-colors"
             >
-              📺 치지직(네이버)으로 인증하기
+              📺 치지직으로 인증하기
             </button>
           </>
         )}
