@@ -6,6 +6,9 @@ import {
   Bot, Shield, TrendingUp, Radio, Smile,
   LogOut, ChevronRight, ArrowRight, Hash,
 } from "lucide-react";
+
+const BOT_CLIENT_ID = process.env.NEXT_PUBLIC_BOT_CLIENT_ID || "YOUR_CLIENT_ID";
+const INVITE_URL    = `https://discord.com/oauth2/authorize?client_id=${BOT_CLIENT_ID}&permissions=8&scope=bot%20applications.commands`;
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
 import { api } from "@/lib/api";
@@ -394,11 +397,14 @@ export default function HomePage() {
         />
 
         <div className="relative z-10 max-w-3xl mx-auto">
-          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full
-                          border border-accent/30 bg-accent/8 text-accent text-sm
-                          mb-8 animate-fade-in">
-            <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-            Discord 봇 대시보드
+          <div className="relative inline-flex mb-8 animate-fade-in">
+            <div className="absolute inset-0 rounded-full bg-gradient-to-r from-[#5865f2] to-[#a5b4fc] opacity-25 blur-md pointer-events-none" />
+            <div className="relative p-[1px] rounded-full bg-gradient-to-r from-[#5865f2] via-[#818cf8] to-[#a5b4fc]">
+              <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-bg">
+                <span className="text-base leading-none">✨</span>
+                <span className="text-sm font-medium text-fg/90">All-in-One Discord Bot</span>
+              </div>
+            </div>
           </div>
 
           <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold leading-tight tracking-tight mb-6
@@ -440,13 +446,13 @@ export default function HomePage() {
                     Discord로 시작하기 <ArrowRight size={16} />
                   </div>}
             <a
-              href="https://github.com"
+              href={INVITE_URL}
               target="_blank" rel="noreferrer"
               className="flex items-center gap-2 px-6 py-3 border border-border
                          hover:border-accent/40 text-fg rounded-xl transition-colors
                          hover:bg-bg-hover font-medium"
             >
-              GitHub
+              봇 초대하기 🤖
             </a>
           </div>
         </div>
