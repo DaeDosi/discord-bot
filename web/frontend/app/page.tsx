@@ -286,7 +286,7 @@ export default function HomePage() {
   const [loginUrl, setLoginUrl] = useState<string | null>(null);
   const [stats, setStats] = useState<{ guilds: number; chzzk_subscriptions: number; today_visitors: number } | null>(null);
 
-  const typed = useTypewriter(["스마트하게.", "쉽게.", "빠르게."]);
+  const typed = useTypewriter(["함께.", "연결하다.", "소통하다."]);
   useReveal();
 
   useEffect(() => {
@@ -419,14 +419,14 @@ export default function HomePage() {
         <div
           className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2
                      w-[600px] h-[400px] rounded-full pointer-events-none"
-          style={{ background: "radial-gradient(ellipse, rgba(88,101,242,0.12) 0%, transparent 70%)" }}
+          style={{ background: "radial-gradient(ellipse, rgba(56,189,248,0.10) 0%, rgba(129,140,248,0.10) 50%, transparent 70%)" }}
         />
 
         <div className="relative z-10 max-w-3xl mx-auto">
           <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold leading-tight tracking-tight mb-6
                          animate-fade-up">
-            Discord 서버를<br />
-            <span className="bg-gradient-to-r from-[#5865f2] via-[#818cf8] to-[#a5b4fc]
+            방송인과 시청자를<br />
+            <span className="bg-gradient-to-r from-[#38BDF8] via-[#818cf8] to-[#C084FC]
                              bg-clip-text text-transparent">
               {typed}
               <span className="inline-block w-0.5 h-[0.85em] bg-[#818cf8]/80 ml-0.5 align-middle animate-pulse" />
@@ -437,8 +437,8 @@ export default function HomePage() {
             className="text-lg text-muted max-w-xl mx-auto mb-10 leading-relaxed animate-fade-up"
             style={{ animationDelay: "0.1s" }}
           >
-            관리, 레벨링, 치지직 알림, 리액션 역할까지.<br />
-            하나의 봇으로, 하나의 대시보드로.
+            치지직 방송 알림부터 시청자 참여 관리까지.<br />
+            방송인과 시청자가 함께하는 Discord 서버를 만들어보세요.
           </p>
 
           <div
