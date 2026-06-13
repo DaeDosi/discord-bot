@@ -23,8 +23,8 @@ CHZZK_REDIRECT_URI  = os.getenv(
 )
 
 CHZZK_AUTH_URL  = "https://chzzk.naver.com/account-interlock"
-CHZZK_TOKEN_URL = "https://chzzk.naver.com/auth/v1/token"
-CHZZK_USER_URL  = "https://api.chzzk.naver.com/open/v1/users/me"
+CHZZK_TOKEN_URL = "https://openapi.chzzk.naver.com/auth/v1/token"
+CHZZK_USER_URL  = "https://openapi.chzzk.naver.com/open/v1/users/me"
 DISCORD_API     = "https://discord.com/api/v10"
 _BOT_TOKEN      = os.getenv("DISCORD_TOKEN", "")
 
