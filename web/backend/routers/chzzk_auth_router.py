@@ -94,6 +94,7 @@ async def chzzk_login(
         "client_id":     NAVER_CLIENT_ID,
         "redirect_uri":  NAVER_REDIRECT_URI,
         "state":         state,
+        "scope":         "nickname name",
     }
     return RedirectResponse(f"{NAVER_AUTH_URL}?{urlencode(params)}")
 
