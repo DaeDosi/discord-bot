@@ -23,10 +23,10 @@ export default function Navbar({ user }: Props) {
           <Bot size={22} className="text-accent" />
           NexBot
         </Link>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <ThemeToggle />
           {user && (
-            <div className="flex items-center gap-3 pl-2 border-l border-border">
+            <div className="flex items-center gap-2">
               <div className="flex items-center gap-2">
                 {user.avatar ? (
                   <Image src={user.avatar} alt={user.username} width={32} height={32} className="rounded-full" />
