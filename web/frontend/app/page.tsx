@@ -7,7 +7,7 @@ import {
   LogOut, ChevronRight, ArrowRight, Hash,
 } from "lucide-react";
 
-const BOT_CLIENT_ID = process.env.NEXT_PUBLIC_BOT_CLIENT_ID || "YOUR_CLIENT_ID";
+const BOT_CLIENT_ID = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID || "YOUR_CLIENT_ID";
 const INVITE_URL    = `https://discord.com/oauth2/authorize?client_id=${BOT_CLIENT_ID}&permissions=8&scope=bot%20applications.commands`;
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
@@ -401,8 +401,7 @@ export default function HomePage() {
             <div className="absolute inset-0 rounded-full bg-gradient-to-r from-[#5865f2] to-[#a5b4fc] opacity-25 blur-md pointer-events-none" />
             <div className="relative p-[1px] rounded-full bg-gradient-to-r from-[#5865f2] via-[#818cf8] to-[#a5b4fc]">
               <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-bg">
-                <span className="text-base leading-none">✨</span>
-                <span className="text-sm font-medium text-fg/90">All-in-One Discord Bot</span>
+                <span className="text-sm font-medium text-fg/90">방송 최적화 관리 봇</span>
               </div>
             </div>
           </div>
@@ -452,7 +451,7 @@ export default function HomePage() {
                          hover:border-accent/40 text-fg rounded-xl transition-colors
                          hover:bg-bg-hover font-medium"
             >
-              봇 초대하기 🤖
+              봇 초대하기
             </a>
           </div>
         </div>
