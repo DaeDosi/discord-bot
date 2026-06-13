@@ -157,60 +157,106 @@ class ChzzkCog(commands.Cog):
     async def before_monitor(self):
         await self.bot.wait_until_ready()
 
-    # ── /치지직설정 ──────────────────────────────────────────────────────────────
-    @app_commands.command(name="치지직설정", description="치지직 알림 설정 방법을 안내합니다.")
-    async def chzzk_settings(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="📺 치지직 알림 설정",
-            description=(
-                "치지직 알림 설정은 **웹 대시보드**에서 가능합니다.\n\n"
-                "👉 https://nexbot.shop/dashboard\n\n"
-                "대시보드 로그인 → 서버 선택 → **치지직** 탭에서 스트리머를 추가하세요."
-            ),
-            color=0x03C75A,
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # ── /치지직알림테스트 ─────────────────────────────────────────────────────
-    @app_commands.command(name="치지직알림테스트", description="DB에 등록된 스트리머로 테스트 알림을 전송합니다.")
+    # ── /chzzk-subscribe ─────────────────────────────────────────────────────
+    @app_commands.command(name="치지직구독", description="치지직 채널 방송 알림을 구독합니다.")
+    @app_commands.describe(
+        chzzk_id="치지직 채널 ID (URL의 마지막 부분)",
+        notify_channel="알림을 받을 Discord 채널",
+        mention_role="방송 시작 시 멘션할 역할 (선택)"
+    )
     @is_mod_or_admin()
-    async def test_chzzk_alert(self, interaction: discord.Interaction):
+    async def chzzk_subscribe(
+        self,
+        interaction: discord.Interaction,
+        chzzk_id: str,
+        notify_channel: discord.TextChannel,
+        mention_role: discord.Role | None = None
+    ):
+        await interaction.response.defer(ephemeral=True)
+        info = await fetch_channel_info(chzzk_id)
+        if not info:
+            return await interaction.followup.send(
+                embed=error("오류", "치지직 채널을 찾을 수 없습니다. 채널 ID를 확인해주세요.")
+            )
+
+        name = info.get("channelName", chzzk_id)
+        image = info.get("channelImageUrl", "")
+        db = await get_db()
+        try:
+            await db.execute(
+                """INSERT INTO chzzk_subscriptions
+                   (guild_id, discord_channel, chzzk_channel_id, chzzk_name, chzzk_image_url, mention_role_id)
+                   VALUES (?,?,?,?,?,?)""",
+                (interaction.guild_id, notify_channel.id, chzzk_id, name, image,
+                 mention_role.id if mention_role else None)
+            )
+            await db.commit()
+        except Exception:
+            return await interaction.followup.send(
+                embed=error("이미 구독 중", f"**{name}** 채널은 이미 구독 중입니다.")
+            )
+
+        embed = discord.Embed(
+            title="✅ 치지직 구독 완료",
+            description=f"**{name}** 방송이 {notify_channel.mention}에 알림됩니다.",
+            color=0x03C75A
+        )
+        if image:
+            embed.set_thumbnail(url=image)
+        await interaction.followup.send(embed=embed)
+
+    # ── /chzzk-unsubscribe ────────────────────────────────────────────────────
+    @app_commands.command(name="치지직구독해제", description="치지직 채널 알림 구독을 해제합니다.")
+    @app_commands.describe(chzzk_id="해제할 치지직 채널 ID")
+    @is_mod_or_admin()
+    async def chzzk_unsubscribe(self, interaction: discord.Interaction, chzzk_id: str):
+        db = await get_db()
+        result = await db.execute(
+            "DELETE FROM chzzk_subscriptions WHERE guild_id=? AND chzzk_channel_id=?",
+            (interaction.guild_id, chzzk_id)
+        )
+        await db.commit()
+        if result.rowcount == 0:
+            return await interaction.response.send_message(
+                embed=error("없음", "해당 채널을 구독하고 있지 않습니다."), ephemeral=True
+            )
+        await interaction.response.send_message(
+            embed=success("구독 해제", f"치지직 채널 구독이 해제되었습니다."), ephemeral=True
+        )
+
+    # ── /test-chzzk-alert ────────────────────────────────────────────────────
+    @app_commands.command(name="치지직알림테스트", description="치지직 방송 알림 테스트 메시지를 전송합니다.")
+    @app_commands.describe(
+        channel="테스트 알림을 보낼 Discord 채널",
+        streamer="테스트할 스트리머 이름 (치지직 채널 ID 또는 이름)",
+    )
+    @is_mod_or_admin()
+    async def test_chzzk_alert(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        streamer: str,
+    ):
         await interaction.response.defer(ephemeral=True)
 
-        db = await get_db()
-        row = await (await db.execute(
-            "SELECT chzzk_channel_id, chzzk_name, discord_channel "
-            "FROM chzzk_subscriptions WHERE guild_id=? LIMIT 1",
-            (interaction.guild_id,)
-        )).fetchone()
-
-        if not row:
-            return await interaction.followup.send(
-                "❌ 등록된 치지직 구독이 없습니다.\n"
-                "웹 대시보드에서 먼저 스트리머를 등록해주세요.\n"
-                "👉 https://nexbot.shop/dashboard",
-                ephemeral=True,
-            )
-
-        chzzk_id  = row["chzzk_channel_id"]
-        name      = row["chzzk_name"]
-        channel   = interaction.guild.get_channel(row["discord_channel"])
-
-        if not channel:
-            return await interaction.followup.send(
-                "❌ 등록된 알림 채널을 찾을 수 없습니다. 대시보드에서 채널을 다시 설정해주세요.",
-                ephemeral=True,
-            )
-
+        # 이름으로 검색 → channelId 획득
+        results   = await search_channels(streamer)
+        info      = next(
+            (r.get("channel", {}) for r in results
+             if r.get("channel", {}).get("channelName", "").lower() == streamer.lower()),
+            results[0].get("channel", {}) if results else {},
+        )
+        name     = info.get("channelName") or streamer
+        chzzk_id = info.get("channelId") or streamer
         chzzk_url = f"https://chzzk.naver.com/live/{chzzk_id}"
-        live      = await fetch_live_detail(chzzk_id) or {}
-        info      = await fetch_channel_info(chzzk_id) or {}
 
+        # 실제 방송 정보 조회 (v2 API)
+        live      = await fetch_live_detail(chzzk_id) or {}
         title     = live.get("liveTitle") or "[테스트] 방송 제목"
         category  = live.get("liveCategoryValue") or "없음"
         thumbnail = live.get("liveImageUrl") or ""
-        avatar    = info.get("channelImageUrl") or ""
 
+        avatar = info.get("channelImageUrl") or ""
         embed = discord.Embed(
             title=title,
             url=chzzk_url,
@@ -238,9 +284,33 @@ class ChzzkCog(commands.Cog):
         )
         await interaction.followup.send(
             f"✅ {channel.mention} 채널에 테스트 알림을 전송했습니다.\n"
-            f"스트리머: `{name}` | 카테고리: `{category}`",
+            f"방송 제목: `{title}` | 카테고리: `{category}`",
             ephemeral=True,
         )
+
+    # ── /chzzk-list ───────────────────────────────────────────────────────────
+    @app_commands.command(name="치지직목록", description="구독 중인 치지직 채널 목록을 확인합니다.")
+    async def chzzk_list(self, interaction: discord.Interaction):
+        db = await get_db()
+        rows = await (await db.execute(
+            "SELECT chzzk_name, chzzk_channel_id, discord_channel, is_live "
+            "FROM chzzk_subscriptions WHERE guild_id=?",
+            (interaction.guild_id,)
+        )).fetchall()
+
+        embed = discord.Embed(title="📺 치지직 구독 목록", color=0x03C75A)
+        if rows:
+            lines = []
+            for r in rows:
+                status = "🔴 라이브" if r["is_live"] else "⚫ 오프라인"
+                lines.append(
+                    f"{status} **{r['chzzk_name']}** → <#{r['discord_channel']}>\n"
+                    f"  └ ID: `{r['chzzk_channel_id']}`"
+                )
+            embed.description = "\n".join(lines)
+        else:
+            embed.description = "구독 중인 채널이 없습니다."
+        await interaction.response.send_message(embed=embed)
 
 
 async def setup(bot: commands.Bot):

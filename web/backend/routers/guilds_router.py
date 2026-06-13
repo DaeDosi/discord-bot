@@ -62,11 +62,12 @@ async def get_channels(guild_id: str, user: dict = Depends(get_current_user)):
         if resp.status_code != 200:
             raise HTTPException(status_code=resp.status_code, detail=f"Discord API 오류: {resp.text}")
         channels = resp.json()
-    # 텍스트 채널(type=0)만 반환
+    # 카테고리(4), 텍스트(0), 음성(2), 공지(5), 포럼(15) 포함
+    ALLOWED_TYPES = {0, 2, 4, 5, 15}
     return [
         {"id": c["id"], "name": c["name"], "type": c["type"], "position": c.get("position", 0)}
         for c in sorted(channels, key=lambda c: c.get("position", 0))
-        if c["type"] == 0
+        if c["type"] in ALLOWED_TYPES
     ]
 
 

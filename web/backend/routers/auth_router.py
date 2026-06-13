@@ -31,7 +31,6 @@ async def oauth_callback(
         jwt_token    = create_jwt(
             user_id=user["id"],
             username=user["username"],
-            global_name=user.get("global_name") or user.get("username", ""),
             avatar=user.get("avatar", ""),
             access_token=access_token,
         )
@@ -53,7 +52,6 @@ async def callback(body: dict):
         jwt_token    = create_jwt(
             user_id=user["id"],
             username=user["username"],
-            global_name=user.get("global_name") or user.get("username", ""),
             avatar=user.get("avatar", ""),
             access_token=access_token,
         )
@@ -70,8 +68,7 @@ async def me(user: dict = Depends(get_current_user)):
         else "https://cdn.discordapp.com/embed/avatars/0.png"
     )
     return {
-        "id":          user["sub"],
-        "username":    user["username"],
-        "global_name": user.get("global_name") or user.get("username", ""),
-        "avatar":      avatar_url,
+        "id":       user["sub"],
+        "username": user["username"],
+        "avatar":   avatar_url,
     }
