@@ -139,7 +139,7 @@ function VerifyContent() {
               type="text"
               value={chzzkName}
               onChange={e => { setChzzkName(e.target.value); setMessage(""); }}
-              placeholder="치지직 채널명 (예: 진땅kr)"
+              placeholder="치지직 채널명 (예: 고아람1)"
               className="w-full px-3 py-2.5 rounded-xl bg-bg border border-border text-fg
                          text-sm placeholder:text-muted focus:outline-none focus:border-accent"
             />
