@@ -2,6 +2,7 @@ import os
 import json
 import time
 import secrets
+import traceback
 import httpx
 from urllib.parse import urlencode, quote
 from datetime import datetime, timedelta
@@ -23,7 +24,7 @@ CHZZK_REDIRECT_URI  = os.getenv(
 
 CHZZK_AUTH_URL  = "https://chzzk.naver.com/account-interlock"
 CHZZK_TOKEN_URL = "https://chzzk.naver.com/auth/v1/token"
-CHZZK_USER_URL  = "https://api.chzzk.naver.com/open/v1/users/me"
+CHZZK_USER_URL  = "https://chzzk.naver.com/open/v1/users/me"
 DISCORD_API     = "https://discord.com/api/v10"
 _BOT_TOKEN      = os.getenv("DISCORD_TOKEN", "")
 
@@ -45,7 +46,8 @@ async def _get_chzzk_channel_name(access_token: str) -> str | None:
                 print(f"[chzzk-auth] channelName={name!r}")
                 return name or None
     except Exception as e:
-        print(f"[chzzk-auth] users/me error: {repr(e)}")
+        print(f"[chzzk-auth] users/me error type={type(e).__name__} repr={repr(e)}")
+        traceback.print_exc()
     return None
 
 
