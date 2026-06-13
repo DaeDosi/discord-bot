@@ -35,7 +35,7 @@ export default function Navbar({ user }: Props) {
                     <Bot size={14} className="text-accent" />
                   </div>
                 )}
-                <span className="text-sm text-fg hidden sm:block">{user.username}</span>
+                <span className="text-sm text-fg hidden sm:block">{user.global_name || user.username}</span>
               </div>
               <button
                 onClick={logout}
