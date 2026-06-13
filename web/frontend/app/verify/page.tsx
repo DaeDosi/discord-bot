@@ -28,9 +28,10 @@ function VerifyContent() {
   const params  = useSearchParams();
   const guildId = params.get("guild_id") || "";
 
-  const [status,   setStatus]   = useState<Status>("loading");
-  const [message,  setMessage]  = useState("");
-  const [username, setUsername] = useState("");
+  const [status,     setStatus]     = useState<Status>("loading");
+  const [message,    setMessage]    = useState("");
+  const [username,   setUsername]   = useState("");
+  const [chzzkName,  setChzzkName]  = useState("");
 
   useEffect(() => {
     // Naver OAuth 완료 후 리다이렉트 처리
@@ -81,11 +82,15 @@ function VerifyContent() {
       setMessage("guild_id가 없습니다. 디스코드 서버의 인증 링크를 다시 클릭해주세요.");
       return;
     }
+    if (!chzzkName.trim()) {
+      setMessage("치지직 채널명을 입력해주세요.");
+      return;
+    }
     setStatus("verifying");
     const userStr = localStorage.getItem("discord_user");
     const userId  = userStr ? (JSON.parse(userStr).id as string) : "";
     window.location.href =
-      `${BASE}/api/chzzk-auth/login?guild_id=${encodeURIComponent(guildId)}&discord_user_id=${encodeURIComponent(userId)}`;
+      `${BASE}/api/chzzk-auth/login?guild_id=${encodeURIComponent(guildId)}&discord_user_id=${encodeURIComponent(userId)}&chzzk_name=${encodeURIComponent(chzzkName.trim())}`;
   };
 
   return (
@@ -121,7 +126,8 @@ function VerifyContent() {
             <div className="text-center space-y-2">
               <p className="text-sm text-muted leading-relaxed">
                 <span className="text-fg font-medium">{username || "사용자"}</span>님,
-                아래 버튼을 눌러 네이버 로그인을 완료하면 서버 입장 인증이 처리됩니다.
+                치지직 채널명을 입력 후 네이버로 인증해주세요.
+                인증 완료 시 채널명이 Discord 닉네임으로 자동 설정됩니다.
               </p>
               {!guildId && (
                 <p className="text-xs text-danger">
@@ -129,6 +135,15 @@ function VerifyContent() {
                 </p>
               )}
             </div>
+            <input
+              type="text"
+              value={chzzkName}
+              onChange={e => { setChzzkName(e.target.value); setMessage(""); }}
+              placeholder="치지직 채널명 (예: 진땅kr)"
+              className="w-full px-3 py-2.5 rounded-xl bg-bg border border-border text-fg
+                         text-sm placeholder:text-muted focus:outline-none focus:border-accent"
+            />
+            {message && <p className="text-xs text-danger -mt-3">{message}</p>}
             <button
               onClick={handleChzzkVerify}
               disabled={!guildId}

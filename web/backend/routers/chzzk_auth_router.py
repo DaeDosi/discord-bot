@@ -22,30 +22,8 @@ NAVER_REDIRECT_URI  = os.getenv(
 
 NAVER_AUTH_URL      = "https://nid.naver.com/oauth2.0/authorize"
 NAVER_TOKEN_URL     = "https://nid.naver.com/oauth2.0/token"
-CHZZK_USER_API      = "https://comm-api.game.naver.com/nng_main/v1/user/getUserStatus"
 DISCORD_API         = "https://discord.com/api/v10"
 _BOT_TOKEN          = os.getenv("DISCORD_TOKEN", "")
-
-
-async def _get_chzzk_nickname(access_token: str) -> str | None:
-    """Chzzk 게임 API로 로그인한 유저의 치지직 닉네임을 가져옵니다."""
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(
-                CHZZK_USER_API,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "User-Agent": "Mozilla/5.0",
-                },
-            )
-            print(f"[chzzk-auth] Chzzk user status={resp.status_code} body={resp.text[:300]}")
-            if resp.status_code == 200:
-                nick = resp.json().get("content", {}).get("nickname")
-                print(f"[chzzk-auth] Chzzk nickname={nick!r}")
-                return nick or None
-    except Exception as e:
-        print(f"[chzzk-auth] Chzzk user fetch error: {e}")
-    return None
 
 
 async def _set_discord_nickname(guild_id: str, user_id: str, nickname: str) -> None:
@@ -65,12 +43,13 @@ async def _set_discord_nickname(guild_id: str, user_id: str, nickname: str) -> N
         print(f"[chzzk-auth] Discord nick PATCH error: {e}")
 
 
-def _build_state(guild_id: str, discord_user_id: str) -> str:
+def _build_state(guild_id: str, discord_user_id: str, chzzk_name: str = "") -> str:
     payload = {
-        "guild_id": guild_id,
-        "user_id":  discord_user_id,
-        "exp":      datetime.utcnow() + timedelta(minutes=15),
-        "nonce":    secrets.token_hex(8),
+        "guild_id":   guild_id,
+        "user_id":    discord_user_id,
+        "chzzk_name": chzzk_name,
+        "exp":        datetime.utcnow() + timedelta(minutes=15),
+        "nonce":      secrets.token_hex(8),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -84,13 +63,14 @@ def _err(msg: str, guild_id: str = "") -> RedirectResponse:
 async def chzzk_login(
     guild_id:        str = Query(...),
     discord_user_id: str = Query(...),
+    chzzk_name:      str = Query(""),
 ):
     if not NAVER_CLIENT_ID:
         return _err("naver_not_configured", guild_id)
     if not discord_user_id:
         return _err("discord_not_logged_in", guild_id)
 
-    state  = _build_state(guild_id, discord_user_id)
+    state  = _build_state(guild_id, discord_user_id, chzzk_name)
     params = {
         "response_type": "code",
         "client_id":     NAVER_CLIENT_ID,
@@ -117,6 +97,7 @@ async def chzzk_callback(
         state_data      = jwt.decode(state, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         guild_id        = state_data["guild_id"]
         discord_user_id = state_data["user_id"]
+        chzzk_name      = state_data.get("chzzk_name", "")
     except JWTError:
         return _err("invalid_state")
 
@@ -183,11 +164,9 @@ async def chzzk_callback(
         print(f"[chzzk-auth] Failed to add verified role for user {discord_user_id}")
         return _err("role_assign_failed", guild_id)
 
-    # ── 치지직 닉네임 → Discord 서버 닉네임 자동 변경 ──────────────────────
-    chzzk_nick = await _get_chzzk_nickname(access_token)
-    if chzzk_nick:
-        await _set_discord_nickname(guild_id, discord_user_id, chzzk_nick)
-    else:
-        print(f"[chzzk-auth] Could not fetch Chzzk nickname for user {discord_user_id}")
+    # ── 치지직 채널명 → Discord 서버 닉네임 설정 ────────────────────────────
+    if chzzk_name:
+        await _set_discord_nickname(guild_id, discord_user_id, chzzk_name)
+        print(f"[chzzk-auth] Set Discord nickname to {chzzk_name!r} for user {discord_user_id}")
 
     return RedirectResponse(f"{FRONTEND_URL}/verify?success=1&guild_id={quote(guild_id)}")
