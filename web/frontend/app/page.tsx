@@ -397,13 +397,11 @@ export default function HomePage() {
         />
 
         <div className="relative z-10 max-w-3xl mx-auto">
-          <div className="relative inline-flex mb-8 animate-fade-in">
-            <div className="absolute inset-0 rounded-full bg-gradient-to-r from-[#5865f2] to-[#a5b4fc] opacity-25 blur-md pointer-events-none" />
-            <div className="relative p-[1px] rounded-full bg-gradient-to-r from-[#5865f2] via-[#818cf8] to-[#a5b4fc]">
-              <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-bg">
-                <span className="text-sm font-medium text-fg/90">방송 최적화 관리 봇</span>
-              </div>
-            </div>
+          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full
+                          border border-accent/30 bg-accent/8 text-accent text-sm
+                          mb-8 animate-fade-in">
+            <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+            방송 최적화 관리 봇
           </div>
 
           <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold leading-tight tracking-tight mb-6
