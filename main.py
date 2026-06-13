@@ -19,6 +19,7 @@ COGS = [
     "cogs.reaction_roles",
     "cogs.chzzk",
     "cogs.verification",
+    "cogs.sichham",
 ]
 
 
