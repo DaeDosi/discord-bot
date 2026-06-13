@@ -20,29 +20,31 @@ NAVER_REDIRECT_URI  = os.getenv(
     "http://localhost:8000/api/chzzk-auth/callback",
 )
 
-NAVER_AUTH_URL    = "https://nid.naver.com/oauth2.0/authorize"
-NAVER_TOKEN_URL   = "https://nid.naver.com/oauth2.0/token"
-NAVER_PROFILE_URL = "https://openapi.naver.com/v1/nid/me"
-DISCORD_API       = "https://discord.com/api/v10"
-_BOT_TOKEN        = os.getenv("DISCORD_TOKEN", "")
+NAVER_AUTH_URL      = "https://nid.naver.com/oauth2.0/authorize"
+NAVER_TOKEN_URL     = "https://nid.naver.com/oauth2.0/token"
+CHZZK_USER_API      = "https://comm-api.game.naver.com/nng_main/v1/user/getUserStatus"
+DISCORD_API         = "https://discord.com/api/v10"
+_BOT_TOKEN          = os.getenv("DISCORD_TOKEN", "")
 
 
-async def _get_naver_nickname(access_token: str) -> str | None:
+async def _get_chzzk_nickname(access_token: str) -> str | None:
+    """Chzzk 게임 API로 로그인한 유저의 치지직 닉네임을 가져옵니다."""
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(
-                NAVER_PROFILE_URL,
-                headers={"Authorization": f"Bearer {access_token}"},
+                CHZZK_USER_API,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "User-Agent": "Mozilla/5.0",
+                },
             )
-            print(f"[chzzk-auth] Naver profile status={resp.status_code} body={resp.text[:300]}")
+            print(f"[chzzk-auth] Chzzk user status={resp.status_code} body={resp.text[:300]}")
             if resp.status_code == 200:
-                profile = resp.json().get("response", {})
-                # nickname 우선, 없으면 name 사용
-                nick = profile.get("nickname") or profile.get("name")
-                print(f"[chzzk-auth] Naver nickname={nick!r}")
+                nick = resp.json().get("content", {}).get("nickname")
+                print(f"[chzzk-auth] Chzzk nickname={nick!r}")
                 return nick or None
     except Exception as e:
-        print(f"[chzzk-auth] Naver profile fetch error: {e}")
+        print(f"[chzzk-auth] Chzzk user fetch error: {e}")
     return None
 
 
@@ -181,11 +183,11 @@ async def chzzk_callback(
         print(f"[chzzk-auth] Failed to add verified role for user {discord_user_id}")
         return _err("role_assign_failed", guild_id)
 
-    # ── Naver 닉네임 → Discord 서버 닉네임 자동 변경 ─────────────────────────
-    naver_nick = await _get_naver_nickname(access_token)
-    if naver_nick:
-        await _set_discord_nickname(guild_id, discord_user_id, naver_nick)
+    # ── 치지직 닉네임 → Discord 서버 닉네임 자동 변경 ──────────────────────
+    chzzk_nick = await _get_chzzk_nickname(access_token)
+    if chzzk_nick:
+        await _set_discord_nickname(guild_id, discord_user_id, chzzk_nick)
     else:
-        print(f"[chzzk-auth] Could not fetch Naver nickname for user {discord_user_id}")
+        print(f"[chzzk-auth] Could not fetch Chzzk nickname for user {discord_user_id}")
 
     return RedirectResponse(f"{FRONTEND_URL}/verify?success=1&guild_id={quote(guild_id)}")
