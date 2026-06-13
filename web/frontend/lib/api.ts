@@ -38,7 +38,7 @@ export const api = {
         method: "POST",
         body:   JSON.stringify({ code }),
       }),
-    me: () => request<{ id: string; username: string; avatar: string }>("/api/auth/me"),
+    me: () => request<{ id: string; username: string; global_name: string; avatar: string }>("/api/auth/me"),
   },
 
   guilds: {
