@@ -30,18 +30,22 @@ _BOT_TOKEN      = os.getenv("DISCORD_TOKEN", "")
 
 async def _get_chzzk_channel_name(access_token: str) -> str | None:
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(timeout=10, verify=True) as client:
             resp = await client.get(
                 CHZZK_USER_URL,
-                headers={"Authorization": f"Bearer {access_token}"},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Client-Id": CHZZK_CLIENT_ID,
+                },
             )
             print(f"[chzzk-auth] users/me status={resp.status_code} body={resp.text[:300]}")
             if resp.status_code == 200:
-                name = resp.json().get("channelName")
+                content = resp.json().get("content") or resp.json()
+                name = content.get("channelName")
                 print(f"[chzzk-auth] channelName={name!r}")
                 return name or None
     except Exception as e:
-        print(f"[chzzk-auth] users/me error: {e}")
+        print(f"[chzzk-auth] users/me error: {repr(e)}")
     return None
 
 
