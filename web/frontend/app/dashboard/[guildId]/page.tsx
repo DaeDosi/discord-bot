@@ -89,49 +89,6 @@ export default function GeneralSettingsPage() {
         </div>
       </div>
 
-      {/* 역할 설정 */}
-      <div className="card space-y-4">
-        <h2 className="font-semibold text-white">역할 설정</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <SelectField label="중재자 역할"       value={cfg.mod_role_id || ""}   onChange={set("mod_role_id")}
-            options={roles} placeholder="역할 선택..." />
-          <SelectField label="가입 자동 부여 역할" value={cfg.auto_role_id || ""} onChange={set("auto_role_id")}
-            options={roles} placeholder="역할 선택..." />
-        </div>
-      </div>
-
-      {/* 자동 관리 */}
-      <div className="card space-y-4">
-        <h2 className="font-semibold text-white">자동 관리 (Auto-Mod)</h2>
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={cfg.automod_enabled ?? true}
-            onChange={(e) => set("automod_enabled")(e.target.checked)}
-            className="w-4 h-4 accent-accent"
-          />
-          <span className="text-sm">자동 관리 활성화</span>
-        </label>
-        <div>
-          <label className="label">금지어 목록 (쉼표로 구분)</label>
-          <input
-            className="input"
-            placeholder="욕설1, 욕설2, ..."
-            value={cfg.badwords || ""}
-            onChange={(e) => set("badwords")(e.target.value)}
-          />
-        </div>
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={cfg.levelup_dm ?? false}
-            onChange={(e) => set("levelup_dm")(e.target.checked)}
-            className="w-4 h-4 accent-accent"
-          />
-          <span className="text-sm">레벨업 알림을 DM으로 전송</span>
-        </label>
-      </div>
-
       <button onClick={save} disabled={saving} className="btn-primary">
         {saved ? <><CheckCircle size={16} /> 저장됨</> : <><Save size={16} /> {saving ? "저장 중..." : "변경사항 저장"}</>}
       </button>

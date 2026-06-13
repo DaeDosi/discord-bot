@@ -243,9 +243,16 @@ export default function ChzzkPage() {
           <p className="text-muted text-sm mt-1">
             스트리머 방송 시작 시 Discord 채널에 알림을 보냅니다.
           </p>
+          {subs.length >= 1 && (
+            <p className="text-xs text-muted/60 mt-1">최대 1명까지 등록 가능합니다.</p>
+          )}
         </div>
         {!selected && (
-          <button onClick={() => setShowSearch(true)} className="btn-primary md:shrink-0">
+          <button
+            onClick={() => setShowSearch(true)}
+            disabled={subs.length >= 1}
+            className="btn-primary md:shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
             <Plus size={16} /> 스트리머 추가
           </button>
         )}

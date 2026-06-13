@@ -100,10 +100,11 @@ async def get_discord_guilds(access_token: str) -> list[dict]:
     return guilds
 
 
-def create_jwt(user_id: str, username: str, avatar: str, access_token: str) -> str:
+def create_jwt(user_id: str, username: str, global_name: str, avatar: str, access_token: str) -> str:
     payload = {
         "sub":          user_id,
         "username":     username,
+        "global_name":  global_name,
         "avatar":       avatar,
         "access_token": access_token,
         "exp":          datetime.utcnow() + timedelta(hours=JWT_EXPIRE_HOURS),

@@ -91,7 +91,7 @@ function ProfileDropdown({ user }: { user: User }) {
           : <div className="w-7 h-7 rounded-full bg-accent/20 flex items-center justify-center">
               <Bot size={13} className="text-accent" />
             </div>}
-        <span className="text-sm text-fg hidden sm:block">{user.username}</span>
+        <span className="text-sm text-fg hidden sm:block">{user.global_name || user.username}</span>
         <ChevronRight size={13} className={`text-muted transition-transform ${open ? "rotate-90" : ""}`} />
       </button>
 
@@ -505,7 +505,7 @@ export default function HomePage() {
       {/* ── Features ── */}
       <section className="max-w-6xl mx-auto px-5 py-24 space-y-28">
         <div className="text-center reveal">
-          <p className="text-sm font-semibold text-accent uppercase tracking-widest mb-3">기능</p>
+          <p className="text-base font-semibold text-accent uppercase tracking-widest mb-3">기능</p>
           <h2 className="text-3xl sm:text-4xl font-bold text-fg mb-4">하나의 봇으로 모든 것을</h2>
           <p className="text-muted max-w-lg mx-auto text-[15px]">
             서버 관리부터 방송 알림까지, NexBot 하나로 해결하세요.

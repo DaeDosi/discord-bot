@@ -69,6 +69,12 @@ async def add_subscription(
     _: None = Depends(require_guild_admin),
 ):
     db = await get_db()
+    count_row = await (await db.execute(
+        "SELECT COUNT(*) FROM chzzk_subscriptions WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone()
+    if count_row and int(count_row[0]) >= 1:
+        raise HTTPException(status_code=400, detail="치지직 알림은 서버당 1명만 등록 가능합니다.")
     try:
         await db.execute(
             """INSERT INTO chzzk_subscriptions
