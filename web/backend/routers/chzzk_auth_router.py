@@ -24,25 +24,27 @@ CHZZK_REDIRECT_URI  = os.getenv(
 
 CHZZK_AUTH_URL  = "https://chzzk.naver.com/account-interlock"
 CHZZK_TOKEN_URL = "https://chzzk.naver.com/auth/v1/token"
-CHZZK_USER_URL  = "https://chzzk.naver.com/open/v1/users/me"
+CHZZK_USER_URL  = "https://api.chzzk.naver.com/open/v1/users/me"
 DISCORD_API     = "https://discord.com/api/v10"
 _BOT_TOKEN      = os.getenv("DISCORD_TOKEN", "")
 
 
 async def _get_chzzk_channel_name(access_token: str) -> str | None:
     try:
-        async with httpx.AsyncClient(timeout=10, verify=True) as client:
+        async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
                 CHZZK_USER_URL,
                 headers={
                     "Authorization": f"Bearer {access_token}",
                     "Client-Id": CHZZK_CLIENT_ID,
+                    "Accept": "application/json",
                 },
             )
-            print(f"[chzzk-auth] users/me status={resp.status_code} body={resp.text[:300]}")
+            print(f"[chzzk-auth] users/me status={resp.status_code} body={resp.text[:400]}")
             if resp.status_code == 200:
-                content = resp.json().get("content") or resp.json()
-                name = content.get("channelName")
+                data    = resp.json()
+                content = data.get("content") or data
+                name    = content.get("channelName")
                 print(f"[chzzk-auth] channelName={name!r}")
                 return name or None
     except Exception as e:
