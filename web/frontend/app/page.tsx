@@ -9,6 +9,7 @@ import {
 
 const BOT_CLIENT_ID = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID || "YOUR_CLIENT_ID";
 const INVITE_URL    = `https://discord.com/oauth2/authorize?client_id=${BOT_CLIENT_ID}&permissions=8&scope=bot%20applications.commands`;
+
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
 import { api } from "@/lib/api";
@@ -120,10 +121,10 @@ function ProfileDropdown({ user }: { user: User }) {
 // Mockup: terminal
 function TerminalMockup() {
   const cmds = [
-    { cmd: "/warn", args: "@유저 욕설 사용", ok: true },
-    { cmd: "/mute", args: "@유저 30m 도배", ok: true },
-    { cmd: "/clear", args: "100", ok: true },
-    { cmd: "/ban", args: "@유저 반복 위반", ok: true },
+    { cmd: "/warn",  args: "@유저 욕설 사용",  label: "경고", labelColor: "#FEE75C" },
+    { cmd: "/mute",  args: "@유저 30m 도배",   label: "뮤트", labelColor: "#EB459E" },
+    { cmd: "/clear", args: "100",              label: "완료", labelColor: "#57F287" },
+    { cmd: "/ban",   args: "@유저 반복 위반",   label: "차단", labelColor: "#ED4245" },
   ];
   return (
     <div className="bg-[#0b0d14] rounded-2xl border border-white/8 p-5
@@ -137,12 +138,15 @@ function TerminalMockup() {
         <span className="text-[11px] text-white/20 ml-2">NexBot — 서버 관리</span>
       </div>
       <div className="space-y-2.5">
-        {cmds.map(({ cmd, args, ok }) => (
+        {cmds.map(({ cmd, args, label, labelColor }) => (
           <div key={cmd + args} className="flex items-center gap-2">
             <span className="text-[#5865f2]/40 text-xs select-none">$</span>
             <span className="text-[#818cf8]">{cmd}</span>
             <span className="text-white/40">{args}</span>
-            {ok && <span className="ml-auto text-[#57f287] text-xs">✓</span>}
+            <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded"
+                  style={{ color: labelColor, background: `${labelColor}18` }}>
+              {label}
+            </span>
           </div>
         ))}
         <div className="flex items-center gap-2 opacity-30 pt-1">
@@ -155,17 +159,20 @@ function TerminalMockup() {
 }
 
 // Mockup: leaderboard
-function LeaderboardMockup() {
+function LeaderboardMockup({ color = "#FEE75C" }: { color?: string }) {
   const rows = [
     { medal: "🥇", name: "스타플레이어", lv: 42, xp: 8400, pct: 84 },
-    { medal: "🥈", name: "레벨업러너", lv: 38, xp: 7600, pct: 76 },
-    { medal: "🥉", name: "꾸준한멤버", lv: 31, xp: 6200, pct: 62 },
+    { medal: "🥈", name: "레벨업러너",   lv: 38, xp: 7600, pct: 76 },
+    { medal: "🥉", name: "꾸준한멤버",   lv: 31, xp: 6200, pct: 62 },
   ];
   return (
     <div className="bg-bg-card rounded-2xl border border-border p-5 shadow-xl w-full max-w-sm">
       <div className="flex items-center justify-between mb-5">
         <p className="text-xs font-bold text-muted uppercase tracking-widest">리더보드</p>
-        <span className="text-[11px] text-accent px-2 py-0.5 rounded-full bg-accent/10">이번 주</span>
+        <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full"
+              style={{ color, background: `${color}18` }}>
+          이번 주
+        </span>
       </div>
       <div className="space-y-4">
         {rows.map(({ medal, name, lv, xp, pct }) => (
@@ -178,8 +185,8 @@ function LeaderboardMockup() {
             </div>
             <div className="h-1.5 rounded-full bg-bg overflow-hidden">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-[#5865f2] to-[#818cf8]"
-                style={{ width: `${pct}%` }}
+                className="h-full rounded-full"
+                style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${color}99, ${color})` }}
               />
             </div>
           </div>
@@ -197,12 +204,16 @@ function ChzzkEmbedMockup() {
       <div className="flex items-center gap-2 px-4 py-2.5" style={{ background: "#2b2d31" }}>
         <Hash size={11} style={{ color: "#80848e" }} />
         <span className="text-[11px]" style={{ color: "#80848e" }}>알림-채널</span>
+        <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded"
+              style={{ color: "#03C75A", background: "rgba(3,199,90,0.15)" }}>
+          LIVE
+        </span>
       </div>
       <div className="p-4">
         <div className="flex gap-3">
           <div className="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center"
-               style={{ background: "rgba(88,101,242,0.2)" }}>
-            <Bot size={16} style={{ color: "#5865f2" }} />
+               style={{ background: "rgba(3,199,90,0.15)" }}>
+            <Radio size={16} style={{ color: "#03C75A" }} />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-2">
@@ -218,10 +229,10 @@ function ChzzkEmbedMockup() {
               <p className="text-[12px] mb-3" style={{ color: "#b5bac1" }}>
                 스트리머님이 방송을 시작했습니다.
               </p>
-              <div className="rounded-md h-16 flex items-center justify-center gap-2"
+              <div className="rounded-md h-14 flex items-center justify-center gap-2"
                    style={{ background: "#1e1f22" }}>
-                <Radio size={12} style={{ color: "#03c75a" }} />
-                <span className="text-[11px]" style={{ color: "#03c75a" }}>LIVE</span>
+                <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "#03C75A" }} />
+                <span className="text-[11px] font-semibold" style={{ color: "#03C75A" }}>방송 중</span>
               </div>
             </div>
           </div>
@@ -232,12 +243,12 @@ function ChzzkEmbedMockup() {
 }
 
 // Mockup: reaction roles
-function ReactionRolesMockup() {
+function ReactionRolesMockup({ color = "#EB459E" }: { color?: string }) {
   const roles = [
-    { emoji: "😊", label: "일반 멤버", active: true },
-    { emoji: "🎮", label: "게이머", active: true },
-    { emoji: "🎨", label: "아티스트", active: false },
-    { emoji: "📢", label: "공지 수신", active: true },
+    { emoji: "😊", label: "일반 멤버",  active: true },
+    { emoji: "🎮", label: "게이머",     active: true },
+    { emoji: "🎨", label: "아티스트",   active: false },
+    { emoji: "📢", label: "공지 수신",  active: true },
   ];
   return (
     <div className="bg-bg-card rounded-2xl border border-border p-5 shadow-xl w-full max-w-sm">
@@ -246,15 +257,19 @@ function ReactionRolesMockup() {
         {roles.map(({ emoji, label, active }) => (
           <div
             key={label}
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-colors ${
-              active ? "bg-accent/8 border-accent/20" : "border-border"
-            }`}
+            className="flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-colors"
+            style={active
+              ? { background: `${color}10`, borderColor: `${color}30` }
+              : { borderColor: "var(--color-border)" }}
           >
             <span className="text-xl leading-none">{emoji}</span>
             <span className="text-sm text-fg flex-1">{label}</span>
-            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center transition-colors ${
-              active ? "bg-accent border-accent" : "border-border"
-            }`}>
+            <div
+              className="w-4 h-4 rounded-full border-2 flex items-center justify-center transition-colors"
+              style={active
+                ? { background: color, borderColor: color }
+                : { borderColor: "var(--color-border)" }}
+            >
               {active && <span className="text-white text-[9px] font-bold leading-none">✓</span>}
             </div>
           </div>
@@ -292,55 +307,66 @@ export default function HomePage() {
   }, []);
 
   const features: {
+    color: string;
+    bg: string;
     icon: React.ReactNode;
+    tag: string;
     title: string;
-    desc: string;
     detail: string;
+    bullets: string[];
     mockup: React.ReactNode;
     flip: boolean;
   }[] = [
     {
-      icon: <Shield size={22} className="text-accent" />,
-      title: "서버 관리",
-      desc: "강력한 관리 도구",
-      detail:
-        "경고, 뮤트, 차단, 메시지 삭제까지 슬래시 커맨드 하나로 빠르게 처리하세요. 웹 대시보드에서 권한과 설정을 한눈에 관리할 수 있습니다.",
+      color:  "#ED4245",
+      bg:     "rgba(237,66,69,0.12)",
+      icon:   <Shield size={22} style={{ color: "#ED4245" }} />,
+      tag:    "서버 보안",
+      title:  "강력한 서버 관리",
+      detail: "경고·뮤트·차단·메시지 삭제를 슬래시 커맨드 하나로 빠르게 처리하세요. 웹 대시보드에서 역할 권한과 자동 제재 설정을 한눈에 관리할 수 있습니다.",
+      bullets: ["경고·뮤트·차단·킥", "자동 불량 단어 감지", "채널별 로그 기록"],
       mockup: <TerminalMockup />,
-      flip: false,
+      flip:   false,
     },
     {
-      icon: <TrendingUp size={22} className="text-accent" />,
-      title: "레벨링 시스템",
-      desc: "활동 기반 성장",
-      detail:
-        "채팅 활동에 따라 자동으로 XP가 쌓이고 레벨이 오릅니다. 리더보드로 멤버들의 참여도를 높이고, 레벨별 역할 보상으로 커뮤니티를 활성화하세요.",
-      mockup: <LeaderboardMockup />,
-      flip: true,
+      color:  "#FEE75C",
+      bg:     "rgba(254,231,92,0.12)",
+      icon:   <TrendingUp size={22} style={{ color: "#FEE75C" }} />,
+      tag:    "커뮤니티 성장",
+      title:  "레벨링 & 리더보드",
+      detail: "채팅 활동에 따라 자동으로 XP가 쌓이고 레벨이 오릅니다. 리더보드로 멤버 참여도를 높이고, 레벨별 역할 보상으로 커뮤니티를 활성화하세요.",
+      bullets: ["채팅 기반 XP 자동 적립", "주간·전체 리더보드", "레벨별 역할 자동 지급"],
+      mockup: <LeaderboardMockup color="#FEE75C" />,
+      flip:   true,
     },
     {
-      icon: <Radio size={22} className="text-accent" />,
-      title: "치지직 알림",
-      desc: "실시간 방송 알림",
-      detail:
-        "치지직 스트리머의 방송 시작을 실시간으로 감지해 Discord 채널에 자동 알림을 보냅니다. 방송 제목, 카테고리, 썸네일이 포함된 임베드 메시지를 받아보세요.",
+      color:  "#03C75A",
+      bg:     "rgba(3,199,90,0.12)",
+      icon:   <Radio size={22} style={{ color: "#03C75A" }} />,
+      tag:    "실시간 알림",
+      title:  "치지직 방송 알림",
+      detail: "치지직 스트리머의 방송 시작을 실시간으로 감지해 Discord 채널에 자동 알림을 보냅니다. 방송 제목·카테고리·썸네일이 담긴 임베드 메시지로 팬들을 모아보세요.",
+      bullets: ["방송 시작 실시간 감지", "임베드 알림 + 멘션 지원", "여러 스트리머 동시 구독"],
       mockup: <ChzzkEmbedMockup />,
-      flip: false,
+      flip:   false,
     },
     {
-      icon: <Smile size={22} className="text-accent" />,
-      title: "리액션 역할",
-      desc: "셀프 역할 선택",
-      detail:
-        "멤버가 이모지를 클릭해 직접 역할을 선택할 수 있습니다. 관심사나 게임별 역할을 멤버 스스로 관리하게 해 서버 운영 부담을 줄이세요.",
-      mockup: <ReactionRolesMockup />,
-      flip: true,
+      color:  "#EB459E",
+      bg:     "rgba(235,69,158,0.12)",
+      icon:   <Smile size={22} style={{ color: "#EB459E" }} />,
+      tag:    "셀프 역할",
+      title:  "리액션 역할 시스템",
+      detail: "멤버가 이모지를 클릭해 직접 역할을 선택합니다. 관심사나 게임별 역할을 멤버 스스로 관리하게 해 서버 운영 부담을 크게 줄이세요.",
+      bullets: ["이모지 클릭으로 역할 토글", "무제한 역할 패널 생성", "웹에서 간편 설정"],
+      mockup: <ReactionRolesMockup color="#EB459E" />,
+      flip:   true,
     },
   ];
 
   const statsDisplay = [
-    { value: stats ? `${stats.guilds}+` : null, label: "등록 서버" },
-    { value: stats ? `${stats.chzzk_subscriptions}+` : null, label: "치지직 구독" },
-    { value: stats ? `${stats.today_visitors}` : null, label: "오늘 방문자" },
+    { value: stats ? `${stats.guilds}+` : null,                label: "등록 서버" },
+    { value: stats ? `${stats.chzzk_subscriptions}+` : null,  label: "치지직 구독" },
+    { value: stats ? `${stats.today_visitors}` : null,         label: "오늘 방문자" },
   ];
 
   return (
@@ -397,13 +423,6 @@ export default function HomePage() {
         />
 
         <div className="relative z-10 max-w-3xl mx-auto">
-          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full
-                          border border-accent/30 bg-accent/8 text-accent text-sm
-                          mb-8 animate-fade-in">
-            <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-            방송 최적화 관리 봇
-          </div>
-
           <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold leading-tight tracking-tight mb-6
                          animate-fade-up">
             Discord 서버를<br />
@@ -485,12 +504,15 @@ export default function HomePage() {
 
       {/* ── Features ── */}
       <section className="max-w-6xl mx-auto px-5 py-24 space-y-28">
-        <div className="text-center reveal mb-4">
+        <div className="text-center reveal">
           <p className="text-sm font-semibold text-accent uppercase tracking-widest mb-3">기능</p>
-          <h2 className="text-3xl sm:text-4xl font-bold text-fg">하나의 봇으로 모든 것을</h2>
+          <h2 className="text-3xl sm:text-4xl font-bold text-fg mb-4">하나의 봇으로 모든 것을</h2>
+          <p className="text-muted max-w-lg mx-auto text-[15px]">
+            서버 관리부터 방송 알림까지, NexBot 하나로 해결하세요.
+          </p>
         </div>
 
-        {features.map(({ icon, title, desc, detail, mockup, flip }) => (
+        {features.map(({ color, bg, icon, tag, title, detail, bullets, mockup, flip }) => (
           <div
             key={title}
             className={`reveal flex flex-col ${
@@ -498,14 +520,29 @@ export default function HomePage() {
             } items-center gap-12 lg:gap-20`}
           >
             <div className="flex-1 max-w-lg">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
+              {/* Tag */}
+              <div className="flex items-center gap-3 mb-5">
+                <div className="w-11 h-11 rounded-2xl flex items-center justify-center" style={{ background: bg }}>
                   {icon}
                 </div>
-                <span className="text-sm font-semibold text-accent uppercase tracking-wider">{desc}</span>
+                <span className="text-xs font-bold uppercase tracking-widest px-3 py-1 rounded-full"
+                      style={{ color, background: bg }}>
+                  {tag}
+                </span>
               </div>
+
               <h3 className="text-2xl sm:text-3xl font-bold text-fg mb-4">{title}</h3>
-              <p className="text-muted leading-relaxed text-[15px]">{detail}</p>
+              <p className="text-muted leading-relaxed text-[15px] mb-6">{detail}</p>
+
+              {/* Bullet points */}
+              <ul className="space-y-2.5">
+                {bullets.map(b => (
+                  <li key={b} className="flex items-center gap-3 text-sm text-fg/80">
+                    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />
+                    {b}
+                  </li>
+                ))}
+              </ul>
             </div>
 
             <div className="flex-1 flex justify-center lg:justify-end">
