@@ -400,26 +400,26 @@ export default function HomePage() {
       </header>
 
       {/* ── Hero ── */}
-      <section className="relative flex flex-col items-center justify-center
-                          min-h-[calc(100vh-60px)] px-5 text-center overflow-hidden">
-        {/* Grid background */}
-        <div className="absolute inset-0 pointer-events-none select-none">
-          <div
-            className="absolute inset-0"
-            style={{
-              backgroundImage:
-                "linear-gradient(rgb(var(--color-border-rgb)/0.4) 1px, transparent 1px), linear-gradient(90deg, rgb(var(--color-border-rgb)/0.4) 1px, transparent 1px)",
-              backgroundSize: "60px 60px",
-            }}
-          />
-          <div className="absolute inset-0 bg-gradient-to-b from-bg via-transparent to-bg" />
-        </div>
-
-        {/* Glow orb */}
+      <section
+        className="relative flex flex-col items-center justify-center
+                   min-h-[calc(100vh-60px)] px-5 text-center overflow-hidden"
+        style={{ background: "#080810" }}
+      >
+        {/* Subtle grid — 4% opacity, barely visible */}
         <div
-          className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2
-                     w-[600px] h-[400px] rounded-full pointer-events-none"
-          style={{ background: "radial-gradient(ellipse, rgba(56,189,248,0.10) 0%, rgba(129,140,248,0.10) 50%, transparent 70%)" }}
+          className="absolute inset-0 pointer-events-none select-none"
+          style={{
+            backgroundImage:
+              "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
+            backgroundSize: "60px 60px",
+          }}
+        />
+
+        {/* Faint glow — centered, very low opacity */}
+        <div
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
+                     w-[900px] h-[500px] rounded-full pointer-events-none"
+          style={{ background: "radial-gradient(ellipse, rgba(56,189,248,0.06) 0%, rgba(192,132,252,0.04) 45%, transparent 70%)" }}
         />
 
         <div className="relative z-10 max-w-3xl mx-auto">
