@@ -44,8 +44,8 @@ async def _get_chzzk_channel_name(access_token: str) -> str | None:
             if resp.status_code == 200:
                 data    = resp.json()
                 content = data.get("content") or data
-                name    = content.get("channelName")
-                print(f"[chzzk-auth] channelName={name!r}")
+                name    = content.get("nickname") or content.get("channelName")
+                print(f"[chzzk-auth] nickname={name!r}")
                 return name or None
     except Exception as e:
         print(f"[chzzk-auth] users/me error type={type(e).__name__} repr={repr(e)}")
