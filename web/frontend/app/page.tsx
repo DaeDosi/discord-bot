@@ -402,18 +402,10 @@ export default function HomePage() {
       {/* ── Hero ── */}
       <section
         className="relative flex flex-col items-center justify-center
-                   min-h-[calc(100vh-60px)] px-5 text-center overflow-hidden"
-        style={{ background: "#080810" }}
+                   min-h-[calc(100vh-60px)] px-5 text-center overflow-hidden bg-bg"
       >
-        {/* Subtle grid — 4% opacity, barely visible */}
-        <div
-          className="absolute inset-0 pointer-events-none select-none"
-          style={{
-            backgroundImage:
-              "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
-            backgroundSize: "60px 60px",
-          }}
-        />
+        {/* Subtle grid — adaptive opacity for dark/light */}
+        <div className="absolute inset-0 pointer-events-none select-none hero-grid" />
 
         {/* Faint glow — centered, very low opacity */}
         <div
@@ -525,7 +517,7 @@ export default function HomePage() {
                 <div className="w-11 h-11 rounded-2xl flex items-center justify-center" style={{ background: bg }}>
                   {icon}
                 </div>
-                <span className="text-xs font-bold uppercase tracking-widest px-3 py-1 rounded-full"
+                <span className="text-sm font-bold uppercase tracking-widest px-3 py-1 rounded-full"
                       style={{ color, background: bg }}>
                   {tag}
                 </span>
@@ -537,7 +529,7 @@ export default function HomePage() {
               {/* Bullet points */}
               <ul className="space-y-2.5">
                 {bullets.map(b => (
-                  <li key={b} className="flex items-center gap-3 text-sm text-fg/80">
+                  <li key={b} className="flex items-center gap-3 text-base text-fg/80">
                     <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />
                     {b}
                   </li>
