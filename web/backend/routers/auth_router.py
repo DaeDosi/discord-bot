@@ -64,14 +64,27 @@ async def callback(body: dict):
 
 @router.get("/me")
 async def me(user: dict = Depends(get_current_user)):
+    # 기존 JWT에 global_name이 없으면 Discord API에서 직접 조회
+    global_name = user.get("global_name", "")
+    username    = user["username"]
+    avatar_hash = user.get("avatar", "")
+    if not global_name and user.get("access_token"):
+        try:
+            fresh = await get_discord_user(user["access_token"])
+            global_name = fresh.get("global_name") or fresh.get("username", username)
+            username    = fresh.get("username", username)
+            avatar_hash = fresh.get("avatar", avatar_hash)
+        except Exception:
+            pass
+
     avatar_url = (
-        f"https://cdn.discordapp.com/avatars/{user['sub']}/{user['avatar']}.png"
-        if user.get("avatar")
+        f"https://cdn.discordapp.com/avatars/{user['sub']}/{avatar_hash}.png"
+        if avatar_hash
         else "https://cdn.discordapp.com/embed/avatars/0.png"
     )
     return {
         "id":          user["sub"],
-        "username":    user["username"],
-        "global_name": user.get("global_name", ""),
+        "username":    username,
+        "global_name": global_name,
         "avatar":      avatar_url,
     }

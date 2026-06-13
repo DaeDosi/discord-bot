@@ -1,7 +1,13 @@
 import hashlib
 import datetime
+from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Request
 from database.db import get_db
+
+_KST = ZoneInfo("Asia/Seoul")
+
+def today_kst() -> str:
+    return datetime.datetime.now(_KST).date().isoformat()
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
@@ -34,8 +40,8 @@ async def get_stats():
             )).fetchone()
             chzzk = int(row2[0]) if row2 else 0
 
-        # 오늘 방문자 수
-        today = datetime.date.today().isoformat()
+        # 오늘 방문자 수 (KST 기준)
+        today = today_kst()
         row3 = await (await db.execute(
             "SELECT COUNT(*) FROM daily_visitors WHERE date=?", (today,)
         )).fetchone()
@@ -52,7 +58,7 @@ async def record_visit(request: Request):
     forwarded = request.headers.get("X-Forwarded-For")
     ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host or "unknown")
     ip_hash = hashlib.sha256(ip.encode()).hexdigest()
-    today = datetime.date.today().isoformat()
+    today = today_kst()
 
     try:
         db = await get_db()
