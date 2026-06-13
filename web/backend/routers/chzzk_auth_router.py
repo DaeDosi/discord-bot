@@ -20,8 +20,39 @@ NAVER_REDIRECT_URI  = os.getenv(
     "http://localhost:8000/api/chzzk-auth/callback",
 )
 
-NAVER_AUTH_URL  = "https://nid.naver.com/oauth2.0/authorize"
-NAVER_TOKEN_URL = "https://nid.naver.com/oauth2.0/token"
+NAVER_AUTH_URL    = "https://nid.naver.com/oauth2.0/authorize"
+NAVER_TOKEN_URL   = "https://nid.naver.com/oauth2.0/token"
+NAVER_PROFILE_URL = "https://openapi.naver.com/v1/nid/me"
+DISCORD_API       = "https://discord.com/api/v10"
+_BOT_TOKEN        = os.getenv("DISCORD_TOKEN", "")
+
+
+async def _get_naver_nickname(access_token: str) -> str | None:
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(
+                NAVER_PROFILE_URL,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if resp.status_code == 200:
+                return resp.json().get("response", {}).get("nickname")
+    except Exception:
+        pass
+    return None
+
+
+async def _set_discord_nickname(guild_id: str, user_id: str, nickname: str) -> None:
+    import json
+    url = f"{DISCORD_API}/guilds/{guild_id}/members/{user_id}"
+    headers = {
+        "Authorization": f"Bot {_BOT_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.patch(url, headers=headers, content=json.dumps({"nick": nickname}))
+    except Exception:
+        pass
 
 
 def _build_state(guild_id: str, discord_user_id: str) -> str:
@@ -140,5 +171,12 @@ async def chzzk_callback(
     if not ok:
         print(f"[chzzk-auth] Failed to add verified role for user {discord_user_id}")
         return _err("role_assign_failed", guild_id)
+
+    # ── Naver 닉네임 → Discord 서버 닉네임 자동 변경 ─────────────────────────
+    naver_nick = await _get_naver_nickname(access_token)
+    if naver_nick:
+        await _set_discord_nickname(guild_id, discord_user_id, naver_nick)
+    else:
+        print(f"[chzzk-auth] Could not fetch Naver nickname for user {discord_user_id}")
 
     return RedirectResponse(f"{FRONTEND_URL}/verify?success=1&guild_id={quote(guild_id)}")

@@ -71,7 +71,8 @@ const CATEGORIES: Category[] = [
     label: "기타",
     color: "#8B8FA8",
     cmds: [
-      { name: "/명령어", desc: "NexBot의 모든 명령어를 페이지로 확인합니다" },
+      { name: "/명령어",   desc: "NexBot 일반 명령어 목록을 확인합니다" },
+      { name: "/관리명령어", desc: "NexBot 관리자 명령어 목록을 확인합니다", admin: true },
     ],
   },
 ];
@@ -86,7 +87,9 @@ export default function CommandsPage() {
         <p className="text-muted text-sm mt-1">
           NexBot의 모든 슬래시 명령어를 확인합니다. Discord에서{" "}
           <code className="text-accent bg-black/20 px-1 rounded">/명령어</code>
-          {" "}를 입력해도 볼 수 있습니다.
+          {" "}(일반) 또는{" "}
+          <code className="text-accent bg-black/20 px-1 rounded">/관리명령어</code>
+          {" "}(관리자)를 입력해도 볼 수 있습니다.
         </p>
       </div>
 

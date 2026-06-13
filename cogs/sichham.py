@@ -3,7 +3,6 @@ from discord import app_commands
 from discord.ext import commands
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
 
 COLOR_START = 0x5865F2  # 보라 - 시작
 COLOR_CALL  = 0x00FFA3  # 초록 - 호출
@@ -26,7 +25,7 @@ class SichhamSession:
         self.condition: str              = "없음"
         self.queue:     list[QueueEntry] = []
 
-    def find(self, user_id: int) -> Optional[QueueEntry]:
+    def find(self, user_id: int) -> "QueueEntry | None":
         return next((e for e in self.queue if e.user.id == user_id), None)
 
     def renumber(self):
@@ -47,12 +46,7 @@ class SichhamCog(commands.Cog):
     # ── 시청자용 ─────────────────────────────────────────────────────────────
 
     @app_commands.command(name="시참등록", description="시청자 참여 대기열에 등록합니다.")
-    @app_commands.describe(치지직닉네임="치지직 닉네임 (미입력 시 디스코드 닉네임 사용)")
-    async def 시참등록(
-        self,
-        interaction: discord.Interaction,
-        치지직닉네임: Optional[str] = None,
-    ):
+    async def 시참등록(self, interaction: discord.Interaction):
         s = self._get(interaction.guild_id)
 
         if not s.active:
@@ -71,7 +65,7 @@ class SichhamCog(commands.Cog):
                 f"❌ 대기열이 꽉 찼습니다. ({len(s.queue)}/{s.max_size}명)", ephemeral=True
             )
 
-        nick   = 치지직닉네임 or interaction.user.display_name
+        nick   = interaction.user.display_name
         number = len(s.queue) + 1
         s.queue.append(QueueEntry(
             user=interaction.user,
@@ -82,7 +76,7 @@ class SichhamCog(commands.Cog):
 
         embed = discord.Embed(
             title="✅ 시참 등록 완료",
-            description=f"**{number}번**으로 등록되었습니다!\n치지직 닉네임: `{nick}`",
+            description=f"**{number}번**으로 등록되었습니다!\n닉네임: `{nick}`",
             color=COLOR_START,
         )
         embed.set_footer(text=f"현재 대기 {len(s.queue)}/{s.max_size}명")
@@ -122,7 +116,7 @@ class SichhamCog(commands.Cog):
             title="🔢 시참 대기 현황",
             description=(
                 f"현재 **{entry.number}번** 대기 중\n"
-                f"치지직 닉네임: `{entry.chzzk_name}`"
+                f"닉네임: `{entry.chzzk_name}`"
             ),
             color=COLOR_INFO,
         )
@@ -184,7 +178,7 @@ class SichhamCog(commands.Cog):
         embed = discord.Embed(
             title="🎮 시청자 참여가 시작되었습니다!",
             description=(
-                "`/시참등록 [치지직닉네임]` 으로 참여하세요\n\n"
+                "`/시참등록` 으로 참여하세요\n\n"
                 f"**최대 인원:** {s.max_size}명\n"
                 f"**참여 조건:** {s.condition}"
             ),
