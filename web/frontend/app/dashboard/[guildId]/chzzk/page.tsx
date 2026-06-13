@@ -245,9 +245,15 @@ export default function ChzzkPage() {
           </p>
         </div>
         {!selected && (
-          <button onClick={() => setShowSearch(true)} className="btn-primary md:shrink-0">
-            <Plus size={16} /> 스트리머 추가
-          </button>
+          subs.length >= 1 ? (
+            <p className="text-sm text-muted md:shrink-0 md:text-right">
+              서버당 1명만 등록 가능합니다.<br className="hidden md:block" /> 기존 구독을 삭제 후 추가하세요.
+            </p>
+          ) : (
+            <button onClick={() => setShowSearch(true)} className="btn-primary md:shrink-0">
+              <Plus size={16} /> 스트리머 추가
+            </button>
+          )
         )}
       </div>
 

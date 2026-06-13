@@ -224,39 +224,72 @@ class ChzzkCog(commands.Cog):
             embed=success("구독 해제", f"치지직 채널 구독이 해제되었습니다."), ephemeral=True
         )
 
-    # ── /test-chzzk-alert ────────────────────────────────────────────────────
-    @app_commands.command(name="치지직알림테스트", description="치지직 방송 알림 테스트 메시지를 전송합니다.")
-    @app_commands.describe(
-        channel="테스트 알림을 보낼 Discord 채널",
-        streamer="테스트할 스트리머 이름 (치지직 채널 ID 또는 이름)",
-    )
+    # ── /치지직설정 ──────────────────────────────────────────────────────────
+    @app_commands.command(name="치지직설정", description="웹 대시보드에서 치지직 알림을 설정합니다.")
     @is_mod_or_admin()
-    async def test_chzzk_alert(
-        self,
-        interaction: discord.Interaction,
-        channel: discord.TextChannel,
-        streamer: str,
-    ):
+    async def chzzk_settings(self, interaction: discord.Interaction):
+        dashboard_url = f"{os.getenv('FRONTEND_URL', 'https://nexbot.shop')}/dashboard/{interaction.guild_id}/chzzk"
+        embed = discord.Embed(
+            title="치지직 알림 설정",
+            description="아래 버튼을 눌러 웹 대시보드에서 치지직 알림을 설정하세요.",
+            color=0x03C75A,
+        )
+        embed.set_footer(text="NexBot Dashboard")
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(
+            label="대시보드 열기",
+            url=dashboard_url,
+            style=discord.ButtonStyle.link,
+        ))
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    # ── /치지직알림테스트 ─────────────────────────────────────────────────────
+    @app_commands.command(name="치지직알림테스트", description="등록된 치지직 알림 설정으로 테스트 메시지를 전송합니다.")
+    @is_mod_or_admin()
+    async def test_chzzk_alert(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        # 이름으로 검색 → channelId 획득
-        results   = await search_channels(streamer)
-        info      = next(
-            (r.get("channel", {}) for r in results
-             if r.get("channel", {}).get("channelName", "").lower() == streamer.lower()),
-            results[0].get("channel", {}) if results else {},
-        )
-        name     = info.get("channelName") or streamer
-        chzzk_id = info.get("channelId") or streamer
+        db = await get_db()
+        row = await (await db.execute(
+            "SELECT discord_channel, chzzk_channel_id, chzzk_name, chzzk_image_url, mention_everyone "
+            "FROM chzzk_subscriptions WHERE guild_id=? LIMIT 1",
+            (interaction.guild_id,)
+        )).fetchone()
+
+        if not row:
+            dashboard_url = f"{os.getenv('FRONTEND_URL', 'https://nexbot.shop')}/dashboard/{interaction.guild_id}/chzzk"
+            embed = discord.Embed(
+                title="등록된 정보가 없습니다.",
+                description="치지직 알림을 설정하려면 웹 대시보드를 이용하세요.",
+                color=0xED4245,
+            )
+            embed.set_footer(text="NexBot Dashboard")
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(
+                label="대시보드 열기",
+                url=dashboard_url,
+                style=discord.ButtonStyle.link,
+            ))
+            return await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+        ch = interaction.guild.get_channel(row["discord_channel"])
+        if not ch:
+            return await interaction.followup.send(
+                embed=error("오류", "등록된 Discord 채널을 찾을 수 없습니다. 대시보드에서 채널을 다시 설정해주세요."),
+                ephemeral=True,
+            )
+
+        chzzk_id  = row["chzzk_channel_id"]
+        name      = row["chzzk_name"] or chzzk_id
         chzzk_url = f"https://chzzk.naver.com/live/{chzzk_id}"
 
-        # 실제 방송 정보 조회 (v2 API)
         live      = await fetch_live_detail(chzzk_id) or {}
+        channel_info = live.get("channel", {})
         title     = live.get("liveTitle") or "[테스트] 방송 제목"
         category  = live.get("liveCategoryValue") or "없음"
         thumbnail = live.get("liveImageUrl") or ""
+        avatar    = channel_info.get("channelImageUrl") or row["chzzk_image_url"] or ""
 
-        avatar = info.get("channelImageUrl") or ""
         embed = discord.Embed(
             title=title,
             url=chzzk_url,
@@ -270,6 +303,7 @@ class ChzzkCog(commands.Cog):
             embed.set_image(url=thumbnail)
         embed.set_footer(text="chzzk.junah.dev")
 
+        mention = "@everyone " if bool(row["mention_everyone"]) else ""
         view = discord.ui.View()
         view.add_item(discord.ui.Button(
             label="방송 바로가기",
@@ -277,14 +311,10 @@ class ChzzkCog(commands.Cog):
             style=discord.ButtonStyle.link,
         ))
 
-        await channel.send(
-            content=f"[{name}]님이 방송을 시작했습니다!",
-            embed=embed,
-            view=view,
-        )
+        await ch.send(content=f"{mention}[{name}]님이 방송을 시작했습니다!", embed=embed, view=view)
         await interaction.followup.send(
-            f"✅ {channel.mention} 채널에 테스트 알림을 전송했습니다.\n"
-            f"방송 제목: `{title}` | 카테고리: `{category}`",
+            f"✅ {ch.mention} 채널에 테스트 알림을 전송했습니다.\n"
+            f"스트리머: `{name}` | 방송 제목: `{title}`",
             ephemeral=True,
         )
 
