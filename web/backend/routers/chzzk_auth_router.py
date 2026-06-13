@@ -132,7 +132,7 @@ async def chzzk_callback(
             )
             print(f"[chzzk-auth] token status={token_resp.status_code} body={token_resp.text[:300]}")
             token_data   = token_resp.json()
-            access_token = token_data.get("accessToken")
+            access_token = token_data.get("content", {}).get("accessToken")
     except Exception as e:
         print(f"[chzzk-auth] token request failed: {e}")
         return _err("oauth_failed", guild_id)
