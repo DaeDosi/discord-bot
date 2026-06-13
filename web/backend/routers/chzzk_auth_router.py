@@ -34,10 +34,15 @@ async def _get_naver_nickname(access_token: str) -> str | None:
                 NAVER_PROFILE_URL,
                 headers={"Authorization": f"Bearer {access_token}"},
             )
+            print(f"[chzzk-auth] Naver profile status={resp.status_code} body={resp.text[:300]}")
             if resp.status_code == 200:
-                return resp.json().get("response", {}).get("nickname")
-    except Exception:
-        pass
+                profile = resp.json().get("response", {})
+                # nickname 우선, 없으면 name 사용
+                nick = profile.get("nickname") or profile.get("name")
+                print(f"[chzzk-auth] Naver nickname={nick!r}")
+                return nick or None
+    except Exception as e:
+        print(f"[chzzk-auth] Naver profile fetch error: {e}")
     return None
 
 
@@ -50,9 +55,12 @@ async def _set_discord_nickname(guild_id: str, user_id: str, nickname: str) -> N
     }
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            await client.patch(url, headers=headers, content=json.dumps({"nick": nickname}))
-    except Exception:
-        pass
+            resp = await client.patch(
+                url, headers=headers, content=json.dumps({"nick": nickname})
+            )
+            print(f"[chzzk-auth] Discord nick PATCH status={resp.status_code} body={resp.text[:200]}")
+    except Exception as e:
+        print(f"[chzzk-auth] Discord nick PATCH error: {e}")
 
 
 def _build_state(guild_id: str, discord_user_id: str) -> str:
