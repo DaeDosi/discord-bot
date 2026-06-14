@@ -81,9 +81,10 @@ export interface FollowRoleTier {
 
 export interface ChzzkVerification {
   user_id:      string;
+  user_name:    string;
   tier_months:  number;
-  follow_date:  string | null;  // 팔로우 시작일 (ISO8601)
-  follow_days:  number;         // 팔로우 경과 일수, -1 = 팔로우 안 함
+  follow_date:  string | null;
+  follow_days:  number;         // -1 = 팔로우 안 함
   is_following: boolean;
   verified_at:  number;
 }

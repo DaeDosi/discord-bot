@@ -43,8 +43,8 @@ interface ChzzkSub {
   follow_months_tier1: number; follow_months_tier2: number;
 }
 interface VerifUser {
-  guild_id: number; guild_name: string;
-  user_id: number; user_name: string;
+  guild_id: string; guild_name: string;
+  user_id: string; user_name: string;
   tier_months: number;
   follow_date: string | null;
   follow_days: number;
@@ -572,7 +572,6 @@ export default function AdminPage() {
                       <th className="text-left px-4 py-3 text-muted font-medium">유저명</th>
                       <th className="text-left px-4 py-3 text-muted font-medium hidden md:table-cell">유저 ID</th>
                       <th className="text-left px-4 py-3 text-muted font-medium">서버</th>
-                      <th className="text-left px-4 py-3 text-muted font-medium">팔로우 여부</th>
                       <th className="text-left px-4 py-3 text-muted font-medium">팔로우 시작일</th>
                       <th className="text-left px-4 py-3 text-muted font-medium">경과</th>
                       <th className="text-left px-4 py-3 text-muted font-medium hidden lg:table-cell">인증 일시</th>
@@ -588,11 +587,6 @@ export default function AdminPage() {
                         <td className="px-4 py-3 text-white font-medium">{v.user_name}</td>
                         <td className="px-4 py-3 font-mono text-xs text-muted select-all hidden md:table-cell">{v.user_id}</td>
                         <td className="px-4 py-3 text-sm text-muted">{v.guild_name}</td>
-                        <td className="px-4 py-3">
-                          {v.is_following
-                            ? <span className="text-xs font-semibold text-accent">팔로우 중</span>
-                            : <span className="text-xs font-semibold text-danger">팔로우 안 함</span>}
-                        </td>
                         <td className="px-4 py-3 text-xs text-muted">
                           {v.follow_date
                             ? new Date(v.follow_date).toLocaleDateString("ko-KR")
@@ -612,7 +606,7 @@ export default function AdminPage() {
                       </tr>
                     ))}
                     {verifUsers.length === 0 && (
-                      <tr><td colSpan={7} className="px-4 py-8 text-center text-muted">인증한 유저 없음</td></tr>
+                      <tr><td colSpan={6} className="px-4 py-8 text-center text-muted">인증한 유저 없음</td></tr>
                     )}
                   </tbody>
                 </table>

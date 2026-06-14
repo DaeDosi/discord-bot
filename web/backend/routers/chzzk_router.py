@@ -1,3 +1,5 @@
+import os
+import asyncio
 import httpx
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
@@ -8,8 +10,30 @@ from chzzk_monitor import check_once_debug
 
 router = APIRouter(prefix="/api/chzzk", tags=["chzzk"])
 
-CHZZK_API = "https://api.chzzk.naver.com"
-HEADERS   = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+CHZZK_API    = "https://api.chzzk.naver.com"
+HEADERS      = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+_BOT_TOKEN   = os.getenv("DISCORD_TOKEN", "")
+_DISCORD_API = "https://discord.com/api/v10"
+
+
+async def _fetch_member_name(client: httpx.AsyncClient, guild_id: str, user_id: str) -> str:
+    try:
+        resp = await client.get(
+            f"{_DISCORD_API}/guilds/{guild_id}/members/{user_id}",
+            headers={"Authorization": f"Bot {_BOT_TOKEN}"},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return (
+                data.get("nick")
+                or data.get("user", {}).get("global_name")
+                or data.get("user", {}).get("username")
+                or user_id
+            )
+    except Exception:
+        pass
+    return user_id
 
 
 # ── 검색 (로그인만 필요, 서버 관리자 불필요) ──────────────────────────────────
@@ -310,11 +334,19 @@ async def get_guild_verifications(
                verified_at DESC""",
         (int(guild_id),)
     )).fetchall()
+
+    async with httpx.AsyncClient(timeout=5) as client:
+        user_names = await asyncio.gather(*[
+            _fetch_member_name(client, guild_id, str(r["user_id"]))
+            for r in rows
+        ])
+
     result = []
-    for r in rows:
+    for r, name in zip(rows, user_names):
         fd = r["follow_days"] if r["follow_days"] is not None else -1
         result.append({
             "user_id":      str(r["user_id"]),
+            "user_name":    name,
             "tier_months":  r["tier_months"] or 0,
             "follow_date":  r["follow_date"],
             "follow_days":  fd,

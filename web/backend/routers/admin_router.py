@@ -220,7 +220,11 @@ async def verifications(
     for r, name in zip(rows, user_names):
         fd = r["follow_days"] if r["follow_days"] is not None else -1
         result.append({
-            **dict(r),
+            "guild_id":     str(r["guild_id"]),
+            "user_id":      str(r["user_id"]),
+            "tier_months":  r["tier_months"],
+            "follow_date":  r["follow_date"],
+            "verified_at":  r["verified_at"],
             "guild_name":   guild_name_map.get(str(r["guild_id"]), str(r["guild_id"])),
             "user_name":    name,
             "follow_days":  fd,

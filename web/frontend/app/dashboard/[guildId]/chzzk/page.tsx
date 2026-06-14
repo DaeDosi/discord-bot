@@ -272,8 +272,7 @@ export default function ChzzkPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border">
-                      <th className="text-left px-2 py-2 text-muted font-medium text-xs">유저 ID</th>
-                      <th className="text-left px-2 py-2 text-muted font-medium text-xs">팔로우 여부</th>
+                      <th className="text-left px-2 py-2 text-muted font-medium text-xs">유저명</th>
                       <th className="text-left px-2 py-2 text-muted font-medium text-xs">팔로우 시작일</th>
                       <th className="text-left px-2 py-2 text-muted font-medium text-xs">경과</th>
                       <th className="text-left px-2 py-2 text-muted font-medium text-xs">인증 일시</th>
@@ -289,13 +288,9 @@ export default function ChzzkPage() {
                         : null;
                       return (
                         <tr key={v.user_id} className="hover:bg-bg-hover/30 transition-colors">
-                          <td className="px-2 py-2.5 font-mono text-xs text-muted select-all">{v.user_id}</td>
                           <td className="px-2 py-2.5">
-                            {v.is_following ? (
-                              <span className="text-xs font-semibold text-accent">팔로우 중</span>
-                            ) : (
-                              <span className="text-xs font-semibold text-danger">팔로우 안 함</span>
-                            )}
+                            <p className="text-sm font-medium text-white">{v.user_name}</p>
+                            <p className="font-mono text-[10px] text-muted select-all">{v.user_id}</p>
                           </td>
                           <td className="px-2 py-2.5 text-xs text-muted">
                             {v.follow_date

@@ -177,6 +177,10 @@ async def init_db():
         "ALTER TABLE chzzk_verifications ADD COLUMN follow_months INTEGER DEFAULT 0",
         "ALTER TABLE chzzk_verifications ADD COLUMN follow_date TEXT",
         "ALTER TABLE chzzk_verifications ADD COLUMN follow_days INTEGER DEFAULT -1",
+        "ALTER TABLE chzzk_verifications ADD COLUMN chzzk_channel_id TEXT",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN streamer_access_token TEXT",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN streamer_refresh_token TEXT",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN streamer_token_expires_at INTEGER DEFAULT 0",
     ]:
         try:
             await db.execute(sql)

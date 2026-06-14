@@ -22,14 +22,30 @@ CHZZK_REDIRECT_URI  = os.getenv(
     "http://localhost:8000/api/chzzk-auth/callback",
 )
 
-CHZZK_AUTH_URL  = "https://chzzk.naver.com/account-interlock"
-CHZZK_TOKEN_URL = "https://openapi.chzzk.naver.com/auth/v1/token"
-CHZZK_USER_URL  = "https://openapi.chzzk.naver.com/open/v1/users/me"
-DISCORD_API     = "https://discord.com/api/v10"
-_BOT_TOKEN      = os.getenv("DISCORD_TOKEN", "")
+CHZZK_AUTH_URL   = "https://chzzk.naver.com/account-interlock"
+CHZZK_TOKEN_URL  = "https://openapi.chzzk.naver.com/auth/v1/token"
+CHZZK_USER_URL   = "https://openapi.chzzk.naver.com/open/v1/users/me"
+CHZZK_FOLLOWERS_URL = "https://openapi.chzzk.naver.com/open/v1/channels/followers"
+DISCORD_API      = "https://discord.com/api/v10"
+_BOT_TOKEN       = os.getenv("DISCORD_TOKEN", "")
 
 
-async def _get_chzzk_channel_name(access_token: str) -> str | None:
+# ── 유틸 헬퍼 ─────────────────────────────────────────────────────────────────
+
+def _days_since(date_str: str) -> int:
+    """ISO8601 날짜 문자열 → 현재까지 경과 일수."""
+    from datetime import timezone
+    try:
+        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0, (datetime.now(timezone.utc) - dt).days)
+    except Exception:
+        return 0
+
+
+async def _get_chzzk_channel_info(access_token: str) -> dict:
+    """로그인한 치지직 유저의 채널 정보(channelId, channelName, channelImageUrl) 반환."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
@@ -44,13 +60,15 @@ async def _get_chzzk_channel_name(access_token: str) -> str | None:
             if resp.status_code == 200:
                 data    = resp.json()
                 content = data.get("content") or data
-                name    = content.get("nickname") or content.get("channelName")
-                print(f"[chzzk-auth] nickname={name!r}")
-                return name or None
+                return {
+                    "channelId":       content.get("channelId") or content.get("userIdHash"),
+                    "channelName":     content.get("nickname") or content.get("channelName") or "",
+                    "channelImageUrl": content.get("profileImageUrl") or content.get("channelImageUrl") or "",
+                }
     except Exception as e:
-        print(f"[chzzk-auth] users/me error type={type(e).__name__} repr={repr(e)}")
+        print(f"[chzzk-auth] users/me error: {repr(e)}")
         traceback.print_exc()
-    return None
+    return {}
 
 
 async def _set_discord_nickname(guild_id: str, user_id: str, nickname: str) -> None:
@@ -64,39 +82,83 @@ async def _set_discord_nickname(guild_id: str, user_id: str, nickname: str) -> N
             resp = await client.patch(
                 url, headers=headers, content=json.dumps({"nick": nickname})
             )
-            print(f"[chzzk-auth] Discord PATCH nick status={resp.status_code} body={resp.text[:300]}")
+            print(f"[chzzk-auth] Discord PATCH nick status={resp.status_code}")
     except Exception as e:
         print(f"[chzzk-auth] Discord PATCH nick error: {e}")
 
 
-CHZZK_FOLLOWERS_URL = "https://openapi.chzzk.naver.com/open/v1/channels/followers"
+# ── 치지직 토큰 갱신 ──────────────────────────────────────────────────────────
 
-
-def _days_since(date_str: str) -> int:
-    """ISO8601 날짜 문자열 → 현재까지 경과 일수."""
-    from datetime import timezone
+async def _refresh_chzzk_token(refresh_token: str) -> tuple[str | None, str | None, int]:
+    """Returns (access_token, new_refresh_token, expires_at_unix)."""
     try:
-        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return max(0, (datetime.now(timezone.utc) - dt).days)
-    except Exception:
-        return 0
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                CHZZK_TOKEN_URL,
+                json={
+                    "grantType":    "refresh_token",
+                    "clientId":     CHZZK_CLIENT_ID,
+                    "clientSecret": CHZZK_CLIENT_SECRET,
+                    "refreshToken": refresh_token,
+                },
+            )
+            print(f"[chzzk-auth] token refresh status={resp.status_code} body={resp.text[:300]}")
+            if resp.status_code == 200:
+                c  = resp.json().get("content", {})
+                at = c.get("accessToken")
+                rt = c.get("refreshToken") or refresh_token
+                ei = c.get("expiresIn", 86400)
+                return at, rt, int(time.time()) + ei
+    except Exception as e:
+        print(f"[chzzk-auth] token refresh error: {repr(e)}")
+    return None, None, 0
 
 
-async def _get_follow_info(channel_id: str, access_token: str) -> tuple[str | None, int, bool]:
+async def _get_fresh_streamer_token(guild_id: str) -> str | None:
+    """스트리머 OAuth 토큰 반환. 만료 임박 시 자동 갱신."""
+    db = await get_db()
+    sub = await (await db.execute(
+        """SELECT streamer_access_token, streamer_refresh_token, streamer_token_expires_at
+           FROM chzzk_subscriptions WHERE guild_id=?""",
+        (int(guild_id),)
+    )).fetchone()
+    if not sub or not sub["streamer_refresh_token"]:
+        print(f"[chzzk-auth] no streamer tokens for guild {guild_id}")
+        return None
+
+    expires_at = sub["streamer_token_expires_at"] or 0
+    if expires_at > int(time.time()) + 300:
+        return sub["streamer_access_token"]
+
+    at, rt, new_exp = await _refresh_chzzk_token(sub["streamer_refresh_token"])
+    if not at:
+        return None
+    await db.execute(
+        """UPDATE chzzk_subscriptions
+           SET streamer_access_token=?, streamer_refresh_token=?, streamer_token_expires_at=?
+           WHERE guild_id=?""",
+        (at, rt, new_exp, int(guild_id))
+    )
+    await db.commit()
+    return at
+
+
+# ── 팔로우 체크 ───────────────────────────────────────────────────────────────
+
+async def _get_follow_info(viewer_channel_id: str, streamer_token: str) -> tuple[str | None, int, bool]:
     """
-    GET /open/v1/channels/followers 를 페이지네이션하여 target channel_id 를 찾아 팔로우 정보 반환.
-    Returns: (follow_date_str, follow_days, is_following)
+    스트리머 토큰으로 GET /open/v1/channels/followers 를 페이지네이션.
+    응답에서 viewer_channel_id 를 찾아 팔로우 날짜/경과일/여부 반환.
+    Returns: (follow_date_str | None, follow_days, is_following)
     """
     headers = {
-        "Authorization": f"Bearer {access_token}",
+        "Authorization": f"Bearer {streamer_token}",
         "Client-Id": CHZZK_CLIENT_ID,
         "Accept": "application/json",
     }
     page      = 0
     page_size = 50
-    max_pages = 40  # 최대 2000개 채널까지 탐색
+    max_pages = 40  # 최대 2000명까지 탐색
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -109,32 +171,41 @@ async def _get_follow_info(channel_id: str, access_token: str) -> tuple[str | No
                 print(f"[chzzk-auth] followers page={page} status={resp.status_code} body={resp.text[:600]}")
 
                 if resp.status_code != 200:
-                    print(f"[chzzk-auth] followers API error: HTTP {resp.status_code}")
+                    print(f"[chzzk-auth] followers API error HTTP {resp.status_code}")
                     break
 
                 data    = resp.json()
                 content = data.get("content") or {}
-                items   = content.get("data") if isinstance(content, dict) else (content if isinstance(content, list) else [])
+                if isinstance(content, list):
+                    items = content
+                elif isinstance(content, dict):
+                    items = content.get("data") or []
+                else:
+                    items = []
 
                 if not items:
                     print(f"[chzzk-auth] followers: no more items at page={page}")
                     break
 
                 for item in items:
-                    if item.get("channelId") == channel_id:
-                        date_str = item.get("createdDate") or item.get("followDate") or item.get("createdAt")
+                    if item.get("channelId") == viewer_channel_id:
+                        date_str = (
+                            item.get("createdDate")
+                            or item.get("followDate")
+                            or item.get("createdAt")
+                        )
                         if date_str:
                             days = _days_since(date_str)
-                            print(f"[chzzk-auth] follow found: channelId={channel_id} date={date_str} days={days}")
+                            print(f"[chzzk-auth] follow found: channelId={viewer_channel_id} date={date_str} days={days}")
                             return date_str, days, True
-                        print(f"[chzzk-auth] follow found but no date field: item={item}")
+                        print(f"[chzzk-auth] follow found but no date: item={item}")
                         return None, 0, True
 
                 if len(items) < page_size:
                     break
                 page += 1
 
-        print(f"[chzzk-auth] follow: channelId={channel_id} not found in followers list")
+        print(f"[chzzk-auth] follow: viewer {viewer_channel_id} not in streamer's follower list")
 
     except Exception as e:
         print(f"[chzzk-auth] follow check error: {repr(e)}")
@@ -142,47 +213,26 @@ async def _get_follow_info(channel_id: str, access_token: str) -> tuple[str | No
     return None, -1, False
 
 
-async def _get_follow_info_for_guild(guild_id: str, access_token: str) -> tuple[str | None, int, bool]:
-    """해당 서버에 등록된 스트리머에 대한 팔로우 정보 반환."""
-    db = await get_db()
-    sub = await (await db.execute(
-        "SELECT chzzk_channel_id FROM chzzk_subscriptions WHERE guild_id=?",
-        (int(guild_id),)
-    )).fetchone()
-    if not sub:
-        print(f"[chzzk-auth] no streamer registered for guild {guild_id}")
+async def _get_follow_info_for_guild(guild_id: str, viewer_channel_id: str | None) -> tuple[str | None, int, bool]:
+    """스트리머 토큰으로 팔로워 목록에서 viewer_channel_id 검색."""
+    if not viewer_channel_id:
+        print(f"[chzzk-auth] viewer channelId unknown → skip follow check")
         return None, -1, False
-    return await _get_follow_info(sub["chzzk_channel_id"], access_token)
+
+    streamer_token = await _get_fresh_streamer_token(guild_id)
+    if not streamer_token:
+        return None, -1, False
+
+    return await _get_follow_info(viewer_channel_id, streamer_token)
 
 
-async def _get_chzzk_channel_info(access_token: str) -> dict:
-    """로그인한 치지직 유저의 채널 정보를 반환."""
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                CHZZK_USER_URL,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Client-Id": CHZZK_CLIENT_ID,
-                    "Accept": "application/json",
-                },
-            )
-            if resp.status_code == 200:
-                data    = resp.json()
-                content = data.get("content") or data
-                return {
-                    "channelId":       content.get("channelId") or content.get("userIdHash"),
-                    "channelName":     content.get("nickname") or content.get("channelName") or "",
-                    "channelImageUrl": content.get("profileImageUrl") or content.get("channelImageUrl") or "",
-                }
-    except Exception as e:
-        print(f"[chzzk-auth] _get_chzzk_channel_info error: {e}")
-    return {}
-
+# ── 스트리머 등록 플로우 ──────────────────────────────────────────────────────
 
 async def _handle_streamer_registration(
     state_data: dict,
     access_token: str,
+    refresh_token: str | None,
+    token_expires_at: int,
     guild_id: str,
 ) -> RedirectResponse:
     discord_channel  = state_data.get("discord_channel", "")
@@ -193,7 +243,6 @@ async def _handle_streamer_registration(
     if not channel_info.get("channelId"):
         return RedirectResponse(f"{dashboard_url}?error=chzzk_channel_not_found")
 
-    # 채널 상세 정보 (라이브 여부 포함)
     chzzk_id   = channel_info["channelId"]
     chzzk_name = channel_info["channelName"]
     image_url  = channel_info["channelImageUrl"]
@@ -204,36 +253,51 @@ async def _handle_streamer_registration(
             "SELECT COUNT(*) FROM chzzk_subscriptions WHERE guild_id=?",
             (int(guild_id),)
         )).fetchone())[0]
+
         if count >= 1:
-            return RedirectResponse(f"{dashboard_url}?error=already_subscribed")
+            # 이미 등록됨 → 토큰만 갱신 (재연동)
+            await db.execute(
+                """UPDATE chzzk_subscriptions
+                   SET streamer_access_token=?, streamer_refresh_token=?, streamer_token_expires_at=?
+                   WHERE guild_id=?""",
+                (access_token, refresh_token, token_expires_at, int(guild_id))
+            )
+            await db.commit()
+            print(f"[chzzk-auth] streamer tokens refreshed for guild={guild_id}")
+            return RedirectResponse(f"{dashboard_url}?success=token_refreshed")
 
         await db.execute(
             """INSERT INTO chzzk_subscriptions
-               (guild_id, discord_channel, chzzk_channel_id, chzzk_name, chzzk_image_url, mention_everyone, is_live)
-               VALUES (?,?,?,?,?,?,0)""",
-            (int(guild_id), int(discord_channel), chzzk_id, chzzk_name, image_url, mention_everyone),
+               (guild_id, discord_channel, chzzk_channel_id, chzzk_name, chzzk_image_url,
+                mention_everyone, is_live, streamer_access_token, streamer_refresh_token, streamer_token_expires_at)
+               VALUES (?,?,?,?,?,?,0,?,?,?)""",
+            (
+                int(guild_id), int(discord_channel),
+                chzzk_id, chzzk_name, image_url, mention_everyone,
+                access_token, refresh_token, token_expires_at,
+            ),
         )
         await db.commit()
         print(f"[chzzk-auth] streamer registered: guild={guild_id} channel={chzzk_name}({chzzk_id})")
     except Exception as e:
-        print(f"[chzzk-auth] streamer DB insert failed: {e}")
+        print(f"[chzzk-auth] streamer DB error: {e}")
         return RedirectResponse(f"{dashboard_url}?error=db_error")
 
     return RedirectResponse(f"{dashboard_url}?success=streamer_added")
 
 
+# ── 팔로우 역할 부여 ──────────────────────────────────────────────────────────
+
 async def _assign_follower_roles(guild_id: str, discord_user_id: str, months: int) -> None:
     """팔로우 개월 수(months)를 기준으로 역할 부여. 이미 계산된 값을 받아 API 중복 호출 방지."""
     db = await get_db()
 
-    # 새 다중 티어 테이블 우선 사용
     tiers = await (await db.execute(
         "SELECT months, role_id FROM chzzk_follow_roles WHERE guild_id=? ORDER BY months ASC",
         (int(guild_id),)
     )).fetchall()
 
     if not tiers:
-        # 구버전 fallback: follow_role_1month / follow_role_3month
         sub = await (await db.execute(
             "SELECT follow_role_1month, follow_role_3month, "
             "follow_months_tier1, follow_months_tier2 "
@@ -256,6 +320,8 @@ async def _assign_follower_roles(guild_id: str, discord_user_id: str, months: in
             await _add_role(guild_id, discord_user_id, str(tier["role_id"]))
             print(f"[chzzk-auth] assigned follow role {tier['role_id']} ({tier['months']}개월+)")
 
+
+# ── JWT state 빌더 ────────────────────────────────────────────────────────────
 
 def _build_state(guild_id: str, discord_user_id: str) -> str:
     payload = {
@@ -290,6 +356,8 @@ def _err(msg: str, guild_id: str = "") -> RedirectResponse:
     gid = f"&guild_id={quote(guild_id)}" if guild_id else ""
     return RedirectResponse(f"{FRONTEND_URL}/verify?error={quote(msg)}{gid}")
 
+
+# ── OAuth 엔드포인트 ──────────────────────────────────────────────────────────
 
 @router.get("/streamer-login")
 async def chzzk_streamer_login(
@@ -353,7 +421,7 @@ async def chzzk_callback(
     if not discord_user_id:
         return _err("discord_user_missing", guild_id)
 
-    # ── Chzzk code → access_token 교환 ──────────────────────────────────────
+    # ── Chzzk code → token 교환 ──────────────────────────────────────────────
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             token_resp = await client.post(
@@ -367,11 +435,16 @@ async def chzzk_callback(
                 },
             )
             print(f"[chzzk-auth] token status={token_resp.status_code} body={token_resp.text[:300]}")
-            token_data   = token_resp.json()
-            access_token = token_data.get("content", {}).get("accessToken")
+            token_data = token_resp.json()
     except Exception as e:
         print(f"[chzzk-auth] token request failed: {e}")
         return _err("oauth_failed", guild_id)
+
+    content          = token_data.get("content", {})
+    access_token     = content.get("accessToken")
+    refresh_token    = content.get("refreshToken")
+    expires_in       = content.get("expiresIn", 86400)
+    token_expires_at = int(time.time()) + expires_in
 
     if not access_token:
         print(f"[chzzk-auth] No accessToken in response: {token_data}")
@@ -380,14 +453,18 @@ async def chzzk_callback(
     # ── 스트리머 등록 플로우 ──────────────────────────────────────────────────
     if flow_type == "streamer":
         return await _handle_streamer_registration(
-            state_data, access_token, guild_id
+            state_data, access_token, refresh_token, token_expires_at, guild_id
         )
 
-    # ── 치지직 채널명 조회 ────────────────────────────────────────────────────
-    channel_name = await _get_chzzk_channel_name(access_token)
+    # ── 시청자 인증 플로우 ────────────────────────────────────────────────────
 
-    # ── 치지직 팔로우 정보 조회 (날짜 기반) ────────────────────────────────
-    follow_date, follow_days, is_following = await _get_follow_info_for_guild(guild_id, access_token)
+    # 치지직 채널 정보 (channelId + channelName) 조회
+    viewer_info       = await _get_chzzk_channel_info(access_token)
+    channel_name      = viewer_info.get("channelName") or viewer_info.get("channelId")
+    viewer_channel_id = viewer_info.get("channelId")
+
+    # 스트리머 토큰으로 팔로우 여부 확인
+    follow_date, follow_days, is_following = await _get_follow_info_for_guild(guild_id, viewer_channel_id)
     tier_months = max(0, follow_days // 30) if follow_days >= 0 else 0
 
     # ── DB에 인증 이력 + 팔로우 정보 기록 ───────────────────────────────────
@@ -395,19 +472,21 @@ async def chzzk_callback(
         db = await get_db()
         await db.execute(
             """INSERT INTO chzzk_verifications
-                   (guild_id, user_id, verified_at, tier_months, follow_months, follow_date, follow_days)
-               VALUES(?,?,?,?,?,?,?)
+                   (guild_id, user_id, verified_at, tier_months, follow_months,
+                    follow_date, follow_days, chzzk_channel_id)
+               VALUES(?,?,?,?,?,?,?,?)
                ON CONFLICT(guild_id, user_id) DO UPDATE SET
                    verified_at=excluded.verified_at,
                    tier_months=excluded.tier_months,
                    follow_months=excluded.follow_months,
                    follow_date=excluded.follow_date,
-                   follow_days=excluded.follow_days""",
+                   follow_days=excluded.follow_days,
+                   chzzk_channel_id=excluded.chzzk_channel_id""",
             (int(guild_id), int(discord_user_id), time.time(),
-             tier_months, tier_months, follow_date, follow_days),
+             tier_months, tier_months, follow_date, follow_days, viewer_channel_id),
         )
         await db.commit()
-        print(f"[chzzk-auth] saved follow info: date={follow_date} days={follow_days} is_following={is_following}")
+        print(f"[chzzk-auth] saved: date={follow_date} days={follow_days} is_following={is_following} chzzk_ch={viewer_channel_id}")
     except Exception as e:
         print(f"[chzzk-auth] DB write failed: {e}")
         return _err("db_error", guild_id)
@@ -419,34 +498,26 @@ async def chzzk_callback(
     )).fetchone()
 
     if not cfg:
-        print(f"[chzzk-auth] guild_config not found for guild {guild_id}")
         return _err("guild_not_configured", guild_id)
-
     if not cfg["verified_role_id"]:
-        print(f"[chzzk-auth] verified_role_id not set for guild {guild_id}")
         return _err("role_not_configured", guild_id)
 
     if cfg["unverified_role_id"]:
-        ok = await _remove_role(guild_id, discord_user_id, str(cfg["unverified_role_id"]))
-        if not ok:
-            print(f"[chzzk-auth] Failed to remove unverified role for user {discord_user_id}")
+        await _remove_role(guild_id, discord_user_id, str(cfg["unverified_role_id"]))
 
     ok = await _add_role(guild_id, discord_user_id, str(cfg["verified_role_id"]))
     if not ok:
-        print(f"[chzzk-auth] Failed to add verified role for user {discord_user_id}")
         return _err("role_assign_failed", guild_id)
 
-    # ── 치지직 채널명 → Discord 서버 닉네임 설정 ────────────────────────────
+    # 치지직 채널명 → Discord 서버 닉네임
     if channel_name:
         await _set_discord_nickname(guild_id, discord_user_id, channel_name)
-    else:
-        print(f"[chzzk-auth] No channel name found, skipping nickname change")
 
-    # ── 팔로우 역할 부여 (팔로우한 경우만) ─────────────────────────────────
+    # 팔로우 역할 부여
     if is_following:
         await _assign_follower_roles(guild_id, discord_user_id, tier_months)
     else:
-        print(f"[chzzk-auth] user {discord_user_id} does not follow the streamer — no follow roles assigned")
+        print(f"[chzzk-auth] user {discord_user_id} not following → no follow roles")
 
     follow_param = f"&follow_days={follow_days}" if is_following else "&follow=none"
     return RedirectResponse(f"{FRONTEND_URL}/verify?success=1&guild_id={quote(guild_id)}{follow_param}")
