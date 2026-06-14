@@ -143,35 +143,49 @@ async def _get_fresh_streamer_token(guild_id: str) -> str | None:
     return at
 
 
-# ── 팔로우 체크 ───────────────────────────────────────────────────────────────
+# ── 팔로우 체크 공통 헬퍼 ─────────────────────────────────────────────────────
 
-async def _get_follow_info(viewer_channel_id: str, streamer_token: str) -> tuple[str | None, int, bool]:
+def _extract_date_from_item(item: dict) -> str | None:
+    return (
+        item.get("createdDate")
+        or item.get("followDate")
+        or item.get("createdAt")
+        or item.get("followedAt")
+    )
+
+
+async def _search_followers_page(
+    search_channel_id: str,
+    token: str,
+    label: str,
+) -> tuple[str | None, int, bool]:
     """
-    스트리머 토큰으로 GET /open/v1/channels/followers 를 페이지네이션.
-    응답에서 viewer_channel_id 를 찾아 팔로우 날짜/경과일/여부 반환.
-    Returns: (follow_date_str | None, follow_days, is_following)
+    GET /open/v1/channels/followers 를 페이지네이션하여 search_channel_id 검색.
+    어떤 토큰을 쓰느냐에 따라 의미가 다름:
+      - viewer 토큰 → viewer가 팔로우하는 채널 목록 (팔로잉) 에서 streamer 검색
+      - streamer 토큰 → streamer의 팔로워 목록에서 viewer 검색
     """
     headers = {
-        "Authorization": f"Bearer {streamer_token}",
+        "Authorization": f"Bearer {token}",
         "Client-Id": CHZZK_CLIENT_ID,
         "Accept": "application/json",
     }
     page      = 0
     page_size = 50
-    max_pages = 40  # 최대 2000명까지 탐색
+    max_pages = 40
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             while page < max_pages:
                 resp = await client.get(
                     CHZZK_FOLLOWERS_URL,
                     headers=headers,
                     params={"page": page, "size": page_size},
                 )
-                print(f"[chzzk-auth] followers page={page} status={resp.status_code} body={resp.text[:600]}")
+                print(f"[chzzk-auth][{label}] page={page} status={resp.status_code} body={resp.text[:600]}")
 
                 if resp.status_code != 200:
-                    print(f"[chzzk-auth] followers API error HTTP {resp.status_code}")
+                    print(f"[chzzk-auth][{label}] API error HTTP {resp.status_code}")
                     break
 
                 data    = resp.json()
@@ -184,46 +198,131 @@ async def _get_follow_info(viewer_channel_id: str, streamer_token: str) -> tuple
                     items = []
 
                 if not items:
-                    print(f"[chzzk-auth] followers: no more items at page={page}")
+                    print(f"[chzzk-auth][{label}] no more items at page={page}")
                     break
 
                 for item in items:
-                    if item.get("channelId") == viewer_channel_id:
-                        date_str = (
-                            item.get("createdDate")
-                            or item.get("followDate")
-                            or item.get("createdAt")
-                        )
+                    if item.get("channelId") == search_channel_id:
+                        date_str = _extract_date_from_item(item)
                         if date_str:
                             days = _days_since(date_str)
-                            print(f"[chzzk-auth] follow found: channelId={viewer_channel_id} date={date_str} days={days}")
+                            print(f"[chzzk-auth][{label}] FOUND id={search_channel_id} date={date_str} days={days}")
                             return date_str, days, True
-                        print(f"[chzzk-auth] follow found but no date: item={item}")
+                        print(f"[chzzk-auth][{label}] FOUND but no date: {item}")
                         return None, 0, True
 
                 if len(items) < page_size:
                     break
                 page += 1
 
-        print(f"[chzzk-auth] follow: viewer {viewer_channel_id} not in streamer's follower list")
+        print(f"[chzzk-auth][{label}] id={search_channel_id} NOT FOUND in list")
 
     except Exception as e:
-        print(f"[chzzk-auth] follow check error: {repr(e)}")
+        print(f"[chzzk-auth][{label}] error: {repr(e)}")
 
     return None, -1, False
 
 
-async def _get_follow_info_for_guild(guild_id: str, viewer_channel_id: str | None) -> tuple[str | None, int, bool]:
-    """스트리머 토큰으로 팔로워 목록에서 viewer_channel_id 검색."""
+async def _check_unofficial_follow(
+    streamer_channel_id: str,
+    viewer_access_token: str,
+) -> tuple[str | None, int, bool]:
+    """
+    비공식 채널 API (api.chzzk.naver.com) 로 팔로우 여부 확인.
+    응답 JSON에서 가능한 follow 관련 필드 모두 시도.
+    """
+    url = f"https://api.chzzk.naver.com/service/v1/channels/{streamer_channel_id}"
+    headers = {
+        "Authorization": f"Bearer {viewer_access_token}",
+        "Client-Id": CHZZK_CLIENT_ID,
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, headers=headers)
+            print(f"[chzzk-auth][unofficial] status={resp.status_code} body={resp.text[:1000]}")
+            if resp.status_code == 200:
+                data    = resp.json()
+                content = data.get("content") or {}
+                print(f"[chzzk-auth][unofficial] content keys={list(content.keys())}")
+
+                # following이 dict인 경우 (streaming info 포함 가능)
+                following = content.get("following") or content.get("streamingProperty", {}).get("following")
+                if isinstance(following, dict):
+                    date_str = _extract_date_from_item(following) or following.get("followDate")
+                    if date_str:
+                        days = _days_since(date_str)
+                        print(f"[chzzk-auth][unofficial] follow via dict date={date_str} days={days}")
+                        return date_str, days, True
+                    if following:
+                        return None, 0, True
+
+                # 직접 필드
+                is_following = bool(content.get("isFollowing") or content.get("isFollowed"))
+                date_str = (
+                    content.get("followDate")
+                    or content.get("followedAt")
+                    or content.get("followStartDate")
+                )
+                if is_following or date_str:
+                    days = _days_since(date_str) if date_str else 0
+                    print(f"[chzzk-auth][unofficial] follow via direct field date={date_str} days={days}")
+                    return date_str, days, True
+
+    except Exception as e:
+        print(f"[chzzk-auth][unofficial] error: {repr(e)}")
+
+    return None, -1, False
+
+
+async def _get_follow_info_for_guild(
+    guild_id: str,
+    viewer_channel_id: str | None,
+    viewer_access_token: str,
+) -> tuple[str | None, int, bool]:
+    """
+    3가지 방법으로 팔로우 여부를 순차 시도:
+      1. 비공식 채널 API (viewer 토큰) — follow 필드 직접 파싱
+      2. 공식 팔로워 API (viewer 토큰) — streamer channelId 검색
+         (이 경우 followers = 내가 팔로우하는 목록)
+      3. 공식 팔로워 API (streamer 토큰) — viewer channelId 검색
+         (이 경우 followers = 스트리머의 팔로워 목록)
+    """
     if not viewer_channel_id:
         print(f"[chzzk-auth] viewer channelId unknown → skip follow check")
         return None, -1, False
 
-    streamer_token = await _get_fresh_streamer_token(guild_id)
-    if not streamer_token:
+    db = await get_db()
+    sub = await (await db.execute(
+        "SELECT chzzk_channel_id FROM chzzk_subscriptions WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone()
+    if not sub:
+        print(f"[chzzk-auth] no streamer for guild {guild_id}")
         return None, -1, False
 
-    return await _get_follow_info(viewer_channel_id, streamer_token)
+    streamer_channel_id = sub["chzzk_channel_id"]
+
+    # ── 방법 1: 비공식 채널 API ───────────────────────────────────────────────
+    result = await _check_unofficial_follow(streamer_channel_id, viewer_access_token)
+    if result[2]:
+        return result
+
+    # ── 방법 2: 공식 API - viewer 토큰으로 streamer 검색 (팔로잉 목록 가정) ──
+    result = await _search_followers_page(streamer_channel_id, viewer_access_token, "viewer-following")
+    if result[2]:
+        return result
+
+    # ── 방법 3: 공식 API - streamer 토큰으로 viewer 검색 (팔로워 목록 가정) ──
+    streamer_token = await _get_fresh_streamer_token(guild_id)
+    if streamer_token:
+        result = await _search_followers_page(viewer_channel_id, streamer_token, "streamer-followers")
+        if result[2]:
+            return result
+
+    print(f"[chzzk-auth] all 3 follow checks failed guild={guild_id} viewer={viewer_channel_id} streamer={streamer_channel_id}")
+    return None, -1, False
 
 
 # ── 스트리머 등록 플로우 ──────────────────────────────────────────────────────
@@ -463,8 +562,10 @@ async def chzzk_callback(
     channel_name      = viewer_info.get("channelName") or viewer_info.get("channelId")
     viewer_channel_id = viewer_info.get("channelId")
 
-    # 스트리머 토큰으로 팔로우 여부 확인
-    follow_date, follow_days, is_following = await _get_follow_info_for_guild(guild_id, viewer_channel_id)
+    # 3단계 방식으로 팔로우 여부 확인
+    follow_date, follow_days, is_following = await _get_follow_info_for_guild(
+        guild_id, viewer_channel_id, access_token
+    )
     tier_months = max(0, follow_days // 30) if follow_days >= 0 else 0
 
     # ── DB에 인증 이력 + 팔로우 정보 기록 ───────────────────────────────────
