@@ -65,6 +65,7 @@ class AllInOneBot(commands.Bot):
 
     async def on_ready(self):
         print(f"\n봇 준비 완료: {self.user} (ID: {self.user.id})")
+        print(f"등록된 슬래시 커맨드: {[c.name for c in self.tree.get_commands()]}")
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,

@@ -133,6 +133,56 @@ class HelpCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    @app_commands.command(name="도움말", description="NexBot의 모든 기능과 명령어를 한눈에 확인합니다.")
+    async def 도움말(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="📖 NexBot 도움말",
+            description=(
+                "치지직 알림, 서버 관리, 레벨링, 입장 인증까지!\n"
+                "모든 설정은 **웹 대시보드**에서 쉽게 관리하세요.\n"
+                "👉 [nexbot.shop](https://nexbot.shop)"
+            ),
+            color=0x5865F2,
+        )
+        embed.add_field(
+            name="📺 치지직",
+            value="`/치지직설정` `/치지직알림테스트`\n대시보드에서 방송 알림을 설정하세요.",
+            inline=False,
+        )
+        embed.add_field(
+            name="⭐ 레벨링",
+            value="`/랭크` `/리더보드` `/xp설정`\n채팅 활동으로 레벨을 올리세요.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🛡️ 서버 관리",
+            value="`/경고` `/추방` `/차단` `/뮤트` `/청소`\n서버를 깔끔하게 관리하세요.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🎭 리액션 역할",
+            value="`/반응역할` `/반응역할제거` `/반응역할목록`\n이모지 반응으로 역할을 자동 부여합니다.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🔐 입장 인증",
+            value="`/입장메시지설정`\n치지직 OAuth 연동 인증을 설정합니다.",
+            inline=False,
+        )
+        embed.add_field(
+            name="📋 시청자 참여",
+            value="`/시참등록` `/시참취소` `/시참목록` `/시참시작`\n스트리머 시참 대기열을 관리합니다.",
+            inline=False,
+        )
+        embed.add_field(
+            name="ℹ️ 기타",
+            value="`/봇정보` `/핑` `/명령어` `/관리명령어`",
+            inline=False,
+        )
+        embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+        embed.set_footer(text="NexBot • nexbot.shop  |  /명령어 로 간단 목록 확인")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @app_commands.command(name="명령어", description="NexBot 일반 명령어 목록을 확인합니다.")
     async def cmd_list(self, interaction: discord.Interaction):
         await interaction.response.send_message(
