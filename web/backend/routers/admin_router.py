@@ -145,10 +145,30 @@ async def chzzk_all(user: dict = Depends(_require_owner)):
     ]
 
 
+async def _fetch_member_name(client: httpx.AsyncClient, guild_id: str, user_id: str) -> str:
+    try:
+        resp = await client.get(
+            f"{_DISCORD}/guilds/{guild_id}/members/{user_id}",
+            headers={"Authorization": f"Bot {_BOT_TOKEN}"},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return (
+                data.get("nick")
+                or data.get("user", {}).get("global_name")
+                or data.get("user", {}).get("username")
+                or user_id
+            )
+    except Exception:
+        pass
+    return user_id
+
+
 @router.get("/verifications")
 async def verifications(
     user: dict = Depends(_require_owner),
-    limit: int = Query(200, le=1000),
+    limit: int = Query(100, le=500),
 ):
     db   = await get_db()
     rows = await (await db.execute(
@@ -157,7 +177,24 @@ async def verifications(
            ORDER BY verified_at DESC LIMIT ?""",
         (limit,)
     )).fetchall()
-    return [dict(r) for r in rows]
+
+    guilds_list    = await _bot_guilds()
+    guild_name_map = {g["id"]: g["name"] for g in guilds_list}
+
+    async with httpx.AsyncClient() as client:
+        user_names = await asyncio.gather(*[
+            _fetch_member_name(client, str(r["guild_id"]), str(r["user_id"]))
+            for r in rows
+        ])
+
+    return [
+        {
+            **dict(r),
+            "guild_name": guild_name_map.get(str(r["guild_id"]), str(r["guild_id"])),
+            "user_name":  name,
+        }
+        for r, name in zip(rows, user_names)
+    ]
 
 
 @router.get("/chzzk/search")

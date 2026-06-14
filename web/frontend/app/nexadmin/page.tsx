@@ -42,7 +42,9 @@ interface ChzzkSub {
   discord_channel: number; mention_everyone: number; is_live: number;
 }
 interface Verification {
-  guild_id: number; user_id: number; tier_months: number; verified_at: number;
+  guild_id: number; guild_name: string;
+  user_id: number; user_name: string;
+  tier_months: number; verified_at: number;
 }
 interface SearchResult {
   channelId: string; channelName: string; channelImageUrl: string | null;
@@ -52,8 +54,8 @@ interface SearchResult {
 // ── 서브 컴포넌트 ─────────────────────────────────────────────────────────────
 
 function StatCard({
-  icon, label, value, color,
-}: { icon: React.ReactNode; label: string; value: number | null; color: string }) {
+  icon, label, sub, value, color,
+}: { icon: React.ReactNode; label: string; sub?: string; value: number | null; color: string }) {
   return (
     <div className="rounded-2xl border border-border bg-bg-card p-5 flex items-center gap-4">
       <div className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0"
@@ -65,6 +67,7 @@ function StatCard({
           {value === null ? <span className="animate-pulse text-muted">—</span> : value.toLocaleString()}
         </p>
         <p className="text-xs text-muted mt-0.5">{label}</p>
+        {sub && <p className="text-[10px] text-muted/60 mt-0.5">{sub}</p>}
       </div>
     </div>
   );
@@ -97,15 +100,15 @@ function AddChzzkModal({
   onClose: () => void;
   onAdded: () => void;
 }) {
-  const [keyword, setKeyword]         = useState("");
-  const [results, setResults]         = useState<SearchResult[]>([]);
-  const [searching, setSearching]     = useState(false);
-  const [selected, setSelected]       = useState<SearchResult | null>(null);
-  const [guildId, setGuildId]         = useState("");
-  const [channelId, setChannelId]     = useState("");
-  const [mentionAll, setMentionAll]   = useState(false);
-  const [saving, setSaving]           = useState(false);
-  const [error, setError]             = useState("");
+  const [keyword, setKeyword]       = useState("");
+  const [results, setResults]       = useState<SearchResult[]>([]);
+  const [searching, setSearching]   = useState(false);
+  const [selected, setSelected]     = useState<SearchResult | null>(null);
+  const [guildId, setGuildId]       = useState("");
+  const [channelId, setChannelId]   = useState("");
+  const [mentionAll, setMentionAll] = useState(false);
+  const [saving, setSaving]         = useState(false);
+  const [error, setError]           = useState("");
   const debounce = useRef<NodeJS.Timeout | null>(null);
 
   const search = (kw: string) => {
@@ -152,11 +155,10 @@ function AddChzzkModal({
       <div className="bg-bg-card border border-border rounded-2xl w-full max-w-lg shadow-2xl"
            onClick={(e) => e.stopPropagation()}>
         <div className="p-4 border-b border-border flex items-center justify-between">
-          <h3 className="font-semibold text-white">치지직 구독 추가 (관리자)</h3>
+          <h3 className="font-semibold text-white">치지직 구독 추가</h3>
           <button onClick={onClose} className="text-muted hover:text-white"><X size={18} /></button>
         </div>
         <div className="p-4 space-y-4">
-          {/* 스트리머 검색 */}
           {!selected ? (
             <>
               <div className="relative">
@@ -250,15 +252,15 @@ function AddChzzkModal({
 // ── 메인 페이지 ───────────────────────────────────────────────────────────────
 
 export default function AdminPage() {
-  const [authed, setAuthed]           = useState<boolean | null>(null);
-  const [overview, setOverview]       = useState<Overview | null>(null);
-  const [guilds, setGuilds]           = useState<Guild[]>([]);
-  const [chzzk, setChzzk]            = useState<ChzzkSub[]>([]);
-  const [verifs, setVerifs]           = useState<Verification[]>([]);
-  const [loading, setLoading]         = useState(true);
-  const [showAdd, setShowAdd]         = useState(false);
-  const [activeTab, setActiveTab]     = useState<"guilds" | "chzzk" | "verifs">("guilds");
-  const [refreshing, setRefreshing]   = useState(false);
+  const [authed, setAuthed]         = useState<boolean | null>(null);
+  const [overview, setOverview]     = useState<Overview | null>(null);
+  const [guilds, setGuilds]         = useState<Guild[]>([]);
+  const [chzzk, setChzzk]          = useState<ChzzkSub[]>([]);
+  const [verifs, setVerifs]         = useState<Verification[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [showAdd, setShowAdd]       = useState(false);
+  const [activeTab, setActiveTab]   = useState<"guilds" | "chzzk" | "follow">("guilds");
+  const [refreshing, setRefreshing] = useState(false);
 
   const loadAll = async () => {
     setRefreshing(true);
@@ -303,26 +305,11 @@ export default function AdminPage() {
   }
 
   if (authed === false) {
-    const myId = (() => {
-      try {
-        const token = localStorage.getItem("token");
-        if (!token) return null;
-        const payload = JSON.parse(atob(token.split(".")[1]));
-        return payload.sub as string;
-      } catch { return null; }
-    })();
     return (
       <div className="min-h-screen bg-bg flex flex-col items-center justify-center gap-4">
         <ShieldCheck size={48} className="text-muted" />
         <p className="text-fg font-semibold text-lg">접근 권한이 없습니다.</p>
         <p className="text-muted text-sm">봇 오너 계정으로 로그인한 후 접근하세요.</p>
-        {myId && (
-          <div className="bg-bg-card border border-border rounded-xl px-5 py-3 text-center space-y-1">
-            <p className="text-xs text-muted">현재 로그인된 Discord ID</p>
-            <p className="font-mono text-sm text-white select-all">{myId}</p>
-            <p className="text-xs text-muted">이 값이 서버의 <code className="text-accent">OWNER_ID</code> 환경변수와 일치해야 합니다.</p>
-          </div>
-        )}
         <a href="/" className="text-accent text-sm hover:underline flex items-center gap-1">
           <LogIn size={14} /> 홈으로
         </a>
@@ -333,7 +320,7 @@ export default function AdminPage() {
   const tabs = [
     { key: "guilds", label: `서버 목록 (${guilds.length})` },
     { key: "chzzk",  label: `치지직 구독 (${chzzk.length})` },
-    { key: "verifs", label: `팔로우 인증 (${verifs.length})` },
+    { key: "follow", label: `팔로우 관리 (${verifs.length})` },
   ] as const;
 
   return (
@@ -371,11 +358,11 @@ export default function AdminPage() {
 
         {/* 통계 카드 */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <StatCard icon={<Server size={22} />}    label="등록 서버"      value={overview?.guild_count    ?? null} color="#5865F2" />
-          <StatCard icon={<Users size={22} />}     label="총 유저 (상위30)" value={overview?.total_users  ?? null} color="#57F287" />
-          <StatCard icon={<Radio size={22} />}     label="치지직 구독"    value={overview?.chzzk_subs    ?? null} color="#03C75A" />
-          <StatCard icon={<ShieldCheck size={22} />} label="치지직 인증"  value={overview?.verifications ?? null} color="#EB459E" />
-          <StatCard icon={<Bot size={22} />}       label="오늘 방문자"    value={overview?.today_visitors ?? null} color="#FEE75C" />
+          <StatCard icon={<Server size={22} />}      label="등록 서버"     value={overview?.guild_count    ?? null} color="#5865F2" />
+          <StatCard icon={<Users size={22} />}       label="멤버 수 합계"  sub="상위 30개 서버 멤버 수 합산 (중복 포함)" value={overview?.total_users ?? null} color="#57F287" />
+          <StatCard icon={<Radio size={22} />}       label="치지직 구독"   value={overview?.chzzk_subs    ?? null} color="#03C75A" />
+          <StatCard icon={<ShieldCheck size={22} />} label="치지직 인증"   value={overview?.verifications ?? null} color="#EB459E" />
+          <StatCard icon={<Bot size={22} />}         label="오늘 방문자"   value={overview?.today_visitors ?? null} color="#FEE75C" />
         </div>
 
         {/* 탭 */}
@@ -401,9 +388,9 @@ export default function AdminPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-bg-card/60">
-                  <th className="text-left px-4 py-3 text-muted font-medium">#</th>
-                  <th className="text-left px-4 py-3 text-muted font-medium">서버</th>
-                  <th className="text-left px-4 py-3 text-muted font-medium hidden md:table-cell">ID</th>
+                  <th className="text-left px-4 py-3 text-muted font-medium w-8">#</th>
+                  <th className="text-left px-4 py-3 text-muted font-medium">서버명</th>
+                  <th className="text-left px-4 py-3 text-muted font-medium">서버 ID</th>
                   <th className="text-left px-4 py-3 text-muted font-medium">치지직</th>
                 </tr>
               </thead>
@@ -414,10 +401,10 @@ export default function AdminPage() {
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <GuildIcon guild={g} />
-                        <span className="font-medium text-white truncate max-w-[180px]">{g.name}</span>
+                        <span className="font-medium text-white">{g.name}</span>
                       </div>
                     </td>
-                    <td className="px-4 py-3 font-mono text-xs text-muted hidden md:table-cell">{g.id}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-muted">{g.id}</td>
                     <td className="px-4 py-3">
                       {g.chzzk_name
                         ? <span className="text-xs px-2 py-0.5 rounded-full bg-chzzk/10 text-chzzk border border-chzzk/20">{g.chzzk_name}</span>
@@ -447,8 +434,8 @@ export default function AdminPage() {
                 <thead>
                   <tr className="border-b border-border bg-bg-card/60">
                     <th className="text-left px-4 py-3 text-muted font-medium">스트리머</th>
-                    <th className="text-left px-4 py-3 text-muted font-medium">서버</th>
-                    <th className="text-left px-4 py-3 text-muted font-medium hidden md:table-cell">채널 ID</th>
+                    <th className="text-left px-4 py-3 text-muted font-medium">서버명</th>
+                    <th className="text-left px-4 py-3 text-muted font-medium">서버 ID</th>
                     <th className="text-left px-4 py-3 text-muted font-medium">상태</th>
                     <th className="px-4 py-3" />
                   </tr>
@@ -467,8 +454,8 @@ export default function AdminPage() {
                           <span className="font-medium text-white">{sub.chzzk_name}</span>
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-muted truncate max-w-[120px]">{sub.guild_name}</td>
-                      <td className="px-4 py-3 font-mono text-xs text-muted hidden md:table-cell">{sub.discord_channel}</td>
+                      <td className="px-4 py-3 text-white">{sub.guild_name}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-muted">{sub.guild_id}</td>
                       <td className="px-4 py-3">
                         {sub.is_live
                           ? <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ color: "#03C75A", background: "rgba(3,199,90,0.15)" }}>LIVE</span>
@@ -491,17 +478,25 @@ export default function AdminPage() {
           </div>
         )}
 
-        {/* ── 팔로우 인증 탭 ── */}
-        {activeTab === "verifs" && (
-          <div className="space-y-3">
-            <p className="text-sm text-muted">
-              치지직 OAuth 인증을 완료한 유저 목록입니다. <code className="text-accent bg-black/20 px-1 rounded">tier_months</code>는 인증 당시 기록된 구독 개월 수입니다.
-            </p>
+        {/* ── 팔로우 관리 탭 ── */}
+        {activeTab === "follow" && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted">
+                치지직 OAuth 인증을 완료한 유저 목록입니다.{" "}
+                <code className="text-accent bg-black/20 px-1 rounded">tier_months</code>는 인증 당시 기록된 구독 개월 수입니다.
+                <br />
+                <span className="text-xs">스트리머 추가는 <button onClick={() => setActiveTab("chzzk")} className="text-accent underline">치지직 구독 탭</button>에서 진행하세요.</span>
+              </p>
+            </div>
+
             <div className="rounded-2xl border border-border overflow-hidden">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-bg-card/60">
+                    <th className="text-left px-4 py-3 text-muted font-medium">서버명</th>
                     <th className="text-left px-4 py-3 text-muted font-medium">서버 ID</th>
+                    <th className="text-left px-4 py-3 text-muted font-medium">유저명</th>
                     <th className="text-left px-4 py-3 text-muted font-medium">유저 ID</th>
                     <th className="text-left px-4 py-3 text-muted font-medium">구독 개월</th>
                     <th className="text-left px-4 py-3 text-muted font-medium hidden md:table-cell">인증 일시</th>
@@ -510,8 +505,10 @@ export default function AdminPage() {
                 <tbody className="divide-y divide-border">
                   {verifs.map((v, i) => (
                     <tr key={i} className="hover:bg-bg-hover/40 transition-colors">
+                      <td className="px-4 py-3 text-white font-medium">{v.guild_name}</td>
                       <td className="px-4 py-3 font-mono text-xs text-muted">{v.guild_id}</td>
-                      <td className="px-4 py-3 font-mono text-xs text-white">{v.user_id}</td>
+                      <td className="px-4 py-3 text-white">{v.user_name}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-muted">{v.user_id}</td>
                       <td className="px-4 py-3">
                         <span className={`text-sm font-bold ${
                           v.tier_months >= 3 ? "text-chzzk" :
@@ -526,7 +523,7 @@ export default function AdminPage() {
                     </tr>
                   ))}
                   {verifs.length === 0 && (
-                    <tr><td colSpan={4} className="px-4 py-8 text-center text-muted">인증 데이터 없음</td></tr>
+                    <tr><td colSpan={6} className="px-4 py-8 text-center text-muted">인증 데이터 없음</td></tr>
                   )}
                 </tbody>
               </table>
