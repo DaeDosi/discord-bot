@@ -91,8 +91,10 @@ export default function ChzzkPage() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [roles, setRoles]       = useState<Role[]>([]);
   const [followerRoles, setFollowerRoles] = useState<FollowerRoles>({
-    follow_role_1month: null,
-    follow_role_3month: null,
+    follow_role_1month:  null,
+    follow_role_3month:  null,
+    follow_months_tier1: 1,
+    follow_months_tier2: 3,
   });
   const [savingRoles, setSavingRoles] = useState(false);
   const [savedRoles, setSavedRoles]   = useState(false);
@@ -102,7 +104,7 @@ export default function ChzzkPage() {
       api.chzzk.list(guildId),
       api.guilds.channels(guildId),
       api.guilds.roles(guildId),
-      api.chzzk.getFollowerRoles(guildId).catch(() => ({ follow_role_1month: null, follow_role_3month: null })),
+      api.chzzk.getFollowerRoles(guildId).catch(() => ({ follow_role_1month: null, follow_role_3month: null, follow_months_tier1: 1, follow_months_tier2: 3 })),
     ]);
     setSubs(s);
     setChannels(ch);
@@ -219,8 +221,17 @@ export default function ChzzkPage() {
             </p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="label">1개월 이상 구독자 역할</label>
+            {/* 티어 1 */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <input
+                  type="number" min={1} max={36}
+                  className="input w-20 text-center"
+                  value={followerRoles.follow_months_tier1}
+                  onChange={(e) => setFollowerRoles((p) => ({ ...p, follow_months_tier1: Number(e.target.value) || 1 }))}
+                />
+                <span className="text-sm text-muted">개월 이상 구독자 역할</span>
+              </div>
               <select
                 className="select"
                 value={followerRoles.follow_role_1month ?? ""}
@@ -232,8 +243,17 @@ export default function ChzzkPage() {
                 ))}
               </select>
             </div>
-            <div>
-              <label className="label">3개월 이상 구독자 역할</label>
+            {/* 티어 2 */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <input
+                  type="number" min={1} max={36}
+                  className="input w-20 text-center"
+                  value={followerRoles.follow_months_tier2}
+                  onChange={(e) => setFollowerRoles((p) => ({ ...p, follow_months_tier2: Number(e.target.value) || 3 }))}
+                />
+                <span className="text-sm text-muted">개월 이상 구독자 역할</span>
+              </div>
               <select
                 className="select"
                 value={followerRoles.follow_role_3month ?? ""}

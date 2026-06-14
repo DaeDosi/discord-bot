@@ -57,8 +57,10 @@ export interface ChzzkSubscription {
 }
 
 export interface FollowerRoles {
-  follow_role_1month: string | null;
-  follow_role_3month: string | null;
+  follow_role_1month:  string | null;
+  follow_role_3month:  string | null;
+  follow_months_tier1: number;
+  follow_months_tier2: number;
 }
 
 export interface VerificationConfig {

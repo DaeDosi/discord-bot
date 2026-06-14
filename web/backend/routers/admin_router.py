@@ -1,4 +1,5 @@
 import os
+import time as _time
 import asyncio
 import httpx
 from datetime import date
@@ -16,6 +17,54 @@ _DISCORD   = "https://discord.com/api/v10"
 _CHZZK_API = "https://api.chzzk.naver.com"
 _CHZZK_HDR = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
+# ── 봇 서버 목록 캐시 (2분 TTL) ───────────────────────────────────────────────
+_guilds_cache: list[dict] = []
+_guilds_cache_ts: float = 0.0
+_guilds_lock: asyncio.Lock | None = None
+_GUILDS_TTL = 120  # seconds
+
+
+def _get_lock() -> asyncio.Lock:
+    global _guilds_lock
+    if _guilds_lock is None:
+        _guilds_lock = asyncio.Lock()
+    return _guilds_lock
+
+
+async def _bot_guilds() -> list[dict]:
+    global _guilds_cache, _guilds_cache_ts
+    now = _time.monotonic()
+    if _guilds_cache and now - _guilds_cache_ts < _GUILDS_TTL:
+        return _guilds_cache
+    async with _get_lock():
+        now = _time.monotonic()
+        if _guilds_cache and now - _guilds_cache_ts < _GUILDS_TTL:
+            return _guilds_cache
+        guilds: list[dict] = []
+        after: str | None = None
+        async with httpx.AsyncClient(timeout=15) as client:
+            while True:
+                params: dict = {"limit": 200}
+                if after:
+                    params["after"] = after
+                resp = await client.get(
+                    f"{_DISCORD}/users/@me/guilds",
+                    headers={"Authorization": f"Bot {_BOT_TOKEN}"},
+                    params=params,
+                )
+                if resp.status_code != 200:
+                    break
+                batch = resp.json()
+                if not batch:
+                    break
+                guilds.extend(batch)
+                if len(batch) < 200:
+                    break
+                after = batch[-1]["id"]
+        _guilds_cache = guilds
+        _guilds_cache_ts = _time.monotonic()
+        return guilds
+
 
 # ── 오너 전용 권한 검증 ────────────────────────────────────────────────────────
 
@@ -26,30 +75,6 @@ async def _require_owner(user: dict = Depends(get_current_user)) -> dict:
 
 
 # ── 내부 헬퍼 ─────────────────────────────────────────────────────────────────
-
-async def _bot_guilds() -> list[dict]:
-    guilds, after = [], None
-    async with httpx.AsyncClient(timeout=15) as client:
-        while True:
-            params: dict = {"limit": 200}
-            if after:
-                params["after"] = after
-            resp = await client.get(
-                f"{_DISCORD}/users/@me/guilds",
-                headers={"Authorization": f"Bot {_BOT_TOKEN}"},
-                params=params,
-            )
-            if resp.status_code != 200:
-                break
-            batch = resp.json()
-            if not batch:
-                break
-            guilds.extend(batch)
-            if len(batch) < 200:
-                break
-            after = batch[-1]["id"]
-    return guilds
-
 
 async def _guild_member_count(client: httpx.AsyncClient, guild_id: str) -> int:
     try:
@@ -66,6 +91,26 @@ async def _guild_member_count(client: httpx.AsyncClient, guild_id: str) -> int:
     return 0
 
 
+async def _fetch_member_name(client: httpx.AsyncClient, guild_id: str, user_id: str) -> str:
+    try:
+        resp = await client.get(
+            f"{_DISCORD}/guilds/{guild_id}/members/{user_id}",
+            headers={"Authorization": f"Bot {_BOT_TOKEN}"},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return (
+                data.get("nick")
+                or data.get("user", {}).get("global_name")
+                or data.get("user", {}).get("username")
+                or user_id
+            )
+    except Exception:
+        pass
+    return user_id
+
+
 # ── 엔드포인트 ────────────────────────────────────────────────────────────────
 
 @router.get("/overview")
@@ -74,7 +119,6 @@ async def overview(user: dict = Depends(_require_owner)):
     guilds_list = await _bot_guilds()
     guild_count = len(guilds_list)
 
-    # 상위 30개 서버 멤버 수 병렬 조회
     async with httpx.AsyncClient() as client:
         counts = await asyncio.gather(*[
             _guild_member_count(client, g["id"])
@@ -132,7 +176,8 @@ async def chzzk_all(user: dict = Depends(_require_owner)):
     rows        = await (await db.execute(
         """SELECT id, guild_id, chzzk_channel_id, chzzk_name, chzzk_image_url,
                   discord_channel, mention_everyone, is_live,
-                  follow_role_1month, follow_role_3month
+                  follow_role_1month, follow_role_3month,
+                  follow_months_tier1, follow_months_tier2
            FROM chzzk_subscriptions ORDER BY guild_id"""
     )).fetchall()
 
@@ -143,26 +188,6 @@ async def chzzk_all(user: dict = Depends(_require_owner)):
         {**dict(r), "guild_name": guild_name_map.get(str(r["guild_id"]), str(r["guild_id"]))}
         for r in rows
     ]
-
-
-async def _fetch_member_name(client: httpx.AsyncClient, guild_id: str, user_id: str) -> str:
-    try:
-        resp = await client.get(
-            f"{_DISCORD}/guilds/{guild_id}/members/{user_id}",
-            headers={"Authorization": f"Bot {_BOT_TOKEN}"},
-            timeout=5,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            return (
-                data.get("nick")
-                or data.get("user", {}).get("global_name")
-                or data.get("user", {}).get("username")
-                or user_id
-            )
-    except Exception:
-        pass
-    return user_id
 
 
 @router.get("/verifications")
@@ -194,6 +219,63 @@ async def verifications(
             "user_name":  name,
         }
         for r, name in zip(rows, user_names)
+    ]
+
+
+@router.get("/follow-stats")
+async def follow_stats(user: dict = Depends(_require_owner)):
+    """서버별 치지직 구독 + 인증 유저 팔로우 현황을 묶어서 반환."""
+    db = await get_db()
+
+    subs = await (await db.execute(
+        """SELECT guild_id, chzzk_name, chzzk_image_url,
+                  follow_months_tier1, follow_months_tier2
+           FROM chzzk_subscriptions"""
+    )).fetchall()
+
+    if not subs:
+        return []
+
+    guild_ids    = [s["guild_id"] for s in subs]
+    placeholders = ",".join("?" * len(guild_ids))
+
+    verif_rows = await (await db.execute(
+        f"""SELECT guild_id, user_id, tier_months, verified_at
+            FROM chzzk_verifications
+            WHERE guild_id IN ({placeholders})
+            ORDER BY tier_months DESC, verified_at DESC""",
+        guild_ids,
+    )).fetchall()
+
+    guilds_list    = await _bot_guilds()
+    guild_name_map = {g["id"]: g["name"] for g in guilds_list}
+
+    async with httpx.AsyncClient() as client:
+        user_names = await asyncio.gather(*[
+            _fetch_member_name(client, str(v["guild_id"]), str(v["user_id"]))
+            for v in verif_rows
+        ])
+
+    verif_by_guild: dict[int, list] = {}
+    for v, name in zip(verif_rows, user_names):
+        verif_by_guild.setdefault(v["guild_id"], []).append({
+            "user_id":     v["user_id"],
+            "user_name":   name,
+            "tier_months": v["tier_months"],
+            "verified_at": v["verified_at"],
+        })
+
+    return [
+        {
+            "guild_id":          s["guild_id"],
+            "guild_name":        guild_name_map.get(str(s["guild_id"]), str(s["guild_id"])),
+            "chzzk_name":        s["chzzk_name"],
+            "chzzk_image_url":   s["chzzk_image_url"],
+            "follow_months_tier1": s["follow_months_tier1"] or 1,
+            "follow_months_tier2": s["follow_months_tier2"] or 3,
+            "users":             verif_by_guild.get(s["guild_id"], []),
+        }
+        for s in subs
     ]
 
 

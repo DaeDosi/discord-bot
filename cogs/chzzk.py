@@ -165,7 +165,8 @@ class ChzzkCog(commands.Cog):
 
         db = await get_db()
         sub = await (await db.execute(
-            "SELECT follow_role_1month, follow_role_3month "
+            "SELECT follow_role_1month, follow_role_3month, "
+            "follow_months_tier1, follow_months_tier2 "
             "FROM chzzk_subscriptions WHERE guild_id=?",
             (interaction.guild_id,)
         )).fetchone()
@@ -186,6 +187,8 @@ class ChzzkCog(commands.Cog):
                 "❌ 치지직 인증을 완료한 유저가 없습니다.", ephemeral=True
             )
 
+        tier1_months = int(sub["follow_months_tier1"] or 1)
+        tier2_months = int(sub["follow_months_tier2"] or 3)
         role_1m = interaction.guild.get_role(int(sub["follow_role_1month"])) if sub["follow_role_1month"] else None
         role_3m = interaction.guild.get_role(int(sub["follow_role_3month"])) if sub["follow_role_3month"] else None
 
@@ -197,11 +200,11 @@ class ChzzkCog(commands.Cog):
                 continue
             months = int(row["tier_months"] or 0)
             try:
-                if months >= 3 and role_3m:
+                if months >= tier2_months and role_3m:
                     if role_3m not in member.roles:
                         await member.add_roles(role_3m, reason="/팔로우불러오기")
                     assigned_3m += 1
-                elif months >= 1 and role_1m:
+                elif months >= tier1_months and role_1m:
                     if role_1m not in member.roles:
                         await member.add_roles(role_1m, reason="/팔로우불러오기")
                     assigned_1m += 1
@@ -213,8 +216,8 @@ class ChzzkCog(commands.Cog):
             description="저장된 구독 개월 수 기준으로 역할을 재적용했습니다.",
             color=0x57F287,
         )
-        embed.add_field(name="1개월+ 역할 부여", value=f"{assigned_1m}명", inline=True)
-        embed.add_field(name="3개월+ 역할 부여", value=f"{assigned_3m}명", inline=True)
+        embed.add_field(name=f"{tier1_months}개월+ 역할 부여", value=f"{assigned_1m}명", inline=True)
+        embed.add_field(name=f"{tier2_months}개월+ 역할 부여", value=f"{assigned_3m}명", inline=True)
         embed.add_field(name="건너뜀(미가입 등)", value=f"{skipped}명", inline=True)
         embed.set_footer(text="구독 현황 갱신은 유저가 재인증(치지직 OAuth)하면 자동 업데이트됩니다.")
         await interaction.followup.send(embed=embed, ephemeral=True)

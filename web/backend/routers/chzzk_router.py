@@ -45,7 +45,8 @@ async def list_subscriptions(
     rows = await (await db.execute(
         "SELECT id, discord_channel, chzzk_channel_id, chzzk_name, "
         "chzzk_image_url, is_live, mention_role_id, custom_message, "
-        "follow_role_1month, follow_role_3month "
+        "follow_role_1month, follow_role_3month, "
+        "follow_months_tier1, follow_months_tier2 "
         "FROM chzzk_subscriptions WHERE guild_id=?",
         (int(guild_id),)
     )).fetchall()
@@ -167,8 +168,10 @@ async def delete_subscription(
 
 # ── 팔로워 역할 설정 ──────────────────────────────────────────────────────────
 class FollowerRoles(BaseModel):
-    follow_role_1month: Optional[str] = None
-    follow_role_3month: Optional[str] = None
+    follow_role_1month:   Optional[str] = None
+    follow_role_3month:   Optional[str] = None
+    follow_months_tier1:  Optional[int] = 1
+    follow_months_tier2:  Optional[int] = 3
 
 
 @router.get("/{guild_id}/follower-roles")
@@ -179,14 +182,21 @@ async def get_follower_roles(
 ):
     db = await get_db()
     row = await (await db.execute(
-        "SELECT follow_role_1month, follow_role_3month FROM chzzk_subscriptions WHERE guild_id=?",
+        """SELECT follow_role_1month, follow_role_3month,
+                  follow_months_tier1, follow_months_tier2
+           FROM chzzk_subscriptions WHERE guild_id=?""",
         (int(guild_id),)
     )).fetchone()
     if not row:
-        return {"follow_role_1month": None, "follow_role_3month": None}
+        return {
+            "follow_role_1month": None, "follow_role_3month": None,
+            "follow_months_tier1": 1,   "follow_months_tier2": 3,
+        }
     return {
-        "follow_role_1month": str(row["follow_role_1month"]) if row["follow_role_1month"] else None,
-        "follow_role_3month": str(row["follow_role_3month"]) if row["follow_role_3month"] else None,
+        "follow_role_1month":  str(row["follow_role_1month"])  if row["follow_role_1month"]  else None,
+        "follow_role_3month":  str(row["follow_role_3month"])  if row["follow_role_3month"]  else None,
+        "follow_months_tier1": row["follow_months_tier1"] or 1,
+        "follow_months_tier2": row["follow_months_tier2"] or 3,
     }
 
 
@@ -206,11 +216,14 @@ async def update_follower_roles(
         raise HTTPException(status_code=404, detail="먼저 치지직 채널을 등록해주세요.")
     await db.execute(
         """UPDATE chzzk_subscriptions
-           SET follow_role_1month=?, follow_role_3month=?
+           SET follow_role_1month=?, follow_role_3month=?,
+               follow_months_tier1=?, follow_months_tier2=?
            WHERE guild_id=?""",
         (
-            int(body.follow_role_1month) if body.follow_role_1month else None,
-            int(body.follow_role_3month) if body.follow_role_3month else None,
+            int(body.follow_role_1month)  if body.follow_role_1month  else None,
+            int(body.follow_role_3month)  if body.follow_role_3month  else None,
+            body.follow_months_tier1 or 1,
+            body.follow_months_tier2 or 3,
             int(guild_id),
         )
     )
