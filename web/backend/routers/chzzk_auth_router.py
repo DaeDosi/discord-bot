@@ -69,8 +69,7 @@ async def _set_discord_nickname(guild_id: str, user_id: str, nickname: str) -> N
         print(f"[chzzk-auth] Discord PATCH nick error: {e}")
 
 
-CHZZK_SUBSCRIPTION_URL = "https://openapi.chzzk.naver.com/open/v1/channels/{channel_id}/subscriptions/me"
-CHZZK_FOLLOW_URL       = "https://openapi.chzzk.naver.com/open/v1/channels/{channel_id}/follows/me"
+CHZZK_FOLLOWERS_URL = "https://openapi.chzzk.naver.com/open/v1/channels/followers"
 
 
 def _days_since(date_str: str) -> int:
@@ -87,52 +86,55 @@ def _days_since(date_str: str) -> int:
 
 async def _get_follow_info(channel_id: str, access_token: str) -> tuple[str | None, int, bool]:
     """
-    해당 스트리머에 대한 팔로우 정보를 반환합니다.
+    GET /open/v1/channels/followers 를 페이지네이션하여 target channel_id 를 찾아 팔로우 정보 반환.
     Returns: (follow_date_str, follow_days, is_following)
-      - follow_date_str : ISO8601 팔로우 시작일 or None
-      - follow_days     : 팔로우 경과 일수 (팔로우 안 했으면 -1)
-      - is_following    : 팔로우 여부
     """
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Client-Id": CHZZK_CLIENT_ID,
         "Accept": "application/json",
     }
+    page      = 0
+    page_size = 50
+    max_pages = 40  # 최대 2000개 채널까지 탐색
+
     try:
-        url = CHZZK_FOLLOW_URL.format(channel_id=channel_id)
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, headers=headers)
-            print(f"[chzzk-auth] follow check status={resp.status_code} body={resp.text[:400]}")
-
-            if resp.status_code == 200:
-                data    = resp.json()
-                content = data.get("content")
-
-                # content가 null이거나 빈 dict면 팔로우 안 함
-                if not content:
-                    print("[chzzk-auth] follow: not following (empty content)")
-                    return None, -1, False
-
-                date_str = (
-                    content.get("followDate")
-                    or content.get("createdAt")
-                    or content.get("followedAt")
-                    or content.get("followingDate")
-                    or content.get("follow_date")
+            while page < max_pages:
+                resp = await client.get(
+                    CHZZK_FOLLOWERS_URL,
+                    headers=headers,
+                    params={"page": page, "size": page_size},
                 )
-                if date_str:
-                    days = _days_since(date_str)
-                    print(f"[chzzk-auth] follow date={date_str} → {days} days")
-                    return date_str, days, True
+                print(f"[chzzk-auth] followers page={page} status={resp.status_code} body={resp.text[:600]}")
 
-                # content는 있는데 날짜 필드가 없는 경우 (팔로우 안 함 응답 형식 가능)
-                print(f"[chzzk-auth] follow: content exists but no date field — content={content}")
-                return None, -1, False
+                if resp.status_code != 200:
+                    print(f"[chzzk-auth] followers API error: HTTP {resp.status_code}")
+                    break
 
-            elif resp.status_code in (404, 400):
-                # 팔로우 안 함
-                print(f"[chzzk-auth] follow: not following (HTTP {resp.status_code})")
-                return None, -1, False
+                data    = resp.json()
+                content = data.get("content") or {}
+                items   = content.get("data") if isinstance(content, dict) else (content if isinstance(content, list) else [])
+
+                if not items:
+                    print(f"[chzzk-auth] followers: no more items at page={page}")
+                    break
+
+                for item in items:
+                    if item.get("channelId") == channel_id:
+                        date_str = item.get("createdDate") or item.get("followDate") or item.get("createdAt")
+                        if date_str:
+                            days = _days_since(date_str)
+                            print(f"[chzzk-auth] follow found: channelId={channel_id} date={date_str} days={days}")
+                            return date_str, days, True
+                        print(f"[chzzk-auth] follow found but no date field: item={item}")
+                        return None, 0, True
+
+                if len(items) < page_size:
+                    break
+                page += 1
+
+        print(f"[chzzk-auth] follow: channelId={channel_id} not found in followers list")
 
     except Exception as e:
         print(f"[chzzk-auth] follow check error: {repr(e)}")
@@ -303,6 +305,7 @@ async def chzzk_streamer_login(
         "clientId":    CHZZK_CLIENT_ID,
         "redirectUri": CHZZK_REDIRECT_URI,
         "state":       state,
+        "scope":       "채널 팔로워 조회",
     }
     return RedirectResponse(f"{CHZZK_AUTH_URL}?{urlencode(params)}")
 
@@ -322,6 +325,7 @@ async def chzzk_login(
         "clientId":    CHZZK_CLIENT_ID,
         "redirectUri": CHZZK_REDIRECT_URI,
         "state":       state,
+        "scope":       "채널 팔로워 조회",
     }
     return RedirectResponse(f"{CHZZK_AUTH_URL}?{urlencode(params)}")
 

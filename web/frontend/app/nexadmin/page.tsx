@@ -299,6 +299,73 @@ function FollowStatCard({ stat }: { stat: FollowStat }) {
   );
 }
 
+// ── 인증 상세/삭제 모달 ───────────────────────────────────────────────────────
+function VerifDetailModal({
+  verif, onClose, onDeleted,
+}: { verif: VerifUser; onClose: () => void; onDeleted: () => void }) {
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError]       = useState("");
+
+  const del = async () => {
+    if (!confirm(`${verif.user_name} (${verif.user_id})의 인증 기록을 삭제하시겠습니까?`)) return;
+    setDeleting(true); setError("");
+    try {
+      await adminFetch(`/api/admin/verifications/${verif.guild_id}/${verif.user_id}`, { method: "DELETE" });
+      onDeleted(); onClose();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "삭제 실패");
+    } finally { setDeleting(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+         onClick={onClose}>
+      <div className="bg-bg-card border border-border rounded-2xl w-full max-w-sm shadow-2xl"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="p-4 border-b border-border flex items-center justify-between">
+          <h3 className="font-semibold text-white text-sm">인증 상세 정보</h3>
+          <button onClick={onClose} className="text-muted hover:text-white"><X size={16} /></button>
+        </div>
+        <div className="p-4 space-y-3 text-sm">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+            <span className="text-muted">유저명</span>
+            <span className="text-white font-medium">{verif.user_name}</span>
+            <span className="text-muted">유저 ID</span>
+            <span className="font-mono text-xs text-fg select-all">{verif.user_id}</span>
+            <span className="text-muted">서버</span>
+            <span className="text-fg">{verif.guild_name}</span>
+            <span className="text-muted">서버 ID</span>
+            <span className="font-mono text-xs text-fg select-all">{verif.guild_id}</span>
+            <span className="text-muted">팔로우 여부</span>
+            <span className={verif.is_following ? "text-accent font-semibold" : "text-danger font-semibold"}>
+              {verif.is_following ? "팔로우 중" : "팔로우 안 함"}
+            </span>
+            {verif.is_following && (
+              <>
+                <span className="text-muted">팔로우 시작일</span>
+                <span className="text-fg">
+                  {verif.follow_date ? new Date(verif.follow_date).toLocaleDateString("ko-KR") : "—"}
+                </span>
+                <span className="text-muted">팔로우 경과</span>
+                <span className="text-accent font-semibold">
+                  {verif.follow_days}일 ({verif.tier_months}개월)
+                </span>
+              </>
+            )}
+            <span className="text-muted">인증 일시</span>
+            <span className="text-fg text-xs">{new Date(verif.verified_at * 1000).toLocaleString("ko-KR")}</span>
+          </div>
+          {error && <p className="text-danger text-xs">{error}</p>}
+          <button onClick={del} disabled={deleting}
+                  className="w-full mt-2 px-3 py-2 rounded-lg text-sm font-medium bg-danger/10 hover:bg-danger/20 text-danger border border-danger/30 transition-colors disabled:opacity-50">
+            {deleting ? "삭제 중..." : "인증 기록 삭제"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── 메인 페이지 ───────────────────────────────────────────────────────────────
 
 export default function AdminPage() {
@@ -312,6 +379,7 @@ export default function AdminPage() {
   const [showAdd, setShowAdd]         = useState(false);
   const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow">("guilds");
   const [refreshing, setRefreshing]   = useState(false);
+  const [selectedVerif, setSelectedVerif] = useState<VerifUser | null>(null);
 
   const loadAll = async () => {
     setRefreshing(true);
@@ -391,6 +459,19 @@ export default function AdminPage() {
     <div className="min-h-screen bg-bg text-fg">
       {showAdd && (
         <AddChzzkModal guilds={guilds} onClose={() => setShowAdd(false)} onAdded={loadAll} />
+      )}
+      {selectedVerif && (
+        <VerifDetailModal
+          verif={selectedVerif}
+          onClose={() => setSelectedVerif(null)}
+          onDeleted={() => {
+            setVerifUsers((prev) => prev
+              ? prev.filter((v) => !(v.guild_id === selectedVerif.guild_id && v.user_id === selectedVerif.user_id))
+              : prev
+            );
+            setSelectedVerif(null);
+          }}
+        />
       )}
 
       <header className="border-b border-border bg-bg-card/60 backdrop-blur sticky top-0 z-40">
@@ -499,7 +580,11 @@ export default function AdminPage() {
                   </thead>
                   <tbody className="divide-y divide-border">
                     {verifUsers.map((v) => (
-                      <tr key={`${v.guild_id}-${v.user_id}`} className="hover:bg-bg-hover/40 transition-colors">
+                      <tr
+                        key={`${v.guild_id}-${v.user_id}`}
+                        onClick={() => setSelectedVerif(v)}
+                        className="hover:bg-bg-hover/40 transition-colors cursor-pointer"
+                      >
                         <td className="px-4 py-3 text-white font-medium">{v.user_name}</td>
                         <td className="px-4 py-3 font-mono text-xs text-muted select-all hidden md:table-cell">{v.user_id}</td>
                         <td className="px-4 py-3 text-sm text-muted">{v.guild_name}</td>

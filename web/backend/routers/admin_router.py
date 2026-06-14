@@ -204,7 +204,11 @@ async def verifications(
     )).fetchall()
 
     guilds_list    = await _bot_guilds()
+    guild_id_set   = {g["id"] for g in guilds_list}
     guild_name_map = {g["id"]: g["name"] for g in guilds_list}
+
+    # 봇이 더 이상 없는 서버의 인증 기록은 제외
+    rows = [r for r in rows if str(r["guild_id"]) in guild_id_set]
 
     async with httpx.AsyncClient() as client:
         user_names = await asyncio.gather(*[
@@ -217,12 +221,29 @@ async def verifications(
         fd = r["follow_days"] if r["follow_days"] is not None else -1
         result.append({
             **dict(r),
-            "guild_name":  guild_name_map.get(str(r["guild_id"]), str(r["guild_id"])),
-            "user_name":   name,
-            "follow_days": fd,
+            "guild_name":   guild_name_map.get(str(r["guild_id"]), str(r["guild_id"])),
+            "user_name":    name,
+            "follow_days":  fd,
             "is_following": fd >= 0,
         })
     return result
+
+
+@router.delete("/verifications/{guild_id}/{user_id}")
+async def delete_verification(
+    guild_id: int,
+    user_id:  int,
+    user: dict = Depends(_require_owner),
+):
+    db = await get_db()
+    result = await db.execute(
+        "DELETE FROM chzzk_verifications WHERE guild_id=? AND user_id=?",
+        (guild_id, user_id),
+    )
+    await db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="인증 기록을 찾을 수 없습니다.")
+    return {"ok": True}
 
 
 @router.get("/follow-stats")
