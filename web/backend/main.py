@@ -19,6 +19,7 @@ from routers.chzzk_router      import router as chzzk_router
 from routers.stats_router      import router as stats_router
 from routers.verify_router     import router as verify_router
 from routers.chzzk_auth_router import router as chzzk_auth_router
+from routers.admin_router      import router as admin_router
 
 
 @asynccontextmanager
@@ -46,6 +47,7 @@ app.include_router(chzzk_router)
 app.include_router(stats_router)
 app.include_router(verify_router)
 app.include_router(chzzk_auth_router)
+app.include_router(admin_router)
 
 
 @app.get("/auth/callback")
