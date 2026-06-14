@@ -9,9 +9,8 @@ from database import init_db, close_db, get_db
 
 load_dotenv()
 
-TOKEN         = os.getenv("DISCORD_TOKEN")
-OWNER_ID      = int(os.getenv("OWNER_ID", 0))
-TEST_GUILD_ID = int(os.getenv("TEST_GUILD_ID", 0))
+TOKEN    = os.getenv("DISCORD_TOKEN")
+OWNER_ID = int(os.getenv("OWNER_ID", 0))
 
 COGS = [
     "cogs.welcome",
@@ -51,13 +50,7 @@ class AllInOneBot(commands.Bot):
         from cogs.verification import VerifyView
         self.add_view(VerifyView())
 
-        # 특정 길드에 즉시 동기화 (TEST_GUILD_ID 설정 시)
-        if TEST_GUILD_ID:
-            guild_obj = discord.Object(id=TEST_GUILD_ID)
-            self.tree.copy_global_to(guild=guild_obj)
-            await self.tree.sync(guild=guild_obj)
-            print(f"길드 {TEST_GUILD_ID}에 슬래시 커맨드 즉시 동기화 완료")
-        # 글로벌 동기화 (전파에 최대 1시간 소요)
+        # 글로벌 동기화 — guild 복사 없이 global 하나만 등록해 중복 방지
         synced = await self.tree.sync()
         print(f"슬래시 커맨드 {len(synced)}개 글로벌 동기화 완료")
 
@@ -65,7 +58,6 @@ class AllInOneBot(commands.Bot):
 
     async def on_ready(self):
         print(f"\n봇 준비 완료: {self.user} (ID: {self.user.id})")
-        print(f"등록된 슬래시 커맨드: {[c.name for c in self.tree.get_commands()]}")
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
@@ -75,33 +67,26 @@ class AllInOneBot(commands.Bot):
 
     async def on_guild_join(self, guild: discord.Guild):
         print(f"서버 참가: {guild.name} (ID: {guild.id})")
-        # 봇이 서버에 (재)참가할 때 해당 서버에 즉시 슬래시 커맨드 등록
-        try:
-            self.tree.copy_global_to(guild=guild)
-            synced = await self.tree.sync(guild=guild)
-            print(f"[guild_join] {guild.name} 슬래시 커맨드 {len(synced)}개 즉시 동기화")
-        except Exception as e:
-            print(f"[guild_join] 동기화 실패: {e}")
 
-    # 봇 오너 전용: @봇이름 sync  →  슬래시 커맨드 강제 동기화
+    # 봇 오너 전용: @봇이름 sync  →  글로벌 슬래시 커맨드 강제 동기화
     @commands.command(name="sync")
     @commands.is_owner()
-    async def sync_commands(self, ctx: commands.Context, guild_id: str = ""):
-        if guild_id:
-            guild_obj = discord.Object(id=int(guild_id))
-            self.tree.copy_global_to(guild=guild_obj)
-            synced = await self.tree.sync(guild=guild_obj)
-            await ctx.send(f"✅ 길드 {guild_id}에 {len(synced)}개 커맨드 즉시 동기화 완료")
-        else:
-            synced = await self.tree.sync()
-            await ctx.send(f"✅ 글로벌 {len(synced)}개 커맨드 동기화 완료 (Discord 반영까지 최대 1시간)")
+    async def sync_commands(self, ctx: commands.Context):
+        synced = await self.tree.sync()
+        await ctx.send(f"✅ 글로벌 {len(synced)}개 커맨드 동기화 완료")
+
+    # 봇 오너 전용: @봇이름 clearguild  →  이 서버의 guild 명령어 전부 삭제 (중복 제거)
+    @commands.command(name="clearguild")
+    @commands.is_owner()
+    async def clear_guild_commands(self, ctx: commands.Context):
+        self.tree.clear_commands(guild=ctx.guild)
+        await self.tree.sync(guild=ctx.guild)
+        await ctx.send("✅ 이 서버의 guild 명령어 전부 삭제됨 (global 명령어만 남음)")
 
     async def on_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ):
-        if isinstance(error, app_commands.CheckFailure):
-            msg = "이 명령어를 사용할 권한이 없습니다."
-        elif isinstance(error, app_commands.MissingPermissions):
+        if isinstance(error, (app_commands.CheckFailure, app_commands.MissingPermissions)):
             msg = "이 명령어를 사용할 권한이 없습니다."
         elif isinstance(error, app_commands.BotMissingPermissions):
             perms = ", ".join(error.missing_permissions)
