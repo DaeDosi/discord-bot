@@ -106,7 +106,6 @@ async def _send_live_notification(row, live: dict, info: dict):
         "fields": [
             {"name": "카테고리", "value": category, "inline": False},
         ],
-        "footer":    {"text": "chzzk.junah.dev"},
         "timestamp": now_iso,
     }
     if thumbnail:
@@ -128,7 +127,6 @@ async def _send_offline_notification(row, info: dict):
     embed = {
         "title":     f"[{name}]님이 방송을 종료했습니다.",
         "color":     0x636E72,
-        "footer":    {"text": "chzzk.junah.dev"},
         "timestamp": now_iso,
     }
     err = await _send_discord_message(row["discord_channel"], "", embed)

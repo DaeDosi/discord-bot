@@ -219,7 +219,8 @@ async def _handle_streamer_registration(
     return RedirectResponse(f"{dashboard_url}?success=streamer_added")
 
 
-async def _assign_follower_roles(guild_id: str, discord_user_id: str, access_token: str) -> None:
+async def _assign_follower_roles(guild_id: str, discord_user_id: str, months: int) -> None:
+    """팔로우 개월 수(months)를 기준으로 역할 부여. 이미 계산된 값을 받아 API 중복 호출 방지."""
     db = await get_db()
 
     # 새 다중 티어 테이블 우선 사용
@@ -231,14 +232,13 @@ async def _assign_follower_roles(guild_id: str, discord_user_id: str, access_tok
     if not tiers:
         # 구버전 fallback: follow_role_1month / follow_role_3month
         sub = await (await db.execute(
-            "SELECT chzzk_channel_id, follow_role_1month, follow_role_3month, "
+            "SELECT follow_role_1month, follow_role_3month, "
             "follow_months_tier1, follow_months_tier2 "
             "FROM chzzk_subscriptions WHERE guild_id=?",
             (int(guild_id),)
         )).fetchone()
         if not sub or (not sub["follow_role_1month"] and not sub["follow_role_3month"]):
             return
-        months = await _get_tier_months(guild_id, access_token)
         t1 = int(sub["follow_months_tier1"] or 1)
         t2 = int(sub["follow_months_tier2"] or 3)
         if months >= t2 and sub["follow_role_3month"]:
@@ -247,7 +247,6 @@ async def _assign_follower_roles(guild_id: str, discord_user_id: str, access_tok
             await _add_role(guild_id, discord_user_id, str(sub["follow_role_1month"]))
         return
 
-    months = await _get_tier_months(guild_id, access_token)
     print(f"[chzzk-auth] follow months={months}, tiers={[(t['months'], t['role_id']) for t in tiers]}")
     for tier in tiers:
         if months >= tier["months"]:
@@ -431,7 +430,7 @@ async def chzzk_callback(
     else:
         print(f"[chzzk-auth] No channel name found, skipping nickname change")
 
-    # ── 팔로워 역할 부여 ─────────────────────────────────────────────────────
-    await _assign_follower_roles(guild_id, discord_user_id, access_token)
+    # ── 팔로워 역할 부여 (이미 계산된 tier_months 재사용) ───────────────────
+    await _assign_follower_roles(guild_id, discord_user_id, tier_months)
 
     return RedirectResponse(f"{FRONTEND_URL}/verify?success=1&guild_id={quote(guild_id)}")
