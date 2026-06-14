@@ -2,6 +2,7 @@ import os
 import time
 import asyncio
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from database import init_db, close_db, get_db
@@ -73,6 +74,32 @@ class AllInOneBot(commands.Bot):
 
     async def on_guild_join(self, guild: discord.Guild):
         print(f"서버 참가: {guild.name} (ID: {guild.id})")
+
+    async def on_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ):
+        if isinstance(error, app_commands.CheckFailure):
+            msg = "이 명령어를 사용할 권한이 없습니다."
+        elif isinstance(error, app_commands.MissingPermissions):
+            msg = "이 명령어를 사용할 권한이 없습니다."
+        elif isinstance(error, app_commands.BotMissingPermissions):
+            perms = ", ".join(error.missing_permissions)
+            msg = f"봇에 필요한 권한이 없습니다: **{perms}**"
+        elif isinstance(error, app_commands.CommandOnCooldown):
+            msg = f"잠시 후 다시 시도해주세요. ({error.retry_after:.1f}초)"
+        elif isinstance(error, app_commands.CommandNotFound):
+            return
+        else:
+            print(f"[app_command_error] {error}")
+            msg = "명령어 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            pass
 
     async def close(self):
         self.update_stats.cancel()

@@ -122,7 +122,7 @@ class ChzzkCog(commands.Cog):
         embed.add_field(name="카테고리", value=category, inline=False)
         if thumbnail:
             embed.set_image(url=thumbnail)
-        embed.set_footer(text="chzzk.junah.dev")
+        embed.set_footer(text="NexBot • nexbot.shop")
 
         mention = "@everyone " if bool(row.get("mention_everyone")) else ""
         content = f"{mention}[{name}]님이 방송을 시작했습니다!"
@@ -150,7 +150,7 @@ class ChzzkCog(commands.Cog):
             color=0x636E72,
             timestamp=discord.utils.utcnow(),
         )
-        embed.set_footer(text="chzzk.junah.dev")
+        embed.set_footer(text="NexBot • nexbot.shop")
         await ch.send(embed=embed)
 
     @monitor_loop.before_loop
@@ -234,7 +234,7 @@ class ChzzkCog(commands.Cog):
         embed.add_field(name="카테고리", value=category, inline=False)
         if thumbnail:
             embed.set_image(url=thumbnail)
-        embed.set_footer(text="chzzk.junah.dev")
+        embed.set_footer(text="NexBot • nexbot.shop")
 
         mention = "@everyone " if bool(row["mention_everyone"]) else ""
         view = discord.ui.View()
