@@ -164,62 +164,81 @@ class ChzzkCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         db = await get_db()
-        sub = await (await db.execute(
-            "SELECT follow_role_1month, follow_role_3month, "
-            "follow_months_tier1, follow_months_tier2 "
-            "FROM chzzk_subscriptions WHERE guild_id=?",
+
+        # 새 다중 티어 테이블에서 이 서버의 티어 목록 조회 (개월 수 내림차순)
+        tier_rows = await (await db.execute(
+            "SELECT months, role_id FROM chzzk_follow_roles WHERE guild_id=? ORDER BY months DESC",
             (interaction.guild_id,)
-        )).fetchone()
+        )).fetchall()
 
-        if not sub or (not sub["follow_role_1month"] and not sub["follow_role_3month"]):
-            return await interaction.followup.send(
-                "❌ 팔로워 역할이 설정되지 않았습니다. 대시보드 > 치지직에서 역할을 먼저 설정해주세요.",
-                ephemeral=True,
-            )
+        # 티어가 없으면 구버전 2-칼럼 fallback
+        if not tier_rows:
+            sub = await (await db.execute(
+                "SELECT follow_role_1month, follow_role_3month, "
+                "follow_months_tier1, follow_months_tier2 "
+                "FROM chzzk_subscriptions WHERE guild_id=?",
+                (interaction.guild_id,)
+            )).fetchone()
+            if not sub or (not sub["follow_role_1month"] and not sub["follow_role_3month"]):
+                return await interaction.followup.send(
+                    "❌ 팔로워 역할이 설정되지 않았습니다. 대시보드 > 치지직에서 역할 티어를 먼저 추가해주세요.",
+                    ephemeral=True,
+                )
+            tier1_months = int(sub["follow_months_tier1"] or 1)
+            tier2_months = int(sub["follow_months_tier2"] or 3)
+            tiers = []
+            if sub["follow_role_3month"]:
+                tiers.append((tier2_months, int(sub["follow_role_3month"])))
+            if sub["follow_role_1month"]:
+                tiers.append((tier1_months, int(sub["follow_role_1month"])))
+            tiers.sort(key=lambda x: x[0], reverse=True)
+        else:
+            tiers = [(int(r["months"]), int(r["role_id"])) for r in tier_rows]
 
-        rows = await (await db.execute(
+        verified_rows = await (await db.execute(
             "SELECT user_id, tier_months FROM chzzk_verifications WHERE guild_id=?",
             (interaction.guild_id,)
         )).fetchall()
 
-        if not rows:
+        if not verified_rows:
             return await interaction.followup.send(
                 "❌ 치지직 인증을 완료한 유저가 없습니다.", ephemeral=True
             )
 
-        tier1_months = int(sub["follow_months_tier1"] or 1)
-        tier2_months = int(sub["follow_months_tier2"] or 3)
-        role_1m = interaction.guild.get_role(int(sub["follow_role_1month"])) if sub["follow_role_1month"] else None
-        role_3m = interaction.guild.get_role(int(sub["follow_role_3month"])) if sub["follow_role_3month"] else None
+        # tier별 부여 카운터
+        tier_counts: dict[int, int] = {months: 0 for months, _ in tiers}
+        skipped = 0
 
-        assigned_1m = assigned_3m = skipped = 0
-        for row in rows:
+        for row in verified_rows:
             member = interaction.guild.get_member(int(row["user_id"]))
             if not member:
                 skipped += 1
                 continue
             months = int(row["tier_months"] or 0)
             try:
-                if months >= tier2_months and role_3m:
-                    if role_3m not in member.roles:
-                        await member.add_roles(role_3m, reason="/팔로우불러오기")
-                    assigned_3m += 1
-                elif months >= tier1_months and role_1m:
-                    if role_1m not in member.roles:
-                        await member.add_roles(role_1m, reason="/팔로우불러오기")
-                    assigned_1m += 1
+                for req_months, role_id in tiers:
+                    if months >= req_months:
+                        role = interaction.guild.get_role(role_id)
+                        if role and role not in member.roles:
+                            await member.add_roles(role, reason="/팔로우불러오기")
+                        tier_counts[req_months] = tier_counts.get(req_months, 0) + 1
+                        break  # 가장 높은 티어 하나만 부여
             except discord.Forbidden:
                 skipped += 1
 
         embed = discord.Embed(
             title="✅ 팔로워 역할 최신화 완료",
-            description="저장된 구독 개월 수 기준으로 역할을 재적용했습니다.",
+            description="저장된 팔로우 기간 기준으로 역할을 재적용했습니다.",
             color=0x57F287,
         )
-        embed.add_field(name=f"{tier1_months}개월+ 역할 부여", value=f"{assigned_1m}명", inline=True)
-        embed.add_field(name=f"{tier2_months}개월+ 역할 부여", value=f"{assigned_3m}명", inline=True)
+        for req_months, _ in sorted(tiers, key=lambda x: x[0]):
+            embed.add_field(
+                name=f"{req_months}개월+ 역할 부여",
+                value=f"{tier_counts.get(req_months, 0)}명",
+                inline=True,
+            )
         embed.add_field(name="건너뜀(미가입 등)", value=f"{skipped}명", inline=True)
-        embed.set_footer(text="구독 현황 갱신은 유저가 재인증(치지직 OAuth)하면 자동 업데이트됩니다.")
+        embed.set_footer(text="팔로우 기간 갱신은 유저가 재인증(치지직 OAuth)하면 자동 업데이트됩니다.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── /치지직설정 ──────────────────────────────────────────────────────────

@@ -95,5 +95,13 @@ export const api = {
       request<import("./types").FollowerRoles>(`/api/chzzk/${gid}/follower-roles`),
     saveFollowerRoles: (gid: string, data: import("./types").FollowerRoles) =>
       request(`/api/chzzk/${gid}/follower-roles`, { method: "PUT", body: JSON.stringify(data) }),
+    followTiers: {
+      list:   (gid: string) =>
+        request<import("./types").FollowRoleTier[]>(`/api/chzzk/${gid}/follow-tiers`),
+      add:    (gid: string, months: number, role_id: string) =>
+        request(`/api/chzzk/${gid}/follow-tiers`, { method: "POST", body: JSON.stringify({ months, role_id }) }),
+      remove: (gid: string, tierId: number) =>
+        request(`/api/chzzk/${gid}/follow-tiers/${tierId}`, { method: "DELETE" }),
+    },
   },
 };

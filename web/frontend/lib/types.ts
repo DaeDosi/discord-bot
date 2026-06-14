@@ -73,6 +73,12 @@ export interface VerificationConfig {
   embed_title?:            string;
 }
 
+export interface FollowRoleTier {
+  id:      number;
+  months:  number;
+  role_id: string;
+}
+
 export interface ChzzkSearchResult {
   channelId:       string;
   channelName:     string;

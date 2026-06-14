@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   description: "NexBot 서비스 이용에 관한 약관입니다.",
 };
 
-const EFFECTIVE_DATE = "2026년 6월 11일";
+const EFFECTIVE_DATE = "2026년 6월 14일";
 
 const sections = [
   {
@@ -29,9 +29,10 @@ const sections = [
         <p>서비스는 다음과 같은 기능을 제공합니다.</p>
         <ul className="space-y-2">
           {[
-            "치지직(Chzzk) 방송 알림 서비스 — 구독한 스트리머의 방송 시작·종료를 Discord 채널에 자동 알림",
+            "치지직(Chzzk) 방송 알림 서비스 — 구독한 스트리머의 방송 시작 시 Discord 채널에 자동 알림",
+            "치지직 팔로우 인증 시스템 — Chzzk OAuth 인증을 통해 팔로우 기간을 확인하고, 설정된 기간 조건에 따라 Discord 역할을 자동 부여 (최대 5개 티어 설정 가능)",
             "Discord 서버 레벨링 시스템 — 채팅 활동에 따른 XP 적립, 레벨업 알림, 역할 보상",
-            "서버 관리 기능 — 경고(/warn), 뮤트(/mute), 차단(/ban) 등 중재 도구 제공",
+            "서버 관리 기능 — 경고(/warn), 뮤트(/mute), 차단(/ban) 등 중재 도구, 환영/퇴장 메시지 설정",
             "웹 대시보드를 통한 설정 관리 — 서버별 봇 설정을 브라우저에서 직관적으로 관리",
           ].map((item) => (
             <li key={item} className="flex items-start gap-2.5">

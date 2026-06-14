@@ -2,9 +2,9 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Image from "next/image";
-import { Radio, Trash2, Bell, BellOff, Save, CheckCircle, ExternalLink } from "lucide-react";
+import { Radio, Trash2, Bell, BellOff, Save, CheckCircle, ExternalLink, Plus } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ChzzkSubscription, Channel, Role, FollowerRoles } from "@/lib/types";
+import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier } from "@/lib/types";
 
 const BACKEND = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -96,20 +96,43 @@ export default function ChzzkPage() {
     follow_months_tier1: 1,
     follow_months_tier2: 3,
   });
-  const [savingRoles, setSavingRoles] = useState(false);
-  const [savedRoles, setSavedRoles]   = useState(false);
+  const [savingRoles, setSavingRoles]   = useState(false);
+  const [savedRoles, setSavedRoles]     = useState(false);
+  const [followTiers, setFollowTiers]   = useState<FollowRoleTier[]>([]);
+  const [newMonths, setNewMonths]       = useState("");
+  const [newRole, setNewRole]           = useState("");
+  const [addingTier, setAddingTier]     = useState(false);
 
   const load = async () => {
-    const [s, ch, r, fr] = await Promise.all([
+    const [s, ch, r, fr, ft] = await Promise.all([
       api.chzzk.list(guildId),
       api.guilds.channels(guildId),
       api.guilds.roles(guildId),
       api.chzzk.getFollowerRoles(guildId).catch(() => ({ follow_role_1month: null, follow_role_3month: null, follow_months_tier1: 1, follow_months_tier2: 3 })),
+      api.chzzk.followTiers.list(guildId).catch(() => [] as FollowRoleTier[]),
     ]);
     setSubs(s);
     setChannels(ch);
     setRoles(r);
     setFollowerRoles(fr);
+    setFollowTiers(ft);
+  };
+
+  const addTier = async () => {
+    if (!newMonths || !newRole) return;
+    setAddingTier(true);
+    try {
+      await api.chzzk.followTiers.add(guildId, parseInt(newMonths), newRole);
+      const ft = await api.chzzk.followTiers.list(guildId);
+      setFollowTiers(ft);
+      setNewMonths(""); setNewRole("");
+    } catch {}
+    setAddingTier(false);
+  };
+
+  const removeTier = async (tierId: number) => {
+    await api.chzzk.followTiers.remove(guildId, tierId).catch(() => {});
+    setFollowTiers((p) => p.filter((t) => t.id !== tierId));
   };
 
   useEffect(() => {
@@ -210,68 +233,75 @@ export default function ChzzkPage() {
         </p>
       )}
 
-      {/* 팔로워 역할 설정 */}
+      {/* 팔로워 역할 티어 관리 */}
       {subs.length > 0 && (
         <div className="card space-y-4">
           <div>
-            <h2 className="font-semibold text-white">팔로워 역할 자동 부여</h2>
+            <h2 className="font-semibold text-white">팔로우 역할 티어</h2>
             <p className="text-muted text-xs mt-1">
-              치지직 OAuth 인증 시 구독 기간에 따라 역할을 자동으로 부여합니다.
-              Discord에서 <code className="text-accent bg-black/20 px-1 rounded">/팔로우불러오기</code>로 기존 인증 유저에게 재적용할 수 있습니다.
+              치지직 OAuth 인증 시 팔로우 기간에 따라 역할을 자동으로 부여합니다.
+              티어를 여러 개 추가할 수 있으며, 조건을 만족하는 모든 역할이 부여됩니다.
+              <br />
+              Discord에서 <code className="text-accent bg-black/20 px-1 rounded">/팔로우불러오기</code>로 기존 인증 유저에 재적용할 수 있습니다.
             </p>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* 티어 1 */}
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <input
-                  type="number" min={1} max={36}
-                  className="input w-20 text-center"
-                  value={followerRoles.follow_months_tier1}
-                  onChange={(e) => setFollowerRoles((p) => ({ ...p, follow_months_tier1: Number(e.target.value) || 1 }))}
-                />
-                <span className="text-sm text-muted">개월 이상 구독자 역할</span>
-              </div>
-              <select
-                className="select"
-                value={followerRoles.follow_role_1month ?? ""}
-                onChange={(e) => setFollowerRoles((p) => ({ ...p, follow_role_1month: e.target.value || null }))}
-              >
-                <option value="">역할 없음</option>
-                {roles.map((r) => (
-                  <option key={r.id} value={r.id}>{r.name}</option>
-                ))}
-              </select>
-            </div>
-            {/* 티어 2 */}
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <input
-                  type="number" min={1} max={36}
-                  className="input w-20 text-center"
-                  value={followerRoles.follow_months_tier2}
-                  onChange={(e) => setFollowerRoles((p) => ({ ...p, follow_months_tier2: Number(e.target.value) || 3 }))}
-                />
-                <span className="text-sm text-muted">개월 이상 구독자 역할</span>
-              </div>
-              <select
-                className="select"
-                value={followerRoles.follow_role_3month ?? ""}
-                onChange={(e) => setFollowerRoles((p) => ({ ...p, follow_role_3month: e.target.value || null }))}
-              >
-                <option value="">역할 없음</option>
-                {roles.map((r) => (
-                  <option key={r.id} value={r.id}>{r.name}</option>
-                ))}
-              </select>
-            </div>
+
+          {/* 등록된 티어 목록 */}
+          <div className="space-y-2">
+            {followTiers.length === 0 && (
+              <p className="text-sm text-muted text-center py-3">등록된 티어가 없습니다. 아래에서 추가하세요.</p>
+            )}
+            {followTiers.map((tier) => {
+              const role = roles.find((r) => r.id === tier.role_id);
+              return (
+                <div key={tier.id} className="flex items-center justify-between bg-bg rounded-lg px-4 py-3 border border-border">
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-semibold text-accent w-24">{tier.months}개월 이상</span>
+                    {role && (
+                      <span className="text-sm px-2 py-0.5 rounded-full border border-border"
+                            style={{ color: role.color ? `#${role.color.toString(16).padStart(6, "0")}` : "#fff" }}>
+                        @{role.name}
+                      </span>
+                    )}
+                    {!role && <span className="text-xs text-muted">역할 ID: {tier.role_id}</span>}
+                  </div>
+                  <button onClick={() => removeTier(tier.id)}
+                          className="text-muted hover:text-danger transition-colors p-1">
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
-          <button onClick={saveFollowerRoles} disabled={savingRoles} className="btn-primary">
-            {savedRoles
-              ? <><CheckCircle size={16} /> 저장됨</>
-              : <><Save size={16} /> {savingRoles ? "저장 중..." : "역할 설정 저장"}</>
-            }
-          </button>
+
+          {/* 티어 추가 */}
+          {followTiers.length >= 5 ? (
+            <p className="text-xs text-muted text-center pt-2 border-t border-border">
+              최대 5개의 티어까지만 추가할 수 있습니다.
+            </p>
+          ) : (
+            <div className="flex gap-2 pt-2 border-t border-border flex-wrap">
+              <div className="flex items-center gap-2">
+                <input
+                  type="number" min={1} max={120}
+                  className="input w-24 text-center"
+                  placeholder="개월"
+                  value={newMonths}
+                  onChange={(e) => setNewMonths(e.target.value)}
+                />
+                <span className="text-sm text-muted shrink-0">개월 이상</span>
+              </div>
+              <select className="select flex-1 min-w-36" value={newRole}
+                      onChange={(e) => setNewRole(e.target.value)}>
+                <option value="">역할 선택...</option>
+                {roles.map((r) => <option key={r.id} value={r.id}>@{r.name}</option>)}
+              </select>
+              <button onClick={addTier} disabled={addingTier || !newMonths || !newRole}
+                      className="btn-primary shrink-0">
+                <Plus size={15} /> {addingTier ? "추가 중..." : "추가"}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

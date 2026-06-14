@@ -167,6 +167,14 @@ async def init_db():
         "ALTER TABLE chzzk_verifications ADD COLUMN tier_months INTEGER DEFAULT 0",
         "ALTER TABLE chzzk_subscriptions ADD COLUMN follow_months_tier1 INTEGER DEFAULT 1",
         "ALTER TABLE chzzk_subscriptions ADD COLUMN follow_months_tier2 INTEGER DEFAULT 3",
+        """CREATE TABLE IF NOT EXISTS chzzk_follow_roles (
+               id       INTEGER PRIMARY KEY AUTOINCREMENT,
+               guild_id INTEGER NOT NULL,
+               months   INTEGER NOT NULL,
+               role_id  INTEGER NOT NULL,
+               UNIQUE(guild_id, months)
+           )""",
+        "ALTER TABLE chzzk_verifications ADD COLUMN follow_months INTEGER DEFAULT 0",
     ]:
         try:
             await db.execute(sql)

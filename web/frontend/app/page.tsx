@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import {
-  Bot, Shield, TrendingUp, Radio, Smile,
+  Bot, Shield, TrendingUp, Radio, BadgeCheck,
   LogOut, ChevronRight, ArrowRight, Hash,
 } from "lucide-react";
 
@@ -242,35 +242,39 @@ function ChzzkEmbedMockup() {
   );
 }
 
-// Mockup: reaction roles
-function ReactionRolesMockup({ color = "#EB459E" }: { color?: string }) {
-  const roles = [
-    { emoji: "😊", label: "일반 멤버",  active: true },
-    { emoji: "🎮", label: "게이머",     active: true },
-    { emoji: "🎨", label: "아티스트",   active: false },
-    { emoji: "📢", label: "공지 수신",  active: true },
+// Mockup: chzzk follow verification
+function ChzzkFollowVerifyMockup({ color = "#03C75A" }: { color?: string }) {
+  const tiers = [
+    { months: 1,  role: "팔로워",       granted: true },
+    { months: 3,  role: "서포터",        granted: true },
+    { months: 6,  role: "충성팬",        granted: false },
+    { months: 12, role: "레전드 팬",     granted: false },
   ];
   return (
-    <div className="bg-bg-card rounded-2xl border border-border p-5 shadow-xl w-full max-w-sm">
-      <p className="text-xs font-bold text-muted uppercase tracking-widest mb-4">역할 선택</p>
+    <div className="bg-bg-card rounded-2xl border border-border p-5 shadow-xl w-full max-w-sm space-y-4">
+      <div className="flex items-center gap-2.5 pb-3 border-b border-border">
+        <div className="w-8 h-8 rounded-full flex items-center justify-center"
+             style={{ background: `${color}20` }}>
+          <BadgeCheck size={16} style={{ color }} />
+        </div>
+        <div>
+          <p className="text-xs font-bold text-fg">치지직 팔로우 인증</p>
+          <p className="text-[11px] text-muted">팔로우 기간: <span style={{ color }} className="font-semibold">4개월</span></p>
+        </div>
+      </div>
       <div className="space-y-2">
-        {roles.map(({ emoji, label, active }) => (
-          <div
-            key={label}
-            className="flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-colors"
-            style={active
-              ? { background: `${color}10`, borderColor: `${color}30` }
-              : { borderColor: "var(--color-border)" }}
-          >
-            <span className="text-xl leading-none">{emoji}</span>
-            <span className="text-sm text-fg flex-1">{label}</span>
-            <div
-              className="w-4 h-4 rounded-full border-2 flex items-center justify-center transition-colors"
-              style={active
-                ? { background: color, borderColor: color }
-                : { borderColor: "var(--color-border)" }}
-            >
-              {active && <span className="text-white text-[9px] font-bold leading-none">✓</span>}
+        {tiers.map(({ months, role, granted }) => (
+          <div key={months}
+               className="flex items-center gap-3 px-3 py-2 rounded-xl border"
+               style={granted ? { background: `${color}10`, borderColor: `${color}30` } : { borderColor: "var(--color-border)" }}>
+            <span className="text-[11px] font-semibold w-14 shrink-0"
+                  style={granted ? { color } : { color: "var(--color-muted)" }}>
+              {months}개월+
+            </span>
+            <span className="text-sm text-fg flex-1">@{role}</span>
+            <div className="w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0"
+                 style={granted ? { background: color, borderColor: color } : { borderColor: "var(--color-border)" }}>
+              {granted && <span className="text-white text-[9px] font-bold leading-none">✓</span>}
             </div>
           </div>
         ))}
@@ -351,14 +355,14 @@ export default function HomePage() {
       flip:   false,
     },
     {
-      color:  "#EB459E",
-      bg:     "rgba(235,69,158,0.12)",
-      icon:   <Smile size={22} style={{ color: "#EB459E" }} />,
-      tag:    "셀프 역할",
-      title:  "리액션 역할 시스템",
-      detail: "멤버가 이모지를 클릭해 직접 역할을 선택합니다. 관심사나 게임별 역할을 멤버 스스로 관리하게 해 서버 운영 부담을 크게 줄이세요.",
-      bullets: ["이모지 클릭으로 역할 토글", "무제한 역할 패널 생성", "웹에서 간편 설정"],
-      mockup: <ReactionRolesMockup color="#EB459E" />,
+      color:  "#03C75A",
+      bg:     "rgba(3,199,90,0.10)",
+      icon:   <BadgeCheck size={22} style={{ color: "#03C75A" }} />,
+      tag:    "팔로우 인증",
+      title:  "치지직 팔로우 역할 시스템",
+      detail: "치지직 OAuth로 로그인하면 팔로우 시작일을 기준으로 팔로우 기간을 자동 계산합니다. 1개월, 3개월, 6개월 등 최대 5개의 기간 티어를 설정해 조건에 맞는 Discord 역할을 자동으로 부여하세요.",
+      bullets: ["팔로우 날짜 기반 자동 계산", "최대 5개 기간 티어 설정", "웹 대시보드에서 역할 관리"],
+      mockup: <ChzzkFollowVerifyMockup color="#03C75A" />,
       flip:   true,
     },
   ];

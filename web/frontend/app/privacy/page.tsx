@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   description: "NexBot 서비스의 개인정보 수집·이용·보호에 관한 방침입니다.",
 };
 
-const EFFECTIVE_DATE = "2026년 6월 11일";
+const EFFECTIVE_DATE = "2026년 6월 14일";
 
 const sections = [
   {
@@ -30,8 +30,10 @@ const sections = [
             {[
               ["Discord 사용자 ID", "로그인 인증 및 세션 관리"],
               ["Discord 서버(길드) ID", "서버별 설정 저장 및 봇 기능 제공"],
-              ["치지직 채널 ID", "방송 알림 구독 기능 제공"],
+              ["치지직 채널 ID", "방송 알림 구독 및 팔로우 인증 기능 제공"],
               ["Discord 서버 채널·역할 ID", "알림 채널, 역할 부여 기능 설정"],
+              ["치지직 팔로우 기간(개월)", "OAuth 인증 시 팔로우 날짜 기준으로 산출하여 역할 부여에 사용, DB에 저장"],
+              ["치지직 OAuth 액세스 토큰", "팔로우 날짜 조회 시 일회성 사용, 서버에 영구 저장하지 않음"],
             ].map(([item, desc]) => (
               <tr key={item}>
                 <td className="py-2.5 pr-4 text-fg">{item}</td>
@@ -53,6 +55,7 @@ const sections = [
       <ul className="space-y-2 text-muted leading-relaxed list-none">
         {[
           "Discord OAuth2 로그인을 통한 자동 수집",
+          "치지직 OAuth2 인증 시 팔로우 날짜 자동 조회 및 저장",
           "봇 슬래시 명령어 실행 시 서버·채널·역할 ID 자동 저장",
           "웹 대시보드에서 사용자가 직접 설정·입력",
         ].map((item) => (
@@ -70,8 +73,9 @@ const sections = [
     content: (
       <ul className="space-y-2 text-muted leading-relaxed list-none">
         {[
-          "Discord 봇 서비스 제공 (서버 관리, 레벨링, 리액션 역할 등)",
+          "Discord 봇 서비스 제공 (서버 관리, 레벨링, 환영/퇴장 메시지 등)",
           "치지직 방송 시작 알림 발송",
+          "치지직 팔로우 인증 — 팔로우 기간 확인 후 Discord 역할 자동 부여",
           "서버별 설정 저장 및 웹 대시보드 표시",
           "로그인 인증 및 세션 유지",
         ].map((item) => (
@@ -125,9 +129,9 @@ const sections = [
               desc: "메시지 전송, 역할 부여, 채널 정보 조회 등 봇 핵심 기능에 사용",
             },
             {
-              name: "치지직(CHZZK) API",
+              name: "치지직(CHZZK) API / OAuth",
               url: "https://chzzk.naver.com",
-              desc: "방송 시작 여부 감지 및 방송 정보 조회에 사용",
+              desc: "방송 시작 여부 감지, 방송 정보 조회, 팔로우 날짜 조회(OAuth)에 사용. 액세스 토큰은 일회성으로만 사용하며 서버에 저장하지 않음",
             },
           ].map(({ name, url, desc }) => (
             <div key={name} className="bg-bg rounded-xl border border-border p-4">
@@ -183,6 +187,7 @@ const sections = [
           "로그인 세션은 JWT(JSON Web Token) 방식으로 관리하며, 서버에 세션 정보를 저장하지 않습니다.",
           "데이터베이스 접근은 인증된 서버 내부에서만 가능합니다.",
           "Discord 액세스 토큰은 JWT 내에 암호화되어 저장되며 외부에 노출되지 않습니다.",
+          "치지직 OAuth 액세스 토큰은 팔로우 날짜 조회 후 즉시 폐기하며, DB에 영구 저장하지 않습니다.",
           "HTTPS를 통해 모든 통신이 암호화됩니다.",
         ].map((item) => (
           <li key={item} className="flex items-start gap-2">

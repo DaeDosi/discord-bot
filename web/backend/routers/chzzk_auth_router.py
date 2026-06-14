@@ -70,10 +70,72 @@ async def _set_discord_nickname(guild_id: str, user_id: str, nickname: str) -> N
 
 
 CHZZK_SUBSCRIPTION_URL = "https://openapi.chzzk.naver.com/open/v1/channels/{channel_id}/subscriptions/me"
+CHZZK_FOLLOW_URL       = "https://openapi.chzzk.naver.com/open/v1/channels/{channel_id}/follows/me"
+
+
+def _months_since(date_str: str) -> int:
+    """ISO8601 날짜 문자열 → 현재까지 개월 수 (30일 기준)."""
+    from datetime import timezone
+    try:
+        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta_days = (datetime.now(timezone.utc) - dt).days
+        return max(0, int(delta_days / 30))
+    except Exception:
+        return 0
+
+
+async def _get_follow_months(channel_id: str, access_token: str) -> int:
+    """팔로우 날짜 기반 개월 수 반환. 실패 시 0."""
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Client-Id": CHZZK_CLIENT_ID,
+        "Accept": "application/json",
+    }
+    try:
+        url = CHZZK_FOLLOW_URL.format(channel_id=channel_id)
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, headers=headers)
+            print(f"[chzzk-auth] follow check status={resp.status_code} body={resp.text[:300]}")
+            if resp.status_code == 200:
+                content = resp.json().get("content") or {}
+                date_str = (
+                    content.get("followDate")
+                    or content.get("createdAt")
+                    or content.get("followedAt")
+                    or content.get("followingDate")
+                )
+                if date_str:
+                    months = _months_since(date_str)
+                    print(f"[chzzk-auth] follow date={date_str} → {months} months")
+                    return months
+    except Exception as e:
+        print(f"[chzzk-auth] follow check error: {repr(e)}")
+    return 0
+
+
+async def _get_subscription_months(channel_id: str, access_token: str) -> int:
+    """유료 구독 개월 수 반환 (없으면 0)."""
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Client-Id": CHZZK_CLIENT_ID,
+        "Accept": "application/json",
+    }
+    try:
+        url = CHZZK_SUBSCRIPTION_URL.format(channel_id=channel_id)
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code == 200:
+                content = resp.json().get("content") or {}
+                return int(content.get("tierMonths") or content.get("month") or 0)
+    except Exception:
+        pass
+    return 0
 
 
 async def _get_tier_months(guild_id: str, access_token: str) -> int:
-    """구독 개월 수를 반환 (없으면 0)."""
+    """팔로우 날짜 기반 개월 수. 실패 시 구독 개월 수로 fallback."""
     db = await get_db()
     sub = await (await db.execute(
         "SELECT chzzk_channel_id FROM chzzk_subscriptions WHERE guild_id=?",
@@ -81,23 +143,13 @@ async def _get_tier_months(guild_id: str, access_token: str) -> int:
     )).fetchone()
     if not sub:
         return 0
-    try:
-        url = CHZZK_SUBSCRIPTION_URL.format(channel_id=sub["chzzk_channel_id"])
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                url,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Client-Id": CHZZK_CLIENT_ID,
-                    "Accept": "application/json",
-                },
-            )
-            if resp.status_code == 200:
-                content = resp.json().get("content") or {}
-                return int(content.get("tierMonths") or content.get("month") or 0)
-    except Exception:
-        pass
-    return 0
+    channel_id = sub["chzzk_channel_id"]
+
+    months = await _get_follow_months(channel_id, access_token)
+    if months > 0:
+        return months
+    # fallback: 유료 구독 개월
+    return await _get_subscription_months(channel_id, access_token)
 
 
 async def _get_chzzk_channel_info(access_token: str) -> dict:
@@ -169,41 +221,38 @@ async def _handle_streamer_registration(
 
 async def _assign_follower_roles(guild_id: str, discord_user_id: str, access_token: str) -> None:
     db = await get_db()
-    sub = await (await db.execute(
-        "SELECT chzzk_channel_id, follow_role_1month, follow_role_3month "
-        "FROM chzzk_subscriptions WHERE guild_id=?",
+
+    # 새 다중 티어 테이블 우선 사용
+    tiers = await (await db.execute(
+        "SELECT months, role_id FROM chzzk_follow_roles WHERE guild_id=? ORDER BY months ASC",
         (int(guild_id),)
-    )).fetchone()
-    if not sub or (not sub["follow_role_1month"] and not sub["follow_role_3month"]):
+    )).fetchall()
+
+    if not tiers:
+        # 구버전 fallback: follow_role_1month / follow_role_3month
+        sub = await (await db.execute(
+            "SELECT chzzk_channel_id, follow_role_1month, follow_role_3month, "
+            "follow_months_tier1, follow_months_tier2 "
+            "FROM chzzk_subscriptions WHERE guild_id=?",
+            (int(guild_id),)
+        )).fetchone()
+        if not sub or (not sub["follow_role_1month"] and not sub["follow_role_3month"]):
+            return
+        months = await _get_tier_months(guild_id, access_token)
+        t1 = int(sub["follow_months_tier1"] or 1)
+        t2 = int(sub["follow_months_tier2"] or 3)
+        if months >= t2 and sub["follow_role_3month"]:
+            await _add_role(guild_id, discord_user_id, str(sub["follow_role_3month"]))
+        elif months >= t1 and sub["follow_role_1month"]:
+            await _add_role(guild_id, discord_user_id, str(sub["follow_role_1month"]))
         return
 
-    try:
-        url = CHZZK_SUBSCRIPTION_URL.format(channel_id=sub["chzzk_channel_id"])
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                url,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Client-Id": CHZZK_CLIENT_ID,
-                    "Accept": "application/json",
-                },
-            )
-            print(f"[chzzk-auth] subscription check status={resp.status_code} body={resp.text[:300]}")
-            if resp.status_code != 200:
-                return
-            content = resp.json().get("content") or {}
-            months = content.get("tierMonths") or content.get("month") or 0
-            print(f"[chzzk-auth] subscription months={months}")
-    except Exception as e:
-        print(f"[chzzk-auth] subscription check error: {repr(e)}")
-        return
-
-    if months >= 3 and sub["follow_role_3month"]:
-        await _add_role(guild_id, discord_user_id, str(sub["follow_role_3month"]))
-        print(f"[chzzk-auth] assigned 3month follower role {sub['follow_role_3month']}")
-    elif months >= 1 and sub["follow_role_1month"]:
-        await _add_role(guild_id, discord_user_id, str(sub["follow_role_1month"]))
-        print(f"[chzzk-auth] assigned 1month follower role {sub['follow_role_1month']}")
+    months = await _get_tier_months(guild_id, access_token)
+    print(f"[chzzk-auth] follow months={months}, tiers={[(t['months'], t['role_id']) for t in tiers]}")
+    for tier in tiers:
+        if months >= tier["months"]:
+            await _add_role(guild_id, discord_user_id, str(tier["role_id"]))
+            print(f"[chzzk-auth] assigned follow role {tier['role_id']} ({tier['months']}개월+)")
 
 
 def _build_state(guild_id: str, discord_user_id: str) -> str:
@@ -336,15 +385,16 @@ async def chzzk_callback(
     # ── DB에 인증 이력 + 구독 개월 수 기록 ─────────────────────────────────
     try:
         db = await get_db()
-        # 구독 개월 수 조회 (역할 부여 전에 미리 가져오기)
+        # 팔로우 개월 수 조회 (날짜 기반 우선, fallback 구독 개월)
         tier_months = await _get_tier_months(guild_id, access_token)
         await db.execute(
-            """INSERT INTO chzzk_verifications(guild_id, user_id, verified_at, tier_months)
-               VALUES(?,?,?,?)
+            """INSERT INTO chzzk_verifications(guild_id, user_id, verified_at, tier_months, follow_months)
+               VALUES(?,?,?,?,?)
                ON CONFLICT(guild_id, user_id) DO UPDATE SET
                    verified_at=excluded.verified_at,
-                   tier_months=excluded.tier_months""",
-            (int(guild_id), int(discord_user_id), time.time(), tier_months),
+                   tier_months=excluded.tier_months,
+                   follow_months=excluded.follow_months""",
+            (int(guild_id), int(discord_user_id), time.time(), tier_months, tier_months),
         )
         await db.commit()
     except Exception as e:

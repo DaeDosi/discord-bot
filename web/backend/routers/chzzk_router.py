@@ -231,6 +231,68 @@ async def update_follower_roles(
     return {"ok": True}
 
 
+# ── 팔로우 역할 다중 티어 ────────────────────────────────────────────────────
+
+class FollowTierCreate(BaseModel):
+    months:  int
+    role_id: str
+
+
+@router.get("/{guild_id}/follow-tiers")
+async def get_follow_tiers(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT id, months, role_id FROM chzzk_follow_roles WHERE guild_id=? ORDER BY months ASC",
+        (int(guild_id),)
+    )).fetchall()
+    return [{"id": r["id"], "months": r["months"], "role_id": str(r["role_id"])} for r in rows]
+
+
+@router.post("/{guild_id}/follow-tiers")
+async def add_follow_tier(
+    guild_id: str,
+    body: FollowTierCreate,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    count = (await (await db.execute(
+        "SELECT COUNT(*) FROM chzzk_follow_roles WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone())[0]
+    if count >= 5:
+        raise HTTPException(status_code=400, detail="최대 5개의 티어까지만 추가할 수 있습니다.")
+    try:
+        await db.execute(
+            "INSERT INTO chzzk_follow_roles (guild_id, months, role_id) VALUES (?,?,?)",
+            (int(guild_id), body.months, int(body.role_id))
+        )
+        await db.commit()
+    except Exception:
+        raise HTTPException(status_code=409, detail="이미 같은 개월 수 티어가 존재합니다.")
+    return {"ok": True}
+
+
+@router.delete("/{guild_id}/follow-tiers/{tier_id}")
+async def delete_follow_tier(
+    guild_id: str,
+    tier_id: int,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    await db.execute(
+        "DELETE FROM chzzk_follow_roles WHERE id=? AND guild_id=?",
+        (tier_id, int(guild_id))
+    )
+    await db.commit()
+    return {"ok": True}
+
+
 # ── 디버그: 현재 라이브 상태 체크 ────────────────────────────────────────────
 @router.get("/debug/status")
 async def debug_status(user: dict = Depends(get_current_user)):
