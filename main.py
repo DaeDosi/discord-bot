@@ -69,12 +69,18 @@ class AllInOneBot(commands.Bot):
     async def on_guild_join(self, guild: discord.Guild):
         print(f"서버 참가: {guild.name} (ID: {guild.id})")
 
-    # 봇 오너 전용: @봇이름 sync  →  글로벌 슬래시 커맨드 강제 동기화
+    # 봇 오너 전용: @봇이름 sync        → 글로벌 동기화
+    #              @봇이름 sync guild  → 이 서버에 즉시 반영 (테스트용)
     @commands.command(name="sync")
     @commands.is_owner()
-    async def sync_commands(self, ctx: commands.Context):
-        synced = await self.tree.sync()
-        await ctx.send(f"✅ 글로벌 {len(synced)}개 커맨드 동기화 완료")
+    async def sync_commands(self, ctx: commands.Context, scope: str = "global"):
+        if scope == "guild":
+            self.tree.copy_global_to(guild=ctx.guild)
+            synced = await self.tree.sync(guild=ctx.guild)
+            await ctx.send(f"✅ 이 서버에 {len(synced)}개 커맨드 즉시 동기화 완료 (테스트용)")
+        else:
+            synced = await self.tree.sync()
+            await ctx.send(f"✅ 글로벌 {len(synced)}개 커맨드 동기화 완료")
 
     # 봇 오너 전용: @봇이름 clearguild  →  이 서버의 guild 명령어 전부 삭제 (중복 제거)
     @commands.command(name="clearguild")
