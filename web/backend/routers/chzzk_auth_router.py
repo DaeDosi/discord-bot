@@ -161,9 +161,8 @@ async def _search_followers_page(
 ) -> tuple[str | None, int, bool]:
     """
     GET /open/v1/channels/followers 를 페이지네이션하여 search_channel_id 검색.
-    어떤 토큰을 쓰느냐에 따라 의미가 다름:
-      - viewer 토큰 → viewer가 팔로우하는 채널 목록 (팔로잉) 에서 streamer 검색
-      - streamer 토큰 → streamer의 팔로워 목록에서 viewer 검색
+    이 엔드포인트는 "인증된 채널을 팔로우하는 사람 목록(팔로워)"을 반환함.
+    반드시 streamer 토큰으로 호출해 viewer channelId를 검색해야 함.
     """
     headers = {
         "Authorization": f"Bearer {token}",
@@ -282,12 +281,12 @@ async def _get_follow_info_for_guild(
     viewer_access_token: str,
 ) -> tuple[str | None, int, bool]:
     """
-    3가지 방법으로 팔로우 여부를 순차 시도:
-      1. 비공식 채널 API (viewer 토큰) — follow 필드 직접 파싱
-      2. 공식 팔로워 API (viewer 토큰) — streamer channelId 검색
-         (이 경우 followers = 내가 팔로우하는 목록)
-      3. 공식 팔로워 API (streamer 토큰) — viewer channelId 검색
-         (이 경우 followers = 스트리머의 팔로워 목록)
+    2가지 방법으로 팔로우 여부를 순차 시도:
+      1. 비공식 채널 API (viewer 토큰) — follow 필드 직접 파싱 (미지원)
+      2. 공식 팔로워 API (streamer 토큰) — streamer의 팔로워 목록에서 viewer channelId 검색
+         ※ GET /open/v1/channels/followers 는 "나를 팔로우하는 목록" 반환.
+           viewer 토큰으로 호출하면 viewer 팔로워 목록 → streamer를 찾을 수 없음.
+           반드시 streamer 토큰으로 호출해 viewer를 검색해야 함.
     """
     if not viewer_channel_id:
         print(f"[chzzk-auth] viewer channelId unknown → skip follow check")
@@ -309,19 +308,16 @@ async def _get_follow_info_for_guild(
     if result[2]:
         return result
 
-    # ── 방법 2: 공식 API - viewer 토큰으로 streamer 검색 (팔로잉 목록 가정) ──
-    result = await _search_followers_page(streamer_channel_id, viewer_access_token, "viewer-following")
-    if result[2]:
-        return result
-
-    # ── 방법 3: 공식 API - streamer 토큰으로 viewer 검색 (팔로워 목록 가정) ──
+    # ── 방법 2: 공식 API - streamer 토큰으로 팔로워 목록에서 viewer 검색 ─────
     streamer_token = await _get_fresh_streamer_token(guild_id)
     if streamer_token:
         result = await _search_followers_page(viewer_channel_id, streamer_token, "streamer-followers")
         if result[2]:
             return result
+    else:
+        print(f"[chzzk-auth] no streamer tokens → streamer must re-link OAuth at dashboard")
 
-    print(f"[chzzk-auth] all 3 follow checks failed guild={guild_id} viewer={viewer_channel_id} streamer={streamer_channel_id}")
+    print(f"[chzzk-auth] follow check failed guild={guild_id} viewer={viewer_channel_id} streamer={streamer_channel_id}")
     return None, -1, False
 
 

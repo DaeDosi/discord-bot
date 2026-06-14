@@ -151,7 +151,7 @@ export default function ChzzkPage() {
     load();
     // 치지직 OAuth 콜백 후 success/error 파라미터 처리
     const params = new URLSearchParams(window.location.search);
-    if (params.get("success") === "streamer_added") {
+    if (params.get("success") === "streamer_added" || params.get("success") === "token_refreshed") {
       window.history.replaceState({}, "", window.location.pathname);
       load();
     }
@@ -190,37 +190,65 @@ export default function ChzzkPage() {
       <div className="space-y-3">
         {subs.map((sub) => {
           const ch = findChannel(sub.discord_channel);
+          const handleRelink = () => {
+            let discordUserId = "";
+            try {
+              const raw = localStorage.getItem("discord_user");
+              if (raw) discordUserId = JSON.parse(raw).id || "";
+            } catch {}
+            const params = new URLSearchParams({
+              guild_id:         guildId,
+              discord_channel:  String(sub.discord_channel),
+              mention_everyone: sub.mention_everyone ? "1" : "0",
+              discord_user_id:  discordUserId,
+            });
+            window.location.href = `${BACKEND}/api/chzzk-auth/streamer-login?${params}`;
+          };
           return (
-            <div key={sub.id} className="card flex items-center gap-4">
-              {sub.chzzk_image_url ? (
-                <Image src={sub.chzzk_image_url} alt={sub.chzzk_name}
-                       width={48} height={48} className="rounded-full shrink-0" />
-              ) : (
-                <div className="w-12 h-12 rounded-full bg-bg-hover flex items-center justify-center shrink-0">
-                  <Radio size={20} className="text-muted" />
+            <div key={sub.id} className="card space-y-3">
+              <div className="flex items-center gap-4">
+                {sub.chzzk_image_url ? (
+                  <Image src={sub.chzzk_image_url} alt={sub.chzzk_name}
+                         width={48} height={48} className="rounded-full shrink-0" />
+                ) : (
+                  <div className="w-12 h-12 rounded-full bg-bg-hover flex items-center justify-center shrink-0">
+                    <Radio size={20} className="text-muted" />
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="font-semibold text-white">{sub.chzzk_name}</p>
+                    {sub.is_live
+                      ? <span className="badge-live"><span className="w-1.5 h-1.5 rounded-full bg-chzzk animate-pulse" />LIVE</span>
+                      : <span className="badge-offline">오프라인</span>
+                    }
+                    {Boolean(sub.mention_everyone) && (
+                      <span className="text-xs text-muted flex items-center gap-1">
+                        <Bell size={11} /> @everyone
+                      </span>
+                    )}
+                  </div>
+                  {ch && <span className="text-xs text-muted mt-1 block">→ #{ch.name}</span>}
                 </div>
-              )}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <p className="font-semibold text-white">{sub.chzzk_name}</p>
-                  {sub.is_live
-                    ? <span className="badge-live"><span className="w-1.5 h-1.5 rounded-full bg-chzzk animate-pulse" />LIVE</span>
-                    : <span className="badge-offline">오프라인</span>
-                  }
-                  {Boolean(sub.mention_everyone) && (
-                    <span className="text-xs text-muted flex items-center gap-1">
-                      <Bell size={11} /> @everyone
-                    </span>
-                  )}
-                </div>
-                {ch && <span className="text-xs text-muted mt-1 block">→ #{ch.name}</span>}
+                <button
+                  onClick={() => remove(sub.id)}
+                  className="p-2 text-muted hover:text-danger transition-colors rounded-lg hover:bg-danger/10 shrink-0"
+                >
+                  <Trash2 size={16} />
+                </button>
               </div>
-              <button
-                onClick={() => remove(sub.id)}
-                className="p-2 text-muted hover:text-danger transition-colors rounded-lg hover:bg-danger/10 shrink-0"
-              >
-                <Trash2 size={16} />
-              </button>
+              <div className="border-t border-border pt-3">
+                <p className="text-xs text-muted mb-2">
+                  팔로우 기간 조회를 위해 스트리머({sub.chzzk_name}) 본인이 아래 버튼으로 치지직 계정을 연동해야 합니다.
+                </p>
+                <button
+                  onClick={handleRelink}
+                  className="flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-colors"
+                >
+                  <ExternalLink size={12} />
+                  스트리머 팔로워 조회 연동
+                </button>
+              </div>
             </div>
           );
         })}
