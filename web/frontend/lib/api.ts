@@ -61,7 +61,7 @@ export const api = {
         request(`/api/settings/${gid}/level-rewards/${level}`, { method: "DELETE" }),
     },
     leaderboard: (gid: string) =>
-      request<{ user_id: string; xp: number; level: number }[]>(
+      request<{ user_id: string; display_name?: string; xp: number; level: number }[]>(
         `/api/settings/${gid}/leaderboard`
       ),
     getVerification: (gid: string) =>

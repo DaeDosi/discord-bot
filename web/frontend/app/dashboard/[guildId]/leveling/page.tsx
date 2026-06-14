@@ -9,7 +9,7 @@ export default function LevelingPage() {
   const { guildId } = useParams<{ guildId: string }>();
   const [rewards, setRewards]   = useState<LevelReward[]>([]);
   const [roles, setRoles]       = useState<Role[]>([]);
-  const [lb, setLb]             = useState<{ user_id: string; display_name: string; xp: number; level: number }[]>([]);
+  const [lb, setLb]             = useState<{ user_id: string; display_name?: string; xp: number; level: number }[]>([]);
   const [newLevel, setNewLevel] = useState("");
   const [newRole, setNewRole]   = useState("");
   const [adding, setAdding]     = useState(false);
