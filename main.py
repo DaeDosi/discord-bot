@@ -75,6 +75,13 @@ class AllInOneBot(commands.Bot):
 
     async def on_guild_join(self, guild: discord.Guild):
         print(f"서버 참가: {guild.name} (ID: {guild.id})")
+        # 봇이 서버에 (재)참가할 때 해당 서버에 즉시 슬래시 커맨드 등록
+        try:
+            self.tree.copy_global_to(guild=guild)
+            synced = await self.tree.sync(guild=guild)
+            print(f"[guild_join] {guild.name} 슬래시 커맨드 {len(synced)}개 즉시 동기화")
+        except Exception as e:
+            print(f"[guild_join] 동기화 실패: {e}")
 
     # 봇 오너 전용: @봇이름 sync  →  슬래시 커맨드 강제 동기화
     @commands.command(name="sync")
