@@ -303,11 +303,26 @@ export default function AdminPage() {
   }
 
   if (authed === false) {
+    const myId = (() => {
+      try {
+        const token = localStorage.getItem("token");
+        if (!token) return null;
+        const payload = JSON.parse(atob(token.split(".")[1]));
+        return payload.sub as string;
+      } catch { return null; }
+    })();
     return (
       <div className="min-h-screen bg-bg flex flex-col items-center justify-center gap-4">
         <ShieldCheck size={48} className="text-muted" />
         <p className="text-fg font-semibold text-lg">접근 권한이 없습니다.</p>
         <p className="text-muted text-sm">봇 오너 계정으로 로그인한 후 접근하세요.</p>
+        {myId && (
+          <div className="bg-bg-card border border-border rounded-xl px-5 py-3 text-center space-y-1">
+            <p className="text-xs text-muted">현재 로그인된 Discord ID</p>
+            <p className="font-mono text-sm text-white select-all">{myId}</p>
+            <p className="text-xs text-muted">이 값이 서버의 <code className="text-accent">OWNER_ID</code> 환경변수와 일치해야 합니다.</p>
+          </div>
+        )}
         <a href="/" className="text-accent text-sm hover:underline flex items-center gap-1">
           <LogIn size={14} /> 홈으로
         </a>
