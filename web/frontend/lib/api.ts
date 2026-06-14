@@ -95,6 +95,8 @@ export const api = {
       request<import("./types").FollowerRoles>(`/api/chzzk/${gid}/follower-roles`),
     saveFollowerRoles: (gid: string, data: import("./types").FollowerRoles) =>
       request(`/api/chzzk/${gid}/follower-roles`, { method: "PUT", body: JSON.stringify(data) }),
+    verifications: (gid: string) =>
+      request<import("./types").ChzzkVerification[]>(`/api/chzzk/${gid}/verifications`),
     followTiers: {
       list:   (gid: string) =>
         request<import("./types").FollowRoleTier[]>(`/api/chzzk/${gid}/follow-tiers`),

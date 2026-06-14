@@ -293,6 +293,31 @@ async def delete_follow_tier(
     return {"ok": True}
 
 
+# ── 팔로우 인증 유저 목록 (대시보드용) ───────────────────────────────────────
+
+@router.get("/{guild_id}/verifications")
+async def get_guild_verifications(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    rows = await (await db.execute(
+        """SELECT user_id, tier_months, follow_months, verified_at
+           FROM chzzk_verifications WHERE guild_id=?
+           ORDER BY tier_months DESC, verified_at DESC""",
+        (int(guild_id),)
+    )).fetchall()
+    return [
+        {
+            "user_id":     str(r["user_id"]),
+            "tier_months": r["tier_months"] or 0,
+            "verified_at": r["verified_at"],
+        }
+        for r in rows
+    ]
+
+
 # ── 디버그: 현재 라이브 상태 체크 ────────────────────────────────────────────
 @router.get("/debug/status")
 async def debug_status(user: dict = Depends(get_current_user)):

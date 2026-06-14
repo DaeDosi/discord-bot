@@ -2,9 +2,9 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Image from "next/image";
-import { Radio, Trash2, Bell, BellOff, Save, CheckCircle, ExternalLink, Plus } from "lucide-react";
+import { Radio, Trash2, Bell, BellOff, Save, CheckCircle, ExternalLink, Plus, Users, ChevronDown, ChevronUp } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier } from "@/lib/types";
+import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier, ChzzkVerification } from "@/lib/types";
 
 const BACKEND = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -98,10 +98,13 @@ export default function ChzzkPage() {
   });
   const [savingRoles, setSavingRoles]   = useState(false);
   const [savedRoles, setSavedRoles]     = useState(false);
-  const [followTiers, setFollowTiers]   = useState<FollowRoleTier[]>([]);
-  const [newMonths, setNewMonths]       = useState("");
-  const [newRole, setNewRole]           = useState("");
-  const [addingTier, setAddingTier]     = useState(false);
+  const [followTiers, setFollowTiers]         = useState<FollowRoleTier[]>([]);
+  const [newMonths, setNewMonths]             = useState("");
+  const [newRole, setNewRole]                 = useState("");
+  const [addingTier, setAddingTier]           = useState(false);
+  const [verifications, setVerifications]     = useState<ChzzkVerification[]>([]);
+  const [showVerif, setShowVerif]             = useState(false);
+  const [loadingVerif, setLoadingVerif]       = useState(false);
 
   const load = async () => {
     const [s, ch, r, fr, ft] = await Promise.all([
@@ -133,6 +136,15 @@ export default function ChzzkPage() {
   const removeTier = async (tierId: number) => {
     await api.chzzk.followTiers.remove(guildId, tierId).catch(() => {});
     setFollowTiers((p) => p.filter((t) => t.id !== tierId));
+  };
+
+  const toggleVerif = async () => {
+    if (showVerif) { setShowVerif(false); return; }
+    setShowVerif(true);
+    setLoadingVerif(true);
+    const v = await api.chzzk.verifications(guildId).catch(() => [] as ChzzkVerification[]);
+    setVerifications(v);
+    setLoadingVerif(false);
   };
 
   useEffect(() => {
@@ -231,6 +243,71 @@ export default function ChzzkPage() {
         <p className="text-sm text-muted text-center">
           서버당 1명만 등록 가능합니다. 기존 구독을 삭제 후 다시 연동하세요.
         </p>
+      )}
+
+      {/* 팔로우 인증 현황 */}
+      {subs.length > 0 && (
+        <div className="card space-y-3">
+          <button
+            onClick={toggleVerif}
+            className="w-full flex items-center justify-between text-left"
+          >
+            <div className="flex items-center gap-2">
+              <Users size={16} className="text-accent" />
+              <span className="font-semibold text-white">팔로우 인증 현황</span>
+              {!loadingVerif && showVerif && (
+                <span className="text-xs text-muted">({verifications.length}명)</span>
+              )}
+            </div>
+            {showVerif ? <ChevronUp size={16} className="text-muted" /> : <ChevronDown size={16} className="text-muted" />}
+          </button>
+
+          {showVerif && (
+            loadingVerif ? (
+              <p className="text-sm text-muted text-center py-4 animate-pulse">불러오는 중...</p>
+            ) : verifications.length === 0 ? (
+              <p className="text-sm text-muted text-center py-4">아직 인증한 유저가 없습니다.</p>
+            ) : (
+              <div className="overflow-x-auto -mx-1">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="text-left px-2 py-2 text-muted font-medium text-xs">유저 ID</th>
+                      <th className="text-left px-2 py-2 text-muted font-medium text-xs">팔로우 기간</th>
+                      <th className="text-left px-2 py-2 text-muted font-medium text-xs">인증 일시</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {verifications.map((v) => {
+                      const qualifiedTier = [...followTiers]
+                        .sort((a, b) => b.months - a.months)
+                        .find((t) => v.tier_months >= t.months);
+                      const tierRole = qualifiedTier
+                        ? roles.find((r) => r.id === qualifiedTier.role_id)
+                        : null;
+                      return (
+                        <tr key={v.user_id} className="hover:bg-bg-hover/30 transition-colors">
+                          <td className="px-2 py-2.5 font-mono text-xs text-muted select-all">{v.user_id}</td>
+                          <td className="px-2 py-2.5">
+                            <span className={`font-semibold text-sm ${v.tier_months > 0 ? "text-accent" : "text-muted"}`}>
+                              {v.tier_months}개월
+                            </span>
+                            {tierRole && (
+                              <span className="ml-2 text-[11px] text-muted">→ @{tierRole.name}</span>
+                            )}
+                          </td>
+                          <td className="px-2 py-2.5 text-xs text-muted">
+                            {new Date(v.verified_at * 1000).toLocaleString("ko-KR")}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )
+          )}
+        </div>
       )}
 
       {/* 팔로워 역할 티어 관리 */}

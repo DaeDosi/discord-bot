@@ -79,6 +79,12 @@ export interface FollowRoleTier {
   role_id: string;
 }
 
+export interface ChzzkVerification {
+  user_id:     string;
+  tier_months: number;
+  verified_at: number;
+}
+
 export interface ChzzkSearchResult {
   channelId:       string;
   channelName:     string;

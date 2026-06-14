@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import {
   Bot, Server, Users, Radio, ShieldCheck, Search,
-  Trash2, Plus, X, RefreshCw, LogIn, ChevronDown, ChevronUp,
+  Plus, X, RefreshCw, LogIn, ChevronDown, ChevronUp,
 } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
@@ -41,6 +41,11 @@ interface ChzzkSub {
   chzzk_channel_id: string; chzzk_name: string; chzzk_image_url: string | null;
   discord_channel: number; mention_everyone: number; is_live: number;
   follow_months_tier1: number; follow_months_tier2: number;
+}
+interface VerifUser {
+  guild_id: number; guild_name: string;
+  user_id: number; user_name: string;
+  tier_months: number; verified_at: number;
 }
 interface FollowUser {
   user_id: number; user_name: string; tier_months: number; verified_at: number;
@@ -298,9 +303,9 @@ export default function AdminPage() {
   const [guilds, setGuilds]           = useState<Guild[]>([]);
   const [chzzk, setChzzk]            = useState<ChzzkSub[]>([]);
   const [followStats, setFollowStats] = useState<FollowStat[] | null>(null);
+  const [verifUsers, setVerifUsers]   = useState<VerifUser[] | null>(null);
   const [loading, setLoading]         = useState(true);
-  const [showAdd, setShowAdd]         = useState(false);
-  const [activeTab, setActiveTab]     = useState<"guilds" | "chzzk" | "follow">("guilds");
+  const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow">("guilds");
   const [refreshing, setRefreshing]   = useState(false);
 
   const loadAll = async () => {
@@ -326,12 +331,14 @@ export default function AdminPage() {
 
     // ── Phase 2: 느린 데이터 (Discord API 멤버 조회 포함) ──
     try {
-      const [ov, fs] = await Promise.all([
+      const [ov, fs, vu] = await Promise.all([
         adminFetch<Overview>("/api/admin/overview"),
         adminFetch<FollowStat[]>("/api/admin/follow-stats"),
+        adminFetch<VerifUser[]>("/api/admin/verifications"),
       ]);
       setOverview(ov);
       setFollowStats(fs);
+      setVerifUsers(vu);
     } catch {
       // 통계/팔로우 로드 실패해도 서버 목록은 이미 표시됨
     } finally {
@@ -344,12 +351,6 @@ export default function AdminPage() {
     if (!token) { setAuthed(false); setLoading(false); return; }
     loadAll();
   }, []);
-
-  const deleteSub = async (id: number) => {
-    if (!confirm("구독을 삭제하시겠습니까?")) return;
-    await adminFetch(`/api/admin/chzzk/${id}`, { method: "DELETE" }).catch(() => {});
-    setChzzk((p) => p.filter((s) => s.id !== id));
-  };
 
   if (loading) {
     return (
@@ -373,23 +374,16 @@ export default function AdminPage() {
   }
 
   const followCount = followStats?.reduce((s, f) => s + f.users.length, 0) ?? null;
+  const verifCount  = verifUsers?.length ?? null;
 
   const tabs = [
     { key: "guilds", label: `서버 목록 (${guilds.length})` },
-    { key: "chzzk",  label: `치지직 구독 (${chzzk.length})` },
+    { key: "verif",  label: verifUsers === null ? "인증 현황 (로딩 중...)" : `인증 현황 (${verifCount}명)` },
     { key: "follow", label: followStats === null ? "팔로우 관리 (로딩 중...)" : `팔로우 관리 (${followCount}명)` },
   ] as const;
 
   return (
     <div className="min-h-screen bg-bg text-fg">
-      {showAdd && (
-        <AddChzzkModal
-          guilds={guilds}
-          onClose={() => setShowAdd(false)}
-          onAdded={loadAll}
-        />
-      )}
-
       <header className="border-b border-border bg-bg-card/60 backdrop-blur sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-5 flex items-center justify-between" style={{ height: 56 }}>
           <div className="flex items-center gap-2">
@@ -470,76 +464,54 @@ export default function AdminPage() {
           </div>
         )}
 
-        {/* ── 치지직 구독 ── */}
-        {activeTab === "chzzk" && (
-          <div className="space-y-4">
-            <div className="flex justify-end">
-              <button onClick={() => setShowAdd(true)} className="btn-primary">
-                <Plus size={15} /> 구독 추가
-              </button>
-            </div>
-            <div className="rounded-2xl border border-border overflow-hidden">
+        {/* ── 인증 현황 ── */}
+        {activeTab === "verif" && (
+          <div className="rounded-2xl border border-border overflow-hidden">
+            {verifUsers === null ? (
+              <p className="px-4 py-12 text-center text-muted animate-pulse">불러오는 중...</p>
+            ) : (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-bg-card/60">
-                    <th className="text-left px-4 py-3 text-muted font-medium">스트리머</th>
+                    <th className="text-left px-4 py-3 text-muted font-medium">유저명</th>
+                    <th className="text-left px-4 py-3 text-muted font-medium hidden md:table-cell">유저 ID</th>
                     <th className="text-left px-4 py-3 text-muted font-medium">서버명</th>
-                    <th className="text-left px-4 py-3 text-muted font-medium">서버 ID</th>
-                    <th className="text-left px-4 py-3 text-muted font-medium">개월 기준</th>
-                    <th className="text-left px-4 py-3 text-muted font-medium">상태</th>
-                    <th className="px-4 py-3" />
+                    <th className="text-left px-4 py-3 text-muted font-medium">팔로우 기간</th>
+                    <th className="text-left px-4 py-3 text-muted font-medium">인증 일시</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {chzzk.map((sub) => (
-                    <tr key={sub.id} className="hover:bg-bg-hover/40 transition-colors">
+                  {verifUsers.map((v) => (
+                    <tr key={`${v.guild_id}-${v.user_id}`} className="hover:bg-bg-hover/40 transition-colors">
+                      <td className="px-4 py-3 text-white font-medium">{v.user_name}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-muted select-all hidden md:table-cell">{v.user_id}</td>
+                      <td className="px-4 py-3 text-sm text-muted">{v.guild_name}</td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          {sub.chzzk_image_url
-                            ? <Image src={sub.chzzk_image_url} alt={sub.chzzk_name} width={32} height={32} className="rounded-full shrink-0" />
-                            : <div className="w-8 h-8 rounded-full bg-bg-hover shrink-0" />}
-                          <span className="font-medium text-white">{sub.chzzk_name}</span>
-                        </div>
+                        <span className={`font-semibold text-sm ${v.tier_months > 0 ? "text-accent" : "text-muted"}`}>
+                          {v.tier_months}개월
+                        </span>
                       </td>
-                      <td className="px-4 py-3 text-white">{sub.guild_name}</td>
-                      <td className="px-4 py-3 font-mono text-xs text-muted select-all">{sub.guild_id}</td>
                       <td className="px-4 py-3 text-xs text-muted">
-                        {sub.follow_months_tier1}개월 / {sub.follow_months_tier2}개월
-                      </td>
-                      <td className="px-4 py-3">
-                        {sub.is_live
-                          ? <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ color: "#03C75A", background: "rgba(3,199,90,0.15)" }}>LIVE</span>
-                          : <span className="text-[10px] text-muted">오프라인</span>}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <button onClick={() => deleteSub(sub.id)}
-                                className="p-1.5 text-muted hover:text-danger transition-colors rounded-lg hover:bg-danger/10">
-                          <Trash2 size={14} />
-                        </button>
+                        {new Date(v.verified_at * 1000).toLocaleString("ko-KR")}
                       </td>
                     </tr>
                   ))}
-                  {chzzk.length === 0 && (
-                    <tr><td colSpan={6} className="px-4 py-8 text-center text-muted">구독 없음</td></tr>
+                  {verifUsers.length === 0 && (
+                    <tr><td colSpan={5} className="px-4 py-8 text-center text-muted">인증한 유저 없음</td></tr>
                   )}
                 </tbody>
               </table>
-            </div>
+            )}
           </div>
         )}
 
         {/* ── 팔로우 관리 ── */}
         {activeTab === "follow" && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-muted">
-                서버별 등록된 스트리머와 치지직 인증을 완료한 유저의 팔로우 개월 수입니다.
-                개월 기준은 각 서버의 <strong className="text-fg">웹 대시보드 → 치지직</strong>에서 변경하세요.
-              </p>
-              <button onClick={() => setShowAdd(true)} className="btn-primary shrink-0">
-                <Plus size={15} /> 구독 추가
-              </button>
-            </div>
+            <p className="text-sm text-muted">
+              서버별 등록된 스트리머와 치지직 인증을 완료한 유저의 팔로우 개월 수입니다.
+              티어 설정은 각 서버의 <strong className="text-fg">웹 대시보드 → 치지직</strong>에서 변경하세요.
+            </p>
 
             {followStats === null ? (
               <div className="rounded-2xl border border-border px-4 py-12 text-center text-muted animate-pulse">
