@@ -197,7 +197,7 @@ async def verifications(
 ):
     db   = await get_db()
     rows = await (await db.execute(
-        """SELECT guild_id, user_id, tier_months, verified_at
+        """SELECT guild_id, user_id, tier_months, follow_date, follow_days, verified_at
            FROM chzzk_verifications
            ORDER BY verified_at DESC LIMIT ?""",
         (limit,)
@@ -212,14 +212,17 @@ async def verifications(
             for r in rows
         ])
 
-    return [
-        {
+    result = []
+    for r, name in zip(rows, user_names):
+        fd = r["follow_days"] if r["follow_days"] is not None else -1
+        result.append({
             **dict(r),
-            "guild_name": guild_name_map.get(str(r["guild_id"]), str(r["guild_id"])),
-            "user_name":  name,
-        }
-        for r, name in zip(rows, user_names)
-    ]
+            "guild_name":  guild_name_map.get(str(r["guild_id"]), str(r["guild_id"])),
+            "user_name":   name,
+            "follow_days": fd,
+            "is_following": fd >= 0,
+        })
+    return result
 
 
 @router.get("/follow-stats")

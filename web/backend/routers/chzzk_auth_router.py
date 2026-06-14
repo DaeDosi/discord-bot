@@ -73,21 +73,26 @@ CHZZK_SUBSCRIPTION_URL = "https://openapi.chzzk.naver.com/open/v1/channels/{chan
 CHZZK_FOLLOW_URL       = "https://openapi.chzzk.naver.com/open/v1/channels/{channel_id}/follows/me"
 
 
-def _months_since(date_str: str) -> int:
-    """ISO8601 날짜 문자열 → 현재까지 개월 수 (30일 기준)."""
+def _days_since(date_str: str) -> int:
+    """ISO8601 날짜 문자열 → 현재까지 경과 일수."""
     from datetime import timezone
     try:
         dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        delta_days = (datetime.now(timezone.utc) - dt).days
-        return max(0, int(delta_days / 30))
+        return max(0, (datetime.now(timezone.utc) - dt).days)
     except Exception:
         return 0
 
 
-async def _get_follow_months(channel_id: str, access_token: str) -> int:
-    """팔로우 날짜 기반 개월 수 반환. 실패 시 0."""
+async def _get_follow_info(channel_id: str, access_token: str) -> tuple[str | None, int, bool]:
+    """
+    해당 스트리머에 대한 팔로우 정보를 반환합니다.
+    Returns: (follow_date_str, follow_days, is_following)
+      - follow_date_str : ISO8601 팔로우 시작일 or None
+      - follow_days     : 팔로우 경과 일수 (팔로우 안 했으면 -1)
+      - is_following    : 팔로우 여부
+    """
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Client-Id": CHZZK_CLIENT_ID,
@@ -97,59 +102,55 @@ async def _get_follow_months(channel_id: str, access_token: str) -> int:
         url = CHZZK_FOLLOW_URL.format(channel_id=channel_id)
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url, headers=headers)
-            print(f"[chzzk-auth] follow check status={resp.status_code} body={resp.text[:300]}")
+            print(f"[chzzk-auth] follow check status={resp.status_code} body={resp.text[:400]}")
+
             if resp.status_code == 200:
-                content = resp.json().get("content") or {}
+                data    = resp.json()
+                content = data.get("content")
+
+                # content가 null이거나 빈 dict면 팔로우 안 함
+                if not content:
+                    print("[chzzk-auth] follow: not following (empty content)")
+                    return None, -1, False
+
                 date_str = (
                     content.get("followDate")
                     or content.get("createdAt")
                     or content.get("followedAt")
                     or content.get("followingDate")
+                    or content.get("follow_date")
                 )
                 if date_str:
-                    months = _months_since(date_str)
-                    print(f"[chzzk-auth] follow date={date_str} → {months} months")
-                    return months
+                    days = _days_since(date_str)
+                    print(f"[chzzk-auth] follow date={date_str} → {days} days")
+                    return date_str, days, True
+
+                # content는 있는데 날짜 필드가 없는 경우 (팔로우 안 함 응답 형식 가능)
+                print(f"[chzzk-auth] follow: content exists but no date field — content={content}")
+                return None, -1, False
+
+            elif resp.status_code in (404, 400):
+                # 팔로우 안 함
+                print(f"[chzzk-auth] follow: not following (HTTP {resp.status_code})")
+                return None, -1, False
+
     except Exception as e:
         print(f"[chzzk-auth] follow check error: {repr(e)}")
-    return 0
+
+    return None, -1, False
 
 
-async def _get_subscription_months(channel_id: str, access_token: str) -> int:
-    """유료 구독 개월 수 반환 (없으면 0)."""
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Client-Id": CHZZK_CLIENT_ID,
-        "Accept": "application/json",
-    }
-    try:
-        url = CHZZK_SUBSCRIPTION_URL.format(channel_id=channel_id)
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, headers=headers)
-            if resp.status_code == 200:
-                content = resp.json().get("content") or {}
-                return int(content.get("tierMonths") or content.get("month") or 0)
-    except Exception:
-        pass
-    return 0
-
-
-async def _get_tier_months(guild_id: str, access_token: str) -> int:
-    """팔로우 날짜 기반 개월 수. 실패 시 구독 개월 수로 fallback."""
+async def _get_follow_info_for_guild(guild_id: str, access_token: str) -> tuple[str | None, int, bool]:
+    """해당 서버에 등록된 스트리머에 대한 팔로우 정보 반환."""
     db = await get_db()
     sub = await (await db.execute(
         "SELECT chzzk_channel_id FROM chzzk_subscriptions WHERE guild_id=?",
         (int(guild_id),)
     )).fetchone()
     if not sub:
-        return 0
-    channel_id = sub["chzzk_channel_id"]
-
-    months = await _get_follow_months(channel_id, access_token)
-    if months > 0:
-        return months
-    # fallback: 유료 구독 개월
-    return await _get_subscription_months(channel_id, access_token)
+        print(f"[chzzk-auth] no streamer registered for guild {guild_id}")
+        return None, -1, False
+    return await _get_follow_info(sub["chzzk_channel_id"], access_token)
 
 
 async def _get_chzzk_channel_info(access_token: str) -> dict:
@@ -381,21 +382,28 @@ async def chzzk_callback(
     # ── 치지직 채널명 조회 ────────────────────────────────────────────────────
     channel_name = await _get_chzzk_channel_name(access_token)
 
-    # ── DB에 인증 이력 + 구독 개월 수 기록 ─────────────────────────────────
+    # ── 치지직 팔로우 정보 조회 (날짜 기반) ────────────────────────────────
+    follow_date, follow_days, is_following = await _get_follow_info_for_guild(guild_id, access_token)
+    tier_months = max(0, follow_days // 30) if follow_days >= 0 else 0
+
+    # ── DB에 인증 이력 + 팔로우 정보 기록 ───────────────────────────────────
     try:
         db = await get_db()
-        # 팔로우 개월 수 조회 (날짜 기반 우선, fallback 구독 개월)
-        tier_months = await _get_tier_months(guild_id, access_token)
         await db.execute(
-            """INSERT INTO chzzk_verifications(guild_id, user_id, verified_at, tier_months, follow_months)
-               VALUES(?,?,?,?,?)
+            """INSERT INTO chzzk_verifications
+                   (guild_id, user_id, verified_at, tier_months, follow_months, follow_date, follow_days)
+               VALUES(?,?,?,?,?,?,?)
                ON CONFLICT(guild_id, user_id) DO UPDATE SET
                    verified_at=excluded.verified_at,
                    tier_months=excluded.tier_months,
-                   follow_months=excluded.follow_months""",
-            (int(guild_id), int(discord_user_id), time.time(), tier_months, tier_months),
+                   follow_months=excluded.follow_months,
+                   follow_date=excluded.follow_date,
+                   follow_days=excluded.follow_days""",
+            (int(guild_id), int(discord_user_id), time.time(),
+             tier_months, tier_months, follow_date, follow_days),
         )
         await db.commit()
+        print(f"[chzzk-auth] saved follow info: date={follow_date} days={follow_days} is_following={is_following}")
     except Exception as e:
         print(f"[chzzk-auth] DB write failed: {e}")
         return _err("db_error", guild_id)
@@ -430,7 +438,11 @@ async def chzzk_callback(
     else:
         print(f"[chzzk-auth] No channel name found, skipping nickname change")
 
-    # ── 팔로워 역할 부여 (이미 계산된 tier_months 재사용) ───────────────────
-    await _assign_follower_roles(guild_id, discord_user_id, tier_months)
+    # ── 팔로우 역할 부여 (팔로우한 경우만) ─────────────────────────────────
+    if is_following:
+        await _assign_follower_roles(guild_id, discord_user_id, tier_months)
+    else:
+        print(f"[chzzk-auth] user {discord_user_id} does not follow the streamer — no follow roles assigned")
 
-    return RedirectResponse(f"{FRONTEND_URL}/verify?success=1&guild_id={quote(guild_id)}")
+    follow_param = f"&follow_days={follow_days}" if is_following else "&follow=none"
+    return RedirectResponse(f"{FRONTEND_URL}/verify?success=1&guild_id={quote(guild_id)}{follow_param}")

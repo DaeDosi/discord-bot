@@ -45,7 +45,11 @@ interface ChzzkSub {
 interface VerifUser {
   guild_id: number; guild_name: string;
   user_id: number; user_name: string;
-  tier_months: number; verified_at: number;
+  tier_months: number;
+  follow_date: string | null;
+  follow_days: number;
+  is_following: boolean;
+  verified_at: number;
 }
 interface FollowUser {
   user_id: number; user_name: string; tier_months: number; verified_at: number;
@@ -305,6 +309,7 @@ export default function AdminPage() {
   const [followStats, setFollowStats] = useState<FollowStat[] | null>(null);
   const [verifUsers, setVerifUsers]   = useState<VerifUser[] | null>(null);
   const [loading, setLoading]         = useState(true);
+  const [showAdd, setShowAdd]         = useState(false);
   const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow">("guilds");
   const [refreshing, setRefreshing]   = useState(false);
 
@@ -384,6 +389,10 @@ export default function AdminPage() {
 
   return (
     <div className="min-h-screen bg-bg text-fg">
+      {showAdd && (
+        <AddChzzkModal guilds={guilds} onClose={() => setShowAdd(false)} onAdded={loadAll} />
+      )}
+
       <header className="border-b border-border bg-bg-card/60 backdrop-blur sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-5 flex items-center justify-between" style={{ height: 56 }}>
           <div className="flex items-center gap-2">
@@ -466,42 +475,64 @@ export default function AdminPage() {
 
         {/* ── 인증 현황 ── */}
         {activeTab === "verif" && (
-          <div className="rounded-2xl border border-border overflow-hidden">
-            {verifUsers === null ? (
-              <p className="px-4 py-12 text-center text-muted animate-pulse">불러오는 중...</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border bg-bg-card/60">
-                    <th className="text-left px-4 py-3 text-muted font-medium">유저명</th>
-                    <th className="text-left px-4 py-3 text-muted font-medium hidden md:table-cell">유저 ID</th>
-                    <th className="text-left px-4 py-3 text-muted font-medium">서버명</th>
-                    <th className="text-left px-4 py-3 text-muted font-medium">팔로우 기간</th>
-                    <th className="text-left px-4 py-3 text-muted font-medium">인증 일시</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {verifUsers.map((v) => (
-                    <tr key={`${v.guild_id}-${v.user_id}`} className="hover:bg-bg-hover/40 transition-colors">
-                      <td className="px-4 py-3 text-white font-medium">{v.user_name}</td>
-                      <td className="px-4 py-3 font-mono text-xs text-muted select-all hidden md:table-cell">{v.user_id}</td>
-                      <td className="px-4 py-3 text-sm text-muted">{v.guild_name}</td>
-                      <td className="px-4 py-3">
-                        <span className={`font-semibold text-sm ${v.tier_months > 0 ? "text-accent" : "text-muted"}`}>
-                          {v.tier_months}개월
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-xs text-muted">
-                        {new Date(v.verified_at * 1000).toLocaleString("ko-KR")}
-                      </td>
+          <div className="space-y-4">
+            <div className="flex justify-end">
+              <button onClick={() => setShowAdd(true)} className="btn-primary">
+                <Plus size={15} /> 스트리머 등록
+              </button>
+            </div>
+            <div className="rounded-2xl border border-border overflow-hidden">
+              {verifUsers === null ? (
+                <p className="px-4 py-12 text-center text-muted animate-pulse">불러오는 중...</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-bg-card/60">
+                      <th className="text-left px-4 py-3 text-muted font-medium">유저명</th>
+                      <th className="text-left px-4 py-3 text-muted font-medium hidden md:table-cell">유저 ID</th>
+                      <th className="text-left px-4 py-3 text-muted font-medium">서버</th>
+                      <th className="text-left px-4 py-3 text-muted font-medium">팔로우 여부</th>
+                      <th className="text-left px-4 py-3 text-muted font-medium">팔로우 시작일</th>
+                      <th className="text-left px-4 py-3 text-muted font-medium">경과</th>
+                      <th className="text-left px-4 py-3 text-muted font-medium hidden lg:table-cell">인증 일시</th>
                     </tr>
-                  ))}
-                  {verifUsers.length === 0 && (
-                    <tr><td colSpan={5} className="px-4 py-8 text-center text-muted">인증한 유저 없음</td></tr>
-                  )}
-                </tbody>
-              </table>
-            )}
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {verifUsers.map((v) => (
+                      <tr key={`${v.guild_id}-${v.user_id}`} className="hover:bg-bg-hover/40 transition-colors">
+                        <td className="px-4 py-3 text-white font-medium">{v.user_name}</td>
+                        <td className="px-4 py-3 font-mono text-xs text-muted select-all hidden md:table-cell">{v.user_id}</td>
+                        <td className="px-4 py-3 text-sm text-muted">{v.guild_name}</td>
+                        <td className="px-4 py-3">
+                          {v.is_following
+                            ? <span className="text-xs font-semibold text-accent">팔로우 중</span>
+                            : <span className="text-xs font-semibold text-danger">팔로우 안 함</span>}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-muted">
+                          {v.follow_date
+                            ? new Date(v.follow_date).toLocaleDateString("ko-KR")
+                            : "—"}
+                        </td>
+                        <td className="px-4 py-3">
+                          {v.is_following
+                            ? <span className="text-sm font-semibold text-accent">
+                                {v.follow_days}일
+                                <span className="text-xs text-muted ml-1">({v.tier_months}개월)</span>
+                              </span>
+                            : <span className="text-xs text-muted">—</span>}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-muted hidden lg:table-cell">
+                          {new Date(v.verified_at * 1000).toLocaleString("ko-KR")}
+                        </td>
+                      </tr>
+                    ))}
+                    {verifUsers.length === 0 && (
+                      <tr><td colSpan={7} className="px-4 py-8 text-center text-muted">인증한 유저 없음</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
         )}
 

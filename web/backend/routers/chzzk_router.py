@@ -303,19 +303,25 @@ async def get_guild_verifications(
 ):
     db = await get_db()
     rows = await (await db.execute(
-        """SELECT user_id, tier_months, follow_months, verified_at
+        """SELECT user_id, tier_months, follow_date, follow_days, verified_at
            FROM chzzk_verifications WHERE guild_id=?
-           ORDER BY tier_months DESC, verified_at DESC""",
+           ORDER BY
+               CASE WHEN follow_days >= 0 THEN follow_days ELSE -1 END DESC,
+               verified_at DESC""",
         (int(guild_id),)
     )).fetchall()
-    return [
-        {
-            "user_id":     str(r["user_id"]),
-            "tier_months": r["tier_months"] or 0,
-            "verified_at": r["verified_at"],
-        }
-        for r in rows
-    ]
+    result = []
+    for r in rows:
+        fd = r["follow_days"] if r["follow_days"] is not None else -1
+        result.append({
+            "user_id":      str(r["user_id"]),
+            "tier_months":  r["tier_months"] or 0,
+            "follow_date":  r["follow_date"],
+            "follow_days":  fd,
+            "is_following": fd >= 0,
+            "verified_at":  r["verified_at"],
+        })
+    return result
 
 
 # ── 디버그: 현재 라이브 상태 체크 ────────────────────────────────────────────

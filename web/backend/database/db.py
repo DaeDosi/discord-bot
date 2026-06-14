@@ -175,6 +175,8 @@ async def init_db():
                UNIQUE(guild_id, months)
            )""",
         "ALTER TABLE chzzk_verifications ADD COLUMN follow_months INTEGER DEFAULT 0",
+        "ALTER TABLE chzzk_verifications ADD COLUMN follow_date TEXT",
+        "ALTER TABLE chzzk_verifications ADD COLUMN follow_days INTEGER DEFAULT -1",
     ]:
         try:
             await db.execute(sql)

@@ -273,7 +273,9 @@ export default function ChzzkPage() {
                   <thead>
                     <tr className="border-b border-border">
                       <th className="text-left px-2 py-2 text-muted font-medium text-xs">유저 ID</th>
-                      <th className="text-left px-2 py-2 text-muted font-medium text-xs">팔로우 기간</th>
+                      <th className="text-left px-2 py-2 text-muted font-medium text-xs">팔로우 여부</th>
+                      <th className="text-left px-2 py-2 text-muted font-medium text-xs">팔로우 시작일</th>
+                      <th className="text-left px-2 py-2 text-muted font-medium text-xs">경과</th>
                       <th className="text-left px-2 py-2 text-muted font-medium text-xs">인증 일시</th>
                     </tr>
                   </thead>
@@ -289,11 +291,26 @@ export default function ChzzkPage() {
                         <tr key={v.user_id} className="hover:bg-bg-hover/30 transition-colors">
                           <td className="px-2 py-2.5 font-mono text-xs text-muted select-all">{v.user_id}</td>
                           <td className="px-2 py-2.5">
-                            <span className={`font-semibold text-sm ${v.tier_months > 0 ? "text-accent" : "text-muted"}`}>
-                              {v.tier_months}개월
-                            </span>
-                            {tierRole && (
-                              <span className="ml-2 text-[11px] text-muted">→ @{tierRole.name}</span>
+                            {v.is_following ? (
+                              <span className="text-xs font-semibold text-accent">팔로우 중</span>
+                            ) : (
+                              <span className="text-xs font-semibold text-danger">팔로우 안 함</span>
+                            )}
+                          </td>
+                          <td className="px-2 py-2.5 text-xs text-muted">
+                            {v.follow_date
+                              ? new Date(v.follow_date).toLocaleDateString("ko-KR")
+                              : "—"}
+                          </td>
+                          <td className="px-2 py-2.5">
+                            {v.is_following ? (
+                              <span className="text-sm font-semibold text-accent">
+                                {v.follow_days}일
+                                <span className="text-xs text-muted ml-1">({v.tier_months}개월)</span>
+                                {tierRole && <span className="ml-2 text-[11px] text-muted">→ @{tierRole.name}</span>}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-muted">—</span>
                             )}
                           </td>
                           <td className="px-2 py-2.5 text-xs text-muted">
