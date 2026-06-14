@@ -134,7 +134,7 @@ class HelpCog(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="도움말", description="NexBot의 모든 기능과 명령어를 한눈에 확인합니다.")
-    async def 도움말(self, interaction: discord.Interaction):
+    async def help_overview(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="📖 NexBot 도움말",
             description=(

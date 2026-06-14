@@ -76,6 +76,19 @@ class AllInOneBot(commands.Bot):
     async def on_guild_join(self, guild: discord.Guild):
         print(f"서버 참가: {guild.name} (ID: {guild.id})")
 
+    # 봇 오너 전용: @봇이름 sync  →  슬래시 커맨드 강제 동기화
+    @commands.command(name="sync")
+    @commands.is_owner()
+    async def sync_commands(self, ctx: commands.Context, guild_id: str = ""):
+        if guild_id:
+            guild_obj = discord.Object(id=int(guild_id))
+            self.tree.copy_global_to(guild=guild_obj)
+            synced = await self.tree.sync(guild=guild_obj)
+            await ctx.send(f"✅ 길드 {guild_id}에 {len(synced)}개 커맨드 즉시 동기화 완료")
+        else:
+            synced = await self.tree.sync()
+            await ctx.send(f"✅ 글로벌 {len(synced)}개 커맨드 동기화 완료 (Discord 반영까지 최대 1시간)")
+
     async def on_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ):
