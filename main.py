@@ -20,6 +20,7 @@ COGS = [
     "cogs.chzzk",
     "cogs.verification",
     "cogs.sichham",
+    "cogs.info",
     "cogs.help",
 ]
 
