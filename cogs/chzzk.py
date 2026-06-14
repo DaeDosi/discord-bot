@@ -159,6 +159,7 @@ class ChzzkCog(commands.Cog):
 
     # ── /치지직설정 ──────────────────────────────────────────────────────────
     @app_commands.command(name="치지직설정", description="웹 대시보드에서 치지직 알림을 설정합니다.")
+    @app_commands.default_permissions(manage_guild=True)
     @is_mod_or_admin()
     async def chzzk_settings(self, interaction: discord.Interaction):
         dashboard_url = f"{os.getenv('FRONTEND_URL', 'https://nexbot.shop')}/dashboard/{interaction.guild_id}/chzzk"
@@ -178,6 +179,7 @@ class ChzzkCog(commands.Cog):
 
     # ── /치지직알림테스트 ─────────────────────────────────────────────────────
     @app_commands.command(name="치지직알림테스트", description="등록된 치지직 알림 설정으로 테스트 메시지를 전송합니다.")
+    @app_commands.default_permissions(manage_guild=True)
     @is_mod_or_admin()
     async def test_chzzk_alert(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)

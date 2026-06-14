@@ -52,6 +52,7 @@ class ModerationCog(commands.Cog):
     # ── /kick ─────────────────────────────────────────────────────────────────
     @app_commands.command(name="추방", description="멤버를 서버에서 추방합니다.")
     @app_commands.describe(member="대상 멤버", reason="사유")
+    @app_commands.default_permissions(kick_members=True)
     @is_mod_or_admin()
     async def kick(self, interaction: discord.Interaction,
                    member: discord.Member, reason: str = "사유 없음"):
@@ -74,6 +75,7 @@ class ModerationCog(commands.Cog):
     # ── /ban ──────────────────────────────────────────────────────────────────
     @app_commands.command(name="차단", description="멤버를 서버에서 영구 차단합니다.")
     @app_commands.describe(member="대상 멤버", reason="사유", delete_days="삭제할 메시지 기간(일, 0-7)")
+    @app_commands.default_permissions(ban_members=True)
     @is_mod_or_admin()
     async def ban(self, interaction: discord.Interaction, member: discord.Member,
                   reason: str = "사유 없음",
@@ -93,6 +95,7 @@ class ModerationCog(commands.Cog):
     # ── /unban ────────────────────────────────────────────────────────────────
     @app_commands.command(name="차단해제", description="차단된 유저를 해제합니다.")
     @app_commands.describe(user_id="차단 해제할 유저 ID", reason="사유")
+    @app_commands.default_permissions(ban_members=True)
     @is_mod_or_admin()
     async def unban(self, interaction: discord.Interaction,
                     user_id: str, reason: str = "사유 없음"):
@@ -112,6 +115,7 @@ class ModerationCog(commands.Cog):
     # ── /mute ─────────────────────────────────────────────────────────────────
     @app_commands.command(name="뮤트", description="멤버에게 타임아웃을 적용합니다.")
     @app_commands.describe(member="대상 멤버", duration="지속 시간(분)", reason="사유")
+    @app_commands.default_permissions(moderate_members=True)
     @is_mod_or_admin()
     async def mute(self, interaction: discord.Interaction, member: discord.Member,
                    duration: app_commands.Range[int, 1, 40320] = 10,
@@ -132,6 +136,7 @@ class ModerationCog(commands.Cog):
     # ── /unmute ───────────────────────────────────────────────────────────────
     @app_commands.command(name="뮤트해제", description="멤버의 타임아웃을 해제합니다.")
     @app_commands.describe(member="대상 멤버")
+    @app_commands.default_permissions(moderate_members=True)
     @is_mod_or_admin()
     async def unmute(self, interaction: discord.Interaction, member: discord.Member):
         await interaction.response.defer(ephemeral=True)
@@ -151,6 +156,7 @@ class ModerationCog(commands.Cog):
     # ── /warn ─────────────────────────────────────────────────────────────────
     @app_commands.command(name="경고", description="멤버에게 경고를 부여합니다.")
     @app_commands.describe(member="대상 멤버", reason="사유")
+    @app_commands.default_permissions(manage_messages=True)
     @is_mod_or_admin()
     async def warn(self, interaction: discord.Interaction,
                    member: discord.Member, reason: str = "사유 없음"):
@@ -193,6 +199,7 @@ class ModerationCog(commands.Cog):
     # ── /warnings ─────────────────────────────────────────────────────────────
     @app_commands.command(name="경고내역", description="멤버의 경고 내역을 확인합니다.")
     @app_commands.describe(member="대상 멤버")
+    @app_commands.default_permissions(manage_messages=True)
     @is_mod_or_admin()
     async def warnings(self, interaction: discord.Interaction, member: discord.Member):
         db = await get_db()
@@ -235,6 +242,7 @@ class ModerationCog(commands.Cog):
     # ── /purge ─────────────────────────────────────────────────────────────────
     @app_commands.command(name="청소", description="채널의 메시지를 일괄 삭제합니다.")
     @app_commands.describe(amount="삭제할 메시지 수 (최대 100)")
+    @app_commands.default_permissions(manage_messages=True)
     @is_mod_or_admin()
     async def purge(self, interaction: discord.Interaction,
                     amount: app_commands.Range[int, 1, 100]):
