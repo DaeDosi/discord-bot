@@ -110,7 +110,6 @@ def _build_embed_and_view(guild: discord.Guild, row) -> tuple[discord.Embed, dis
             label="인증하기",
             url=verify_url,
             style=discord.ButtonStyle.link,
-            emoji="📺",
         ))
     else:
         view = VerifyView()
@@ -147,18 +146,8 @@ class VerificationCog(commands.Cog):
                 except discord.Forbidden:
                     pass
 
-        ch = member.guild.get_channel(row["verification_channel"])
-        if not ch:
-            return
-
-        embed, view = _build_embed_and_view(member.guild, row)
-        embed.description = f"{member.mention} {embed.description}"
-        embed.set_thumbnail(url=member.display_avatar.url)
-
-        try:
-            await ch.send(embed=embed, view=view)
-        except discord.Forbidden:
-            pass
+        # 고정 임베드 방식: 입장 시 별도 메시지 전송하지 않음
+        # (/입장메시지설정 으로 등록한 고정 임베드를 유저가 직접 사용)
 
     # ── /입장메시지설정 ──────────────────────────────────────────────────────
     @app_commands.command(

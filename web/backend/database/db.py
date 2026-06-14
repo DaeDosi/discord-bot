@@ -59,6 +59,8 @@ async def init_db():
             levelup_dm              INTEGER DEFAULT 0,
             automod_enabled         INTEGER DEFAULT 1,
             badwords                TEXT    DEFAULT '',
+            welcome_message         TEXT    DEFAULT '',
+            goodbye_message         TEXT    DEFAULT '',
             verification_channel    INTEGER,
             unverified_role_id      INTEGER,
             verified_role_id        INTEGER,
@@ -110,16 +112,18 @@ async def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS chzzk_subscriptions (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id         INTEGER NOT NULL,
-            discord_channel  INTEGER NOT NULL,
-            chzzk_channel_id TEXT    NOT NULL,
-            chzzk_name       TEXT,
-            chzzk_image_url  TEXT,
-            is_live          INTEGER DEFAULT 0,
-            mention_role_id  INTEGER,
-            custom_message   TEXT,
-            mention_everyone INTEGER DEFAULT 0,
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id           INTEGER NOT NULL,
+            discord_channel    INTEGER NOT NULL,
+            chzzk_channel_id   TEXT    NOT NULL,
+            chzzk_name         TEXT,
+            chzzk_image_url    TEXT,
+            is_live            INTEGER DEFAULT 0,
+            mention_role_id    INTEGER,
+            custom_message     TEXT,
+            mention_everyone   INTEGER DEFAULT 0,
+            follow_role_1month INTEGER,
+            follow_role_3month INTEGER,
             UNIQUE(guild_id, chzzk_channel_id)
         );
 
@@ -147,7 +151,9 @@ async def init_db():
 
     # 기존 DB에 새 컬럼 추가 (이미 있으면 무시)
     for sql in [
-        "ALTER TABLE chzzk_subscriptions ADD COLUMN mention_everyone INTEGER DEFAULT 0",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN mention_everyone   INTEGER DEFAULT 0",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN follow_role_1month INTEGER",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN follow_role_3month INTEGER",
         "ALTER TABLE guild_config ADD COLUMN verification_channel      INTEGER",
         "ALTER TABLE guild_config ADD COLUMN unverified_role_id        INTEGER",
         "ALTER TABLE guild_config ADD COLUMN verified_role_id          INTEGER",
@@ -156,6 +162,8 @@ async def init_db():
         "ALTER TABLE guild_config ADD COLUMN verification_embed_msg_id INTEGER",
         "ALTER TABLE guild_config ADD COLUMN embed_color TEXT DEFAULT '#5865F2'",
         "ALTER TABLE guild_config ADD COLUMN embed_title TEXT DEFAULT '🔐 입장 인증'",
+        "ALTER TABLE guild_config ADD COLUMN welcome_message TEXT DEFAULT ''",
+        "ALTER TABLE guild_config ADD COLUMN goodbye_message TEXT DEFAULT ''",
     ]:
         try:
             await db.execute(sql)

@@ -2,9 +2,9 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams } from "next/navigation";
 import Image from "next/image";
-import { Radio, Search, Plus, Trash2, X, Bell, BellOff } from "lucide-react";
+import { Radio, Search, Plus, Trash2, X, Bell, BellOff, Save, CheckCircle } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ChzzkSubscription, ChzzkSearchResult, Channel } from "@/lib/types";
+import type { ChzzkSubscription, ChzzkSearchResult, Channel, Role, FollowerRoles } from "@/lib/types";
 
 function SearchModal({
   onClose,
@@ -193,19 +193,38 @@ export default function ChzzkPage() {
   const { guildId } = useParams<{ guildId: string }>();
   const [subs, setSubs]         = useState<ChzzkSubscription[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [roles, setRoles]       = useState<Role[]>([]);
   const [showSearch, setShowSearch] = useState(false);
   const [selected, setSelected]     = useState<ChzzkSearchResult | null>(null);
+  const [followerRoles, setFollowerRoles] = useState<FollowerRoles>({
+    follow_role_1month: null,
+    follow_role_3month: null,
+  });
+  const [savingRoles, setSavingRoles] = useState(false);
+  const [savedRoles, setSavedRoles]   = useState(false);
 
   const load = async () => {
-    const [s, ch] = await Promise.all([
+    const [s, ch, r, fr] = await Promise.all([
       api.chzzk.list(guildId),
       api.guilds.channels(guildId),
+      api.guilds.roles(guildId),
+      api.chzzk.getFollowerRoles(guildId).catch(() => ({ follow_role_1month: null, follow_role_3month: null })),
     ]);
     setSubs(s);
     setChannels(ch);
+    setRoles(r);
+    setFollowerRoles(fr);
   };
 
   useEffect(() => { load(); }, [guildId]);
+
+  const saveFollowerRoles = async () => {
+    setSavingRoles(true);
+    await api.chzzk.saveFollowerRoles(guildId, followerRoles).catch(() => {});
+    setSavingRoles(false);
+    setSavedRoles(true);
+    setTimeout(() => setSavedRoles(false), 2500);
+  };
 
   const handleSelect = (r: ChzzkSearchResult) => {
     setShowSearch(false);
@@ -314,6 +333,52 @@ export default function ChzzkPage() {
           </div>
         )}
       </div>
+
+      {/* 팔로워 역할 설정 */}
+      {subs.length > 0 && (
+        <div className="card space-y-4">
+          <div>
+            <h2 className="font-semibold text-white">팔로워 역할 자동 부여</h2>
+            <p className="text-muted text-xs mt-1">
+              치지직 OAuth 인증 시 구독 기간에 따라 역할을 자동으로 부여합니다.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="label">1개월 이상 구독자 역할</label>
+              <select
+                className="select"
+                value={followerRoles.follow_role_1month ?? ""}
+                onChange={(e) => setFollowerRoles((p) => ({ ...p, follow_role_1month: e.target.value || null }))}
+              >
+                <option value="">역할 없음</option>
+                {roles.map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">3개월 이상 구독자 역할</label>
+              <select
+                className="select"
+                value={followerRoles.follow_role_3month ?? ""}
+                onChange={(e) => setFollowerRoles((p) => ({ ...p, follow_role_3month: e.target.value || null }))}
+              >
+                <option value="">역할 없음</option>
+                {roles.map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <button onClick={saveFollowerRoles} disabled={savingRoles} className="btn-primary">
+            {savedRoles
+              ? <><CheckCircle size={16} /> 저장됨</>
+              : <><Save size={16} /> {savingRoles ? "저장 중..." : "역할 설정 저장"}</>
+            }
+          </button>
+        </div>
+      )}
     </div>
   );
 }

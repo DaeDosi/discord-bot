@@ -91,5 +91,9 @@ export const api = {
       request(`/api/chzzk/${gid}/subscriptions/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
     remove:  (gid: string, id: number) =>
       request(`/api/chzzk/${gid}/subscriptions/${id}`, { method: "DELETE" }),
+    getFollowerRoles: (gid: string) =>
+      request<import("./types").FollowerRoles>(`/api/chzzk/${gid}/follower-roles`),
+    saveFollowerRoles: (gid: string, data: import("./types").FollowerRoles) =>
+      request(`/api/chzzk/${gid}/follower-roles`, { method: "PUT", body: JSON.stringify(data) }),
   },
 };

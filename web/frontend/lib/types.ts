@@ -22,6 +22,8 @@ export interface GuildConfig {
   levelup_dm?:      boolean;
   automod_enabled?: boolean;
   badwords?:        string;
+  welcome_message?: string;
+  goodbye_message?: string;
 }
 
 export interface Channel {
@@ -43,13 +45,20 @@ export interface LevelReward {
 }
 
 export interface ChzzkSubscription {
-  id:               number;
-  discord_channel:  number;
-  chzzk_channel_id: string;
-  chzzk_name:       string;
-  chzzk_image_url:  string | null;
-  is_live:          number;
-  mention_everyone: number;
+  id:                 number;
+  discord_channel:    number;
+  chzzk_channel_id:  string;
+  chzzk_name:        string;
+  chzzk_image_url:   string | null;
+  is_live:           number;
+  mention_everyone:  number;
+  follow_role_1month?: string | null;
+  follow_role_3month?: string | null;
+}
+
+export interface FollowerRoles {
+  follow_role_1month: string | null;
+  follow_role_3month: string | null;
 }
 
 export interface VerificationConfig {

@@ -44,11 +44,20 @@ async def list_subscriptions(
     db = await get_db()
     rows = await (await db.execute(
         "SELECT id, discord_channel, chzzk_channel_id, chzzk_name, "
-        "chzzk_image_url, is_live, mention_role_id, custom_message "
+        "chzzk_image_url, is_live, mention_role_id, custom_message, "
+        "follow_role_1month, follow_role_3month "
         "FROM chzzk_subscriptions WHERE guild_id=?",
         (int(guild_id),)
     )).fetchall()
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        if d.get("follow_role_1month") is not None:
+            d["follow_role_1month"] = str(d["follow_role_1month"])
+        if d.get("follow_role_3month") is not None:
+            d["follow_role_3month"] = str(d["follow_role_3month"])
+        result.append(d)
+    return result
 
 
 # ── 구독 추가 ─────────────────────────────────────────────────────────────────
@@ -153,6 +162,59 @@ async def delete_subscription(
     await db.commit()
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="구독을 찾을 수 없습니다.")
+    return {"ok": True}
+
+
+# ── 팔로워 역할 설정 ──────────────────────────────────────────────────────────
+class FollowerRoles(BaseModel):
+    follow_role_1month: Optional[str] = None
+    follow_role_3month: Optional[str] = None
+
+
+@router.get("/{guild_id}/follower-roles")
+async def get_follower_roles(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT follow_role_1month, follow_role_3month FROM chzzk_subscriptions WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone()
+    if not row:
+        return {"follow_role_1month": None, "follow_role_3month": None}
+    return {
+        "follow_role_1month": str(row["follow_role_1month"]) if row["follow_role_1month"] else None,
+        "follow_role_3month": str(row["follow_role_3month"]) if row["follow_role_3month"] else None,
+    }
+
+
+@router.put("/{guild_id}/follower-roles")
+async def update_follower_roles(
+    guild_id: str,
+    body: FollowerRoles,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT id FROM chzzk_subscriptions WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="먼저 치지직 채널을 등록해주세요.")
+    await db.execute(
+        """UPDATE chzzk_subscriptions
+           SET follow_role_1month=?, follow_role_3month=?
+           WHERE guild_id=?""",
+        (
+            int(body.follow_role_1month) if body.follow_role_1month else None,
+            int(body.follow_role_3month) if body.follow_role_3month else None,
+            int(guild_id),
+        )
+    )
+    await db.commit()
     return {"ok": True}
 
 

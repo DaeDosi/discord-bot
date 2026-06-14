@@ -86,6 +86,34 @@ export default function GeneralSettingsPage() {
         </div>
       </div>
 
+      {/* 환영/퇴장 메시지 내용 */}
+      <div className="card space-y-4">
+        <h2 className="font-semibold text-white">메시지 내용</h2>
+        <p className="text-muted text-xs">
+          사용 가능한 변수: <code className="bg-surface-2 px-1 rounded">{"{mention}"}</code> 유저 멘션,{" "}
+          <code className="bg-surface-2 px-1 rounded">{"{username}"}</code> 유저 이름,{" "}
+          <code className="bg-surface-2 px-1 rounded">{"{server}"}</code> 서버 이름
+        </p>
+        <div>
+          <label className="label">환영 메시지</label>
+          <textarea
+            className="select resize-none h-24 font-mono text-sm"
+            value={cfg.welcome_message ?? ""}
+            onChange={(e) => set("welcome_message")(e.target.value)}
+            placeholder={"{mention}님이 **{server}**에 오셨습니다!\n\n서버의 규칙을 꼭 읽어주세요 😊"}
+          />
+        </div>
+        <div>
+          <label className="label">퇴장 메시지</label>
+          <textarea
+            className="select resize-none h-20 font-mono text-sm"
+            value={cfg.goodbye_message ?? ""}
+            onChange={(e) => set("goodbye_message")(e.target.value)}
+            placeholder="**{username}**님이 서버를 떠났습니다."
+          />
+        </div>
+      </div>
+
       {/* 레벨업 DM */}
       <div className="card space-y-4">
         <h2 className="font-semibold text-white">레벨업 알림</h2>

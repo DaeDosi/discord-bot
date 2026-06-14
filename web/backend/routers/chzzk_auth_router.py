@@ -69,6 +69,48 @@ async def _set_discord_nickname(guild_id: str, user_id: str, nickname: str) -> N
         print(f"[chzzk-auth] Discord PATCH nick error: {e}")
 
 
+CHZZK_SUBSCRIPTION_URL = "https://openapi.chzzk.naver.com/open/v1/channels/{channel_id}/subscriptions/me"
+
+
+async def _assign_follower_roles(guild_id: str, discord_user_id: str, access_token: str) -> None:
+    db = await get_db()
+    sub = await (await db.execute(
+        "SELECT chzzk_channel_id, follow_role_1month, follow_role_3month "
+        "FROM chzzk_subscriptions WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone()
+    if not sub or (not sub["follow_role_1month"] and not sub["follow_role_3month"]):
+        return
+
+    try:
+        url = CHZZK_SUBSCRIPTION_URL.format(channel_id=sub["chzzk_channel_id"])
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                url,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Client-Id": CHZZK_CLIENT_ID,
+                    "Accept": "application/json",
+                },
+            )
+            print(f"[chzzk-auth] subscription check status={resp.status_code} body={resp.text[:300]}")
+            if resp.status_code != 200:
+                return
+            content = resp.json().get("content") or {}
+            months = content.get("tierMonths") or content.get("month") or 0
+            print(f"[chzzk-auth] subscription months={months}")
+    except Exception as e:
+        print(f"[chzzk-auth] subscription check error: {repr(e)}")
+        return
+
+    if months >= 3 and sub["follow_role_3month"]:
+        await _add_role(guild_id, discord_user_id, str(sub["follow_role_3month"]))
+        print(f"[chzzk-auth] assigned 3month follower role {sub['follow_role_3month']}")
+    elif months >= 1 and sub["follow_role_1month"]:
+        await _add_role(guild_id, discord_user_id, str(sub["follow_role_1month"]))
+        print(f"[chzzk-auth] assigned 1month follower role {sub['follow_role_1month']}")
+
+
 def _build_state(guild_id: str, discord_user_id: str) -> str:
     payload = {
         "guild_id": guild_id,
@@ -194,5 +236,8 @@ async def chzzk_callback(
         await _set_discord_nickname(guild_id, discord_user_id, channel_name)
     else:
         print(f"[chzzk-auth] No channel name found, skipping nickname change")
+
+    # ── 팔로워 역할 부여 ─────────────────────────────────────────────────────
+    await _assign_follower_roles(guild_id, discord_user_id, access_token)
 
     return RedirectResponse(f"{FRONTEND_URL}/verify?success=1&guild_id={quote(guild_id)}")

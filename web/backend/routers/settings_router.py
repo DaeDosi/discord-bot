@@ -18,6 +18,8 @@ class GuildConfig(BaseModel):
     levelup_dm:      bool = False
     automod_enabled: bool = True
     badwords:        str  = ""
+    welcome_message: str  = ""
+    goodbye_message: str  = ""
 
 
 @router.get("/{guild_id}")
@@ -46,8 +48,9 @@ async def update_config(
     await db.execute(
         """INSERT INTO guild_config
            (guild_id, mod_role_id, welcome_channel, goodbye_channel, log_channel,
-            auto_role_id, levelup_channel, levelup_dm, automod_enabled, badwords)
-           VALUES (?,?,?,?,?,?,?,?,?,?)
+            auto_role_id, levelup_channel, levelup_dm, automod_enabled, badwords,
+            welcome_message, goodbye_message)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(guild_id) DO UPDATE SET
                mod_role_id=excluded.mod_role_id,
                welcome_channel=excluded.welcome_channel,
@@ -57,7 +60,9 @@ async def update_config(
                levelup_channel=excluded.levelup_channel,
                levelup_dm=excluded.levelup_dm,
                automod_enabled=excluded.automod_enabled,
-               badwords=excluded.badwords""",
+               badwords=excluded.badwords,
+               welcome_message=excluded.welcome_message,
+               goodbye_message=excluded.goodbye_message""",
         (
             int(guild_id),
             int(cfg.mod_role_id)     if cfg.mod_role_id     else None,
@@ -69,6 +74,8 @@ async def update_config(
             int(cfg.levelup_dm),
             int(cfg.automod_enabled),
             cfg.badwords,
+            cfg.welcome_message,
+            cfg.goodbye_message,
         )
     )
     await db.commit()
