@@ -9,7 +9,7 @@ export default function LevelingPage() {
   const { guildId } = useParams<{ guildId: string }>();
   const [rewards, setRewards]   = useState<LevelReward[]>([]);
   const [roles, setRoles]       = useState<Role[]>([]);
-  const [lb, setLb]             = useState<{ user_id: string; xp: number; level: number }[]>([]);
+  const [lb, setLb]             = useState<{ user_id: string; display_name: string; xp: number; level: number }[]>([]);
   const [newLevel, setNewLevel] = useState("");
   const [newRole, setNewRole]   = useState("");
   const [adding, setAdding]     = useState(false);
@@ -106,7 +106,7 @@ export default function LevelingPage() {
               <span className={`text-sm font-bold w-8 ${i < 3 ? "text-warning" : "text-muted"}`}>
                 #{i + 1}
               </span>
-              <span className="text-sm text-white flex-1 font-mono">{entry.user_id}</span>
+              <span className="text-sm text-white flex-1 truncate">{entry.display_name || entry.user_id}</span>
               <span className="text-xs text-muted">Lv.{entry.level}</span>
               <span className="text-xs text-accent font-medium">{entry.xp.toLocaleString()} XP</span>
             </div>

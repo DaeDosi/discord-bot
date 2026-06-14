@@ -1,153 +1,51 @@
 "use client";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Image from "next/image";
-import { Radio, Search, Plus, Trash2, X, Bell, BellOff, Save, CheckCircle } from "lucide-react";
+import { Radio, Trash2, Bell, BellOff, Save, CheckCircle, ExternalLink } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ChzzkSubscription, ChzzkSearchResult, Channel, Role, FollowerRoles } from "@/lib/types";
+import type { ChzzkSubscription, Channel, Role, FollowerRoles } from "@/lib/types";
 
-function SearchModal({
-  onClose,
-  onSelect,
-}: {
-  onClose: () => void;
-  onSelect: (result: ChzzkSearchResult) => void;
-}) {
-  const [keyword, setKeyword]   = useState("");
-  const [results, setResults]   = useState<ChzzkSearchResult[]>([]);
-  const [loading, setLoading]   = useState(false);
-  const debounceRef = useRef<NodeJS.Timeout | null>(null);
+const BACKEND = process.env.NEXT_PUBLIC_API_URL || "";
 
-  const search = (kw: string) => {
-    if (!kw.trim()) { setResults([]); return; }
-    setLoading(true);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(async () => {
-      const res = await api.chzzk.search(kw).catch(() => []);
-      setResults(res);
-      setLoading(false);
-    }, 400);
-  };
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        className="bg-bg-card border border-border rounded-2xl w-full max-w-md shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="p-4 border-b border-border flex items-center justify-between">
-          <h3 className="font-semibold text-white">치지직 채널 검색</h3>
-          <button onClick={onClose} className="text-muted hover:text-white">
-            <X size={18} />
-          </button>
-        </div>
-        <div className="p-4 space-y-3">
-          <div className="relative">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-            <input
-              className="input pl-9"
-              placeholder="스트리머 이름 검색..."
-              value={keyword}
-              onChange={(e) => { setKeyword(e.target.value); search(e.target.value); }}
-              autoFocus
-            />
-          </div>
-          <div className="space-y-2 max-h-72 overflow-y-auto">
-            {loading && <p className="text-muted text-sm text-center py-4">검색 중...</p>}
-            {!loading && results.map((r) => (
-              <button
-                key={r.channelId}
-                onClick={() => onSelect(r)}
-                className="w-full flex items-center gap-3 p-3 rounded-lg hover:bg-bg-hover transition-colors text-left"
-              >
-                {r.channelImageUrl ? (
-                  <Image src={r.channelImageUrl} alt={r.channelName}
-                         width={40} height={40} className="rounded-full shrink-0" />
-                ) : (
-                  <div className="w-10 h-10 rounded-full bg-bg-hover shrink-0 flex items-center justify-center">
-                    <Radio size={16} className="text-muted" />
-                  </div>
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-white truncate">{r.channelName}</p>
-                  <p className="text-xs text-muted">팔로워 {r.followerCount.toLocaleString()}명</p>
-                </div>
-                {r.openLive && (
-                  <span className="badge-live shrink-0">
-                    <span className="w-1.5 h-1.5 rounded-full bg-chzzk animate-pulse" />
-                    LIVE
-                  </span>
-                )}
-              </button>
-            ))}
-            {!loading && keyword && results.length === 0 && (
-              <p className="text-muted text-sm text-center py-4">검색 결과가 없습니다.</p>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AddForm({
-  selected,
+function AddStreamerForm({
   channels,
-  onAdd,
-  onCancel,
+  guildId,
 }: {
-  selected: ChzzkSearchResult;
   channels: Channel[];
-  onAdd: (data: object) => Promise<void>;
-  onCancel: () => void;
+  guildId: string;
 }) {
   const textChannels = channels.filter((c) => c.type === 0);
   const [discordChannel, setDiscordChannel] = useState("");
   const [mentionEveryone, setMentionEveryone] = useState(false);
-  const [saving, setSaving] = useState(false);
 
-  const submit = async () => {
+  const handleConnect = () => {
     if (!discordChannel) return;
-    setSaving(true);
-    await onAdd({
-      chzzk_channel_id: selected.channelId,
-      chzzk_name:       selected.channelName,
-      chzzk_image_url:  selected.channelImageUrl,
+    let discordUserId = "";
+    try {
+      const raw = localStorage.getItem("discord_user");
+      if (raw) discordUserId = JSON.parse(raw).id || "";
+    } catch {}
+    const params = new URLSearchParams({
+      guild_id:         guildId,
       discord_channel:  discordChannel,
-      mention_everyone: mentionEveryone,
-      is_live:          selected.openLive ?? false,
+      mention_everyone: mentionEveryone ? "1" : "0",
+      discord_user_id:  discordUserId,
     });
-    setSaving(false);
+    window.location.href = `${BACKEND}/api/chzzk-auth/streamer-login?${params}`;
   };
 
   return (
     <div className="card border-accent/30 space-y-4">
-      <div className="flex items-center gap-3">
-        {selected.channelImageUrl ? (
-          <Image src={selected.channelImageUrl} alt={selected.channelName}
-                 width={40} height={40} className="rounded-full" />
-        ) : (
-          <div className="w-10 h-10 rounded-full bg-bg-hover flex items-center justify-center">
-            <Radio size={16} className="text-muted" />
-          </div>
-        )}
-        <div>
-          <p className="font-medium text-white">{selected.channelName}</p>
-          <p className="text-xs text-muted">알림 설정</p>
-        </div>
-        {selected.openLive && (
-          <span className="badge-live ml-auto shrink-0">
-            <span className="w-1.5 h-1.5 rounded-full bg-chzzk animate-pulse" />
-            LIVE
-          </span>
-        )}
+      <div>
+        <p className="font-medium text-white mb-1">치지직 스트리머 연동</p>
+        <p className="text-xs text-muted">
+          치지직 계정으로 로그인하면 해당 채널이 자동으로 등록됩니다.
+        </p>
       </div>
 
       <div>
-        <label className="label">알림 채널 *</label>
+        <label className="label">알림 받을 Discord 채널 *</label>
         <select
           className="select"
           value={discordChannel}
@@ -175,16 +73,14 @@ function AddForm({
         </span>
       </button>
 
-      <div className="flex gap-3">
-        <button
-          onClick={submit}
-          disabled={saving || !discordChannel}
-          className="btn-primary"
-        >
-          <Plus size={16} /> {saving ? "추가 중..." : "구독 추가"}
-        </button>
-        <button onClick={onCancel} className="btn-secondary">취소</button>
-      </div>
+      <button
+        onClick={handleConnect}
+        disabled={!discordChannel}
+        className="btn-primary w-full justify-center"
+      >
+        <ExternalLink size={16} />
+        치지직 계정으로 연동하기
+      </button>
     </div>
   );
 }
@@ -194,8 +90,6 @@ export default function ChzzkPage() {
   const [subs, setSubs]         = useState<ChzzkSubscription[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [roles, setRoles]       = useState<Role[]>([]);
-  const [showSearch, setShowSearch] = useState(false);
-  const [selected, setSelected]     = useState<ChzzkSearchResult | null>(null);
   const [followerRoles, setFollowerRoles] = useState<FollowerRoles>({
     follow_role_1month: null,
     follow_role_3month: null,
@@ -216,7 +110,15 @@ export default function ChzzkPage() {
     setFollowerRoles(fr);
   };
 
-  useEffect(() => { load(); }, [guildId]);
+  useEffect(() => {
+    load();
+    // 치지직 OAuth 콜백 후 success/error 파라미터 처리
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("success") === "streamer_added") {
+      window.history.replaceState({}, "", window.location.pathname);
+      load();
+    }
+  }, [guildId]);
 
   const saveFollowerRoles = async () => {
     setSavingRoles(true);
@@ -224,17 +126,6 @@ export default function ChzzkPage() {
     setSavingRoles(false);
     setSavedRoles(true);
     setTimeout(() => setSavedRoles(false), 2500);
-  };
-
-  const handleSelect = (r: ChzzkSearchResult) => {
-    setShowSearch(false);
-    setSelected(r);
-  };
-
-  const handleAdd = async (data: object) => {
-    await api.chzzk.add(guildId, data);
-    setSelected(null);
-    await load();
   };
 
   const remove = async (id: number) => {
@@ -247,13 +138,6 @@ export default function ChzzkPage() {
 
   return (
     <div className="space-y-6">
-      {showSearch && (
-        <SearchModal
-          onClose={() => setShowSearch(false)}
-          onSelect={handleSelect}
-        />
-      )}
-
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
           <h1 className="text-xl font-bold text-white flex items-center gap-2">
@@ -263,28 +147,9 @@ export default function ChzzkPage() {
             스트리머 방송 시작 시 Discord 채널에 알림을 보냅니다.
           </p>
         </div>
-        {!selected && (
-          subs.length >= 1 ? (
-            <p className="text-sm text-muted md:shrink-0 md:text-right">
-              서버당 1명만 등록 가능합니다.<br className="hidden md:block" /> 기존 구독을 삭제 후 추가하세요.
-            </p>
-          ) : (
-            <button onClick={() => setShowSearch(true)} className="btn-primary md:shrink-0">
-              <Plus size={16} /> 스트리머 추가
-            </button>
-          )
-        )}
       </div>
 
-      {selected && (
-        <AddForm
-          selected={selected}
-          channels={channels}
-          onAdd={handleAdd}
-          onCancel={() => setSelected(null)}
-        />
-      )}
-
+      {/* 등록된 스트리머 */}
       <div className="space-y-3">
         {subs.map((sub) => {
           const ch = findChannel(sub.discord_channel);
@@ -311,9 +176,7 @@ export default function ChzzkPage() {
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-3 mt-1 flex-wrap">
-                  {ch && <span className="text-xs text-muted">→ #{ch.name}</span>}
-                </div>
+                {ch && <span className="text-xs text-muted mt-1 block">→ #{ch.name}</span>}
               </div>
               <button
                 onClick={() => remove(sub.id)}
@@ -325,14 +188,25 @@ export default function ChzzkPage() {
           );
         })}
 
-        {subs.length === 0 && !selected && (
-          <div className="text-center py-16 text-muted">
+        {subs.length === 0 && (
+          <div className="text-center py-10 text-muted">
             <Radio size={40} className="mx-auto mb-3 opacity-30" />
             <p className="font-medium">구독 중인 스트리머가 없습니다.</p>
-            <p className="text-sm mt-1">스트리머 추가 버튼으로 알림을 설정하세요.</p>
+            <p className="text-sm mt-1">아래에서 치지직 계정을 연동해 알림을 설정하세요.</p>
           </div>
         )}
       </div>
+
+      {/* 스트리머 추가 (구독이 없을 때만) */}
+      {subs.length === 0 && (
+        <AddStreamerForm channels={channels} guildId={guildId} />
+      )}
+
+      {subs.length >= 1 && (
+        <p className="text-sm text-muted text-center">
+          서버당 1명만 등록 가능합니다. 기존 구독을 삭제 후 다시 연동하세요.
+        </p>
+      )}
 
       {/* 팔로워 역할 설정 */}
       {subs.length > 0 && (
@@ -341,6 +215,7 @@ export default function ChzzkPage() {
             <h2 className="font-semibold text-white">팔로워 역할 자동 부여</h2>
             <p className="text-muted text-xs mt-1">
               치지직 OAuth 인증 시 구독 기간에 따라 역할을 자동으로 부여합니다.
+              Discord에서 <code className="text-accent bg-black/20 px-1 rounded">/팔로우불러오기</code>로 기존 인증 유저에게 재적용할 수 있습니다.
             </p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

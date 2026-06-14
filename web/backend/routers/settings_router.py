@@ -1,8 +1,14 @@
+import os
+import asyncio
+import httpx
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 from deps import get_current_user, require_guild_admin
 from database import get_db
+
+_BOT_TOKEN   = os.getenv("DISCORD_TOKEN", "")
+_DISCORD_API = "https://discord.com/api/v10"
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -210,6 +216,26 @@ async def update_verification_config(
 
 
 # ── 리더보드 ─────────────────────────────────────────────────────────────────
+async def _fetch_display_name(client: httpx.AsyncClient, guild_id: str, user_id: int) -> str:
+    try:
+        resp = await client.get(
+            f"{_DISCORD_API}/guilds/{guild_id}/members/{user_id}",
+            headers={"Authorization": f"Bot {_BOT_TOKEN}"},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return (
+                data.get("nick")
+                or data.get("user", {}).get("global_name")
+                or data.get("user", {}).get("username")
+                or str(user_id)
+            )
+    except Exception:
+        pass
+    return str(user_id)
+
+
 @router.get("/{guild_id}/leaderboard")
 async def get_leaderboard(
     guild_id: str,
@@ -221,4 +247,13 @@ async def get_leaderboard(
         "SELECT user_id, xp, level FROM user_xp WHERE guild_id=? ORDER BY xp DESC LIMIT 20",
         (int(guild_id),)
     )).fetchall()
-    return [dict(r) for r in rows]
+
+    async with httpx.AsyncClient() as client:
+        names = await asyncio.gather(*[
+            _fetch_display_name(client, guild_id, r["user_id"]) for r in rows
+        ])
+
+    return [
+        {**dict(r), "display_name": name}
+        for r, name in zip(rows, names)
+    ]

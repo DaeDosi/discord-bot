@@ -21,7 +21,6 @@ COGS = [
     "cogs.verification",
     "cogs.sichham",
     "cogs.info",
-    "cogs.help",
 ]
 
 

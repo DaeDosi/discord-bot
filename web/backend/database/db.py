@@ -164,6 +164,7 @@ async def init_db():
         "ALTER TABLE guild_config ADD COLUMN embed_title TEXT DEFAULT '🔐 입장 인증'",
         "ALTER TABLE guild_config ADD COLUMN welcome_message TEXT DEFAULT ''",
         "ALTER TABLE guild_config ADD COLUMN goodbye_message TEXT DEFAULT ''",
+        "ALTER TABLE chzzk_verifications ADD COLUMN tier_months INTEGER DEFAULT 0",
     ]:
         try:
             await db.execute(sql)

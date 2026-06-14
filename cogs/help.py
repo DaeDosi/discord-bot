@@ -87,17 +87,5 @@ class AdminHelpView(discord.ui.View):
         await interaction.response.edit_message(embed=_build_admin_embed(self.page), view=self)
 
 
-class HelpCog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-
-    @app_commands.command(name="관리명령어", description="NexBot 관리자 명령어 목록을 확인합니다.")
-    @app_commands.default_permissions(manage_guild=True)
-    async def 관리명령어(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            embed=_build_admin_embed(0), view=AdminHelpView(0), ephemeral=True
-        )
-
-
 async def setup(bot: commands.Bot):
-    await bot.add_cog(HelpCog(bot))
+    pass  # 모든 help 명령어는 cogs/info.py(InfoCog)로 이전됨

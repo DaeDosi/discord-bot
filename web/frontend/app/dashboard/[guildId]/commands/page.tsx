@@ -51,6 +51,7 @@ const CATEGORIES: Category[] = [
     cmds: [
       { name: "/치지직설정",      desc: "웹 대시보드 치지직 알림 설정 링크를 표시합니다", admin: true },
       { name: "/치지직알림테스트", desc: "등록된 치지직 알림을 테스트 전송합니다",         admin: true },
+      { name: "/팔로우불러오기",   desc: "팔로우 데이터를 불러와 역할을 최신화합니다",      admin: true },
     ],
   },
   {
@@ -71,8 +72,10 @@ const CATEGORIES: Category[] = [
     label: "기타",
     color: "#8B8FA8",
     cmds: [
-      { name: "/명령어",   desc: "NexBot 일반 명령어 목록을 확인합니다" },
-      { name: "/관리명령어", desc: "NexBot 관리자 명령어 목록을 확인합니다", admin: true },
+      { name: "/봇정보",    desc: "NexBot의 상태와 기본 정보를 확인합니다" },
+      { name: "/핑",        desc: "봇의 응답 속도를 확인합니다" },
+      { name: "/도움말",    desc: "일반 유저 명령어 목록을 확인합니다" },
+      { name: "/도움말관리", desc: "전체 명령어 목록을 확인합니다", admin: true },
     ],
   },
 ];
@@ -86,9 +89,9 @@ export default function CommandsPage() {
         </h1>
         <p className="text-muted text-sm mt-1">
           NexBot의 모든 슬래시 명령어를 확인합니다. Discord에서{" "}
-          <code className="text-accent bg-black/20 px-1 rounded">/명령어</code>
+          <code className="text-accent bg-black/20 px-1 rounded">/도움말</code>
           {" "}(일반) 또는{" "}
-          <code className="text-accent bg-black/20 px-1 rounded">/관리명령어</code>
+          <code className="text-accent bg-black/20 px-1 rounded">/도움말관리</code>
           {" "}(관리자)를 입력해도 볼 수 있습니다.
         </p>
       </div>

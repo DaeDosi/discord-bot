@@ -346,7 +346,7 @@ export default function HomePage() {
       tag:    "실시간 알림",
       title:  "치지직 방송 알림",
       detail: "치지직 스트리머의 방송 시작을 실시간으로 감지해 Discord 채널에 자동 알림을 보냅니다. 방송 제목·카테고리·썸네일이 담긴 임베드 메시지로 팬들을 모아보세요.",
-      bullets: ["방송 시작 실시간 감지", "임베드 알림 + 멘션 지원", "여러 스트리머 동시 구독"],
+      bullets: ["방송 시작 실시간 감지", "임베드 알림 + 멘션 지원", "치지직 계정 OAuth 연동으로 간편 설정"],
       mockup: <ChzzkEmbedMockup />,
       flip:   false,
     },

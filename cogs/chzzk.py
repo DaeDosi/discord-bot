@@ -157,6 +157,68 @@ class ChzzkCog(commands.Cog):
     async def before_monitor(self):
         await self.bot.wait_until_ready()
 
+    # ── /팔로우불러오기 ──────────────────────────────────────────────────────
+    @app_commands.command(name="팔로우불러오기", description="[관리자] 저장된 팔로우 데이터로 구독자 역할을 재적용합니다.")
+    @app_commands.default_permissions(manage_guild=True)
+    async def 팔로우불러오기(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        db = await get_db()
+        sub = await (await db.execute(
+            "SELECT follow_role_1month, follow_role_3month "
+            "FROM chzzk_subscriptions WHERE guild_id=?",
+            (interaction.guild_id,)
+        )).fetchone()
+
+        if not sub or (not sub["follow_role_1month"] and not sub["follow_role_3month"]):
+            return await interaction.followup.send(
+                "❌ 팔로워 역할이 설정되지 않았습니다. 대시보드 > 치지직에서 역할을 먼저 설정해주세요.",
+                ephemeral=True,
+            )
+
+        rows = await (await db.execute(
+            "SELECT user_id, tier_months FROM chzzk_verifications WHERE guild_id=?",
+            (interaction.guild_id,)
+        )).fetchall()
+
+        if not rows:
+            return await interaction.followup.send(
+                "❌ 치지직 인증을 완료한 유저가 없습니다.", ephemeral=True
+            )
+
+        role_1m = interaction.guild.get_role(int(sub["follow_role_1month"])) if sub["follow_role_1month"] else None
+        role_3m = interaction.guild.get_role(int(sub["follow_role_3month"])) if sub["follow_role_3month"] else None
+
+        assigned_1m = assigned_3m = skipped = 0
+        for row in rows:
+            member = interaction.guild.get_member(int(row["user_id"]))
+            if not member:
+                skipped += 1
+                continue
+            months = int(row["tier_months"] or 0)
+            try:
+                if months >= 3 and role_3m:
+                    if role_3m not in member.roles:
+                        await member.add_roles(role_3m, reason="/팔로우불러오기")
+                    assigned_3m += 1
+                elif months >= 1 and role_1m:
+                    if role_1m not in member.roles:
+                        await member.add_roles(role_1m, reason="/팔로우불러오기")
+                    assigned_1m += 1
+            except discord.Forbidden:
+                skipped += 1
+
+        embed = discord.Embed(
+            title="✅ 팔로워 역할 최신화 완료",
+            description="저장된 구독 개월 수 기준으로 역할을 재적용했습니다.",
+            color=0x57F287,
+        )
+        embed.add_field(name="1개월+ 역할 부여", value=f"{assigned_1m}명", inline=True)
+        embed.add_field(name="3개월+ 역할 부여", value=f"{assigned_3m}명", inline=True)
+        embed.add_field(name="건너뜀(미가입 등)", value=f"{skipped}명", inline=True)
+        embed.set_footer(text="구독 현황 갱신은 유저가 재인증(치지직 OAuth)하면 자동 업데이트됩니다.")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
     # ── /치지직설정 ──────────────────────────────────────────────────────────
     @app_commands.command(name="치지직설정", description="웹 대시보드에서 치지직 알림을 설정합니다.")
     @app_commands.default_permissions(manage_guild=True)

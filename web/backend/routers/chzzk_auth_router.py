@@ -72,6 +72,101 @@ async def _set_discord_nickname(guild_id: str, user_id: str, nickname: str) -> N
 CHZZK_SUBSCRIPTION_URL = "https://openapi.chzzk.naver.com/open/v1/channels/{channel_id}/subscriptions/me"
 
 
+async def _get_tier_months(guild_id: str, access_token: str) -> int:
+    """구독 개월 수를 반환 (없으면 0)."""
+    db = await get_db()
+    sub = await (await db.execute(
+        "SELECT chzzk_channel_id FROM chzzk_subscriptions WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone()
+    if not sub:
+        return 0
+    try:
+        url = CHZZK_SUBSCRIPTION_URL.format(channel_id=sub["chzzk_channel_id"])
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                url,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Client-Id": CHZZK_CLIENT_ID,
+                    "Accept": "application/json",
+                },
+            )
+            if resp.status_code == 200:
+                content = resp.json().get("content") or {}
+                return int(content.get("tierMonths") or content.get("month") or 0)
+    except Exception:
+        pass
+    return 0
+
+
+async def _get_chzzk_channel_info(access_token: str) -> dict:
+    """로그인한 치지직 유저의 채널 정보를 반환."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                CHZZK_USER_URL,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Client-Id": CHZZK_CLIENT_ID,
+                    "Accept": "application/json",
+                },
+            )
+            if resp.status_code == 200:
+                data    = resp.json()
+                content = data.get("content") or data
+                return {
+                    "channelId":       content.get("channelId") or content.get("userIdHash"),
+                    "channelName":     content.get("nickname") or content.get("channelName") or "",
+                    "channelImageUrl": content.get("profileImageUrl") or content.get("channelImageUrl") or "",
+                }
+    except Exception as e:
+        print(f"[chzzk-auth] _get_chzzk_channel_info error: {e}")
+    return {}
+
+
+async def _handle_streamer_registration(
+    state_data: dict,
+    access_token: str,
+    guild_id: str,
+) -> RedirectResponse:
+    discord_channel  = state_data.get("discord_channel", "")
+    mention_everyone = int(state_data.get("mention_everyone", 0))
+    dashboard_url    = f"{FRONTEND_URL}/dashboard/{guild_id}/chzzk"
+
+    channel_info = await _get_chzzk_channel_info(access_token)
+    if not channel_info.get("channelId"):
+        return RedirectResponse(f"{dashboard_url}?error=chzzk_channel_not_found")
+
+    # 채널 상세 정보 (라이브 여부 포함)
+    chzzk_id   = channel_info["channelId"]
+    chzzk_name = channel_info["channelName"]
+    image_url  = channel_info["channelImageUrl"]
+
+    try:
+        db = await get_db()
+        count = (await (await db.execute(
+            "SELECT COUNT(*) FROM chzzk_subscriptions WHERE guild_id=?",
+            (int(guild_id),)
+        )).fetchone())[0]
+        if count >= 1:
+            return RedirectResponse(f"{dashboard_url}?error=already_subscribed")
+
+        await db.execute(
+            """INSERT INTO chzzk_subscriptions
+               (guild_id, discord_channel, chzzk_channel_id, chzzk_name, chzzk_image_url, mention_everyone, is_live)
+               VALUES (?,?,?,?,?,?,0)""",
+            (int(guild_id), int(discord_channel), chzzk_id, chzzk_name, image_url, mention_everyone),
+        )
+        await db.commit()
+        print(f"[chzzk-auth] streamer registered: guild={guild_id} channel={chzzk_name}({chzzk_id})")
+    except Exception as e:
+        print(f"[chzzk-auth] streamer DB insert failed: {e}")
+        return RedirectResponse(f"{dashboard_url}?error=db_error")
+
+    return RedirectResponse(f"{dashboard_url}?success=streamer_added")
+
+
 async def _assign_follower_roles(guild_id: str, discord_user_id: str, access_token: str) -> None:
     db = await get_db()
     sub = await (await db.execute(
@@ -113,6 +208,7 @@ async def _assign_follower_roles(guild_id: str, discord_user_id: str, access_tok
 
 def _build_state(guild_id: str, discord_user_id: str) -> str:
     payload = {
+        "type":     "user",
         "guild_id": guild_id,
         "user_id":  discord_user_id,
         "exp":      datetime.utcnow() + timedelta(minutes=15),
@@ -121,9 +217,45 @@ def _build_state(guild_id: str, discord_user_id: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
+def _build_streamer_state(
+    guild_id: str,
+    discord_channel: str,
+    mention_everyone: int,
+    discord_user_id: str,
+) -> str:
+    payload = {
+        "type":             "streamer",
+        "guild_id":         guild_id,
+        "discord_channel":  discord_channel,
+        "mention_everyone": mention_everyone,
+        "user_id":          discord_user_id,
+        "exp":              datetime.utcnow() + timedelta(minutes=15),
+        "nonce":            secrets.token_hex(8),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
 def _err(msg: str, guild_id: str = "") -> RedirectResponse:
     gid = f"&guild_id={quote(guild_id)}" if guild_id else ""
     return RedirectResponse(f"{FRONTEND_URL}/verify?error={quote(msg)}{gid}")
+
+
+@router.get("/streamer-login")
+async def chzzk_streamer_login(
+    guild_id:         str = Query(...),
+    discord_channel:  str = Query(...),
+    mention_everyone: int = Query(0),
+    discord_user_id:  str = Query(...),
+):
+    if not CHZZK_CLIENT_ID:
+        return _err("chzzk_not_configured", guild_id)
+    state  = _build_streamer_state(guild_id, discord_channel, mention_everyone, discord_user_id)
+    params = {
+        "clientId":    CHZZK_CLIENT_ID,
+        "redirectUri": CHZZK_REDIRECT_URI,
+        "state":       state,
+    }
+    return RedirectResponse(f"{CHZZK_AUTH_URL}?{urlencode(params)}")
 
 
 @router.get("/login")
@@ -161,6 +293,7 @@ async def chzzk_callback(
         state_data      = jwt.decode(state, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         guild_id        = state_data["guild_id"]
         discord_user_id = state_data["user_id"]
+        flow_type       = state_data.get("type", "user")
     except JWTError:
         return _err("invalid_state")
 
@@ -191,16 +324,27 @@ async def chzzk_callback(
         print(f"[chzzk-auth] No accessToken in response: {token_data}")
         return _err("token_failed", guild_id)
 
+    # ── 스트리머 등록 플로우 ──────────────────────────────────────────────────
+    if flow_type == "streamer":
+        return await _handle_streamer_registration(
+            state_data, access_token, guild_id
+        )
+
     # ── 치지직 채널명 조회 ────────────────────────────────────────────────────
     channel_name = await _get_chzzk_channel_name(access_token)
 
-    # ── DB에 인증 이력 기록 ──────────────────────────────────────────────────
+    # ── DB에 인증 이력 + 구독 개월 수 기록 ─────────────────────────────────
     try:
         db = await get_db()
+        # 구독 개월 수 조회 (역할 부여 전에 미리 가져오기)
+        tier_months = await _get_tier_months(guild_id, access_token)
         await db.execute(
-            """INSERT INTO chzzk_verifications(guild_id, user_id, verified_at) VALUES(?,?,?)
-               ON CONFLICT(guild_id, user_id) DO UPDATE SET verified_at=excluded.verified_at""",
-            (int(guild_id), int(discord_user_id), time.time()),
+            """INSERT INTO chzzk_verifications(guild_id, user_id, verified_at, tier_months)
+               VALUES(?,?,?,?)
+               ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                   verified_at=excluded.verified_at,
+                   tier_months=excluded.tier_months""",
+            (int(guild_id), int(discord_user_id), time.time(), tier_months),
         )
         await db.commit()
     except Exception as e:
