@@ -2,38 +2,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-# ── 일반 사용자 명령어 (1페이지) ──────────────────────────────────────────────
-
-USER_EMBED = {
-    "title": "📋 NexBot 일반 명령어",
-    "color": 0x5865F2,
-    "fields": [
-        (
-            "레벨링",
-            "`/랭크` — 자신(또는 멤버)의 레벨·XP를 확인합니다\n\n"
-            "`/리더보드` — 서버 레벨 랭킹 상위 10명을 확인합니다",
-        ),
-        (
-            "리액션 역할",
-            "`/반응역할목록` — 서버의 리액션 역할 목록을 확인합니다",
-        ),
-        (
-            "시청자 참여 (시참)",
-            "`/시참등록` — 시참 대기열에 등록합니다\n\n"
-            "`/시참취소` — 시참 등록을 취소합니다\n\n"
-            "`/시참확인` — 본인의 대기 번호·현황을 확인합니다\n\n"
-            "`/시참목록` — 현재 시참 대기열 전체를 확인합니다",
-        ),
-        (
-            "기타",
-            "`/명령어` — 일반 명령어 목록을 확인합니다\n\n"
-            "`/관리명령어` — 관리자 명령어 목록을 확인합니다",
-        ),
-    ],
-}
-
-# ── 관리자 명령어 (2페이지 페이징) ───────────────────────────────────────────
-
 ADMIN_PAGES = [
     {
         "title": "📋 NexBot 관리 명령어 (1/2)",
@@ -87,14 +55,6 @@ ADMIN_PAGES = [
 ]
 
 
-def _build_user_embed() -> discord.Embed:
-    embed = discord.Embed(title=USER_EMBED["title"], color=USER_EMBED["color"])
-    for name, value in USER_EMBED["fields"]:
-        embed.add_field(name=name, value=value, inline=False)
-    embed.set_footer(text="/명령어 · 관리자 명령어는 /관리명령어")
-    return embed
-
-
 def _build_admin_embed(page: int) -> discord.Embed:
     data = ADMIN_PAGES[page]
     embed = discord.Embed(title=data["title"], color=data["color"])
@@ -131,14 +91,9 @@ class HelpCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="명령어", description="NexBot 일반 명령어 목록을 확인합니다.")
-    async def cmd_list(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            embed=_build_user_embed(), ephemeral=True
-        )
-
     @app_commands.command(name="관리명령어", description="NexBot 관리자 명령어 목록을 확인합니다.")
-    async def admin_cmd_list(self, interaction: discord.Interaction):
+    @app_commands.default_permissions(manage_guild=True)
+    async def 관리명령어(self, interaction: discord.Interaction):
         await interaction.response.send_message(
             embed=_build_admin_embed(0), view=AdminHelpView(0), ephemeral=True
         )
