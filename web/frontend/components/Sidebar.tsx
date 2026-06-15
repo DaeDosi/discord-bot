@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { clsx } from "clsx";
-import { Settings, Zap, Shield, Radio, UserCheck, HelpCircle, ChevronLeft, Terminal } from "lucide-react";
+import { Settings, Zap, Shield, Radio, UserCheck, HelpCircle, ChevronLeft, Terminal, Gem } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 const ITEMS: { href: string; label: string; shortLabel: string; icon: LucideIcon }[] = [
@@ -10,6 +10,7 @@ const ITEMS: { href: string; label: string; shortLabel: string; icon: LucideIcon
   { href: "/verification",  label: "입장 인증",    shortLabel: "인증",     icon: UserCheck   },
   { href: "/leveling",      label: "레벨링",       shortLabel: "레벨링",   icon: Zap         },
   { href: "/moderation",    label: "관리",         shortLabel: "관리",     icon: Shield      },
+  { href: "/points",        label: "포인트",       shortLabel: "포인트",   icon: Gem         },
   { href: "/chzzk",         label: "치지직",       shortLabel: "치지직",   icon: Radio       },
   { href: "/commands",      label: "명령어",       shortLabel: "명령어",   icon: Terminal    },
   { href: "/help",          label: "문제 해결",    shortLabel: "도움말",   icon: HelpCircle  },

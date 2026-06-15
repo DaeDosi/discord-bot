@@ -15,17 +15,20 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 # ── 공통 설정 ────────────────────────────────────────────────────────────────
 class GuildConfig(BaseModel):
-    mod_role_id:     Optional[str] = None
-    welcome_channel: Optional[str] = None
-    goodbye_channel: Optional[str] = None
-    log_channel:     Optional[str] = None
-    auto_role_id:    Optional[str] = None
-    levelup_channel: Optional[str] = None
-    levelup_dm:      bool = False
-    automod_enabled: bool = True
-    badwords:        str  = ""
-    welcome_message: str  = ""
-    goodbye_message: str  = ""
+    mod_role_id:          Optional[str] = None
+    welcome_channel:      Optional[str] = None
+    goodbye_channel:      Optional[str] = None
+    log_channel:          Optional[str] = None
+    auto_role_id:         Optional[str] = None
+    levelup_channel:      Optional[str] = None
+    levelup_dm:           bool = False
+    automod_enabled:      bool = True
+    badwords:             str  = ""
+    welcome_message:      str  = ""
+    goodbye_message:      str  = ""
+    warn_kick_threshold:  int  = 0
+    warn_ban_threshold:   int  = 0
+    points_per_level:     int  = 0
 
 
 @router.get("/{guild_id}")
@@ -55,8 +58,9 @@ async def update_config(
         """INSERT INTO guild_config
            (guild_id, mod_role_id, welcome_channel, goodbye_channel, log_channel,
             auto_role_id, levelup_channel, levelup_dm, automod_enabled, badwords,
-            welcome_message, goodbye_message)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            welcome_message, goodbye_message,
+            warn_kick_threshold, warn_ban_threshold, points_per_level)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(guild_id) DO UPDATE SET
                mod_role_id=excluded.mod_role_id,
                welcome_channel=excluded.welcome_channel,
@@ -68,7 +72,10 @@ async def update_config(
                automod_enabled=excluded.automod_enabled,
                badwords=excluded.badwords,
                welcome_message=excluded.welcome_message,
-               goodbye_message=excluded.goodbye_message""",
+               goodbye_message=excluded.goodbye_message,
+               warn_kick_threshold=excluded.warn_kick_threshold,
+               warn_ban_threshold=excluded.warn_ban_threshold,
+               points_per_level=excluded.points_per_level""",
         (
             int(guild_id),
             int(cfg.mod_role_id)     if cfg.mod_role_id     else None,
@@ -82,6 +89,9 @@ async def update_config(
             cfg.badwords,
             cfg.welcome_message,
             cfg.goodbye_message,
+            cfg.warn_kick_threshold,
+            cfg.warn_ban_threshold,
+            cfg.points_per_level,
         )
     )
     await db.commit()
@@ -257,3 +267,76 @@ async def get_leaderboard(
         {**dict(r), "display_name": name}
         for r, name in zip(rows, names)
     ]
+
+
+# ── 경고 관리 ────────────────────────────────────────────────────────────────
+
+@router.get("/{guild_id}/warnings")
+async def get_warnings(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    rows = await (await db.execute(
+        """SELECT user_id, COUNT(*) AS count, MAX(created_at) AS latest_at
+           FROM warnings WHERE guild_id=?
+           GROUP BY user_id ORDER BY count DESC, latest_at DESC""",
+        (int(guild_id),)
+    )).fetchall()
+    async with httpx.AsyncClient() as client:
+        names = await asyncio.gather(*[
+            _fetch_display_name(client, guild_id, r["user_id"]) for r in rows
+        ])
+    return [
+        {"user_id": str(r["user_id"]), "display_name": n, "count": r["count"], "latest_at": r["latest_at"]}
+        for r, n in zip(rows, names)
+    ]
+
+
+@router.get("/{guild_id}/warnings/{user_id}")
+async def get_user_warnings(
+    guild_id: str,
+    user_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT id, reason, created_at FROM warnings WHERE guild_id=? AND user_id=? ORDER BY created_at DESC",
+        (int(guild_id), int(user_id))
+    )).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.delete("/{guild_id}/warnings/{user_id}")
+async def clear_user_warnings(
+    guild_id: str,
+    user_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    await db.execute(
+        "DELETE FROM warnings WHERE guild_id=? AND user_id=?",
+        (int(guild_id), int(user_id))
+    )
+    await db.commit()
+    return {"ok": True}
+
+
+@router.delete("/{guild_id}/warnings/{user_id}/{warn_id}")
+async def delete_single_warning(
+    guild_id: str,
+    user_id: str,
+    warn_id: int,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    await db.execute(
+        "DELETE FROM warnings WHERE id=? AND guild_id=? AND user_id=?",
+        (warn_id, int(guild_id), int(user_id))
+    )
+    await db.commit()
+    return {"ok": True}

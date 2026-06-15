@@ -192,6 +192,9 @@ class ModerationCog(commands.Cog):
             except discord.Forbidden:
                 pass
 
+        # 경고 임계값 자동 추방/차단
+        await self._check_warn_thresholds(interaction.guild, member, warn_count)
+
         await interaction.followup.send(
             embed=success("경고 부여", f"{member.mention} 님에게 경고가 부여되었습니다. (누적 {warn_count}회)")
         )
@@ -311,6 +314,34 @@ class ModerationCog(commands.Cog):
                 pass
             await self._auto_warn(message, "동일 메시지 반복 도배")
 
+    async def _check_warn_thresholds(self, guild: discord.Guild, member: discord.Member, warn_count: int):
+        db = await get_db()
+        cfg = await (await db.execute(
+            "SELECT warn_kick_threshold, warn_ban_threshold FROM guild_config WHERE guild_id=?",
+            (guild.id,)
+        )).fetchone()
+        if not cfg:
+            return
+        ban_thr  = int(cfg["warn_ban_threshold"]  or 0)
+        kick_thr = int(cfg["warn_kick_threshold"] or 0)
+        try:
+            if ban_thr > 0 and warn_count >= ban_thr:
+                await member.ban(reason=f"경고 {warn_count}회 누적 자동 차단")
+                await self.send_log(guild, mod_log(
+                    "자동 차단", member, self.bot.user,
+                    f"경고 {warn_count}회 누적 ({ban_thr}회 이상 자동 차단)",
+                    discord.Color.dark_red()
+                ))
+            elif kick_thr > 0 and warn_count >= kick_thr:
+                await member.kick(reason=f"경고 {warn_count}회 누적 자동 추방")
+                await self.send_log(guild, mod_log(
+                    "자동 추방", member, self.bot.user,
+                    f"경고 {warn_count}회 누적 ({kick_thr}회 이상 자동 추방)",
+                    discord.Color.orange()
+                ))
+        except discord.Forbidden:
+            pass
+
     async def _auto_warn(self, message: discord.Message, reason: str):
         db = await get_db()
         await db.execute(
@@ -343,6 +374,7 @@ class ModerationCog(commands.Cog):
                                          f"경고 {warn_count}회 누적 자동 뮤트")
             except discord.Forbidden:
                 pass
+        await self._check_warn_thresholds(message.guild, message.author, warn_count)
 
     # ── 뮤트 자동 해제 루프 ────────────────────────────────────────────────────
     @tasks.loop(seconds=30)

@@ -13,17 +13,59 @@ export interface Guild {
 }
 
 export interface GuildConfig {
-  mod_role_id?:     string | null;
-  welcome_channel?: string | null;
-  goodbye_channel?: string | null;
-  log_channel?:     string | null;
-  auto_role_id?:    string | null;
-  levelup_channel?: string | null;
-  levelup_dm?:      boolean;
-  automod_enabled?: boolean;
-  badwords?:        string;
-  welcome_message?: string;
-  goodbye_message?: string;
+  mod_role_id?:         string | null;
+  welcome_channel?:     string | null;
+  goodbye_channel?:     string | null;
+  log_channel?:         string | null;
+  auto_role_id?:        string | null;
+  levelup_channel?:     string | null;
+  levelup_dm?:          boolean;
+  automod_enabled?:     boolean;
+  badwords?:            string;
+  welcome_message?:     string;
+  goodbye_message?:     string;
+  warn_kick_threshold?: number;
+  warn_ban_threshold?:  number;
+  points_per_level?:    number;
+}
+
+export interface WarnUser {
+  user_id:     string;
+  display_name: string;
+  count:        number;
+  latest_at:    number;
+}
+
+export interface WarnDetail {
+  id:         number;
+  reason:     string;
+  created_at: number;
+}
+
+export interface Mission {
+  id:          number;
+  title:       string;
+  description: string;
+  points:      number;
+  is_active:   number;
+  created_at:  number;
+}
+
+export interface MissionSubmission {
+  id:           number;
+  mission_id:   number;
+  user_id:      string;
+  user_name:    string;
+  status:       "pending" | "approved" | "rejected";
+  submitted_at: number;
+  title:        string;
+  points:       number;
+}
+
+export interface PointsEntry {
+  user_id:      string;
+  display_name: string;
+  points:       number;
 }
 
 export interface Channel {

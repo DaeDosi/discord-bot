@@ -140,6 +140,34 @@ async def init_db():
         "ALTER TABLE guild_config ADD COLUMN verification_embed_msg_id INTEGER",
         "ALTER TABLE guild_config ADD COLUMN embed_color TEXT DEFAULT '#5865F2'",
         "ALTER TABLE guild_config ADD COLUMN embed_title TEXT DEFAULT '🔐 입장 인증'",
+        "ALTER TABLE guild_config ADD COLUMN warn_kick_threshold INTEGER DEFAULT 0",
+        "ALTER TABLE guild_config ADD COLUMN warn_ban_threshold  INTEGER DEFAULT 0",
+        "ALTER TABLE guild_config ADD COLUMN points_per_level    INTEGER DEFAULT 0",
+        """CREATE TABLE IF NOT EXISTS user_points (
+               guild_id INTEGER NOT NULL,
+               user_id  INTEGER NOT NULL,
+               points   INTEGER DEFAULT 0,
+               PRIMARY KEY (guild_id, user_id)
+           )""",
+        """CREATE TABLE IF NOT EXISTS missions (
+               id          INTEGER PRIMARY KEY AUTOINCREMENT,
+               guild_id    INTEGER NOT NULL,
+               title       TEXT NOT NULL,
+               description TEXT DEFAULT '',
+               points      INTEGER DEFAULT 0,
+               created_at  INTEGER NOT NULL,
+               is_active   INTEGER DEFAULT 1
+           )""",
+        """CREATE TABLE IF NOT EXISTS mission_completions (
+               id          INTEGER PRIMARY KEY AUTOINCREMENT,
+               mission_id  INTEGER NOT NULL,
+               guild_id    INTEGER NOT NULL,
+               user_id     INTEGER NOT NULL,
+               status      TEXT DEFAULT 'pending',
+               submitted_at INTEGER NOT NULL,
+               reviewed_at  INTEGER,
+               reviewer_id  INTEGER
+           )""",
     ]:
         try:
             await db.execute(sql)

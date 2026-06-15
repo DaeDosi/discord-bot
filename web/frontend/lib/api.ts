@@ -80,6 +80,42 @@ export const api = {
       .then(r => r.json()) as Promise<{ today_visitors: number }>,
   },
 
+  moderation: {
+    warnings: (gid: string) =>
+      request<import("./types").WarnUser[]>(`/api/settings/${gid}/warnings`),
+    userWarnings: (gid: string, uid: string) =>
+      request<import("./types").WarnDetail[]>(`/api/settings/${gid}/warnings/${uid}`),
+    clearWarnings: (gid: string, uid: string) =>
+      request(`/api/settings/${gid}/warnings/${uid}`, { method: "DELETE" }),
+    deleteWarning: (gid: string, uid: string, wid: number) =>
+      request(`/api/settings/${gid}/warnings/${uid}/${wid}`, { method: "DELETE" }),
+  },
+
+  points: {
+    leaderboard: (gid: string) =>
+      request<import("./types").PointsEntry[]>(`/api/points/${gid}/leaderboard`),
+    adjust: (gid: string, data: { user_id: string; amount: number; reason?: string }) =>
+      request(`/api/points/${gid}/adjust`, { method: "POST", body: JSON.stringify(data) }),
+    missions: {
+      list:   (gid: string) =>
+        request<import("./types").Mission[]>(`/api/points/${gid}/missions`),
+      create: (gid: string, data: { title: string; description: string; points: number; is_active: boolean }) =>
+        request<{ ok: boolean; id: number }>(`/api/points/${gid}/missions`, { method: "POST", body: JSON.stringify(data) }),
+      update: (gid: string, id: number, data: { title: string; description: string; points: number; is_active: boolean }) =>
+        request(`/api/points/${gid}/missions/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+      delete: (gid: string, id: number) =>
+        request(`/api/points/${gid}/missions/${id}`, { method: "DELETE" }),
+    },
+    submissions: {
+      list:    (gid: string) =>
+        request<import("./types").MissionSubmission[]>(`/api/points/${gid}/submissions`),
+      approve: (gid: string, id: number) =>
+        request(`/api/points/${gid}/submissions/${id}/approve`, { method: "POST" }),
+      reject:  (gid: string, id: number) =>
+        request(`/api/points/${gid}/submissions/${id}/reject`, { method: "POST" }),
+    },
+  },
+
   chzzk: {
     search:  (keyword: string) =>
       request<import("./types").ChzzkSearchResult[]>(`/api/chzzk/search?keyword=${encodeURIComponent(keyword)}`),

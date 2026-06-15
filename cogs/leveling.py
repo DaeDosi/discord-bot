@@ -70,6 +70,23 @@ class LevelingCog(commands.Cog):
 
         if new_level > old_level:
             await self._on_level_up(message, new_level, xp_in_level, xp_needed)
+            await self._award_level_points(message.guild.id, message.author.id, new_level - old_level)
+
+    async def _award_level_points(self, guild_id: int, user_id: int, levels_gained: int):
+        db = await get_db()
+        cfg = await (await db.execute(
+            "SELECT points_per_level FROM guild_config WHERE guild_id=?", (guild_id,)
+        )).fetchone()
+        per_level = int(cfg["points_per_level"] or 0) if cfg else 0
+        if per_level <= 0:
+            return
+        pts = per_level * levels_gained
+        await db.execute(
+            """INSERT INTO user_points(guild_id, user_id, points) VALUES(?,?,?)
+               ON CONFLICT(guild_id, user_id) DO UPDATE SET points=points + ?""",
+            (guild_id, user_id, pts, pts)
+        )
+        await db.commit()
 
     async def _on_level_up(self, message: discord.Message, new_level: int,
                             xp_in_level: int, xp_needed: int):

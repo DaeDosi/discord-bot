@@ -16,6 +16,7 @@ COGS = [
     "cogs.welcome",
     "cogs.leveling",
     "cogs.moderation",
+    "cogs.points",
     "cogs.reaction_roles",
     "cogs.chzzk",
     "cogs.verification",
