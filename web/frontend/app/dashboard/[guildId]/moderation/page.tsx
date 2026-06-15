@@ -1,77 +1,186 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
-import { Save, CheckCircle, Shield, AlertTriangle, X, Trash2, ChevronRight } from "lucide-react";
+import {
+  Save, CheckCircle, Shield, AlertTriangle, X, Trash2, ChevronLeft, ChevronRight,
+} from "lucide-react";
 import { api } from "@/lib/api";
 import type { GuildConfig, Channel, Role, WarnUser, WarnDetail } from "@/lib/types";
 
-// ── Warning detail modal ──────────────────────────────────────────────────────
+// ── Warning modal (list → detail) ────────────────────────────────────────────
 function WarnModal({
-  user,
-  warnings,
+  guildId,
   onClose,
-  onDeleteOne,
-  onClearAll,
 }: {
-  user: WarnUser;
-  warnings: WarnDetail[];
+  guildId: string;
   onClose: () => void;
-  onDeleteOne: (id: number) => void;
-  onClearAll: () => void;
 }) {
+  const [warnUsers, setWarnUsers]   = useState<WarnUser[]>([]);
+  const [selected, setSelected]     = useState<WarnUser | null>(null);
+  const [details, setDetails]       = useState<WarnDetail[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+
+  const loadUsers = useCallback(() => {
+    setLoading(true);
+    api.moderation.warnings(guildId)
+      .then(setWarnUsers)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [guildId]);
+
+  useEffect(() => { loadUsers(); }, [loadUsers]);
+
+  const openUser = async (u: WarnUser) => {
+    setSelected(u);
+    setLoadingDetail(true);
+    try {
+      const d = await api.moderation.userWarnings(guildId, u.user_id);
+      setDetails(d);
+    } finally {
+      setLoadingDetail(false);
+    }
+  };
+
+  const deleteOne = async (id: number) => {
+    if (!selected) return;
+    await api.moderation.deleteWarning(guildId, selected.user_id, id);
+    const updated = details.filter((d) => d.id !== id);
+    setDetails(updated);
+    if (updated.length === 0) {
+      setSelected(null);
+      loadUsers();
+    } else {
+      setWarnUsers((prev) =>
+        prev.map((u) => u.user_id === selected.user_id ? { ...u, count: updated.length } : u)
+      );
+      setSelected((prev) => prev ? { ...prev, count: updated.length } : null);
+    }
+  };
+
+  const clearAll = async () => {
+    if (!selected) return;
+    await api.moderation.clearWarnings(guildId, selected.user_id);
+    setWarnUsers((prev) => prev.filter((u) => u.user_id !== selected.user_id));
+    setSelected(null);
+  };
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="bg-bg-card border border-border rounded-xl w-full max-w-md shadow-xl">
-        <div className="flex items-center justify-between p-4 border-b border-border">
-          <div>
-            <p className="font-semibold text-white">{user.display_name}</p>
-            <p className="text-xs text-muted">경고 {user.count}회</p>
-          </div>
+      <div className="bg-bg-card border border-border rounded-xl w-full max-w-lg shadow-xl flex flex-col"
+           style={{ maxHeight: "80vh" }}>
+        {/* Header */}
+        <div className="flex items-center justify-between p-4 border-b border-border shrink-0">
+          {selected ? (
+            <button
+              onClick={() => setSelected(null)}
+              className="flex items-center gap-1 text-muted hover:text-white transition-colors"
+            >
+              <ChevronLeft size={16} /> 목록으로
+            </button>
+          ) : (
+            <p className="font-semibold text-white flex items-center gap-2">
+              <AlertTriangle size={16} className="text-yellow-400" /> 경고 현황
+            </p>
+          )}
           <button onClick={onClose} className="text-muted hover:text-white transition-colors">
             <X size={18} />
           </button>
         </div>
 
-        <div className="p-4 space-y-2 max-h-64 overflow-y-auto">
-          {warnings.length === 0 ? (
-            <p className="text-muted text-sm text-center py-4">경고 내역이 없습니다.</p>
-          ) : (
-            warnings.map((w) => (
-              <div
-                key={w.id}
-                className="flex items-start justify-between gap-3 p-2 rounded-lg bg-bg border border-border"
-              >
-                <div className="min-w-0">
-                  <p className="text-sm text-white break-words">{w.reason || "(사유 없음)"}</p>
-                  <p className="text-xs text-muted mt-0.5">
-                    {new Date(w.created_at * 1000).toLocaleString("ko-KR")}
-                  </p>
+        {/* Body */}
+        <div className="overflow-y-auto flex-1 p-4">
+          {/* List view */}
+          {!selected && (
+            <>
+              {loading ? (
+                <p className="text-muted text-sm text-center py-8">불러오는 중...</p>
+              ) : warnUsers.length === 0 ? (
+                <p className="text-muted text-sm text-center py-8">경고를 받은 유저가 없습니다.</p>
+              ) : (
+                <div className="space-y-2">
+                  {warnUsers.map((u) => (
+                    <button
+                      key={u.user_id}
+                      onClick={() => openUser(u)}
+                      className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg
+                                 bg-bg border border-border hover:border-accent/40 hover:bg-bg-hover
+                                 transition-colors text-left"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-white truncate">{u.display_name}</p>
+                        <p className="text-xs text-muted mt-0.5">
+                          마지막 경고: {new Date(u.latest_at * 1000).toLocaleDateString("ko-KR")}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0 ml-2">
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/20">
+                          {u.count}회
+                        </span>
+                        <ChevronRight size={14} className="text-muted" />
+                      </div>
+                    </button>
+                  ))}
                 </div>
-                <button
-                  onClick={() => onDeleteOne(w.id)}
-                  className="shrink-0 text-muted hover:text-red-400 transition-colors"
-                  title="경고 삭제"
-                >
-                  <Trash2 size={14} />
-                </button>
+              )}
+            </>
+          )}
+
+          {/* Detail view */}
+          {selected && (
+            <>
+              <div className="mb-3">
+                <p className="font-semibold text-white">{selected.display_name}</p>
+                <p className="text-sm text-muted">총 경고 {selected.count}회</p>
               </div>
-            ))
+              {loadingDetail ? (
+                <p className="text-muted text-sm text-center py-6">불러오는 중...</p>
+              ) : details.length === 0 ? (
+                <p className="text-muted text-sm text-center py-6">경고 내역이 없습니다.</p>
+              ) : (
+                <div className="space-y-2">
+                  {details.map((w) => (
+                    <div
+                      key={w.id}
+                      className="flex items-start justify-between gap-3 p-3 rounded-lg bg-bg border border-border"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm text-white break-words">{w.reason || "(사유 없음)"}</p>
+                        <p className="text-xs text-muted mt-0.5">
+                          {new Date(w.created_at * 1000).toLocaleString("ko-KR")}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => deleteOne(w.id)}
+                        className="shrink-0 text-muted hover:text-red-400 transition-colors p-1"
+                        title="경고 삭제"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </div>
 
-        <div className="p-4 border-t border-border flex justify-end gap-2">
-          <button onClick={onClose} className="btn-secondary text-sm">닫기</button>
-          <button
-            onClick={onClearAll}
-            className="text-sm px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20
-                       hover:bg-red-500/20 transition-colors"
-          >
-            전체 삭제
-          </button>
-        </div>
+        {/* Footer */}
+        {selected && (
+          <div className="p-4 border-t border-border shrink-0 flex justify-end gap-2">
+            <button onClick={() => setSelected(null)} className="btn-secondary text-sm">닫기</button>
+            <button
+              onClick={clearAll}
+              className="text-sm px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20
+                         hover:bg-red-500/20 transition-colors flex items-center gap-1.5"
+            >
+              <Trash2 size={14} /> 전체 삭제
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -80,16 +189,12 @@ function WarnModal({
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function ModerationPage() {
   const { guildId } = useParams<{ guildId: string }>();
-  const [cfg, setCfg]         = useState<GuildConfig>({});
+  const [cfg, setCfg]           = useState<GuildConfig>({});
   const [channels, setChannels] = useState<Channel[]>([]);
   const [roles, setRoles]       = useState<Role[]>([]);
   const [saving, setSaving]     = useState(false);
   const [saved, setSaved]       = useState(false);
-
-  const [warnUsers, setWarnUsers]   = useState<WarnUser[]>([]);
-  const [selected, setSelected]     = useState<WarnUser | null>(null);
-  const [details, setDetails]       = useState<WarnDetail[]>([]);
-  const [loadingDetails, setLoadingDetails] = useState(false);
+  const [warnOpen, setWarnOpen] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -105,48 +210,7 @@ export default function ModerationPage() {
       setChannels(ch);
       setRoles(r);
     });
-    loadWarnUsers();
   }, [guildId]);
-
-  const loadWarnUsers = useCallback(() => {
-    api.moderation.warnings(guildId).then(setWarnUsers).catch(() => {});
-  }, [guildId]);
-
-  const openUser = async (u: WarnUser) => {
-    setSelected(u);
-    setLoadingDetails(true);
-    try {
-      const d = await api.moderation.userWarnings(guildId, u.user_id);
-      setDetails(d);
-    } finally {
-      setLoadingDetails(false);
-    }
-  };
-
-  const deleteOne = async (id: number) => {
-    if (!selected) return;
-    await api.moderation.deleteWarning(guildId, selected.user_id, id);
-    const updated = details.filter((d) => d.id !== id);
-    setDetails(updated);
-    if (updated.length === 0) {
-      setSelected(null);
-      loadWarnUsers();
-    } else {
-      setWarnUsers((prev) =>
-        prev.map((u) =>
-          u.user_id === selected.user_id ? { ...u, count: updated.length } : u
-        )
-      );
-      setSelected((prev) => prev ? { ...prev, count: updated.length } : null);
-    }
-  };
-
-  const clearAll = async () => {
-    if (!selected) return;
-    await api.moderation.clearWarnings(guildId, selected.user_id);
-    setSelected(null);
-    loadWarnUsers();
-  };
 
   const save = async () => {
     setSaving(true);
@@ -161,21 +225,24 @@ export default function ModerationPage() {
 
   return (
     <div className="space-y-6">
-      {selected && !loadingDetails && (
-        <WarnModal
-          user={selected}
-          warnings={details}
-          onClose={() => setSelected(null)}
-          onDeleteOne={deleteOne}
-          onClearAll={clearAll}
-        />
-      )}
+      {warnOpen && <WarnModal guildId={guildId} onClose={() => setWarnOpen(false)} />}
 
-      <div>
-        <h1 className="text-xl font-bold text-white flex items-center gap-2">
-          <Shield size={20} className="text-accent" /> 관리 설정
-        </h1>
-        <p className="text-muted text-sm mt-1">매니저 역할, 로그 채널, 자동 관리를 설정합니다.</p>
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-bold text-white flex items-center gap-2">
+            <Shield size={20} className="text-accent" /> 관리 설정
+          </h1>
+          <p className="text-muted text-sm mt-1">매니저 역할, 로그 채널, 자동 관리를 설정합니다.</p>
+        </div>
+        <button
+          onClick={() => setWarnOpen(true)}
+          className="shrink-0 flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium
+                     bg-yellow-500/10 text-yellow-400 border border-yellow-500/20
+                     hover:bg-yellow-500/20 transition-colors"
+        >
+          <AlertTriangle size={15} /> 경고 현황
+        </button>
       </div>
 
       {/* ── 기본 설정 ── */}
@@ -199,10 +266,10 @@ export default function ModerationPage() {
         </div>
       </div>
 
-      {/* ── 경고 임계값 ── */}
+      {/* ── 경고 자동 처리 ── */}
       <div className="card space-y-4">
         <h2 className="font-semibold text-white">경고 자동 처리</h2>
-        <p className="text-xs text-muted">0으로 설정하면 비활성화됩니다.</p>
+        <p className="text-sm text-muted">0으로 설정하면 비활성화됩니다.</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="label">자동 추방 경고 횟수</label>
@@ -212,7 +279,7 @@ export default function ModerationPage() {
               value={cfg.warn_kick_threshold ?? 0}
               onChange={(e) => set("warn_kick_threshold")(Number(e.target.value))}
             />
-            <p className="text-xs text-muted mt-1">해당 횟수 경고 시 자동 추방</p>
+            <p className="text-sm text-muted mt-1.5">해당 횟수 도달 시 자동으로 추방합니다.</p>
           </div>
           <div>
             <label className="label">자동 차단 경고 횟수</label>
@@ -222,7 +289,7 @@ export default function ModerationPage() {
               value={cfg.warn_ban_threshold ?? 0}
               onChange={(e) => set("warn_ban_threshold")(Number(e.target.value))}
             />
-            <p className="text-xs text-muted mt-1">해당 횟수 경고 시 자동 차단</p>
+            <p className="text-sm text-muted mt-1.5">해당 횟수 도달 시 자동으로 차단합니다.</p>
           </div>
         </div>
       </div>
@@ -233,7 +300,7 @@ export default function ModerationPage() {
         <label className="flex items-center justify-between cursor-pointer p-3 rounded-lg bg-bg border border-border">
           <div>
             <p className="text-sm font-medium">자동 관리 활성화</p>
-            <p className="text-xs text-muted mt-0.5">금지어·멘션 도배·스팸 자동 감지 및 처리</p>
+            <p className="text-sm text-muted mt-0.5">금지어·멘션 도배·스팸 자동 감지 및 처리</p>
           </div>
           <div className="relative">
             <input type="checkbox" className="sr-only peer"
@@ -251,7 +318,7 @@ export default function ModerationPage() {
             value={cfg.badwords || ""}
             onChange={(e) => set("badwords")(e.target.value)}
           />
-          <p className="text-xs text-muted mt-1">
+          <p className="text-sm text-muted mt-1.5">
             감지 시 메시지 삭제 + 경고 1회 자동 부여. 경고 3회 누적 시 10분 뮤트.
           </p>
         </div>
@@ -262,47 +329,6 @@ export default function ModerationPage() {
           ? <><CheckCircle size={16} /> 저장됨</>
           : <><Save size={16} /> {saving ? "저장 중..." : "변경사항 저장"}</>}
       </button>
-
-      {/* ── 경고 현황 ── */}
-      <div className="card space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-white flex items-center gap-2">
-            <AlertTriangle size={16} className="text-yellow-400" /> 경고 현황
-          </h2>
-          <button onClick={loadWarnUsers} className="text-xs text-muted hover:text-white transition-colors">
-            새로고침
-          </button>
-        </div>
-
-        {warnUsers.length === 0 ? (
-          <p className="text-muted text-sm text-center py-6">경고를 받은 유저가 없습니다.</p>
-        ) : (
-          <div className="space-y-2">
-            {warnUsers.map((u) => (
-              <button
-                key={u.user_id}
-                onClick={() => openUser(u)}
-                className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg
-                           bg-bg border border-border hover:border-accent/40 hover:bg-bg-hover
-                           transition-colors text-left"
-              >
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-white truncate">{u.display_name}</p>
-                  <p className="text-xs text-muted mt-0.5">
-                    마지막 경고: {new Date(u.latest_at * 1000).toLocaleDateString("ko-KR")}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 shrink-0 ml-2">
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/20">
-                    {u.count}회
-                  </span>
-                  <ChevronRight size={14} className="text-muted" />
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 }

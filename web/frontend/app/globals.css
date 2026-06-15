@@ -27,6 +27,7 @@ html.light {
 /* ── Base ─────────────────────────────────────────────────────────────── */
 @layer base {
   * { box-sizing: border-box; }
+  html { font-size: 106.25%; } /* 17px base — slightly larger than Tailwind default 16px */
   body {
     background-color: rgb(var(--color-bg-rgb));
     color: rgb(var(--color-fg-rgb));

@@ -168,6 +168,26 @@ async def init_db():
                reviewed_at  INTEGER,
                reviewer_id  INTEGER
            )""",
+        """CREATE TABLE IF NOT EXISTS shop_items (
+               id          INTEGER PRIMARY KEY AUTOINCREMENT,
+               guild_id    INTEGER NOT NULL,
+               name        TEXT NOT NULL,
+               description TEXT DEFAULT '',
+               image_url   TEXT DEFAULT '',
+               points_cost INTEGER NOT NULL DEFAULT 0,
+               stock       INTEGER DEFAULT -1,
+               is_active   INTEGER DEFAULT 1,
+               created_at  INTEGER NOT NULL
+           )""",
+        """CREATE TABLE IF NOT EXISTS shop_exchanges (
+               id           INTEGER PRIMARY KEY AUTOINCREMENT,
+               guild_id     INTEGER NOT NULL,
+               user_id      INTEGER NOT NULL,
+               item_id      INTEGER NOT NULL,
+               exchanged_at INTEGER NOT NULL,
+               is_used      INTEGER DEFAULT 0,
+               used_at      INTEGER
+           )""",
     ]:
         try:
             await db.execute(sql)

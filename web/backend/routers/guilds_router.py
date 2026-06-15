@@ -1,5 +1,6 @@
 import os
 import httpx
+from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Depends
 from deps import get_current_user
 from auth import get_discord_guilds
@@ -84,4 +85,29 @@ async def get_roles(guild_id: str, user: dict = Depends(get_current_user)):
         {"id": r["id"], "name": r["name"], "color": r["color"]}
         for r in roles
         if r["name"] != "@everyone"
+    ]
+
+
+@router.get("/{guild_id}/members/search")
+async def search_members(guild_id: str, query: str = "", user: dict = Depends(get_current_user)):
+    if not query.strip():
+        return []
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{DISCORD_API}/guilds/{guild_id}/members/search?query={quote(query)}&limit=25",
+            headers=BOT_HEADERS, timeout=5
+        )
+        if resp.status_code != 200:
+            return []
+        members = resp.json()
+    return [
+        {
+            "id": m["user"]["id"],
+            "username": m["user"]["username"],
+            "global_name": m["user"].get("global_name"),
+            "nick": m.get("nick"),
+            "display_name": m.get("nick") or m["user"].get("global_name") or m["user"]["username"],
+            "avatar": m["user"].get("avatar"),
+        }
+        for m in members
     ]

@@ -45,6 +45,8 @@ export const api = {
     list:     ()            => request<import("./types").Guild[]>("/api/guilds"),
     channels: (gid: string) => request<import("./types").Channel[]>(`/api/guilds/${gid}/channels`),
     roles:    (gid: string) => request<import("./types").Role[]>(`/api/guilds/${gid}/roles`),
+    searchMembers: (gid: string, query: string) =>
+      request<import("./types").GuildMember[]>(`/api/guilds/${gid}/members/search?query=${encodeURIComponent(query)}`),
   },
 
   settings: {
@@ -113,6 +115,24 @@ export const api = {
         request(`/api/points/${gid}/submissions/${id}/approve`, { method: "POST" }),
       reject:  (gid: string, id: number) =>
         request(`/api/points/${gid}/submissions/${id}/reject`, { method: "POST" }),
+    },
+    shop: {
+      items: {
+        list:   (gid: string) =>
+          request<import("./types").ShopItem[]>(`/api/points/${gid}/shop/items`),
+        create: (gid: string, data: { name: string; description: string; image_url: string; points_cost: number; stock: number }) =>
+          request<{ ok: boolean; id: number }>(`/api/points/${gid}/shop/items`, { method: "POST", body: JSON.stringify(data) }),
+        update: (gid: string, id: number, data: { name: string; description: string; image_url: string; points_cost: number; stock: number }) =>
+          request(`/api/points/${gid}/shop/items/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+        delete: (gid: string, id: number) =>
+          request(`/api/points/${gid}/shop/items/${id}`, { method: "DELETE" }),
+      },
+      exchanges: {
+        list:     (gid: string) =>
+          request<import("./types").ShopExchange[]>(`/api/points/${gid}/shop/exchanges`),
+        markUsed: (gid: string, id: number) =>
+          request(`/api/points/${gid}/shop/exchanges/${id}/use`, { method: "POST" }),
+      },
     },
   },
 

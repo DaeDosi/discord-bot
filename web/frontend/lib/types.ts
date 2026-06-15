@@ -68,6 +68,39 @@ export interface PointsEntry {
   points:       number;
 }
 
+export interface GuildMember {
+  id:           string;
+  username:     string;
+  global_name:  string | null;
+  nick:         string | null;
+  display_name: string;
+  avatar:       string | null;
+}
+
+export interface ShopItem {
+  id:          number;
+  name:        string;
+  description: string;
+  image_url:   string;
+  points_cost: number;
+  stock:       number;  // -1 = unlimited
+  is_active:   number;
+  created_at:  number;
+}
+
+export interface ShopExchange {
+  id:           number;
+  user_id:      string;
+  user_name:    string;
+  item_id:      number;
+  item_name:    string;
+  points_cost:  number;
+  image_url:    string;
+  exchanged_at: number;
+  is_used:      number;
+  used_at:      number | null;
+}
+
 export interface Channel {
   id:       string;
   name:     string;

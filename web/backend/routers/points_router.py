@@ -226,3 +226,121 @@ async def reject_submission(
     )
     await db.commit()
     return {"ok": True}
+
+
+# ── 상점 아이템 CRUD ──────────────────────────────────────────────────────────
+
+class ShopItemCreate(BaseModel):
+    name:        str
+    description: Optional[str] = ""
+    image_url:   Optional[str] = ""
+    points_cost: int = 0
+    stock:       int = -1  # -1 = 무제한
+
+
+@router.get("/{guild_id}/shop/items")
+async def list_shop_items(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT id, name, description, image_url, points_cost, stock, is_active, created_at FROM shop_items WHERE guild_id=? ORDER BY id DESC",
+        (int(guild_id),)
+    )).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.post("/{guild_id}/shop/items")
+async def create_shop_item(
+    guild_id: str,
+    body: ShopItemCreate,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    cur = await db.execute(
+        "INSERT INTO shop_items(guild_id, name, description, image_url, points_cost, stock, is_active, created_at) VALUES(?,?,?,?,?,?,1,?)",
+        (int(guild_id), body.name, body.description or "", body.image_url or "", body.points_cost, body.stock, int(time.time()))
+    )
+    await db.commit()
+    return {"ok": True, "id": cur.lastrowid}
+
+
+@router.put("/{guild_id}/shop/items/{item_id}")
+async def update_shop_item(
+    guild_id: str,
+    item_id: int,
+    body: ShopItemCreate,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    await db.execute(
+        "UPDATE shop_items SET name=?, description=?, image_url=?, points_cost=?, stock=? WHERE id=? AND guild_id=?",
+        (body.name, body.description or "", body.image_url or "", body.points_cost, body.stock, item_id, int(guild_id))
+    )
+    await db.commit()
+    return {"ok": True}
+
+
+@router.delete("/{guild_id}/shop/items/{item_id}")
+async def delete_shop_item(
+    guild_id: str,
+    item_id: int,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    await db.execute("DELETE FROM shop_items WHERE id=? AND guild_id=?", (item_id, int(guild_id)))
+    await db.commit()
+    return {"ok": True}
+
+
+# ── 상점 교환 내역 ────────────────────────────────────────────────────────────
+
+@router.get("/{guild_id}/shop/exchanges")
+async def list_shop_exchanges(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    rows = await (await db.execute(
+        """SELECT se.id, se.user_id, se.item_id, se.exchanged_at, se.is_used, se.used_at,
+                  si.name AS item_name, si.points_cost, si.image_url
+           FROM shop_exchanges se
+           JOIN shop_items si ON si.id = se.item_id
+           WHERE se.guild_id=?
+           ORDER BY se.exchanged_at DESC LIMIT 200""",
+        (int(guild_id),)
+    )).fetchall()
+    async with httpx.AsyncClient() as client:
+        names = await asyncio.gather(*[_fetch_name(client, guild_id, r["user_id"]) for r in rows])
+    return [
+        {**dict(r), "user_id": str(r["user_id"]), "user_name": n}
+        for r, n in zip(rows, names)
+    ]
+
+
+@router.post("/{guild_id}/shop/exchanges/{exchange_id}/use")
+async def mark_exchange_used(
+    guild_id: str,
+    exchange_id: int,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT id FROM shop_exchanges WHERE id=? AND guild_id=?",
+        (exchange_id, int(guild_id))
+    )).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="교환 내역을 찾을 수 없습니다.")
+    await db.execute(
+        "UPDATE shop_exchanges SET is_used=1, used_at=? WHERE id=?",
+        (int(time.time()), exchange_id)
+    )
+    await db.commit()
+    return {"ok": True}

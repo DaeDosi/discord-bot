@@ -6,6 +6,52 @@ from database import get_db
 from utils import is_mod_or_admin, success, error
 
 
+async def _handle_shop_buy(interaction: discord.Interaction, item_id: int):
+    db = await get_db()
+    item = await (await db.execute(
+        "SELECT * FROM shop_items WHERE id=? AND guild_id=? AND is_active=1",
+        (item_id, interaction.guild_id)
+    )).fetchone()
+    if not item:
+        return await interaction.response.send_message("아이템을 찾을 수 없거나 비활성화되었습니다.", ephemeral=True)
+
+    if item["stock"] != -1:
+        sold = await (await db.execute(
+            "SELECT COUNT(*) AS cnt FROM shop_exchanges WHERE item_id=? AND guild_id=?",
+            (item_id, interaction.guild_id)
+        )).fetchone()
+        if sold and sold["cnt"] >= item["stock"]:
+            return await interaction.response.send_message("품절된 아이템입니다.", ephemeral=True)
+
+    pts_row = await (await db.execute(
+        "SELECT points FROM user_points WHERE guild_id=? AND user_id=?",
+        (interaction.guild_id, interaction.user.id)
+    )).fetchone()
+    current_pts = pts_row["points"] if pts_row else 0
+
+    if current_pts < item["points_cost"]:
+        return await interaction.response.send_message(
+            f"포인트가 부족합니다. (보유: **{current_pts:,}** P / 필요: **{item['points_cost']:,}** P)",
+            ephemeral=True
+        )
+
+    await db.execute(
+        "UPDATE user_points SET points = MAX(0, points - ?) WHERE guild_id=? AND user_id=?",
+        (item["points_cost"], interaction.guild_id, interaction.user.id)
+    )
+    await db.execute(
+        "INSERT INTO shop_exchanges(guild_id, user_id, item_id, exchanged_at) VALUES(?,?,?,?)",
+        (interaction.guild_id, interaction.user.id, item_id, int(time.time()))
+    )
+    await db.commit()
+    await interaction.response.send_message(
+        f"✅ **{item['name']}** 교환 완료!\n"
+        f"사용한 포인트: **{item['points_cost']:,}** P\n"
+        f"남은 포인트: **{current_pts - item['points_cost']:,}** P",
+        ephemeral=True
+    )
+
+
 async def _handle_mission_join(interaction: discord.Interaction, mission_id: int):
     db = await get_db()
     existing = await (await db.execute(
@@ -58,6 +104,26 @@ class MissionView(discord.ui.View):
         self.add_item(MissionButton(mission_id=mission_id))
 
 
+class ShopBuyButton(discord.ui.Button):
+    def __init__(self, item_id: int, points_cost: int):
+        super().__init__(
+            label=f"교환하기 ({points_cost:,}P)",
+            style=discord.ButtonStyle.blurple,
+            custom_id=f"shop_buy:{item_id}",
+            emoji="🛒"
+        )
+        self.item_id = item_id
+
+    async def callback(self, interaction: discord.Interaction):
+        await _handle_shop_buy(interaction, self.item_id)
+
+
+class ShopView(discord.ui.View):
+    def __init__(self, item_id: int, points_cost: int):
+        super().__init__(timeout=None)
+        self.add_item(ShopBuyButton(item_id=item_id, points_cost=points_cost))
+
+
 class PointsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -67,17 +133,13 @@ class PointsCog(commands.Cog):
         if interaction.type != discord.InteractionType.component:
             return
         cid = (interaction.data or {}).get("custom_id", "")
-        if not cid.startswith("mission_join:"):
-            return
-        # 뷰가 만료된 경우(봇 재시작 후) 여기서 처리
-        if interaction.message and interaction.message.id in {v.id for v in getattr(interaction.client, '_connection', {}).get('_view_store', {}).values() if hasattr(v, 'id')}:
-            return  # 뷰가 살아있으면 Button.callback이 처리
         try:
-            mission_id = int(cid.split(":")[1])
+            if cid.startswith("mission_join:") and not interaction.response.is_done():
+                await _handle_mission_join(interaction, int(cid.split(":")[1]))
+            elif cid.startswith("shop_buy:") and not interaction.response.is_done():
+                await _handle_shop_buy(interaction, int(cid.split(":")[1]))
         except (IndexError, ValueError):
-            return
-        if not interaction.response.is_done():
-            await _handle_mission_join(interaction, mission_id)
+            pass
 
     @app_commands.command(name="포인트", description="자신 또는 멤버의 포인트를 확인합니다.")
     @app_commands.describe(member="확인할 멤버 (기본: 자신)")
@@ -168,6 +230,41 @@ class PointsCog(commands.Cog):
             await interaction.channel.send(embed=embed, view=MissionView(mission_id=mission["id"]))
         await interaction.followup.send(
             embed=success("미션 게시 완료", f"{len(rows)}개의 미션이 게시되었습니다."), ephemeral=True
+        )
+
+    @app_commands.command(name="포인트상점", description="포인트 상점에서 아이템을 확인하고 교환합니다.")
+    async def point_shop(self, interaction: discord.Interaction):
+        db = await get_db()
+        items = await (await db.execute(
+            "SELECT * FROM shop_items WHERE guild_id=? AND is_active=1 ORDER BY points_cost ASC",
+            (interaction.guild_id,)
+        )).fetchall()
+        if not items:
+            return await interaction.response.send_message(
+                "현재 상점에 등록된 아이템이 없습니다. 웹 대시보드 > 포인트 탭에서 아이템을 등록하세요.",
+                ephemeral=True
+            )
+        pts_row = await (await db.execute(
+            "SELECT points FROM user_points WHERE guild_id=? AND user_id=?",
+            (interaction.guild_id, interaction.user.id)
+        )).fetchone()
+        current_pts = pts_row["points"] if pts_row else 0
+        await interaction.response.defer()
+        for item in items:
+            embed = discord.Embed(title=f"🛒 {item['name']}", color=discord.Color.gold())
+            if item["description"]:
+                embed.description = item["description"]
+            embed.add_field(name="필요 포인트", value=f"**{item['points_cost']:,}** P", inline=True)
+            stock_val = "무제한" if item["stock"] == -1 else f"**{item['stock']}**개"
+            embed.add_field(name="재고", value=stock_val, inline=True)
+            if item["image_url"]:
+                embed.set_thumbnail(url=item["image_url"])
+            await interaction.channel.send(
+                embed=embed,
+                view=ShopView(item_id=item["id"], points_cost=item["points_cost"])
+            )
+        await interaction.followup.send(
+            f"💎 내 보유 포인트: **{current_pts:,}** P", ephemeral=True
         )
 
     async def cog_app_command_error(self, interaction: discord.Interaction, err: app_commands.AppCommandError):
