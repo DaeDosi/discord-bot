@@ -22,8 +22,9 @@ def _discord_headers() -> dict:
     }
 
 
+# ── Chzzk API fetch ───────────────────────────────────────────────────────────
+
 async def _fetch_channel_info(chzzk_id: str) -> dict | None:
-    """채널 기본 정보 (openLive 포함). 채널 없으면 None."""
     url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}"
     async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=10) as client:
         resp = await client.get(url)
@@ -34,7 +35,6 @@ async def _fetch_channel_info(chzzk_id: str) -> dict | None:
 
 
 async def _fetch_live_detail(chzzk_id: str) -> dict | None:
-    """라이브 상세 (제목·썸네일·시청자 등). 실패해도 None만 반환."""
     url = f"{CHZZK_API}/service/v2/channels/{chzzk_id}/live-detail"
     async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=10) as client:
         resp = await client.get(url)
@@ -42,17 +42,75 @@ async def _fetch_live_detail(chzzk_id: str) -> dict | None:
             return None
         content = resp.json().get("content")
         if content and content.get("liveImageUrl"):
-            url = content["liveImageUrl"]
-            url = url.replace("_{type}", "_1080")          # junah bot format
-            url = url.replace("%7Btype%7D", "1280x720")    # URL-encoded fallback
-            url = url.replace("{type}", "1280x720")         # plain fallback
-            content["liveImageUrl"] = url
+            img = content["liveImageUrl"]
+            img = img.replace("_{type}", "_1080")
+            img = img.replace("%7Btype%7D", "1280x720")
+            img = img.replace("{type}", "1280x720")
+            content["liveImageUrl"] = img
         return content
 
 
-async def _send_discord_message(channel_id: int, content: str, embed: dict) -> str | None:
-    """메시지 전송 후 오류 문자열 반환 (성공 시 None)"""
-    chzzk_url = embed.get("url", "")
+async def _fetch_latest_video(chzzk_id: str) -> dict | None:
+    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/videos"
+    params = {"sortType": "RECENT", "size": 1, "page": 0}
+    async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=10) as client:
+        resp = await client.get(url, params=params)
+        if resp.status_code != 200:
+            _log(f"VOD fetch 오류 ({chzzk_id}): HTTP {resp.status_code}")
+            return None
+        data = resp.json()
+        videos = data.get("content", {}).get("data", [])
+        return videos[0] if videos else None
+
+
+async def _fetch_latest_clip(chzzk_id: str) -> dict | None:
+    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/clips"
+    params = {"sortType": "RECENT", "size": 1}
+    async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=10) as client:
+        resp = await client.get(url, params=params)
+        if resp.status_code != 200:
+            _log(f"클립 fetch 오류 ({chzzk_id}): HTTP {resp.status_code}")
+            return None
+        data = resp.json()
+        clips = data.get("content", {}).get("data", [])
+        return clips[0] if clips else None
+
+
+async def _fetch_latest_post(chzzk_id: str) -> dict | None:
+    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/community/posts"
+    params = {"sortType": "RECENT", "page": 0, "size": 1}
+    async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=15) as client:
+        resp = await client.get(url, params=params)
+        if resp.status_code != 200:
+            _log(f"커뮤니티 fetch 오류 ({chzzk_id}): HTTP {resp.status_code} — {resp.text[:200]}")
+            return None
+        data = resp.json()
+        content = data.get("content", {})
+        if isinstance(content, list):
+            posts = content
+        elif isinstance(content, dict):
+            posts = (
+                content.get("data")
+                or content.get("posts")
+                or content.get("articles")
+                or []
+            )
+        else:
+            posts = []
+        if not posts:
+            _log(f"커뮤니티 게시글 없음 ({chzzk_id}), content keys={list(content.keys()) if isinstance(content, dict) else type(content)}")
+        return posts[0] if posts else None
+
+
+# ── Discord 메시지 전송 ──────────────────────────────────────────────────────
+
+async def _send_discord_message(
+    channel_id: int,
+    content: str,
+    embed: dict,
+    button_label: str = "방송 바로가기",
+) -> str | None:
+    link_url = embed.get("url", "")
     payload: dict = {
         "embeds": [embed],
         "components": [
@@ -62,12 +120,12 @@ async def _send_discord_message(channel_id: int, content: str, embed: dict) -> s
                     {
                         "type":  2,
                         "style": 5,
-                        "label": "방송 바로가기",
-                        "url":   chzzk_url,
+                        "label": button_label,
+                        "url":   link_url,
                     }
                 ],
             }
-        ] if chzzk_url else [],
+        ] if link_url else [],
     }
     if content:
         payload["content"] = content
@@ -80,6 +138,8 @@ async def _send_discord_message(channel_id: int, content: str, embed: dict) -> s
             return f"Discord API {resp.status_code}: {resp.text[:300]}"
         return None
 
+
+# ── 알림 전송 함수들 ──────────────────────────────────────────────────────────
 
 async def _send_live_notification(row, live: dict, info: dict):
     channel_info = live.get("channel") or {}
@@ -103,9 +163,7 @@ async def _send_live_notification(row, live: dict, info: dict):
         "url":         chzzk_url,
         "description": f"[{name}]님이 방송을 시작했습니다.",
         "color":       0x00FFA3,
-        "fields": [
-            {"name": "카테고리", "value": category, "inline": False},
-        ],
+        "fields": [{"name": "카테고리", "value": category, "inline": False}],
         "timestamp": now_iso,
     }
     if thumbnail:
@@ -114,9 +172,9 @@ async def _send_live_notification(row, live: dict, info: dict):
     mention = "@everyone " if bool(row["mention_everyone"]) else ""
     content = f"{mention}[{name}]님이 방송을 시작했습니다!"
 
-    err = await _send_discord_message(row["discord_channel"], content, embed)
+    err = await _send_discord_message(row["discord_channel"], content, embed, "방송 바로가기")
     if err:
-        _log(f"라이브 알림 전송 실패 ({name}, ch={row['discord_channel']}): {err}")
+        _log(f"라이브 알림 전송 실패 ({name}): {err}")
     else:
         _log(f"라이브 알림 전송 완료: {name} → ch={row['discord_channel']}")
 
@@ -128,6 +186,7 @@ async def _send_offline_notification(row, info: dict):
         "title":     f"[{name}]님이 방송을 종료했습니다.",
         "color":     0x636E72,
         "timestamp": now_iso,
+        "url":       "",
     }
     err = await _send_discord_message(row["discord_channel"], "", embed)
     if err:
@@ -135,6 +194,99 @@ async def _send_offline_notification(row, info: dict):
     else:
         _log(f"종료 알림 전송 완료: {name}")
 
+
+async def _send_video_notification(row, video: dict):
+    name      = row["chzzk_name"] or "알 수 없음"
+    title     = video.get("videoTitle") or "새 다시보기"
+    vid_no    = video.get("videoNo", "")
+    thumbnail = video.get("thumbnailImageUrl") or ""
+    video_url = f"https://chzzk.naver.com/video/{vid_no}" if vid_no else ""
+    now_iso   = datetime.now(timezone.utc).isoformat()
+
+    embed: dict = {
+        "title":       title,
+        "url":         video_url,
+        "description": f"**{name}**님이 새 다시보기 영상을 업로드했습니다.",
+        "color":       0x03C75A,
+        "timestamp":   now_iso,
+    }
+    if thumbnail:
+        embed["thumbnail"] = {"url": thumbnail}
+
+    ch_id = row["vod_channel"] or row["discord_channel"]
+    err = await _send_discord_message(ch_id, "", embed, "영상 바로가기")
+    if err:
+        _log(f"VOD 알림 전송 실패 ({name}): {err}")
+    else:
+        _log(f"VOD 알림 전송 완료: {name} '{title}'")
+
+
+async def _send_clip_notification(row, clip: dict):
+    name      = row["chzzk_name"] or "알 수 없음"
+    title     = clip.get("clipTitle") or "새 클립"
+    clip_no   = clip.get("clipNo") or clip.get("clipUID") or ""
+    thumbnail = clip.get("thumbnailImageUrl") or ""
+    clip_url  = f"https://chzzk.naver.com/clips/{clip_no}" if clip_no else ""
+    now_iso   = datetime.now(timezone.utc).isoformat()
+
+    embed: dict = {
+        "title":       title,
+        "url":         clip_url,
+        "description": f"**{name}**님이 새 클립을 등록했습니다.",
+        "color":       0x03C75A,
+        "timestamp":   now_iso,
+    }
+    if thumbnail:
+        embed["thumbnail"] = {"url": thumbnail}
+
+    ch_id = row["clip_channel"] or row["discord_channel"]
+    err = await _send_discord_message(ch_id, "", embed, "클립 바로가기")
+    if err:
+        _log(f"클립 알림 전송 실패 ({name}): {err}")
+    else:
+        _log(f"클립 알림 전송 완료: {name} '{title}'")
+
+
+async def _send_post_notification(row, post: dict):
+    name    = row["chzzk_name"] or "알 수 없음"
+    post_no = (
+        post.get("postNo")
+        or post.get("communityPostNo")
+        or post.get("articleId")
+        or post.get("no")
+        or post.get("id")
+        or ""
+    )
+    # 제목 추출 (content 필드 구조 다양)
+    content_data = post.get("content") or post.get("title") or ""
+    if isinstance(content_data, dict):
+        title = content_data.get("title") or content_data.get("text") or "새 커뮤니티 게시글"
+    elif isinstance(content_data, str):
+        title = content_data[:80] + ("..." if len(content_data) > 80 else "")
+    else:
+        title = post.get("subject") or "새 커뮤니티 게시글"
+
+    channel_id_str = row["chzzk_channel_id"]
+    post_url = f"https://chzzk.naver.com/community/{channel_id_str}/post/{post_no}" if post_no else ""
+    now_iso  = datetime.now(timezone.utc).isoformat()
+
+    embed: dict = {
+        "title":       title,
+        "url":         post_url,
+        "description": f"**{name}**님이 새 커뮤니티 게시글을 작성했습니다.",
+        "color":       0x03C75A,
+        "timestamp":   now_iso,
+    }
+
+    ch_id = row["community_channel"] or row["discord_channel"]
+    err = await _send_discord_message(ch_id, "", embed, "게시글 바로가기")
+    if err:
+        _log(f"커뮤니티 알림 전송 실패 ({name}): {err}")
+    else:
+        _log(f"커뮤니티 알림 전송 완료: {name} '{title}'")
+
+
+# ── 메인 체크 루프 ────────────────────────────────────────────────────────────
 
 async def check_once_debug() -> list[dict]:
     """디버그용: 현재 상태를 체크하고 결과 반환 (DB 업데이트 없음)"""
@@ -175,7 +327,11 @@ async def _check_once():
     db = await get_db()
     rows = await (await db.execute(
         "SELECT id, guild_id, discord_channel, chzzk_channel_id, chzzk_name, "
-        "is_live, mention_everyone FROM chzzk_subscriptions"
+        "is_live, mention_everyone, "
+        "notify_vod, notify_clip, notify_community, "
+        "last_vod_id, last_clip_id, last_post_id, "
+        "vod_channel, clip_channel, community_channel "
+        "FROM chzzk_subscriptions"
     )).fetchall()
 
     if not rows:
@@ -187,7 +343,7 @@ async def _check_once():
         try:
             name = row["chzzk_name"] or row["chzzk_channel_id"]
 
-            # 라이브 여부는 channel info의 openLive로 판단 (live-detail은 500 오류 잦음)
+            # ── 라이브 체크 ───────────────────────────────────────────────
             info = await _fetch_channel_info(row["chzzk_channel_id"])
             if info is None:
                 _log(f"  채널 정보 없음, 건너뜀: {name}")
@@ -208,6 +364,67 @@ async def _check_once():
                 "UPDATE chzzk_subscriptions SET is_live=? WHERE id=?",
                 (int(now_live), row["id"]),
             )
+
+            # ── VOD 체크 ─────────────────────────────────────────────────
+            if bool(row["notify_vod"]):
+                try:
+                    video = await _fetch_latest_video(row["chzzk_channel_id"])
+                    if video:
+                        vid_id = str(video.get("videoNo") or "")
+                        if vid_id:
+                            if row["last_vod_id"] and vid_id != row["last_vod_id"]:
+                                await _send_video_notification(row, video)
+                            if vid_id != (row["last_vod_id"] or ""):
+                                await db.execute(
+                                    "UPDATE chzzk_subscriptions SET last_vod_id=? WHERE id=?",
+                                    (vid_id, row["id"]),
+                                )
+                except Exception as e:
+                    _log(f"  VOD 체크 오류 ({name}): {e}")
+
+            # ── 클립 체크 ─────────────────────────────────────────────────
+            if bool(row["notify_clip"]):
+                try:
+                    clip = await _fetch_latest_clip(row["chzzk_channel_id"])
+                    if clip:
+                        clip_id = str(clip.get("clipNo") or clip.get("clipUID") or "")
+                        if clip_id:
+                            if row["last_clip_id"] and clip_id != row["last_clip_id"]:
+                                await _send_clip_notification(row, clip)
+                            if clip_id != (row["last_clip_id"] or ""):
+                                await db.execute(
+                                    "UPDATE chzzk_subscriptions SET last_clip_id=? WHERE id=?",
+                                    (clip_id, row["id"]),
+                                )
+                except Exception as e:
+                    _log(f"  클립 체크 오류 ({name}): {e}")
+
+            # ── 커뮤니티 게시글 체크 ──────────────────────────────────────
+            if bool(row["notify_community"]):
+                try:
+                    post = await _fetch_latest_post(row["chzzk_channel_id"])
+                    if post:
+                        post_id = str(
+                            post.get("postNo")
+                            or post.get("communityPostNo")
+                            or post.get("articleId")
+                            or post.get("no")
+                            or post.get("id")
+                            or ""
+                        )
+                        if post_id:
+                            if row["last_post_id"] and post_id != row["last_post_id"]:
+                                await _send_post_notification(row, post)
+                            if post_id != (row["last_post_id"] or ""):
+                                await db.execute(
+                                    "UPDATE chzzk_subscriptions SET last_post_id=? WHERE id=?",
+                                    (post_id, row["id"]),
+                                )
+                        else:
+                            _log(f"  커뮤니티 post_id 없음 ({name}), keys={list(post.keys())}")
+                except Exception as e:
+                    _log(f"  커뮤니티 체크 오류 ({name}): {e}")
+
         except Exception as e:
             _log(f"  오류 ({row['chzzk_channel_id']}): {e}")
 
