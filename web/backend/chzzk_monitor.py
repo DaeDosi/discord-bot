@@ -12,6 +12,16 @@ POLL_INTERVAL = int(os.getenv("CHZZK_POLL_INTERVAL", 60))
 
 CHZZK_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
+def _naver_cookie() -> str:
+    nid_aut = os.getenv("NAVER_NID_AUT", "")
+    nid_ses = os.getenv("NAVER_NID_SES", "")
+    parts = []
+    if nid_aut:
+        parts.append(f"NID_AUT={nid_aut}")
+    if nid_ses:
+        parts.append(f"NID_SES={nid_ses}")
+    return "; ".join(parts)
+
 
 def _log(msg: str):
     print(f"[chzzk_monitor] {msg}", flush=True)
@@ -79,39 +89,27 @@ async def _fetch_latest_clip(chzzk_id: str) -> dict | None:
 
 
 async def _fetch_latest_post(chzzk_id: str) -> dict | None:
-    # Naver NNG API requires *.naver.com session cookies.
-    # We get them by visiting naver.com + chzzk.naver.com first in the same
-    # httpx session — those set Domain=.naver.com cookies that carry over to
-    # apis.naver.com automatically.
-    browser_ua = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/125.0.0.0 Safari/537.36"
+    cookie = _naver_cookie()
+    if not cookie:
+        _log("NAVER_NID_AUT / NAVER_NID_SES 환경변수 없음 — 커뮤니티 체크 건너뜀")
+        return None
+
+    url = (
+        "https://apis.naver.com/nng_main/nng_comment_api/v1"
+        f"/type/CHANNEL_POST/id/{chzzk_id}/comments"
     )
-    async with httpx.AsyncClient(
-        follow_redirects=True,
-        timeout=15,
-        headers={"User-Agent": browser_ua, "Accept-Language": "ko-KR,ko;q=0.9"},
-    ) as client:
+    params = {"limit": 1, "offset": 0, "orderType": "DESC", "pagingType": "PAGE"}
+    headers = {
+        "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept":          "application/json",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+        "Origin":          "https://chzzk.naver.com",
+        "Referer":         f"https://chzzk.naver.com/{chzzk_id}/community",
+        "Cookie":          cookie,
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
         try:
-            # 1) warm-up: acquire anonymous .naver.com cookies (NNB, nid_inf …)
-            await client.get("https://www.naver.com/", headers={"Accept": "text/html"})
-            # 2) visit Chzzk community page to pick up any chzzk-specific cookies
-            await client.get(
-                f"https://chzzk.naver.com/{chzzk_id}/community",
-                headers={"Accept": "text/html"},
-            )
-            # 3) call NNG API — session now carries .naver.com cookies
-            api_url = (
-                "https://apis.naver.com/nng_main/nng_comment_api/v1"
-                f"/type/CHANNEL_POST/id/{chzzk_id}/comments"
-            )
-            params = {"limit": 1, "offset": 0, "orderType": "DESC", "pagingType": "PAGE"}
-            resp = await client.get(api_url, params=params, headers={
-                "Accept":  "application/json",
-                "Origin":  "https://chzzk.naver.com",
-                "Referer": f"https://chzzk.naver.com/{chzzk_id}/community",
-            })
+            resp = await client.get(url, params=params, headers=headers)
             _log(f"커뮤니티 API → HTTP {resp.status_code}")
             if resp.status_code != 200:
                 _log(f"커뮤니티 오류: {resp.text[:200]}")
