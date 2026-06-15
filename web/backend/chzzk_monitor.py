@@ -77,29 +77,45 @@ async def _fetch_latest_clip(chzzk_id: str) -> dict | None:
 
 
 async def _fetch_latest_post(chzzk_id: str) -> dict | None:
-    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/community/posts"
+    # 공식 API에 커뮤니티 엔드포인트 없음 → 여러 internal 경로 순서대로 시도
+    candidates = [
+        f"{CHZZK_API}/service/v2/channels/{chzzk_id}/community/posts",
+        f"{CHZZK_API}/service/v1/community/{chzzk_id}/posts",
+        f"{CHZZK_API}/service/v1/channels/{chzzk_id}/posts",
+        f"{CHZZK_API}/service/v1/channels/{chzzk_id}/community-posts",
+    ]
     params = {"sortType": "RECENT", "page": 0, "size": 1}
+
     async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=15) as client:
-        resp = await client.get(url, params=params)
-        if resp.status_code != 200:
-            _log(f"커뮤니티 fetch 오류 ({chzzk_id}): HTTP {resp.status_code} — {resp.text[:200]}")
-            return None
-        data = resp.json()
-        content = data.get("content", {})
-        if isinstance(content, list):
-            posts = content
-        elif isinstance(content, dict):
-            posts = (
-                content.get("data")
-                or content.get("posts")
-                or content.get("articles")
-                or []
-            )
-        else:
-            posts = []
-        if not posts:
-            _log(f"커뮤니티 게시글 없음 ({chzzk_id}), content keys={list(content.keys()) if isinstance(content, dict) else type(content)}")
-        return posts[0] if posts else None
+        for url in candidates:
+            try:
+                resp = await client.get(url, params=params)
+                _log(f"커뮤니티 시도: {url.split('/service/')[1]} → HTTP {resp.status_code}")
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                content = data.get("content", {})
+                if isinstance(content, list):
+                    posts = content
+                elif isinstance(content, dict):
+                    posts = (
+                        content.get("data")
+                        or content.get("posts")
+                        or content.get("articles")
+                        or []
+                    )
+                else:
+                    posts = []
+                if posts:
+                    _log(f"커뮤니티 성공 URL: {url.split('/service/')[1]}, post keys={list(posts[0].keys())}")
+                    return posts[0]
+                else:
+                    _log(f"커뮤니티 200이지만 게시글 없음, content keys={list(content.keys()) if isinstance(content, dict) else type(content)}")
+            except Exception as e:
+                _log(f"커뮤니티 요청 오류 ({url}): {e}")
+
+    _log(f"커뮤니티 모든 엔드포인트 실패 ({chzzk_id})")
+    return None
 
 
 # ── Discord 메시지 전송 ──────────────────────────────────────────────────────
