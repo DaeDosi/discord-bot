@@ -1,10 +1,14 @@
 import os
 import re
+import uuid
 import json as _json
 import asyncio
 import httpx
 from datetime import datetime, timezone
 from database import get_db
+
+# 서버 고유 device ID (Chzzk front-client 식별용)
+_DEVICE_ID = str(uuid.uuid4())
 
 CHZZK_API     = "https://api.chzzk.naver.com"
 DISCORD_API   = "https://discord.com/api/v10"
@@ -100,17 +104,21 @@ async def _fetch_latest_post(chzzk_id: str) -> dict | None:
     )
     params = {"limit": 1, "offset": 0, "orderType": "DESC", "pagingType": "PAGE"}
     headers = {
-        "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Accept":          "application/json",
-        "Accept-Language": "ko-KR,ko;q=0.9",
-        "Origin":          "https://chzzk.naver.com",
-        "Referer":         f"https://chzzk.naver.com/{chzzk_id}/community",
-        "Cookie":          cookie,
+        "User-Agent":                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept":                     "application/json, text/plain, */*",
+        "Accept-Language":            "ko,en-US;q=0.9,en;q=0.8",
+        "Origin":                     "https://chzzk.naver.com",
+        "Referer":                    f"https://chzzk.naver.com/{chzzk_id}/community",
+        "deviceid":                   _DEVICE_ID,
+        "front-client-platform-type": "PC",
+        "front-client-product-type":  "web",
+        "if-modified-since":          "Mon, 26 Jul 1997 05:00:00 GMT",
+        "Cookie":                     cookie,
     }
     async with httpx.AsyncClient(timeout=15) as client:
         try:
             resp = await client.get(url, params=params, headers=headers)
-            _log(f"커뮤니티 API → HTTP {resp.status_code}")
+            _log(f"커뮤니티 API → HTTP {resp.status_code} (cookie={'set' if cookie else 'none'})")
             if resp.status_code != 200:
                 _log(f"커뮤니티 오류: {resp.text[:200]}")
                 return None
