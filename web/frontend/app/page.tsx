@@ -355,14 +355,14 @@ export default function HomePage() {
       flip:   false,
     },
     {
-      color:  "#03C75A",
-      bg:     "rgba(3,199,90,0.10)",
-      icon:   <BadgeCheck size={22} style={{ color: "#03C75A" }} />,
+      color:  "#818CF8",
+      bg:     "rgba(129,140,248,0.12)",
+      icon:   <BadgeCheck size={22} style={{ color: "#818CF8" }} />,
       tag:    "팔로우 인증",
       title:  "치지직 팔로우 역할 시스템",
       detail: "치지직 OAuth로 로그인하면 팔로우 시작일을 기준으로 팔로우 기간을 자동 계산합니다. 1개월, 3개월, 6개월 등 최대 5개의 기간 티어를 설정해 조건에 맞는 Discord 역할을 자동으로 부여하세요.",
       bullets: ["팔로우 날짜 기반 자동 계산", "최대 5개 기간 티어 설정", "웹 대시보드에서 역할 관리"],
-      mockup: <ChzzkFollowVerifyMockup color="#03C75A" />,
+      mockup: <ChzzkFollowVerifyMockup color="#818CF8" />,
       flip:   true,
     },
   ];

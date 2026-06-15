@@ -340,3 +340,58 @@ async def delete_single_warning(
     )
     await db.commit()
     return {"ok": True}
+
+
+# ── 매니저 관리 ──────────────────────────────────────────────────────────────
+
+@router.get("/{guild_id}/managers")
+async def get_managers(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT user_id FROM mod_managers WHERE guild_id=?", (int(guild_id),)
+    )).fetchall()
+    async with httpx.AsyncClient() as client:
+        names = await asyncio.gather(*[
+            _fetch_display_name(client, guild_id, r["user_id"]) for r in rows
+        ])
+    return [{"user_id": str(r["user_id"]), "display_name": n} for r, n in zip(rows, names)]
+
+
+class ManagerAdd(BaseModel):
+    user_id: str
+
+
+@router.post("/{guild_id}/managers")
+async def add_manager(
+    guild_id: str,
+    body: ManagerAdd,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    await db.execute(
+        "INSERT OR IGNORE INTO mod_managers(guild_id, user_id) VALUES(?,?)",
+        (int(guild_id), int(body.user_id))
+    )
+    await db.commit()
+    return {"ok": True}
+
+
+@router.delete("/{guild_id}/managers/{manager_user_id}")
+async def remove_manager(
+    guild_id: str,
+    manager_user_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    await db.execute(
+        "DELETE FROM mod_managers WHERE guild_id=? AND user_id=?",
+        (int(guild_id), int(manager_user_id))
+    )
+    await db.commit()
+    return {"ok": True}

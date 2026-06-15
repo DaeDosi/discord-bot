@@ -28,6 +28,12 @@ def is_mod_or_admin():
             mod_role = interaction.guild.get_role(cfg["mod_role_id"])
             if mod_role and mod_role in interaction.user.roles:
                 return True
+        mgr = await (await db.execute(
+            "SELECT 1 FROM mod_managers WHERE guild_id=? AND user_id=?",
+            (interaction.guild_id, interaction.user.id)
+        )).fetchone()
+        if mgr:
+            return True
         raise app_commands.MissingPermissions(["manage_messages"])
     return app_commands.check(predicate)
 

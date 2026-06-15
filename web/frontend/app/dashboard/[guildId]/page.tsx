@@ -89,10 +89,10 @@ export default function GeneralSettingsPage() {
       {/* 환영/퇴장 메시지 내용 */}
       <div className="card space-y-4">
         <h2 className="font-semibold text-white">메시지 내용</h2>
-        <p className="text-muted text-xs">
-          사용 가능한 변수: <code className="bg-surface-2 px-1 rounded">{"{mention}"}</code> 유저 멘션,{" "}
-          <code className="bg-surface-2 px-1 rounded">{"{username}"}</code> 유저 이름,{" "}
-          <code className="bg-surface-2 px-1 rounded">{"{server}"}</code> 서버 이름
+        <p className="text-muted text-sm">
+          사용 가능한 변수: <code className="bg-bg px-1 rounded">{"{mention}"}</code> 유저 멘션,{" "}
+          <code className="bg-bg px-1 rounded">{"{username}"}</code> 유저 이름,{" "}
+          <code className="bg-bg px-1 rounded">{"{server}"}</code> 서버 이름
         </p>
         <div>
           <label className="label">환영 메시지</label>

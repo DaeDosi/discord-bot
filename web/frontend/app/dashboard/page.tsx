@@ -30,8 +30,8 @@ function GuildCard({ guild, onInvite }: { guild: Guild; onInvite: (guildId: stri
         </div>
       )}
       <div className="flex-1 min-w-0">
-        <p className="font-semibold text-white truncate">{guild.name}</p>
-        <p className="text-xs text-muted mt-0.5">
+        <p className="font-semibold text-fg text-base truncate">{guild.name}</p>
+        <p className="text-sm text-muted mt-0.5">
           {guild.has_bot ? "봇 설치됨" : "봇 미설치"}
         </p>
       </div>

@@ -21,7 +21,7 @@ function SelectField({
   return (
     <div>
       <label className="label">{label}</label>
-      {description && <p className="text-xs text-muted mb-1.5">{description}</p>}
+      {description && <p className="text-sm text-muted mb-1.5">{description}</p>}
       <select className="select" value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">{placeholder}</option>
         {options.map((o) => (
@@ -148,7 +148,7 @@ export default function VerificationPage() {
         >
           <div>
             <p className="text-sm font-medium text-white">치지직 연동 인증</p>
-            <p className="text-xs text-muted mt-0.5">
+            <p className="text-sm text-muted mt-0.5">
               ON이면 네이버 로그인을 통한 치지직 인증, OFF이면 즉시 확인 버튼
             </p>
           </div>
@@ -196,14 +196,14 @@ export default function VerificationPage() {
               style={{ backgroundColor: /^#[0-9A-Fa-f]{6}$/.test(cfg.embed_color || "") ? cfg.embed_color : DEFAULT_COLOR }}
             />
           </div>
-          <p className="text-xs text-muted mt-1.5">예: #5865F2 (Discord 파란색), #FF0000 (빨간색)</p>
+          <p className="text-sm text-muted mt-1.5">예: #5865F2 (Discord 파란색), #FF0000 (빨간색)</p>
         </div>
       </div>
 
       {/* 입장 메시지 */}
       <div className="card space-y-3">
         <h2 className="font-semibold text-white">입장 메시지</h2>
-        <p className="text-xs text-muted">
+        <p className="text-sm text-muted">
           인증 임베드 본문에 표시될 텍스트입니다. 비워두면 기본 메시지가 사용됩니다.
         </p>
         <textarea
@@ -212,7 +212,7 @@ export default function VerificationPage() {
           value={cfg.verification_message || ""}
           onChange={(e) => set("verification_message")(e.target.value)}
         />
-        <p className="text-xs text-muted/60">
+        <p className="text-sm text-muted/60">
           메시지 수정 후 Discord에서 <code className="text-accent">/입장메시지설정</code> 을 실행하면 기존 임베드가 업데이트됩니다.
         </p>
       </div>

@@ -66,6 +66,14 @@ export const api = {
       request<{ user_id: string; display_name?: string; xp: number; level: number }[]>(
         `/api/settings/${gid}/leaderboard`
       ),
+    managers: {
+      list:   (gid: string) =>
+        request<{ user_id: string; display_name: string }[]>(`/api/settings/${gid}/managers`),
+      add:    (gid: string, user_id: string) =>
+        request(`/api/settings/${gid}/managers`, { method: "POST", body: JSON.stringify({ user_id }) }),
+      remove: (gid: string, user_id: string) =>
+        request(`/api/settings/${gid}/managers/${user_id}`, { method: "DELETE" }),
+    },
     getVerification: (gid: string) =>
       request<import("./types").VerificationConfig>(`/api/settings/${gid}/verification`),
     saveVerification: (gid: string, data: import("./types").VerificationConfig) =>

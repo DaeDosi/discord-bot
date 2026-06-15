@@ -2,10 +2,11 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import {
-  Save, CheckCircle, Shield, AlertTriangle, X, Trash2, ChevronLeft, ChevronRight,
+  Save, CheckCircle, Shield, AlertTriangle, X, Trash2, ChevronLeft, ChevronRight, UserPlus,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { GuildConfig, Channel, Role, WarnUser, WarnDetail } from "@/lib/types";
+import type { GuildConfig, Channel, Role, WarnUser, WarnDetail, GuildMember } from "@/lib/types";
+import MemberSearch from "@/components/MemberSearch";
 
 // ── Warning modal (list → detail) ────────────────────────────────────────────
 function WarnModal({
@@ -196,6 +197,10 @@ export default function ModerationPage() {
   const [saved, setSaved]       = useState(false);
   const [warnOpen, setWarnOpen] = useState(false);
 
+  const [managers, setManagers]       = useState<{ user_id: string; display_name: string }[]>([]);
+  const [newManager, setNewManager]   = useState<GuildMember | null>(null);
+  const [addingMgr, setAddingMgr]     = useState(false);
+
   useEffect(() => {
     Promise.all([
       api.settings.get(guildId),
@@ -210,7 +215,22 @@ export default function ModerationPage() {
       setChannels(ch);
       setRoles(r);
     });
+    api.settings.managers.list(guildId).then(setManagers).catch(() => {});
   }, [guildId]);
+
+  const addManager = async () => {
+    if (!newManager) return;
+    setAddingMgr(true);
+    await api.settings.managers.add(guildId, newManager.id);
+    setManagers((prev) => [...prev, { user_id: newManager.id, display_name: newManager.display_name }]);
+    setNewManager(null);
+    setAddingMgr(false);
+  };
+
+  const removeManager = async (userId: string) => {
+    await api.settings.managers.remove(guildId, userId);
+    setManagers((prev) => prev.filter((m) => m.user_id !== userId));
+  };
 
   const save = async () => {
     setSaving(true);
@@ -329,6 +349,47 @@ export default function ModerationPage() {
           ? <><CheckCircle size={16} /> 저장됨</>
           : <><Save size={16} /> {saving ? "저장 중..." : "변경사항 저장"}</>}
       </button>
+
+      {/* ── 개별 매니저 등록 ── */}
+      <div className="card space-y-4">
+        <h2 className="font-semibold text-white flex items-center gap-2">
+          <UserPlus size={16} className="text-accent" /> 개별 매니저 등록
+        </h2>
+        <p className="text-sm text-muted">역할이 없어도 특정 멤버에게 매니저 권한을 부여합니다.</p>
+        <div className="flex gap-2">
+          <div className="flex-1">
+            <MemberSearch guildId={guildId} value={newManager} onChange={setNewManager} placeholder="멤버 검색..." />
+          </div>
+          <button
+            onClick={addManager}
+            disabled={!newManager || addingMgr}
+            className="btn-primary shrink-0 self-end"
+          >
+            추가
+          </button>
+        </div>
+        {managers.length === 0 ? (
+          <p className="text-sm text-muted text-center py-4">등록된 매니저가 없습니다.</p>
+        ) : (
+          <div className="space-y-2">
+            {managers.map((m) => (
+              <div
+                key={m.user_id}
+                className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-bg border border-border"
+              >
+                <p className="text-sm font-medium text-white">{m.display_name}</p>
+                <button
+                  onClick={() => removeManager(m.user_id)}
+                  className="text-muted hover:text-red-400 transition-colors p-1"
+                  title="매니저 제거"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

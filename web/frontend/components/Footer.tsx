@@ -32,7 +32,8 @@ const COLUMNS: {
   {
     heading: "지원",
     links: [
-      { label: "FAQ", href: "/faq" },
+      { label: "FAQ",     href: "/faq"    },
+      { label: "서버 상태", href: "/status" },
     ],
   },
 ];

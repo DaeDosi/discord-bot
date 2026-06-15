@@ -166,8 +166,16 @@ async def init_db():
                status      TEXT DEFAULT 'pending',
                submitted_at INTEGER NOT NULL,
                reviewed_at  INTEGER,
-               reviewer_id  INTEGER
+               reviewer_id  INTEGER,
+               UNIQUE(guild_id, mission_id, user_id)
            )""",
+        """CREATE TABLE IF NOT EXISTS mod_managers (
+               guild_id INTEGER NOT NULL,
+               user_id  INTEGER NOT NULL,
+               PRIMARY KEY (guild_id, user_id)
+           )""",
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_mission_completions_unique
+               ON mission_completions(guild_id, mission_id, user_id)""",
         """CREATE TABLE IF NOT EXISTS shop_items (
                id          INTEGER PRIMARY KEY AUTOINCREMENT,
                guild_id    INTEGER NOT NULL,

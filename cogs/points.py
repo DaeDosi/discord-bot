@@ -73,7 +73,7 @@ async def _handle_mission_join(interaction: discord.Interaction, mission_id: int
             "미션을 찾을 수 없거나 비활성화되었습니다.", ephemeral=True
         )
     await db.execute(
-        "INSERT INTO mission_completions(mission_id, guild_id, user_id, status, submitted_at) VALUES(?,?,?,?,?)",
+        "INSERT OR IGNORE INTO mission_completions(mission_id, guild_id, user_id, status, submitted_at) VALUES(?,?,?,?,?)",
         (mission_id, interaction.guild_id, interaction.user.id, "pending", int(time.time()))
     )
     await db.commit()
@@ -129,17 +129,14 @@ class PointsCog(commands.Cog):
         self.bot = bot
 
     @commands.Cog.listener()
-    async def on_interaction(self, interaction: discord.Interaction):
-        if interaction.type != discord.InteractionType.component:
-            return
-        cid = (interaction.data or {}).get("custom_id", "")
-        try:
-            if cid.startswith("mission_join:") and not interaction.response.is_done():
-                await _handle_mission_join(interaction, int(cid.split(":")[1]))
-            elif cid.startswith("shop_buy:") and not interaction.response.is_done():
-                await _handle_shop_buy(interaction, int(cid.split(":")[1]))
-        except (IndexError, ValueError):
-            pass
+    async def on_ready(self):
+        db = await get_db()
+        missions = await (await db.execute("SELECT id FROM missions")).fetchall()
+        for m in missions:
+            self.bot.add_view(MissionView(mission_id=m["id"]))
+        items = await (await db.execute("SELECT id, points_cost FROM shop_items")).fetchall()
+        for item in items:
+            self.bot.add_view(ShopView(item_id=item["id"], points_cost=item["points_cost"]))
 
     @app_commands.command(name="포인트", description="자신 또는 멤버의 포인트를 확인합니다.")
     @app_commands.describe(member="확인할 멤버 (기본: 자신)")
