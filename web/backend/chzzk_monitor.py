@@ -132,54 +132,107 @@ async def _fetch_latest_clip(chzzk_id: str) -> dict | None:
         return clips[0] if clips else None
 
 
-async def _fetch_latest_post(chzzk_id: str) -> dict | None:
-    # NID_AUT로 Railway IP에서 새 NID_SES 발급 → IP 바인딩 우회
-    nid_aut = _get_nid_aut()
-    if not nid_aut:
-        _log("NAVER_NID_AUT 없음 — 커뮤니티 체크 건너뜀")
-        return None
-
-    nid_ses = await _get_fresh_nid_ses()
-    if not nid_ses:
-        _log("NID_SES 발급 실패 — 커뮤니티 체크 건너뜀")
-        return None
-
-    device_id = _get_ba_uuid()
-    cookie = f"NID_AUT={nid_aut}; NID_SES={nid_ses}"
-    url = (
-        "https://apis.naver.com/nng_main/nng_comment_api/v1"
-        f"/type/CHANNEL_POST/id/{chzzk_id}/comments"
-    )
-    headers = {
-        "User-Agent":                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Accept":                     "application/json, text/plain, */*",
-        "Accept-Language":            "ko,en-US;q=0.9,en;q=0.8",
-        "Origin":                     "https://chzzk.naver.com",
-        "Referer":                    f"https://chzzk.naver.com/{chzzk_id}/community",
-        "deviceid":                   device_id,
-        "front-client-platform-type": "PC",
-        "front-client-product-type":  "web",
-        "if-modified-since":          "Mon, 26 Jul 1997 05:00:00 GMT",
-        "Cookie":                     cookie,
-    }
-    async with httpx.AsyncClient(timeout=15) as client:
-        try:
-            resp = await client.get(url, params={"limit": 1, "offset": 0, "orderType": "DESC", "pagingType": "PAGE"}, headers=headers)
-            _log(f"커뮤니티 API → HTTP {resp.status_code}")
-            if resp.status_code != 200:
-                _log(f"커뮤니티 오류: {resp.text[:200]}")
-                return None
-            data = resp.json()
-            comments_data = data.get("content", {}).get("comments", {}).get("data", [])
-            if not comments_data:
-                _log("커뮤니티 게시글 없음")
-                return None
-            comment = comments_data[0].get("comment", comments_data[0])
-            _log(f"커뮤니티 성공! commentId={comment.get('commentId')}")
-            return comment
-        except Exception as e:
-            _log(f"커뮤니티 오류: {e}")
+async def _get_streamer_token(chzzk_id: str) -> str | None:
+    """DB에서 스트리머 OAuth 액세스 토큰 조회. 만료 임박 시 갱신."""
+    client_id     = os.getenv("CHZZK_CLIENT_ID", "")
+    client_secret = os.getenv("CHZZK_CLIENT_SECRET", "")
+    try:
+        db  = await get_db()
+        sub = await (await db.execute(
+            "SELECT streamer_access_token, streamer_refresh_token, streamer_token_expires_at "
+            "FROM chzzk_subscriptions WHERE chzzk_channel_id=? LIMIT 1",
+            (chzzk_id,)
+        )).fetchone()
+        if not sub or not sub["streamer_access_token"]:
             return None
+
+        expires_at = sub["streamer_token_expires_at"] or 0
+        if expires_at > int(time.time()) + 300:
+            return sub["streamer_access_token"]
+
+        # 만료 임박 → refresh
+        if not sub["streamer_refresh_token"] or not client_id:
+            return sub["streamer_access_token"]  # 그냥 현재 토큰 사용
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                "https://openapi.chzzk.naver.com/auth/v1/token",
+                json={
+                    "grantType":    "refresh_token",
+                    "clientId":     client_id,
+                    "clientSecret": client_secret,
+                    "refreshToken": sub["streamer_refresh_token"],
+                },
+            )
+        if resp.status_code == 200:
+            c  = resp.json().get("content", {})
+            at = c.get("accessToken")
+            rt = c.get("refreshToken") or sub["streamer_refresh_token"]
+            ei = c.get("expiresIn", 86400)
+            if at:
+                new_exp = int(time.time()) + ei
+                await db.execute(
+                    "UPDATE chzzk_subscriptions SET streamer_access_token=?, streamer_refresh_token=?, streamer_token_expires_at=? WHERE chzzk_channel_id=?",
+                    (at, rt, new_exp, chzzk_id),
+                )
+                await db.commit()
+                _log(f"스트리머 토큰 갱신 완료 ({chzzk_id})")
+                return at
+
+        return sub["streamer_access_token"]
+    except Exception as e:
+        _log(f"스트리머 토큰 조회 오류: {e}")
+        return None
+
+
+async def _fetch_latest_post(chzzk_id: str) -> dict | None:
+    client_id = os.getenv("CHZZK_CLIENT_ID", "")
+    token     = await _get_streamer_token(chzzk_id)
+
+    if not token:
+        _log(f"커뮤니티: 스트리머 OAuth 토큰 없음 ({chzzk_id}) — 대시보드에서 치지직 계정 연동 필요")
+        return None
+
+    auth_headers = {
+        "Authorization": f"Bearer {token}",
+        "Client-Id":     client_id,
+        "Accept":        "application/json",
+        "User-Agent":    "Mozilla/5.0",
+    }
+
+    # 공식 Open API 먼저 시도, 그 다음 비공식 API
+    candidates = [
+        ("https://openapi.chzzk.naver.com/open/v1/channels/community/posts",
+         {"size": 1, "page": 0}),
+        (f"https://api.chzzk.naver.com/service/v1/channels/{chzzk_id}/community/posts",
+         {"sortType": "RECENT", "page": 0, "size": 1}),
+        (f"https://api.chzzk.naver.com/service/v2/channels/{chzzk_id}/community/posts",
+         {"sortType": "RECENT", "page": 0, "size": 1}),
+    ]
+
+    async with httpx.AsyncClient(headers=auth_headers, timeout=15) as client:
+        for url, params in candidates:
+            try:
+                resp = await client.get(url, params=params)
+                _log(f"커뮤니티 {url.split('/')[-3]} → HTTP {resp.status_code}")
+                if resp.status_code != 200:
+                    continue
+                data  = resp.json()
+                cont  = data.get("content", {})
+                posts = (
+                    cont.get("data") or cont.get("posts") or cont.get("articles")
+                    if isinstance(cont, dict) else cont
+                ) or []
+                if posts:
+                    post    = posts[0]
+                    post_id = post.get("postNo") or post.get("communityPostNo") or post.get("id")
+                    _log(f"커뮤니티 성공! postNo={post_id}")
+                    return post
+            except Exception as e:
+                _log(f"커뮤니티 요청 오류 ({url}): {e}")
+
+    _log(f"커뮤니티: 모든 엔드포인트 실패 ({chzzk_id})")
+    return None
 
 
 # ── Discord 메시지 전송 ──────────────────────────────────────────────────────
@@ -329,7 +382,7 @@ async def _send_clip_notification(row, clip: dict):
 
 async def _send_post_notification(row, post: dict):
     name    = row["chzzk_name"] or "알 수 없음"
-    post_no = str(post.get("commentId") or post.get("postNo") or post.get("communityPostNo") or post.get("id") or "")
+    post_no = str(post.get("postNo") or post.get("communityPostNo") or post.get("commentId") or post.get("id") or "")
 
     # content 필드가 문자열 (게시글 본문)
     content_text = post.get("content") or ""
@@ -479,9 +532,9 @@ async def _check_once():
                     post = await _fetch_latest_post(row["chzzk_channel_id"])
                     if post:
                         post_id = str(
-                            post.get("commentId")
-                            or post.get("postNo")
+                            post.get("postNo")
                             or post.get("communityPostNo")
+                            or post.get("commentId")
                             or post.get("id")
                             or ""
                         )
