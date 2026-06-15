@@ -435,6 +435,51 @@ async def debug_status(user: dict = Depends(get_current_user)):
     return await check_once_debug()
 
 
+@router.get("/debug/community-test/{chzzk_id}")
+async def debug_community_test(chzzk_id: str, user: dict = Depends(get_current_user)):
+    """현재 환경변수 쿠키로 NNG API 직접 테스트"""
+    import re as _re, uuid as _uuid
+    cookie = os.getenv("NAVER_COOKIE", "").strip()
+    if not cookie:
+        parts = []
+        if os.getenv("NAVER_NID_AUT"): parts.append(f"NID_AUT={os.getenv('NAVER_NID_AUT')}")
+        if os.getenv("NAVER_NID_SES"): parts.append(f"NID_SES={os.getenv('NAVER_NID_SES')}")
+        cookie = "; ".join(parts)
+
+    cookie_names = [p.split("=")[0].strip() for p in cookie.split(";") if "=" in p]
+    m = _re.search(r'ba\.uuid=([^;]+)', cookie)
+    device_id = m.group(1).strip() if m else str(_uuid.uuid4())
+
+    url = (
+        "https://apis.naver.com/nng_main/nng_comment_api/v1"
+        f"/type/CHANNEL_POST/id/{chzzk_id}/comments"
+    )
+    headers = {
+        "User-Agent":                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept":                     "application/json, text/plain, */*",
+        "Accept-Language":            "ko,en-US;q=0.9,en;q=0.8",
+        "Origin":                     "https://chzzk.naver.com",
+        "Referer":                    f"https://chzzk.naver.com/{chzzk_id}/community",
+        "deviceid":                   device_id,
+        "front-client-platform-type": "PC",
+        "front-client-product-type":  "web",
+        "if-modified-since":          "Mon, 26 Jul 1997 05:00:00 GMT",
+        "Cookie":                     cookie,
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(url, params={"limit": 1, "offset": 0, "orderType": "DESC", "pagingType": "PAGE"}, headers=headers)
+
+    return {
+        "cookie_total_len":  len(cookie),
+        "cookie_part_count": len(cookie_names),
+        "cookie_names":      cookie_names,
+        "has_ba_uuid":       "ba.uuid" in cookie,
+        "device_id_used":    device_id[:12] + "...",
+        "api_status":        resp.status_code,
+        "api_response":      resp.json() if "json" in resp.headers.get("content-type","") else resp.text[:300],
+    }
+
+
 @router.get("/debug/community/{chzzk_id}")
 async def debug_community(chzzk_id: str, user: dict = Depends(get_current_user)):
     """커뮤니티 API 엔드포인트 탐색 — 200을 리턴하는 경로 찾기"""

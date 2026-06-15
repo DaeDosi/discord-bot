@@ -103,46 +103,25 @@ async def _fetch_latest_clip(chzzk_id: str) -> dict | None:
 
 
 async def _fetch_latest_post(chzzk_id: str) -> dict | None:
-    cookie = _naver_cookie()
-    if not cookie:
-        _log("NAVER_NID_AUT / NAVER_NID_SES 환경변수 없음 — 커뮤니티 체크 건너뜀")
-        return None
-
-    url = (
-        "https://apis.naver.com/nng_main/nng_comment_api/v1"
-        f"/type/CHANNEL_POST/id/{chzzk_id}/comments"
-    )
-    params = {"limit": 1, "offset": 0, "orderType": "DESC", "pagingType": "PAGE"}
-    device_id = _extract_ba_uuid(cookie)
-    headers = {
-        "User-Agent":                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Accept":                     "application/json, text/plain, */*",
-        "Accept-Language":            "ko,en-US;q=0.9,en;q=0.8",
-        "Origin":                     "https://chzzk.naver.com",
-        "Referer":                    f"https://chzzk.naver.com/{chzzk_id}/community",
-        "deviceid":                   device_id,
-        "front-client-platform-type": "PC",
-        "front-client-product-type":  "web",
-        "if-modified-since":          "Mon, 26 Jul 1997 05:00:00 GMT",
-        "Cookie":                     cookie,
-    }
-    async with httpx.AsyncClient(timeout=15) as client:
+    # 공식 Chzzk API — VOD/클립과 동일한 패턴, 인증 불필요
+    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/community/posts"
+    params = {"sortType": "RECENT", "page": 0, "size": 1}
+    async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=15) as client:
         try:
-            resp = await client.get(url, params=params, headers=headers)
-            _log(f"커뮤니티 API → HTTP {resp.status_code} (cookie={'set' if cookie else 'none'})")
+            resp = await client.get(url, params=params)
+            _log(f"커뮤니티 API → HTTP {resp.status_code}")
             if resp.status_code != 200:
                 _log(f"커뮤니티 오류: {resp.text[:200]}")
                 return None
             data = resp.json()
-            comments_data = (
-                data.get("content", {}).get("comments", {}).get("data", [])
-            )
-            if not comments_data:
+            posts = data.get("content", {}).get("data", [])
+            if not posts:
                 _log("커뮤니티 게시글 없음")
                 return None
-            comment = comments_data[0].get("comment", comments_data[0])
-            _log(f"커뮤니티 성공! commentId={comment.get('commentId')}")
-            return comment
+            post = posts[0]
+            post_id = post.get("postNo") or post.get("communityPostNo") or post.get("id")
+            _log(f"커뮤니티 성공! postNo={post_id}")
+            return post
         except Exception as e:
             _log(f"커뮤니티 오류: {e}")
             return None
@@ -295,7 +274,7 @@ async def _send_clip_notification(row, clip: dict):
 
 async def _send_post_notification(row, post: dict):
     name    = row["chzzk_name"] or "알 수 없음"
-    post_no = str(post.get("commentId") or post.get("postNo") or post.get("id") or "")
+    post_no = str(post.get("postNo") or post.get("communityPostNo") or post.get("commentId") or post.get("id") or "")
 
     # content 필드가 문자열 (게시글 본문)
     content_text = post.get("content") or ""
@@ -445,8 +424,9 @@ async def _check_once():
                     post = await _fetch_latest_post(row["chzzk_channel_id"])
                     if post:
                         post_id = str(
-                            post.get("commentId")
-                            or post.get("postNo")
+                            post.get("postNo")
+                            or post.get("communityPostNo")
+                            or post.get("commentId")
                             or post.get("id")
                             or ""
                         )
