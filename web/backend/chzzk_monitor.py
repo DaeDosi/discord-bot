@@ -202,13 +202,21 @@ async def _fetch_latest_post(chzzk_id: str) -> dict | None:
         "User-Agent":    "Mozilla/5.0",
     }
 
-    # 공식 Open API 먼저 시도, 그 다음 비공식 API
+    # Open API (스트리머 Bearer 토큰) + 비공식 서비스 API 순서로 시도
     candidates = [
-        ("https://openapi.chzzk.naver.com/open/v1/channels/community/posts",
+        # ── Open API: 자신의 채널 게시글 ──────────────────────────────
+        ("https://openapi.chzzk.naver.com/open/v1/channels/me/community-posts",
          {"size": 1, "page": 0}),
-        (f"https://api.chzzk.naver.com/service/v1/channels/{chzzk_id}/community/posts",
+        ("https://openapi.chzzk.naver.com/open/v1/channels/me/community/posts",
+         {"size": 1, "page": 0}),
+        (f"https://openapi.chzzk.naver.com/open/v1/channels/{chzzk_id}/community-posts",
+         {"size": 1, "page": 0}),
+        (f"https://openapi.chzzk.naver.com/open/v1/channels/{chzzk_id}/community/posts",
+         {"size": 1, "page": 0}),
+        # ── 비공식 서비스 API ─────────────────────────────────────────
+        (f"https://api.chzzk.naver.com/service/v1/channels/{chzzk_id}/community-posts",
          {"sortType": "RECENT", "page": 0, "size": 1}),
-        (f"https://api.chzzk.naver.com/service/v2/channels/{chzzk_id}/community/posts",
+        (f"https://api.chzzk.naver.com/service/v2/channels/{chzzk_id}/community-posts",
          {"sortType": "RECENT", "page": 0, "size": 1}),
     ]
 
@@ -216,20 +224,24 @@ async def _fetch_latest_post(chzzk_id: str) -> dict | None:
         for url, params in candidates:
             try:
                 resp = await client.get(url, params=params)
-                _log(f"커뮤니티 {url.split('/')[-3]} → HTTP {resp.status_code}")
+                label = url.replace("https://", "").split("?")[0]
                 if resp.status_code != 200:
+                    snippet = resp.text[:120].replace("\n", " ")
+                    _log(f"커뮤니티 {label} → {resp.status_code} {snippet}")
                     continue
                 data  = resp.json()
                 cont  = data.get("content", {})
                 posts = (
                     cont.get("data") or cont.get("posts") or cont.get("articles")
+                    or cont.get("communityPosts") or cont.get("items")
                     if isinstance(cont, dict) else cont
                 ) or []
                 if posts:
                     post    = posts[0]
                     post_id = post.get("postNo") or post.get("communityPostNo") or post.get("id")
-                    _log(f"커뮤니티 성공! postNo={post_id}")
+                    _log(f"커뮤니티 성공! url={label} postNo={post_id}")
                     return post
+                _log(f"커뮤니티 {label} → 200 but 게시글 없음. keys={list(data.keys())}")
             except Exception as e:
                 _log(f"커뮤니티 요청 오류 ({url}): {e}")
 
