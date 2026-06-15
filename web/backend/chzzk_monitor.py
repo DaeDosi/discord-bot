@@ -83,8 +83,13 @@ async def _fetch_latest_post(chzzk_id: str) -> dict | None:
         f"/type/CHANNEL_POST/id/{chzzk_id}/comments"
     )
     params = {"limit": 1, "offset": 0, "orderType": "DESC", "pagingType": "PAGE"}
+    headers = {
+        **CHZZK_HEADERS,
+        "Origin":  "https://chzzk.naver.com",
+        "Referer": f"https://chzzk.naver.com/{chzzk_id}/community",
+    }
 
-    async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=15) as client:
+    async with httpx.AsyncClient(headers=headers, timeout=15) as client:
         try:
             resp = await client.get(url, params=params)
             _log(f"커뮤니티 API → HTTP {resp.status_code}")
