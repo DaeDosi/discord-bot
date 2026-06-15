@@ -76,48 +76,18 @@ async def _fetch_latest_clip(chzzk_id: str) -> dict | None:
         return clips[0] if clips else None
 
 
-async def _get_community_board_id(chzzk_id: str) -> str | None:
-    """채널 정보에서 커뮤니티 보드 ID를 추출."""
-    async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=10) as client:
-        # 채널 기본 정보 (openLive 등 포함된 응답 전체 확인)
-        resp = await client.get(f"{CHZZK_API}/service/v1/channels/{chzzk_id}")
-        if resp.status_code != 200:
-            return None
-        content = resp.json().get("content", {})
-        # 커뮤니티 보드 ID 후보 필드들 로그
-        community_keys = {k: v for k, v in content.items() if "community" in k.lower() or "board" in k.lower()}
-        if community_keys:
-            _log(f"채널 커뮤니티 필드: {community_keys}")
-        else:
-            _log(f"채널 info 전체 키: {list(content.keys())}")
-        return (
-            content.get("communityBoardId")
-            or content.get("channelCommunityBoardId")
-            or content.get("communityId")
-            or None
-        )
-
-
 async def _fetch_latest_post(chzzk_id: str) -> dict | None:
+    # service/ 경로는 커뮤니티 API 없음 → nng_main 내부 경로 시도
+    candidates: list[tuple[str, dict]] = [
+        (f"{CHZZK_API}/nng_main/v1/channels/{chzzk_id}/community-boards",         {"size": 1}),
+        (f"{CHZZK_API}/nng_main/v2/channels/{chzzk_id}/community-posts",           {"sortType": "RECENT", "size": 1}),
+        (f"{CHZZK_API}/nng_main/v1/channels/{chzzk_id}/posts",                    {"sortType": "RECENT", "size": 1}),
+        (f"{CHZZK_API}/nng_main/v2/community-boards/{chzzk_id}/articles",          {"size": 1, "page": 0}),
+        (f"{CHZZK_API}/nng_main/v1/community-boards/{chzzk_id}/articles",          {"size": 1, "page": 0}),
+        (f"{CHZZK_API}/manage/v1/channels/{chzzk_id}/posts",                       {"sortType": "RECENT", "size": 1}),
+    ]
+
     async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=15) as client:
-        # Step 1: 채널 정보에서 communityBoardId 획득 시도
-        board_id = await _get_community_board_id(chzzk_id)
-
-        candidates: list[tuple[str, dict]] = []
-
-        if board_id:
-            candidates += [
-                (f"{CHZZK_API}/service/v1/community-boards/{board_id}/articles", {"size": 1, "page": 0}),
-                (f"{CHZZK_API}/service/v1/community-boards/{board_id}/posts",    {"size": 1, "page": 0}),
-            ]
-
-        # Step 2: 다양한 경로 시도
-        candidates += [
-            (f"{CHZZK_API}/service/v2/channels/{chzzk_id}/community/posts",   {"sortType": "RECENT", "page": 0, "size": 1}),
-            (f"{CHZZK_API}/service/v1/channels/{chzzk_id}/community/articles", {"page": 0, "size": 1}),
-            (f"{CHZZK_API}/service/v1/channels/{chzzk_id}/community",          {"page": 0, "size": 1}),
-        ]
-
         for url, params in candidates:
             try:
                 resp = await client.get(url, params=params)
@@ -142,7 +112,7 @@ async def _fetch_latest_post(chzzk_id: str) -> dict | None:
                     _log(f"커뮤니티 성공! path={path}, post keys={list(posts[0].keys())}")
                     return posts[0]
                 else:
-                    _log(f"커뮤니티 200이지만 게시글 없음, content keys={list(content.keys()) if isinstance(content, dict) else type(content)}")
+                    _log(f"커뮤니티 200이지만 게시글 없음, content keys={list(content.keys()) if isinstance(content, dict) else type(content)}, raw={str(data)[:300]}")
             except Exception as e:
                 _log(f"커뮤니티 요청 오류 ({url}): {e}")
 
