@@ -17,14 +17,24 @@ POLL_INTERVAL = int(os.getenv("CHZZK_POLL_INTERVAL", 60))
 CHZZK_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 def _naver_cookie() -> str:
+    # NAVER_COOKIE = full browser cookie string (preferred)
+    full = os.getenv("NAVER_COOKIE", "").strip()
+    if full:
+        return full
+    # fallback: individual NID values
+    parts = []
     nid_aut = os.getenv("NAVER_NID_AUT", "")
     nid_ses = os.getenv("NAVER_NID_SES", "")
-    parts = []
     if nid_aut:
         parts.append(f"NID_AUT={nid_aut}")
     if nid_ses:
         parts.append(f"NID_SES={nid_ses}")
     return "; ".join(parts)
+
+
+def _extract_ba_uuid(cookie: str) -> str:
+    m = re.search(r'ba\.uuid=([^;]+)', cookie)
+    return m.group(1).strip() if m else _DEVICE_ID
 
 
 def _log(msg: str):
@@ -103,13 +113,14 @@ async def _fetch_latest_post(chzzk_id: str) -> dict | None:
         f"/type/CHANNEL_POST/id/{chzzk_id}/comments"
     )
     params = {"limit": 1, "offset": 0, "orderType": "DESC", "pagingType": "PAGE"}
+    device_id = _extract_ba_uuid(cookie)
     headers = {
         "User-Agent":                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         "Accept":                     "application/json, text/plain, */*",
         "Accept-Language":            "ko,en-US;q=0.9,en;q=0.8",
         "Origin":                     "https://chzzk.naver.com",
         "Referer":                    f"https://chzzk.naver.com/{chzzk_id}/community",
-        "deviceid":                   _DEVICE_ID,
+        "deviceid":                   device_id,
         "front-client-platform-type": "PC",
         "front-client-product-type":  "web",
         "if-modified-since":          "Mon, 26 Jul 1997 05:00:00 GMT",
