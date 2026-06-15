@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Image from "next/image";
-import { Radio, Trash2, Bell, BellOff, Save, CheckCircle, ExternalLink, Plus, Users, ChevronDown, ChevronUp } from "lucide-react";
+import { Radio, Trash2, Bell, BellOff, Save, CheckCircle, ExternalLink, Plus, Users, ChevronDown, ChevronUp, ToggleLeft, ToggleRight } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier, ChzzkVerification } from "@/lib/types";
 
@@ -98,6 +98,9 @@ export default function ChzzkPage() {
   });
   const [savingRoles, setSavingRoles]   = useState(false);
   const [savedRoles, setSavedRoles]     = useState(false);
+  const [contentNotify, setContentNotify] = useState({ notify_vod: false, notify_clip: false, notify_community: false });
+  const [savingContent, setSavingContent] = useState(false);
+  const [savedContent, setSavedContent]   = useState(false);
   const [followTiers, setFollowTiers]         = useState<FollowRoleTier[]>([]);
   const [newMonths, setNewMonths]             = useState("");
   const [newRole, setNewRole]                 = useState("");
@@ -107,18 +110,28 @@ export default function ChzzkPage() {
   const [loadingVerif, setLoadingVerif]       = useState(false);
 
   const load = async () => {
-    const [s, ch, r, fr, ft] = await Promise.all([
+    const [s, ch, r, fr, ft, cn] = await Promise.all([
       api.chzzk.list(guildId),
       api.guilds.channels(guildId),
       api.guilds.roles(guildId),
       api.chzzk.getFollowerRoles(guildId).catch(() => ({ follow_role_1month: null, follow_role_3month: null, follow_months_tier1: 1, follow_months_tier2: 3 })),
       api.chzzk.followTiers.list(guildId).catch(() => [] as FollowRoleTier[]),
+      api.chzzk.contentNotify.get(guildId).catch(() => ({ notify_vod: false, notify_clip: false, notify_community: false })),
     ]);
     setSubs(s);
     setChannels(ch);
     setRoles(r);
     setFollowerRoles(fr);
     setFollowTiers(ft);
+    setContentNotify(cn);
+  };
+
+  const saveContentNotify = async () => {
+    setSavingContent(true);
+    await api.chzzk.contentNotify.save(guildId, contentNotify).catch(() => {});
+    setSavingContent(false);
+    setSavedContent(true);
+    setTimeout(() => setSavedContent(false), 2500);
   };
 
   const addTier = async () => {
@@ -346,6 +359,44 @@ export default function ChzzkPage() {
         </div>
       )}
 
+      {/* 콘텐츠 알림 */}
+      {subs.length > 0 && (
+        <div className="card space-y-4">
+          <div>
+            <h2 className="font-semibold text-white">콘텐츠 알림</h2>
+            <p className="text-muted text-sm mt-1">
+              새 콘텐츠가 등록될 때 방송 알림 채널에 자동으로 알림을 보냅니다.
+            </p>
+          </div>
+          {(
+            [
+              { key: "notify_vod",       label: "동영상 (다시보기)", desc: "새 다시보기 영상이 업로드되면 알림" },
+              { key: "notify_clip",      label: "클립",              desc: "새 클립이 등록되면 알림" },
+              { key: "notify_community", label: "커뮤니티 게시글",   desc: "새 게시글이 작성되면 알림" },
+            ] as const
+          ).map(({ key, label, desc }) => (
+            <div
+              key={key}
+              className="flex items-center justify-between p-3 rounded-lg border border-border hover:bg-bg-hover transition-colors cursor-pointer"
+              onClick={() => setContentNotify((p) => ({ ...p, [key]: !p[key] }))}
+            >
+              <div>
+                <p className="text-sm font-medium text-white">{label}</p>
+                <p className="text-sm text-muted mt-0.5">{desc}</p>
+              </div>
+              {contentNotify[key]
+                ? <ToggleRight size={28} className="text-accent shrink-0" />
+                : <ToggleLeft  size={28} className="text-muted  shrink-0" />}
+            </div>
+          ))}
+          <button onClick={saveContentNotify} disabled={savingContent} className="btn-primary">
+            {savedContent
+              ? <><CheckCircle size={16} /> 저장됨</>
+              : <><Save size={16} /> {savingContent ? "저장 중..." : "저장"}</>}
+          </button>
+        </div>
+      )}
+
       {/* 팔로워 역할 티어 관리 */}
       {subs.length > 0 && (
         <div className="card space-y-4">
@@ -386,6 +437,8 @@ export default function ChzzkPage() {
               );
             })}
           </div>
+
+          {/* 콘텐츠 알림 섹션은 아래에 별도 카드로 배치 */}
 
           {/* 티어 추가 */}
           {followTiers.length >= 5 ? (

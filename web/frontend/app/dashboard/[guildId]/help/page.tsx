@@ -127,6 +127,54 @@ const FAQS: FaqItem[] = [
       </div>
     ),
   },
+  {
+    q: "포인트/미션/상점 기능이 작동하지 않아요.",
+    tags: ["포인트", "미션", "상점"],
+    a: (
+      <div className="space-y-2 text-sm text-muted">
+        <p>아래 순서로 확인해주세요.</p>
+        <ol className="list-decimal list-inside space-y-1 pl-1">
+          <li><span className="text-white font-medium">/미션불러오기</span> — 관리자가 실행해야 미션 메시지가 채널에 게시됩니다</li>
+          <li><span className="text-white font-medium">/포인트상점</span> — 관리자가 실행해야 상점 메시지가 채널에 게시됩니다</li>
+          <li>대시보드 <span className="text-accent">포인트</span> 탭에서 미션과 상점 아이템이 활성화되어 있는지 확인</li>
+          <li>봇에 <span className="text-white font-medium">메시지 전송</span> 권한이 있는지 확인</li>
+        </ol>
+        <p className="text-xs text-muted/60 mt-1">미션 제출은 유저가 직접 버튼을 눌러야 하며, 관리자가 대시보드에서 승인해야 포인트가 지급됩니다.</p>
+      </div>
+    ),
+  },
+  {
+    q: "치지직 콘텐츠 알림(다시보기·클립·커뮤니티)이 오지 않아요.",
+    tags: ["치지직", "알림", "콘텐츠"],
+    a: (
+      <div className="space-y-2 text-sm text-muted">
+        <p>콘텐츠 알림은 봇이 일정 주기로 치지직을 폴링하여 새 콘텐츠를 감지합니다.</p>
+        <p className="font-medium text-white">확인 사항:</p>
+        <ol className="list-decimal list-inside space-y-1 pl-1">
+          <li>대시보드 <span className="text-accent">치지직</span> 탭 → <span className="text-accent">콘텐츠 알림</span> 섹션에서 해당 항목이 켜져 있는지 확인</li>
+          <li>알림 채널에 봇의 메시지 전송 권한이 있는지 확인</li>
+          <li>치지직 스트리머가 등록되어 있는지 확인 (서버당 1명)</li>
+        </ol>
+        <p className="text-xs text-muted/60 mt-1">처음 활성화하면 기존 콘텐츠에는 알림이 가지 않으며, 그 이후 새로 등록된 콘텐츠부터 알림이 전송됩니다.</p>
+      </div>
+    ),
+  },
+  {
+    q: "/치지직설정불러오기 명령어는 어떻게 사용하나요?",
+    tags: ["치지직", "명령어", "설정"],
+    a: (
+      <div className="space-y-2 text-sm text-muted">
+        <p>이 명령어는 대시보드에 저장된 치지직 설정을 Discord에서 확인하고 알림 채널을 빠르게 변경할 수 있게 합니다.</p>
+        <p className="font-medium text-white">사용 방법:</p>
+        <ol className="list-decimal list-inside space-y-1 pl-1">
+          <li>Discord에서 <code className="text-accent bg-black/30 px-1 rounded">/치지직설정불러오기</code> 실행</li>
+          <li>현재 설정(스트리머, 알림 채널, 콘텐츠 알림 상태)이 표시됩니다</li>
+          <li>채널 선택 드롭다운에서 원하는 채널을 선택하면 즉시 적용됩니다</li>
+        </ol>
+        <p className="text-xs text-muted/60 mt-1">콘텐츠 알림 ON/OFF 등 세부 설정은 웹 대시보드에서만 변경할 수 있습니다.</p>
+      </div>
+    ),
+  },
 ];
 
 function FaqCard({ item }: { item: FaqItem }) {

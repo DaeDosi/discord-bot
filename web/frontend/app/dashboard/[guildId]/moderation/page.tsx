@@ -8,6 +8,91 @@ import { api } from "@/lib/api";
 import type { GuildConfig, Channel, Role, WarnUser, WarnDetail, GuildMember } from "@/lib/types";
 import MemberSearch from "@/components/MemberSearch";
 
+// ── Manager modal ─────────────────────────────────────────────────────────────
+function ManagerModal({
+  guildId,
+  managers,
+  onAdd,
+  onRemove,
+  onClose,
+}: {
+  guildId: string;
+  managers: { user_id: string; display_name: string }[];
+  onAdd: (member: GuildMember) => Promise<void>;
+  onRemove: (userId: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [newMember, setNewMember] = useState<GuildMember | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  const handleAdd = async () => {
+    if (!newMember) return;
+    setAdding(true);
+    await onAdd(newMember);
+    setNewMember(null);
+    setAdding(false);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="bg-bg-card border border-border rounded-xl w-full max-w-md shadow-xl flex flex-col"
+           style={{ maxHeight: "80vh" }}>
+        <div className="flex items-center justify-between p-4 border-b border-border shrink-0">
+          <p className="font-semibold text-white flex items-center gap-2">
+            <UserPlus size={16} className="text-accent" /> 개별 매니저 등록
+          </p>
+          <button onClick={onClose} className="text-muted hover:text-white transition-colors">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto flex-1 p-4 space-y-4">
+          <p className="text-sm text-muted">역할이 없어도 특정 멤버에게 매니저 권한을 부여합니다.</p>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <MemberSearch guildId={guildId} value={newMember} onChange={setNewMember} placeholder="멤버 검색..." />
+            </div>
+            <button
+              onClick={handleAdd}
+              disabled={!newMember || adding}
+              className="btn-primary shrink-0 self-end"
+            >
+              추가
+            </button>
+          </div>
+          {managers.length === 0 ? (
+            <p className="text-sm text-muted text-center py-4">등록된 매니저가 없습니다.</p>
+          ) : (
+            <div className="space-y-2">
+              {managers.map((m) => (
+                <div
+                  key={m.user_id}
+                  className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-bg border border-border"
+                >
+                  <p className="text-sm font-medium text-white">{m.display_name}</p>
+                  <button
+                    onClick={() => onRemove(m.user_id)}
+                    className="text-muted hover:text-red-400 transition-colors p-1"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 border-t border-border shrink-0 flex justify-end">
+          <button onClick={onClose} className="btn-secondary text-sm">닫기</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Warning modal (list → detail) ────────────────────────────────────────────
 function WarnModal({
   guildId,
@@ -197,9 +282,8 @@ export default function ModerationPage() {
   const [saved, setSaved]       = useState(false);
   const [warnOpen, setWarnOpen] = useState(false);
 
-  const [managers, setManagers]       = useState<{ user_id: string; display_name: string }[]>([]);
-  const [newManager, setNewManager]   = useState<GuildMember | null>(null);
-  const [addingMgr, setAddingMgr]     = useState(false);
+  const [managers, setManagers] = useState<{ user_id: string; display_name: string }[]>([]);
+  const [mgrOpen, setMgrOpen]   = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -218,13 +302,9 @@ export default function ModerationPage() {
     api.settings.managers.list(guildId).then(setManagers).catch(() => {});
   }, [guildId]);
 
-  const addManager = async () => {
-    if (!newManager) return;
-    setAddingMgr(true);
-    await api.settings.managers.add(guildId, newManager.id);
-    setManagers((prev) => [...prev, { user_id: newManager.id, display_name: newManager.display_name }]);
-    setNewManager(null);
-    setAddingMgr(false);
+  const addManager = async (member: GuildMember) => {
+    await api.settings.managers.add(guildId, member.id);
+    setManagers((prev) => [...prev, { user_id: member.id, display_name: member.display_name }]);
   };
 
   const removeManager = async (userId: string) => {
@@ -246,6 +326,15 @@ export default function ModerationPage() {
   return (
     <div className="space-y-6">
       {warnOpen && <WarnModal guildId={guildId} onClose={() => setWarnOpen(false)} />}
+      {mgrOpen && (
+        <ManagerModal
+          guildId={guildId}
+          managers={managers}
+          onAdd={addManager}
+          onRemove={removeManager}
+          onClose={() => setMgrOpen(false)}
+        />
+      )}
 
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
@@ -267,7 +356,21 @@ export default function ModerationPage() {
 
       {/* ── 기본 설정 ── */}
       <div className="card space-y-4">
-        <h2 className="font-semibold text-white">기본 설정</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold text-white">기본 설정</h2>
+          <button
+            onClick={() => setMgrOpen(true)}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-accent/40
+                       text-accent hover:bg-accent/10 transition-colors"
+          >
+            <UserPlus size={13} /> 매니저 관리
+            {managers.length > 0 && (
+              <span className="ml-1 text-[10px] bg-accent/20 text-accent rounded-full px-1.5 py-0.5 font-semibold">
+                {managers.length}
+              </span>
+            )}
+          </button>
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="label">매니저 역할</label>
@@ -350,46 +453,6 @@ export default function ModerationPage() {
           : <><Save size={16} /> {saving ? "저장 중..." : "변경사항 저장"}</>}
       </button>
 
-      {/* ── 개별 매니저 등록 ── */}
-      <div className="card space-y-4">
-        <h2 className="font-semibold text-white flex items-center gap-2">
-          <UserPlus size={16} className="text-accent" /> 개별 매니저 등록
-        </h2>
-        <p className="text-sm text-muted">역할이 없어도 특정 멤버에게 매니저 권한을 부여합니다.</p>
-        <div className="flex gap-2">
-          <div className="flex-1">
-            <MemberSearch guildId={guildId} value={newManager} onChange={setNewManager} placeholder="멤버 검색..." />
-          </div>
-          <button
-            onClick={addManager}
-            disabled={!newManager || addingMgr}
-            className="btn-primary shrink-0 self-end"
-          >
-            추가
-          </button>
-        </div>
-        {managers.length === 0 ? (
-          <p className="text-sm text-muted text-center py-4">등록된 매니저가 없습니다.</p>
-        ) : (
-          <div className="space-y-2">
-            {managers.map((m) => (
-              <div
-                key={m.user_id}
-                className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-bg border border-border"
-              >
-                <p className="text-sm font-medium text-white">{m.display_name}</p>
-                <button
-                  onClick={() => removeManager(m.user_id)}
-                  className="text-muted hover:text-red-400 transition-colors p-1"
-                  title="매니저 제거"
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 }

@@ -359,6 +359,58 @@ async def get_guild_verifications(
     return result
 
 
+# ── 콘텐츠 알림 설정 ────────────────────────────────────────────────────────
+
+class ContentNotifyUpdate(BaseModel):
+    notify_vod:       bool = False
+    notify_clip:      bool = False
+    notify_community: bool = False
+
+
+@router.get("/{guild_id}/content-notify")
+async def get_content_notify(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT notify_vod, notify_clip, notify_community FROM chzzk_subscriptions WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone()
+    if not row:
+        return {"notify_vod": False, "notify_clip": False, "notify_community": False}
+    return {
+        "notify_vod":       bool(row["notify_vod"]),
+        "notify_clip":      bool(row["notify_clip"]),
+        "notify_community": bool(row["notify_community"]),
+    }
+
+
+@router.put("/{guild_id}/content-notify")
+async def update_content_notify(
+    guild_id: str,
+    body: ContentNotifyUpdate,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT id FROM chzzk_subscriptions WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="먼저 치지직 채널을 등록해주세요.")
+    await db.execute(
+        """UPDATE chzzk_subscriptions
+           SET notify_vod=?, notify_clip=?, notify_community=?
+           WHERE guild_id=?""",
+        (int(body.notify_vod), int(body.notify_clip), int(body.notify_community), int(guild_id))
+    )
+    await db.commit()
+    return {"ok": True}
+
+
 # ── 디버그: 현재 라이브 상태 체크 ────────────────────────────────────────────
 @router.get("/debug/status")
 async def debug_status(user: dict = Depends(get_current_user)):

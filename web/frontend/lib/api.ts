@@ -169,5 +169,13 @@ export const api = {
       remove: (gid: string, tierId: number) =>
         request(`/api/chzzk/${gid}/follow-tiers/${tierId}`, { method: "DELETE" }),
     },
+    contentNotify: {
+      get:  (gid: string) =>
+        request<{ notify_vod: boolean; notify_clip: boolean; notify_community: boolean }>(
+          `/api/chzzk/${gid}/content-notify`
+        ),
+      save: (gid: string, data: { notify_vod: boolean; notify_clip: boolean; notify_community: boolean }) =>
+        request(`/api/chzzk/${gid}/content-notify`, { method: "PUT", body: JSON.stringify(data) }),
+    },
   },
 };
