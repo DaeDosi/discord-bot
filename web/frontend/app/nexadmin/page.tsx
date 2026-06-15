@@ -1,9 +1,9 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import {
   Bot, Server, Users, Radio, ShieldCheck, Search,
-  Plus, X, RefreshCw, LogIn, ChevronDown, ChevronUp,
+  Plus, X, RefreshCw, LogIn, ChevronDown, ChevronUp, LogOut,
 } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
@@ -55,10 +55,20 @@ interface FollowUser {
   user_id: number; user_name: string; tier_months: number; verified_at: number;
 }
 interface FollowStat {
-  guild_id: number; guild_name: string;
+  sub_id: number; guild_id: number; guild_name: string | null;
   chzzk_name: string; chzzk_image_url: string | null;
   follow_months_tier1: number; follow_months_tier2: number;
   users: FollowUser[];
+}
+interface GuildDetail {
+  id: string; name: string; icon: string | null;
+  owner_id: string | null; member_count: number; description: string | null;
+  chzzk: {
+    chzzk_channel_id: string; chzzk_name: string; chzzk_image_url: string | null;
+    discord_channel: number; notify_vod: number; notify_clip: number; notify_community: number;
+    is_live: number; streamer_access_token: string | null;
+  } | null;
+  verif_count: number;
 }
 interface SearchResult {
   channelId: string; channelName: string; channelImageUrl: string | null;
@@ -232,14 +242,165 @@ function AddChzzkModal({
   );
 }
 
-// ── 팔로우 현황 카드 ──────────────────────────────────────────────────────────
-function FollowStatCard({ stat }: { stat: FollowStat }) {
-  const [expanded, setExpanded] = useState(true);
-  const t1 = stat.follow_months_tier1;
-  const t2 = stat.follow_months_tier2;
+// ── 서버 상세 모달 ────────────────────────────────────────────────────────────
+function GuildDetailModal({ guildId, onClose, onLeft }: { guildId: string; onClose: () => void; onLeft: () => void }) {
+  const [detail, setDetail] = useState<GuildDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [leaving, setLeaving] = useState(false);
+
+  useEffect(() => {
+    adminFetch<GuildDetail>(`/api/admin/guilds/${guildId}`)
+      .then(setDetail)
+      .catch(() => setDetail(null))
+      .finally(() => setLoading(false));
+  }, [guildId]);
+
+  const leave = async () => {
+    if (!detail) return;
+    if (!confirm(`정말 "${detail.name}" 서버에서 나가시겠습니까?\n이 작업은 되돌릴 수 없습니다.`)) return;
+    setLeaving(true);
+    try {
+      await adminFetch(`/api/admin/guilds/${guildId}/leave`, { method: "DELETE" });
+      onLeft();
+      onClose();
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : "서버 나가기 실패");
+      setLeaving(false);
+    }
+  };
 
   return (
-    <div className="rounded-2xl border border-border overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-bg-card border border-border rounded-2xl w-full max-w-md shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="p-4 border-b border-border flex items-center justify-between">
+          <h3 className="font-semibold text-white text-sm">서버 상세 정보</h3>
+          <button onClick={onClose} className="text-muted hover:text-white"><X size={16} /></button>
+        </div>
+
+        {loading ? (
+          <p className="px-4 py-10 text-center text-muted animate-pulse">불러오는 중...</p>
+        ) : !detail ? (
+          <p className="px-4 py-10 text-center text-danger text-sm">정보를 가져올 수 없습니다.</p>
+        ) : (
+          <div className="p-4 space-y-4">
+            {/* 서버 헤더 */}
+            <div className="flex items-center gap-3">
+              {detail.icon
+                ? <Image src={`https://cdn.discordapp.com/icons/${detail.id}/${detail.icon}.png?size=128`} alt={detail.name} width={56} height={56} className="rounded-2xl shrink-0" />
+                : <div className="w-14 h-14 rounded-2xl bg-bg-hover flex items-center justify-center shrink-0"><Server size={22} className="text-muted" /></div>}
+              <div>
+                <p className="font-bold text-white text-base">{detail.name}</p>
+                {detail.description && <p className="text-xs text-muted mt-0.5 line-clamp-2">{detail.description}</p>}
+              </div>
+            </div>
+
+            {/* 기본 정보 */}
+            <div className="rounded-lg border border-border divide-y divide-border text-sm">
+              <div className="flex justify-between px-3 py-2">
+                <span className="text-muted">서버 ID</span>
+                <span className="font-mono text-xs text-fg select-all">{detail.id}</span>
+              </div>
+              <div className="flex justify-between px-3 py-2">
+                <span className="text-muted">멤버 수</span>
+                <span className="text-white font-medium">{detail.member_count.toLocaleString()}명</span>
+              </div>
+              <div className="flex justify-between px-3 py-2">
+                <span className="text-muted">치지직 인증</span>
+                <span className="text-white font-medium">{detail.verif_count}명</span>
+              </div>
+              {detail.owner_id && (
+                <div className="flex justify-between px-3 py-2">
+                  <span className="text-muted">오너 ID</span>
+                  <span className="font-mono text-xs text-fg select-all">{detail.owner_id}</span>
+                </div>
+              )}
+            </div>
+
+            {/* 치지직 구독 */}
+            {detail.chzzk && (
+              <div className="rounded-lg border border-chzzk/20 bg-chzzk/5 p-3 space-y-1.5 text-sm">
+                <p className="font-semibold text-chzzk text-xs uppercase tracking-wide mb-2">치지직 구독</p>
+                <div className="flex items-center gap-2">
+                  {detail.chzzk.chzzk_image_url
+                    ? <Image src={detail.chzzk.chzzk_image_url} alt={detail.chzzk.chzzk_name} width={28} height={28} className="rounded-full" />
+                    : <div className="w-7 h-7 rounded-full bg-bg-hover" />}
+                  <span className="font-medium text-white">{detail.chzzk.chzzk_name}</span>
+                  {detail.chzzk.is_live ? (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ color: "#03C75A", background: "rgba(3,199,90,0.15)" }}>LIVE</span>
+                  ) : null}
+                </div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs mt-1">
+                  <span className="text-muted">VOD 알림</span><span className={detail.chzzk.notify_vod ? "text-accent" : "text-muted"}>{detail.chzzk.notify_vod ? "ON" : "OFF"}</span>
+                  <span className="text-muted">클립 알림</span><span className={detail.chzzk.notify_clip ? "text-accent" : "text-muted"}>{detail.chzzk.notify_clip ? "ON" : "OFF"}</span>
+                  <span className="text-muted">커뮤니티 알림</span><span className={detail.chzzk.notify_community ? "text-accent" : "text-muted"}>{detail.chzzk.notify_community ? "ON" : "OFF"}</span>
+                  <span className="text-muted">스트리머 연동</span><span className={detail.chzzk.streamer_access_token ? "text-accent" : "text-muted"}>{detail.chzzk.streamer_access_token ? "연동됨" : "미연동"}</span>
+                </div>
+              </div>
+            )}
+
+            {/* 나가기 버튼 */}
+            <button onClick={leave} disabled={leaving}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-danger/10 hover:bg-danger/20 text-danger border border-danger/30 transition-colors disabled:opacity-50">
+              <LogOut size={14} /> {leaving ? "나가는 중..." : "이 서버에서 나가기"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── 서버 나가기 버튼 ──────────────────────────────────────────────────────────
+function LeaveGuildButton({ guildId, guildName, onLeft }: { guildId: string; guildName: string; onLeft: () => void }) {
+  const [leaving, setLeaving] = useState(false);
+
+  const leave = async () => {
+    if (!confirm(`정말 "${guildName}" 서버에서 나가시겠습니까?\n이 작업은 되돌릴 수 없습니다.`)) return;
+    setLeaving(true);
+    try {
+      await adminFetch(`/api/admin/guilds/${guildId}/leave`, { method: "DELETE" });
+      onLeft();
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : "서버 나가기 실패");
+    } finally { setLeaving(false); }
+  };
+
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); leave(); }}
+      disabled={leaving}
+      title="서버에서 나가기"
+      className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors disabled:opacity-40"
+    >
+      <LogOut size={14} />
+    </button>
+  );
+}
+
+// ── 팔로우 현황 카드 ──────────────────────────────────────────────────────────
+function FollowStatCard({ stat, onLeft, onSubDeleted }: { stat: FollowStat; onLeft: (guildId: number) => void; onSubDeleted: (subId: number) => void }) {
+  const [expanded, setExpanded] = useState(true);
+  const [deleting, setDeleting] = useState(false);
+  const t1 = stat.follow_months_tier1;
+  const t2 = stat.follow_months_tier2;
+  const guildName = stat.guild_name ?? `(알 수 없는 서버 ${stat.guild_id})`;
+  const isGone = !stat.guild_name;
+
+  const deleteSub = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm(`"${guildName}" 서버의 치지직 구독(${stat.chzzk_name})을 삭제하시겠습니까?`)) return;
+    setDeleting(true);
+    try {
+      await adminFetch(`/api/admin/chzzk/${stat.sub_id}`, { method: "DELETE" });
+      onSubDeleted(stat.sub_id);
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : "삭제 실패");
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div className={`rounded-2xl border overflow-hidden ${isGone ? "border-danger/30" : "border-border"}`}>
       <button
         onClick={() => setExpanded((v) => !v)}
         className="w-full flex items-center gap-3 px-4 py-3 bg-bg-card/60 hover:bg-bg-hover/40 transition-colors text-left"
@@ -249,11 +410,22 @@ function FollowStatCard({ stat }: { stat: FollowStat }) {
           : <div className="w-9 h-9 rounded-full bg-bg-hover shrink-0 flex items-center justify-center"><Radio size={14} className="text-muted" /></div>}
         <div className="flex-1 min-w-0">
           <p className="font-semibold text-white text-sm">{stat.chzzk_name}</p>
-          <p className="text-xs text-muted">{stat.guild_name} <span className="font-mono">({stat.guild_id})</span></p>
+          <p className={`text-xs ${isGone ? "text-danger/70" : "text-muted"}`}>
+            {guildName} <span className="font-mono">({stat.guild_id})</span>
+          </p>
         </div>
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           <span className="text-xs text-muted">{stat.users.length}명 인증</span>
           <span className="text-xs text-muted/60">기준: {t1}개월 / {t2}개월</span>
+          {isGone ? (
+            <button onClick={deleteSub} disabled={deleting}
+                    title="구독 삭제 (봇이 없는 서버)"
+                    className="p-1.5 rounded-lg text-danger hover:bg-danger/10 transition-colors disabled:opacity-40">
+              <X size={14} />
+            </button>
+          ) : (
+            <LeaveGuildButton guildId={String(stat.guild_id)} guildName={guildName} onLeft={() => onLeft(stat.guild_id)} />
+          )}
           {expanded ? <ChevronUp size={16} className="text-muted" /> : <ChevronDown size={16} className="text-muted" />}
         </div>
       </button>
@@ -370,6 +542,16 @@ export default function AdminPage() {
   const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow">("guilds");
   const [refreshing, setRefreshing]   = useState(false);
   const [selectedVerif, setSelectedVerif] = useState<VerifUser | null>(null);
+  const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null);
+
+  const leaveGuild = useCallback((guildId: string) => {
+    setGuilds((prev) => prev.filter((g) => g.id !== guildId));
+    setFollowStats((prev) => prev ? prev.filter((s) => String(s.guild_id) !== guildId) : prev);
+  }, []);
+
+  const deleteFollowSub = useCallback((subId: number) => {
+    setFollowStats((prev) => prev ? prev.filter((s) => s.sub_id !== subId) : prev);
+  }, []);
 
   const loadAll = async () => {
     setRefreshing(true);
@@ -450,6 +632,13 @@ export default function AdminPage() {
       {showAdd && (
         <AddChzzkModal guilds={guilds} onClose={() => setShowAdd(false)} onAdded={loadAll} />
       )}
+      {selectedGuildId && (
+        <GuildDetailModal
+          guildId={selectedGuildId}
+          onClose={() => setSelectedGuildId(null)}
+          onLeft={() => { leaveGuild(selectedGuildId); setSelectedGuildId(null); }}
+        />
+      )}
       {selectedVerif && (
         <VerifDetailModal
           verif={selectedVerif}
@@ -516,11 +705,14 @@ export default function AdminPage() {
                   <th className="text-left px-4 py-3 text-muted font-medium">서버명</th>
                   <th className="text-left px-4 py-3 text-muted font-medium">서버 ID</th>
                   <th className="text-left px-4 py-3 text-muted font-medium">치지직</th>
+                  <th className="px-4 py-3 w-10"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {guilds.map((g, i) => (
-                  <tr key={g.id} className="hover:bg-bg-hover/40 transition-colors">
+                  <tr key={g.id}
+                      onClick={() => setSelectedGuildId(g.id)}
+                      className="hover:bg-bg-hover/40 transition-colors cursor-pointer">
                     <td className="px-4 py-3 text-muted text-xs">{i + 1}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
@@ -534,10 +726,13 @@ export default function AdminPage() {
                         ? <span className="text-xs px-2 py-0.5 rounded-full bg-chzzk/10 text-chzzk border border-chzzk/20">{g.chzzk_name}</span>
                         : <span className="text-xs text-muted">—</span>}
                     </td>
+                    <td className="px-2 py-3 text-right">
+                      <LeaveGuildButton guildId={g.id} guildName={g.name} onLeft={() => leaveGuild(g.id)} />
+                    </td>
                   </tr>
                 ))}
                 {guilds.length === 0 && (
-                  <tr><td colSpan={4} className="px-4 py-8 text-center text-muted">서버 없음</td></tr>
+                  <tr><td colSpan={5} className="px-4 py-8 text-center text-muted">서버 없음</td></tr>
                 )}
               </tbody>
             </table>
@@ -609,7 +804,9 @@ export default function AdminPage() {
             ) : (
               <div className="space-y-3">
                 {followStats.map((stat) => (
-                  <FollowStatCard key={stat.guild_id} stat={stat} />
+                  <FollowStatCard key={stat.sub_id} stat={stat}
+                    onLeft={(id) => leaveGuild(String(id))}
+                    onSubDeleted={deleteFollowSub} />
                 ))}
               </div>
             )}

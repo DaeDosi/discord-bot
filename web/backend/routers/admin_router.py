@@ -256,7 +256,7 @@ async def follow_stats(user: dict = Depends(_require_owner)):
     db = await get_db()
 
     subs = await (await db.execute(
-        """SELECT guild_id, chzzk_name, chzzk_image_url,
+        """SELECT id, guild_id, chzzk_name, chzzk_image_url,
                   follow_months_tier1, follow_months_tier2
            FROM chzzk_subscriptions"""
     )).fetchall()
@@ -295,8 +295,9 @@ async def follow_stats(user: dict = Depends(_require_owner)):
 
     return [
         {
+            "sub_id":            s["id"],
             "guild_id":          s["guild_id"],
-            "guild_name":        guild_name_map.get(str(s["guild_id"]), str(s["guild_id"])),
+            "guild_name":        guild_name_map.get(str(s["guild_id"])),
             "chzzk_name":        s["chzzk_name"],
             "chzzk_image_url":   s["chzzk_image_url"],
             "follow_months_tier1": s["follow_months_tier1"] or 1,
@@ -368,4 +369,57 @@ async def admin_delete_chzzk(sub_id: int, user: dict = Depends(_require_owner)):
     db = await get_db()
     await db.execute("DELETE FROM chzzk_subscriptions WHERE id=?", (sub_id,))
     await db.commit()
+    return {"ok": True}
+
+
+@router.get("/guilds/{guild_id}")
+async def guild_detail(guild_id: str, user: dict = Depends(_require_owner)):
+    db = await get_db()
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            f"{_DISCORD}/guilds/{guild_id}",
+            headers={"Authorization": f"Bot {_BOT_TOKEN}"},
+            params={"with_counts": "true"},
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail="길드 정보를 가져올 수 없습니다.")
+    g = resp.json()
+
+    chzzk_row = await (await db.execute(
+        """SELECT chzzk_channel_id, chzzk_name, chzzk_image_url,
+                  discord_channel, notify_vod, notify_clip, notify_community,
+                  is_live, streamer_access_token
+           FROM chzzk_subscriptions WHERE guild_id=?""",
+        (int(guild_id),)
+    )).fetchone()
+
+    verif_count = (await (await db.execute(
+        "SELECT COUNT(*) FROM chzzk_verifications WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone())[0]
+
+    return {
+        "id":           g["id"],
+        "name":         g["name"],
+        "icon":         g.get("icon"),
+        "owner_id":     g.get("owner_id"),
+        "member_count": g.get("approximate_member_count", 0),
+        "description":  g.get("description"),
+        "chzzk": dict(chzzk_row) if chzzk_row else None,
+        "verif_count": verif_count,
+    }
+
+
+@router.delete("/guilds/{guild_id}/leave")
+async def leave_guild(guild_id: str, user: dict = Depends(_require_owner)):
+    global _guilds_cache, _guilds_cache_ts
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.delete(
+            f"{_DISCORD}/users/@me/guilds/{guild_id}",
+            headers={"Authorization": f"Bot {_BOT_TOKEN}"},
+        )
+    if resp.status_code not in (200, 204):
+        raise HTTPException(status_code=resp.status_code, detail=f"Discord API 오류: {resp.text[:200]}")
+    _guilds_cache = []
+    _guilds_cache_ts = 0.0
     return {"ok": True}

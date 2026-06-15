@@ -140,7 +140,9 @@ async def _get_streamer_token(chzzk_id: str) -> str | None:
         db  = await get_db()
         sub = await (await db.execute(
             "SELECT streamer_access_token, streamer_refresh_token, streamer_token_expires_at "
-            "FROM chzzk_subscriptions WHERE chzzk_channel_id=? LIMIT 1",
+            "FROM chzzk_subscriptions "
+            "WHERE chzzk_channel_id=? AND streamer_access_token IS NOT NULL "
+            "ORDER BY streamer_token_expires_at DESC LIMIT 1",
             (chzzk_id,)
         )).fetchone()
         if not sub or not sub["streamer_access_token"]:
