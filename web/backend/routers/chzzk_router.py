@@ -327,11 +327,14 @@ async def get_guild_verifications(
 ):
     db = await get_db()
     rows = await (await db.execute(
-        """SELECT user_id, tier_months, follow_date, follow_days, verified_at
-           FROM chzzk_verifications WHERE guild_id=?
+        """SELECT v.user_id, v.tier_months, v.follow_date, v.follow_days, v.verified_at
+           FROM chzzk_verifications v
+           LEFT JOIN chzzk_subscriptions s ON s.guild_id = v.guild_id
+           WHERE v.guild_id=?
+             AND (s.chzzk_channel_id IS NULL OR v.chzzk_channel_id != s.chzzk_channel_id)
            ORDER BY
-               CASE WHEN follow_days >= 0 THEN follow_days ELSE -1 END DESC,
-               verified_at DESC""",
+               CASE WHEN v.follow_days >= 0 THEN v.follow_days ELSE -1 END DESC,
+               v.verified_at DESC""",
         (int(guild_id),)
     )).fetchall()
 

@@ -338,20 +338,10 @@ function VerifDetailModal({
             <span className="font-mono text-xs text-fg select-all">{verif.guild_id}</span>
             <span className="text-muted">팔로우 여부</span>
             <span className={verif.is_following ? "text-accent font-semibold" : "text-danger font-semibold"}>
-              {verif.is_following ? "팔로우 중" : "팔로우 안 함"}
+              {verif.is_following
+                ? `팔로우 중 (${verif.follow_days}일 / ${verif.tier_months}개월)`
+                : "팔로우 안 함"}
             </span>
-            {verif.is_following && (
-              <>
-                <span className="text-muted">팔로우 시작일</span>
-                <span className="text-fg">
-                  {verif.follow_date ? new Date(verif.follow_date).toLocaleDateString("ko-KR") : "—"}
-                </span>
-                <span className="text-muted">팔로우 경과</span>
-                <span className="text-accent font-semibold">
-                  {verif.follow_days}일 ({verif.tier_months}개월)
-                </span>
-              </>
-            )}
             <span className="text-muted">인증 일시</span>
             <span className="text-fg text-xs">{new Date(verif.verified_at * 1000).toLocaleString("ko-KR")}</span>
           </div>
@@ -572,8 +562,6 @@ export default function AdminPage() {
                       <th className="text-left px-4 py-3 text-muted font-medium">유저명</th>
                       <th className="text-left px-4 py-3 text-muted font-medium hidden md:table-cell">유저 ID</th>
                       <th className="text-left px-4 py-3 text-muted font-medium">서버</th>
-                      <th className="text-left px-4 py-3 text-muted font-medium">팔로우 시작일</th>
-                      <th className="text-left px-4 py-3 text-muted font-medium">경과</th>
                       <th className="text-left px-4 py-3 text-muted font-medium hidden lg:table-cell">인증 일시</th>
                     </tr>
                   </thead>
@@ -587,26 +575,13 @@ export default function AdminPage() {
                         <td className="px-4 py-3 text-white font-medium">{v.user_name}</td>
                         <td className="px-4 py-3 font-mono text-xs text-muted select-all hidden md:table-cell">{v.user_id}</td>
                         <td className="px-4 py-3 text-sm text-muted">{v.guild_name}</td>
-                        <td className="px-4 py-3 text-xs text-muted">
-                          {v.follow_date
-                            ? new Date(v.follow_date).toLocaleDateString("ko-KR")
-                            : "—"}
-                        </td>
-                        <td className="px-4 py-3">
-                          {v.is_following
-                            ? <span className="text-sm font-semibold text-accent">
-                                {v.follow_days}일
-                                <span className="text-xs text-muted ml-1">({v.tier_months}개월)</span>
-                              </span>
-                            : <span className="text-xs text-muted">—</span>}
-                        </td>
                         <td className="px-4 py-3 text-xs text-muted hidden lg:table-cell">
                           {new Date(v.verified_at * 1000).toLocaleString("ko-KR")}
                         </td>
                       </tr>
                     ))}
                     {verifUsers.length === 0 && (
-                      <tr><td colSpan={6} className="px-4 py-8 text-center text-muted">인증한 유저 없음</td></tr>
+                      <tr><td colSpan={4} className="px-4 py-8 text-center text-muted">인증한 유저 없음</td></tr>
                     )}
                   </tbody>
                 </table>

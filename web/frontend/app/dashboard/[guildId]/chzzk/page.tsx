@@ -303,7 +303,6 @@ export default function ChzzkPage() {
                       <th className="text-left px-2 py-2 text-muted font-medium text-xs">유저명</th>
                       <th className="text-left px-2 py-2 text-muted font-medium text-xs">팔로우 시작일</th>
                       <th className="text-left px-2 py-2 text-muted font-medium text-xs">경과</th>
-                      <th className="text-left px-2 py-2 text-muted font-medium text-xs">인증 일시</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -335,9 +334,6 @@ export default function ChzzkPage() {
                             ) : (
                               <span className="text-xs text-muted">—</span>
                             )}
-                          </td>
-                          <td className="px-2 py-2.5 text-xs text-muted">
-                            {new Date(v.verified_at * 1000).toLocaleString("ko-KR")}
                           </td>
                         </tr>
                       );
