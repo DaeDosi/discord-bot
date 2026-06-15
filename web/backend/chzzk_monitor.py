@@ -188,62 +188,42 @@ async def _get_streamer_token(chzzk_id: str) -> str | None:
 
 
 async def _fetch_latest_post(chzzk_id: str) -> dict | None:
-    client_id = os.getenv("CHZZK_CLIENT_ID", "")
-    token     = await _get_streamer_token(chzzk_id)
-
-    if not token:
-        _log(f"커뮤니티: 스트리머 OAuth 토큰 없음 ({chzzk_id}) — 대시보드에서 치지직 계정 연동 필요")
-        return None
-
-    auth_headers = {
-        "Authorization": f"Bearer {token}",
-        "Client-Id":     client_id,
-        "Accept":        "application/json",
-        "User-Agent":    "Mozilla/5.0",
+    # ── 1차 시도: NNG 공개 API (쿠키 불필요, 브라우저 헤더 스푸핑) ────────────
+    # 참조: github.com/azestkingscrown/Chzzk-Streammer-Noti-Discord-Bot
+    nng_url = (
+        "https://apis.naver.com/nng_main/nng_comment_api/v1"
+        f"/type/CHANNEL_POST/id/{chzzk_id}/comments"
+    )
+    nng_headers = {
+        "User-Agent":    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Content-Type":  "application/xml",
+        "Referer":       f"https://chzzk.naver.com/{chzzk_id}/community",
+        "Origin":        "https://chzzk.naver.com",
+        "Accept":        "application/json, text/plain, */*",
+        "Accept-Language": "ko-KR,ko;q=0.9",
     }
+    nng_params = {"limit": 1, "offset": 0, "orderType": "DESC", "pagingType": "PAGE"}
 
-    # Open API (스트리머 Bearer 토큰) + 비공식 서비스 API 순서로 시도
-    candidates = [
-        # ── Open API: 자신의 채널 게시글 ──────────────────────────────
-        ("https://openapi.chzzk.naver.com/open/v1/channels/me/community-posts",
-         {"size": 1, "page": 0}),
-        ("https://openapi.chzzk.naver.com/open/v1/channels/me/community/posts",
-         {"size": 1, "page": 0}),
-        (f"https://openapi.chzzk.naver.com/open/v1/channels/{chzzk_id}/community-posts",
-         {"size": 1, "page": 0}),
-        (f"https://openapi.chzzk.naver.com/open/v1/channels/{chzzk_id}/community/posts",
-         {"size": 1, "page": 0}),
-        # ── 비공식 서비스 API ─────────────────────────────────────────
-        (f"https://api.chzzk.naver.com/service/v1/channels/{chzzk_id}/community-posts",
-         {"sortType": "RECENT", "page": 0, "size": 1}),
-        (f"https://api.chzzk.naver.com/service/v2/channels/{chzzk_id}/community-posts",
-         {"sortType": "RECENT", "page": 0, "size": 1}),
-    ]
-
-    async with httpx.AsyncClient(headers=auth_headers, timeout=15) as client:
-        for url, params in candidates:
-            try:
-                resp = await client.get(url, params=params)
-                label = url.replace("https://", "").split("?")[0]
-                if resp.status_code != 200:
-                    snippet = resp.text[:120].replace("\n", " ")
-                    _log(f"커뮤니티 {label} → {resp.status_code} {snippet}")
-                    continue
-                data  = resp.json()
-                cont  = data.get("content", {})
-                posts = (
-                    cont.get("data") or cont.get("posts") or cont.get("articles")
-                    or cont.get("communityPosts") or cont.get("items")
-                    if isinstance(cont, dict) else cont
-                ) or []
-                if posts:
-                    post    = posts[0]
-                    post_id = post.get("postNo") or post.get("communityPostNo") or post.get("id")
-                    _log(f"커뮤니티 성공! url={label} postNo={post_id}")
-                    return post
-                _log(f"커뮤니티 {label} → 200 but 게시글 없음. keys={list(data.keys())}")
-            except Exception as e:
-                _log(f"커뮤니티 요청 오류 ({url}): {e}")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(nng_url, params=nng_params, headers=nng_headers)
+        _log(f"커뮤니티 NNG → HTTP {resp.status_code} {resp.text[:150].replace(chr(10), ' ')}")
+        if resp.status_code == 200:
+            data     = resp.json()
+            comments = data.get("content", {}).get("comments", {}).get("data", [])
+            if comments:
+                c = comments[0]
+                return {
+                    "commentId":       c["comment"].get("commentId"),
+                    "content":         c["comment"].get("content", ""),
+                    "userNickname":    c["user"].get("userNickname", ""),
+                    "profileImageUrl": c["user"].get("profileImageUrl"),
+                    "attaches":        c["comment"].get("attaches"),
+                }
+            _log(f"커뮤니티 NNG → 200 but 게시글 없음")
+            return None
+    except Exception as e:
+        _log(f"커뮤니티 NNG 오류: {e}")
 
     _log(f"커뮤니티: 모든 엔드포인트 실패 ({chzzk_id})")
     return None
@@ -398,7 +378,6 @@ async def _send_post_notification(row, post: dict):
     name    = row["chzzk_name"] or "알 수 없음"
     post_no = str(post.get("postNo") or post.get("communityPostNo") or post.get("commentId") or post.get("id") or "")
 
-    # content 필드가 문자열 (게시글 본문)
     content_text = post.get("content") or ""
     if isinstance(content_text, dict):
         title = content_text.get("title") or content_text.get("text") or "새 커뮤니티 게시글"
@@ -407,6 +386,7 @@ async def _send_post_notification(row, post: dict):
     else:
         title = "새 커뮤니티 게시글"
 
+    author_nick = post.get("userNickname") or name
     channel_id_str = row["chzzk_channel_id"]
     post_url = f"https://chzzk.naver.com/{channel_id_str}/community/detail/{post_no}" if post_no else ""
     now_iso  = datetime.now(timezone.utc).isoformat()
@@ -414,10 +394,18 @@ async def _send_post_notification(row, post: dict):
     embed: dict = {
         "title":       title,
         "url":         post_url,
-        "description": f"**{name}**님이 새 커뮤니티 게시글을 작성했습니다.",
+        "description": f"**{author_nick}**님이 새 커뮤니티 게시글을 작성했습니다.",
         "color":       0x03C75A,
         "timestamp":   now_iso,
+        "author":      {"name": name},
     }
+
+    # 첨부 이미지 (NNG attaches 필드)
+    attaches = post.get("attaches")
+    if attaches and isinstance(attaches, list) and attaches:
+        img_url = attaches[0].get("attachValue")
+        if img_url:
+            embed["image"] = {"url": img_url}
 
     ch_id = row["community_channel"] or row["discord_channel"]
     err = await _send_discord_message(ch_id, "", embed, "게시글 바로가기")
