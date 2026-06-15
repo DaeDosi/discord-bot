@@ -77,38 +77,31 @@ async def _fetch_latest_clip(chzzk_id: str) -> dict | None:
 
 
 async def _fetch_latest_post(chzzk_id: str) -> dict | None:
-    # 치지직 커뮤니티 = comment-groups API (objectType=CHANNEL_POST, objectId=channelId)
-    candidates: list[tuple[str, dict]] = [
-        (f"{CHZZK_API}/nng_main/v1/comment-groups/CHANNEL_POST/{chzzk_id}/comments", {"size": 1, "sortType": "NEWEST"}),
-        (f"{CHZZK_API}/nng_main/v2/comment-groups/CHANNEL_POST/{chzzk_id}/comments", {"size": 1, "sortType": "NEWEST"}),
-        (f"{CHZZK_API}/nng_main/v1/comment-groups/CHANNEL_POST/{chzzk_id}/comments", {"size": 1}),
-    ]
+    # 치지직 커뮤니티 = apis.naver.com nng_comment_api
+    url = (
+        f"https://apis.naver.com/nng_main/nng_comment_api/v1"
+        f"/type/CHANNEL_POST/id/{chzzk_id}/comments"
+    )
+    params = {"limit": 1, "offset": 0, "orderType": "DESC", "pagingType": "PAGE"}
 
     async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=15) as client:
-        for url, params in candidates:
-            try:
-                resp = await client.get(url, params=params)
-                path = url.replace(CHZZK_API, "")
-                _log(f"커뮤니티 시도: {path} → HTTP {resp.status_code}")
-                if resp.status_code != 200:
-                    continue
-                data = resp.json()
-                # 응답: content.comments.data[]
-                comments_data = (
-                    data.get("content", {}).get("comments", {}).get("data", [])
-                )
-                if comments_data:
-                    post = comments_data[0]
-                    comment = post.get("comment", post)
-                    _log(f"커뮤니티 성공! commentId={comment.get('commentId')}, content={str(comment.get('content',''))[:50]}")
-                    return comment
-                else:
-                    _log(f"커뮤니티 200이지만 게시글 없음")
-            except Exception as e:
-                _log(f"커뮤니티 요청 오류: {e}")
-
-    _log(f"커뮤니티 모든 엔드포인트 실패 ({chzzk_id})")
-    return None
+        try:
+            resp = await client.get(url, params=params)
+            _log(f"커뮤니티 API → HTTP {resp.status_code}")
+            if resp.status_code != 200:
+                _log(f"커뮤니티 오류 응답: {resp.text[:300]}")
+                return None
+            data = resp.json()
+            comments_data = data.get("content", {}).get("comments", {}).get("data", [])
+            if not comments_data:
+                _log(f"커뮤니티 게시글 없음")
+                return None
+            comment = comments_data[0].get("comment", comments_data[0])
+            _log(f"커뮤니티 성공! commentId={comment.get('commentId')}, content={str(comment.get('content',''))[:50]}")
+            return comment
+        except Exception as e:
+            _log(f"커뮤니티 요청 오류: {e}")
+            return None
 
 
 # ── Discord 메시지 전송 ──────────────────────────────────────────────────────
