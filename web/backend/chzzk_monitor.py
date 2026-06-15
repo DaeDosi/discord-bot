@@ -79,84 +79,55 @@ async def _fetch_latest_clip(chzzk_id: str) -> dict | None:
 
 
 async def _fetch_latest_post(chzzk_id: str) -> dict | None:
-    # Step 1: try undocumented Chzzk API (same domain, no auth needed)
-    for path in [
-        f"/service/v2/channels/{chzzk_id}/community/posts",
-        f"/service/v1/channels/{chzzk_id}/community/posts",
-        f"/service/v1/channels/{chzzk_id}/community",
-    ]:
-        url = f"{CHZZK_API}{path}"
-        async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=10) as client:
-            try:
-                resp = await client.get(url, params={"size": 1, "page": 0})
-                if resp.status_code == 200:
-                    data = resp.json().get("content", {})
-                    items = data.get("data", data.get("posts", []))
-                    if items:
-                        post = items[0]
-                        _log(f"커뮤니티 API 성공 ({path}): {post.get('postNo') or post.get('commentId')}")
-                        return post
-            except Exception:
-                pass
-
-    # Step 2: scrape community HTML — publicly accessible without login
-    page_url = f"https://chzzk.naver.com/{chzzk_id}/community"
-    html_headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/125.0.0.0 Safari/537.36"
-        ),
-        "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
-    }
-    async with httpx.AsyncClient(headers=html_headers, timeout=15, follow_redirects=True) as client:
+    # Naver NNG API requires *.naver.com session cookies.
+    # We get them by visiting naver.com + chzzk.naver.com first in the same
+    # httpx session — those set Domain=.naver.com cookies that carry over to
+    # apis.naver.com automatically.
+    browser_ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    )
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=15,
+        headers={"User-Agent": browser_ua, "Accept-Language": "ko-KR,ko;q=0.9"},
+    ) as client:
         try:
-            resp = await client.get(page_url)
-            if resp.status_code != 200:
-                _log(f"커뮤니티 HTML fetch 오류: HTTP {resp.status_code}")
-                return None
-            html = resp.text
-
-            # Try __NEXT_DATA__ (SSR embedded JSON)
-            nd_match = re.search(
-                r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-                html, re.DOTALL,
+            # 1) warm-up: acquire anonymous .naver.com cookies (NNB, nid_inf …)
+            await client.get("https://www.naver.com/", headers={"Accept": "text/html"})
+            # 2) visit Chzzk community page to pick up any chzzk-specific cookies
+            await client.get(
+                f"https://chzzk.naver.com/{chzzk_id}/community",
+                headers={"Accept": "text/html"},
             )
-            if nd_match:
-                try:
-                    nd = _json.loads(nd_match.group(1))
-                    queries = (
-                        nd.get("props", {})
-                          .get("pageProps", {})
-                          .get("dehydratedState", {})
-                          .get("queries", [])
-                    )
-                    for q in queries:
-                        qdata = q.get("state", {}).get("data", {})
-                        pages = qdata.get("pages", [qdata])
-                        for page in pages:
-                            for key in ("data", "posts", "content", "list", "items"):
-                                items = page.get(key) if isinstance(page, dict) else None
-                                if items and isinstance(items, list):
-                                    post = items[0]
-                                    if post.get("postNo") or post.get("commentId"):
-                                        _log(f"커뮤니티 __NEXT_DATA__ 성공: {post.get('postNo') or post.get('commentId')}")
-                                        return post
-                except Exception as e:
-                    _log(f"커뮤니티 __NEXT_DATA__ 파싱 오류: {e}")
-
-            # Fallback: find /community/detail/{id} links in HTML
-            ids = re.findall(rf'/{re.escape(chzzk_id)}/community/detail/(\d+)', html)
-            if ids:
-                post_no = ids[0]
-                _log(f"커뮤니티 링크 스크래핑 성공: postNo={post_no}")
-                return {"commentId": int(post_no)}
-
-            _log("커뮤니티 게시글 발견 실패 (HTML에 링크 없음 — CSR 페이지일 수 있음)")
-            return None
+            # 3) call NNG API — session now carries .naver.com cookies
+            api_url = (
+                "https://apis.naver.com/nng_main/nng_comment_api/v1"
+                f"/type/CHANNEL_POST/id/{chzzk_id}/comments"
+            )
+            params = {"limit": 1, "offset": 0, "orderType": "DESC", "pagingType": "PAGE"}
+            resp = await client.get(api_url, params=params, headers={
+                "Accept":  "application/json",
+                "Origin":  "https://chzzk.naver.com",
+                "Referer": f"https://chzzk.naver.com/{chzzk_id}/community",
+            })
+            _log(f"커뮤니티 API → HTTP {resp.status_code}")
+            if resp.status_code != 200:
+                _log(f"커뮤니티 오류: {resp.text[:200]}")
+                return None
+            data = resp.json()
+            comments_data = (
+                data.get("content", {}).get("comments", {}).get("data", [])
+            )
+            if not comments_data:
+                _log("커뮤니티 게시글 없음")
+                return None
+            comment = comments_data[0].get("comment", comments_data[0])
+            _log(f"커뮤니티 성공! commentId={comment.get('commentId')}")
+            return comment
         except Exception as e:
-            _log(f"커뮤니티 HTML 오류: {e}")
+            _log(f"커뮤니티 오류: {e}")
             return None
 
 
