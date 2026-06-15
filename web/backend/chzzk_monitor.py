@@ -479,7 +479,7 @@ async def _check_once():
             now_live = bool(info.get("openLive", False))
             was_live = bool(row["is_live"])
 
-            _log(f"  {name}: DB={was_live} openLive={now_live}")
+            _log(f"  {name}: DB={was_live} openLive={now_live} | vod={bool(row['notify_vod'])} clip={bool(row['notify_clip'])} community={bool(row['notify_community'])}")
 
             if now_live and not was_live:
                 detail = await _fetch_live_detail(row["chzzk_channel_id"]) or {}
