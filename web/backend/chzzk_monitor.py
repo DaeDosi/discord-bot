@@ -77,14 +77,11 @@ async def _fetch_latest_clip(chzzk_id: str) -> dict | None:
 
 
 async def _fetch_latest_post(chzzk_id: str) -> dict | None:
-    # service/ 경로는 커뮤니티 API 없음 → nng_main 내부 경로 시도
+    # 치지직 커뮤니티 = comment-groups API (objectType=CHANNEL_POST, objectId=channelId)
     candidates: list[tuple[str, dict]] = [
-        (f"{CHZZK_API}/nng_main/v1/channels/{chzzk_id}/community-boards",         {"size": 1}),
-        (f"{CHZZK_API}/nng_main/v2/channels/{chzzk_id}/community-posts",           {"sortType": "RECENT", "size": 1}),
-        (f"{CHZZK_API}/nng_main/v1/channels/{chzzk_id}/posts",                    {"sortType": "RECENT", "size": 1}),
-        (f"{CHZZK_API}/nng_main/v2/community-boards/{chzzk_id}/articles",          {"size": 1, "page": 0}),
-        (f"{CHZZK_API}/nng_main/v1/community-boards/{chzzk_id}/articles",          {"size": 1, "page": 0}),
-        (f"{CHZZK_API}/manage/v1/channels/{chzzk_id}/posts",                       {"sortType": "RECENT", "size": 1}),
+        (f"{CHZZK_API}/nng_main/v1/comment-groups/CHANNEL_POST/{chzzk_id}/comments", {"size": 1, "sortType": "NEWEST"}),
+        (f"{CHZZK_API}/nng_main/v2/comment-groups/CHANNEL_POST/{chzzk_id}/comments", {"size": 1, "sortType": "NEWEST"}),
+        (f"{CHZZK_API}/nng_main/v1/comment-groups/CHANNEL_POST/{chzzk_id}/comments", {"size": 1}),
     ]
 
     async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=15) as client:
@@ -96,25 +93,19 @@ async def _fetch_latest_post(chzzk_id: str) -> dict | None:
                 if resp.status_code != 200:
                     continue
                 data = resp.json()
-                content = data.get("content", {})
-                if isinstance(content, list):
-                    posts = content
-                elif isinstance(content, dict):
-                    posts = (
-                        content.get("data")
-                        or content.get("posts")
-                        or content.get("articles")
-                        or []
-                    )
+                # 응답: content.comments.data[]
+                comments_data = (
+                    data.get("content", {}).get("comments", {}).get("data", [])
+                )
+                if comments_data:
+                    post = comments_data[0]
+                    comment = post.get("comment", post)
+                    _log(f"커뮤니티 성공! commentId={comment.get('commentId')}, content={str(comment.get('content',''))[:50]}")
+                    return comment
                 else:
-                    posts = []
-                if posts:
-                    _log(f"커뮤니티 성공! path={path}, post keys={list(posts[0].keys())}")
-                    return posts[0]
-                else:
-                    _log(f"커뮤니티 200이지만 게시글 없음, content keys={list(content.keys()) if isinstance(content, dict) else type(content)}, raw={str(data)[:300]}")
+                    _log(f"커뮤니티 200이지만 게시글 없음")
             except Exception as e:
-                _log(f"커뮤니티 요청 오류 ({url}): {e}")
+                _log(f"커뮤니티 요청 오류: {e}")
 
     _log(f"커뮤니티 모든 엔드포인트 실패 ({chzzk_id})")
     return None
@@ -267,25 +258,19 @@ async def _send_clip_notification(row, clip: dict):
 
 async def _send_post_notification(row, post: dict):
     name    = row["chzzk_name"] or "알 수 없음"
-    post_no = (
-        post.get("postNo")
-        or post.get("communityPostNo")
-        or post.get("articleId")
-        or post.get("no")
-        or post.get("id")
-        or ""
-    )
-    # 제목 추출 (content 필드 구조 다양)
-    content_data = post.get("content") or post.get("title") or ""
-    if isinstance(content_data, dict):
-        title = content_data.get("title") or content_data.get("text") or "새 커뮤니티 게시글"
-    elif isinstance(content_data, str):
-        title = content_data[:80] + ("..." if len(content_data) > 80 else "")
+    post_no = str(post.get("commentId") or post.get("postNo") or post.get("id") or "")
+
+    # content 필드가 문자열 (게시글 본문)
+    content_text = post.get("content") or ""
+    if isinstance(content_text, dict):
+        title = content_text.get("title") or content_text.get("text") or "새 커뮤니티 게시글"
+    elif isinstance(content_text, str) and content_text:
+        title = content_text[:80] + ("..." if len(content_text) > 80 else "")
     else:
-        title = post.get("subject") or "새 커뮤니티 게시글"
+        title = "새 커뮤니티 게시글"
 
     channel_id_str = row["chzzk_channel_id"]
-    post_url = f"https://chzzk.naver.com/community/{channel_id_str}/post/{post_no}" if post_no else ""
+    post_url = f"https://chzzk.naver.com/{channel_id_str}/community/detail/{post_no}" if post_no else ""
     now_iso  = datetime.now(timezone.utc).isoformat()
 
     embed: dict = {
@@ -423,23 +408,21 @@ async def _check_once():
                     post = await _fetch_latest_post(row["chzzk_channel_id"])
                     if post:
                         post_id = str(
-                            post.get("postNo")
-                            or post.get("communityPostNo")
-                            or post.get("articleId")
-                            or post.get("no")
+                            post.get("commentId")
+                            or post.get("postNo")
                             or post.get("id")
                             or ""
                         )
                         if post_id:
-                            if row["last_post_id"] and post_id != row["last_post_id"]:
+                            if row["last_post_id"] and post_id != str(row["last_post_id"]):
                                 await _send_post_notification(row, post)
-                            if post_id != (row["last_post_id"] or ""):
+                            if post_id != str(row["last_post_id"] or ""):
                                 await db.execute(
                                     "UPDATE chzzk_subscriptions SET last_post_id=? WHERE id=?",
                                     (post_id, row["id"]),
                                 )
                         else:
-                            _log(f"  커뮤니티 post_id 없음 ({name}), keys={list(post.keys())}")
+                            _log(f"  커뮤니티 post_id 없음 ({name})")
                 except Exception as e:
                     _log(f"  커뮤니티 체크 오류 ({name}): {e}")
 
