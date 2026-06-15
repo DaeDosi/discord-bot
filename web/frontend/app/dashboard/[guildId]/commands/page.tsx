@@ -37,7 +37,7 @@ const CATEGORIES: Category[] = [
     ],
   },
   {
-    label: "레벨링",
+    label: "레벨업",
     color: "#FEE75C",
     cmds: [
       { name: "/랭크",    desc: "자신(또는 멤버)의 레벨·XP를 확인합니다" },

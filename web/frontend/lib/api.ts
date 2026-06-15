@@ -66,6 +66,8 @@ export const api = {
       request<{ user_id: string; display_name?: string; xp: number; level: number }[]>(
         `/api/settings/${gid}/leaderboard`
       ),
+    deleteLeaderboard: (gid: string, user_id: string) =>
+      request(`/api/settings/${gid}/leaderboard/${user_id}`, { method: "DELETE" }),
     managers: {
       list:   (gid: string) =>
         request<{ user_id: string; display_name: string }[]>(`/api/settings/${gid}/managers`),
@@ -171,10 +173,14 @@ export const api = {
     },
     contentNotify: {
       get:  (gid: string) =>
-        request<{ notify_vod: boolean; notify_clip: boolean; notify_community: boolean }>(
-          `/api/chzzk/${gid}/content-notify`
-        ),
-      save: (gid: string, data: { notify_vod: boolean; notify_clip: boolean; notify_community: boolean }) =>
+        request<{
+          notify_vod: boolean; notify_clip: boolean; notify_community: boolean;
+          vod_channel: string | null; clip_channel: string | null; community_channel: string | null;
+        }>(`/api/chzzk/${gid}/content-notify`),
+      save: (gid: string, data: {
+        notify_vod: boolean; notify_clip: boolean; notify_community: boolean;
+        vod_channel: string | null; clip_channel: string | null; community_channel: string | null;
+      }) =>
         request(`/api/chzzk/${gid}/content-notify`, { method: "PUT", body: JSON.stringify(data) }),
     },
   },

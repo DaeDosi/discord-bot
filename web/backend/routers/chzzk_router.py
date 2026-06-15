@@ -362,9 +362,12 @@ async def get_guild_verifications(
 # ── 콘텐츠 알림 설정 ────────────────────────────────────────────────────────
 
 class ContentNotifyUpdate(BaseModel):
-    notify_vod:       bool = False
-    notify_clip:      bool = False
-    notify_community: bool = False
+    notify_vod:        bool = False
+    notify_clip:       bool = False
+    notify_community:  bool = False
+    vod_channel:       Optional[str] = None
+    clip_channel:      Optional[str] = None
+    community_channel: Optional[str] = None
 
 
 @router.get("/{guild_id}/content-notify")
@@ -375,15 +378,23 @@ async def get_content_notify(
 ):
     db = await get_db()
     row = await (await db.execute(
-        "SELECT notify_vod, notify_clip, notify_community FROM chzzk_subscriptions WHERE guild_id=?",
+        "SELECT notify_vod, notify_clip, notify_community, "
+        "vod_channel, clip_channel, community_channel "
+        "FROM chzzk_subscriptions WHERE guild_id=?",
         (int(guild_id),)
     )).fetchone()
     if not row:
-        return {"notify_vod": False, "notify_clip": False, "notify_community": False}
+        return {
+            "notify_vod": False, "notify_clip": False, "notify_community": False,
+            "vod_channel": None, "clip_channel": None, "community_channel": None,
+        }
     return {
-        "notify_vod":       bool(row["notify_vod"]),
-        "notify_clip":      bool(row["notify_clip"]),
-        "notify_community": bool(row["notify_community"]),
+        "notify_vod":        bool(row["notify_vod"]),
+        "notify_clip":       bool(row["notify_clip"]),
+        "notify_community":  bool(row["notify_community"]),
+        "vod_channel":       str(row["vod_channel"])       if row["vod_channel"]       else None,
+        "clip_channel":      str(row["clip_channel"])      if row["clip_channel"]      else None,
+        "community_channel": str(row["community_channel"]) if row["community_channel"] else None,
     }
 
 
@@ -403,9 +414,16 @@ async def update_content_notify(
         raise HTTPException(status_code=404, detail="먼저 치지직 채널을 등록해주세요.")
     await db.execute(
         """UPDATE chzzk_subscriptions
-           SET notify_vod=?, notify_clip=?, notify_community=?
+           SET notify_vod=?, notify_clip=?, notify_community=?,
+               vod_channel=?, clip_channel=?, community_channel=?
            WHERE guild_id=?""",
-        (int(body.notify_vod), int(body.notify_clip), int(body.notify_community), int(guild_id))
+        (
+            int(body.notify_vod), int(body.notify_clip), int(body.notify_community),
+            int(body.vod_channel)       if body.vod_channel       else None,
+            int(body.clip_channel)      if body.clip_channel      else None,
+            int(body.community_channel) if body.community_channel else None,
+            int(guild_id),
+        )
     )
     await db.commit()
     return {"ok": True}

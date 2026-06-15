@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { Plus, Trash2, Zap, Trophy } from "lucide-react";
+import { Plus, Trash2, Zap, Trophy, X } from "lucide-react";
 import { api } from "@/lib/api";
 import type { LevelReward, Role } from "@/lib/types";
 
@@ -13,6 +13,10 @@ export default function LevelingPage() {
   const [newLevel, setNewLevel] = useState("");
   const [newRole, setNewRole]   = useState("");
   const [adding, setAdding]     = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const loadLb = () =>
+    api.settings.leaderboard(guildId).then(setLb).catch(() => {});
 
   useEffect(() => {
     Promise.all([
@@ -37,10 +41,17 @@ export default function LevelingPage() {
     setRewards((p) => p.filter((r) => r.level !== level));
   };
 
+  const deleteLbEntry = async (userId: string) => {
+    setDeletingId(userId);
+    await api.settings.deleteLeaderboard(guildId, userId).catch(() => {});
+    setLb((p) => p.filter((e) => String(e.user_id) !== String(userId)));
+    setDeletingId(null);
+  };
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-bold text-white">레벨링 시스템</h1>
+        <h1 className="text-xl font-bold text-white">레벨업 시스템</h1>
         <p className="text-muted text-sm mt-1">레벨 보상 역할 및 리더보드를 관리합니다.</p>
       </div>
 
@@ -102,13 +113,22 @@ export default function LevelingPage() {
         <div className="space-y-2">
           {lb.map((entry, i) => (
             <div key={entry.user_id}
-              className="flex items-center gap-3 bg-bg rounded-lg px-4 py-2.5 border border-border">
+              className="flex items-center gap-3 bg-bg rounded-lg px-4 py-2.5 border border-border
+                         hover:border-danger/30 group transition-colors">
               <span className={`text-sm font-bold w-8 ${i < 3 ? "text-warning" : "text-muted"}`}>
                 #{i + 1}
               </span>
               <span className="text-sm text-white flex-1 truncate">{entry.display_name || entry.user_id}</span>
               <span className="text-xs text-muted">Lv.{entry.level}</span>
               <span className="text-xs text-accent font-medium">{entry.xp.toLocaleString()} XP</span>
+              <button
+                onClick={() => deleteLbEntry(String(entry.user_id))}
+                disabled={deletingId === String(entry.user_id)}
+                title="XP 삭제"
+                className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger transition-all p-1 shrink-0"
+              >
+                <X size={13} />
+              </button>
             </div>
           ))}
           {lb.length === 0 && (

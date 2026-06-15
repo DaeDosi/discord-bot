@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import {
-  Bot, Shield, TrendingUp, Radio, BadgeCheck,
+  Bot, Shield, Gem, Radio, BadgeCheck,
   LogOut, ChevronRight, ArrowRight, Hash,
 } from "lucide-react";
 
@@ -158,37 +158,36 @@ function TerminalMockup() {
   );
 }
 
-// Mockup: leaderboard
-function LeaderboardMockup({ color = "#FEE75C" }: { color?: string }) {
-  const rows = [
-    { medal: "🥇", name: "스타플레이어", lv: 42, xp: 8400, pct: 84 },
-    { medal: "🥈", name: "레벨업러너",   lv: 38, xp: 7600, pct: 76 },
-    { medal: "🥉", name: "꾸준한멤버",   lv: 31, xp: 6200, pct: 62 },
+// Mockup: points shop
+function PointsMockup({ color = "#A855F7" }: { color?: string }) {
+  const items = [
+    { icon: "🎮", name: "게임 아이템",    points: 500,  stock: 3   },
+    { icon: "🎫", name: "특별 역할 쿠폰", points: 1000, stock: "∞" },
+    { icon: "✨", name: "닉네임 꾸미기",  points: 300,  stock: 10  },
   ];
   return (
-    <div className="bg-bg-card rounded-2xl border border-border p-5 shadow-xl w-full max-w-sm">
-      <div className="flex items-center justify-between mb-5">
-        <p className="text-xs font-bold text-muted uppercase tracking-widest">리더보드</p>
+    <div className="bg-bg-card rounded-2xl border border-border p-5 shadow-xl w-full max-w-sm space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-bold text-muted uppercase tracking-widest">포인트 상점</p>
         <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full"
               style={{ color, background: `${color}18` }}>
-          이번 주
+          1,250P 보유
         </span>
       </div>
-      <div className="space-y-4">
-        {rows.map(({ medal, name, lv, xp, pct }) => (
-          <div key={name}>
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className="text-base leading-none">{medal}</span>
-              <span className="text-sm text-fg font-medium flex-1">{name}</span>
-              <span className="text-xs text-muted">Lv.{lv}</span>
-              <span className="text-xs text-muted/60">{xp.toLocaleString()} XP</span>
+      <div className="space-y-3">
+        {items.map(({ icon, name, points, stock }) => (
+          <div key={name} className="flex items-center gap-3 p-3 rounded-xl border border-border bg-bg">
+            <span className="text-2xl leading-none">{icon}</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-fg truncate">{name}</p>
+              <p className="text-[11px] text-muted">잔여 {stock}개</p>
             </div>
-            <div className="h-1.5 rounded-full bg-bg overflow-hidden">
-              <div
-                className="h-full rounded-full"
-                style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${color}99, ${color})` }}
-              />
-            </div>
+            <button
+              className="text-[11px] font-semibold px-2.5 py-1 rounded-lg shrink-0 cursor-default"
+              style={{ background: `${color}18`, color }}
+            >
+              {typeof points === "number" ? points.toLocaleString() : points}P
+            </button>
           </div>
         ))}
       </div>
@@ -333,14 +332,14 @@ export default function HomePage() {
       flip:   false,
     },
     {
-      color:  "#FEE75C",
-      bg:     "rgba(254,231,92,0.12)",
-      icon:   <TrendingUp size={22} style={{ color: "#FEE75C" }} />,
-      tag:    "커뮤니티 성장",
-      title:  "레벨링 & 리더보드",
-      detail: "채팅 활동에 따라 자동으로 XP가 쌓이고 레벨이 오릅니다. 리더보드로 멤버 참여도를 높이고, 레벨별 역할 보상으로 커뮤니티를 활성화하세요.",
-      bullets: ["채팅 기반 XP 자동 적립", "주간·전체 리더보드", "레벨별 역할 자동 지급"],
-      mockup: <LeaderboardMockup color="#FEE75C" />,
+      color:  "#A855F7",
+      bg:     "rgba(168,85,247,0.12)",
+      icon:   <Gem size={22} style={{ color: "#A855F7" }} />,
+      tag:    "포인트 시스템",
+      title:  "포인트 & 상점",
+      detail: "채팅 활동·레벨업·미션 완료 등 다양한 방법으로 포인트를 적립하세요. 관리자가 설정한 상점 아이템을 포인트로 교환하고, 미션 제출·승인 시스템으로 커뮤니티 참여를 활성화하세요.",
+      bullets: ["채팅·레벨업 자동 포인트 적립", "미션 제출 & 관리자 승인", "포인트 상점 아이템 교환"],
+      mockup: <PointsMockup color="#A855F7" />,
       flip:   true,
     },
     {

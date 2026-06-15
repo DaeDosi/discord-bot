@@ -269,6 +269,24 @@ async def get_leaderboard(
     ]
 
 
+# ── 리더보드 삭제 ────────────────────────────────────────────────────────────
+
+@router.delete("/{guild_id}/leaderboard/{user_id}")
+async def delete_leaderboard_entry(
+    guild_id: str,
+    user_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    await db.execute(
+        "DELETE FROM user_xp WHERE guild_id=? AND user_id=?",
+        (int(guild_id), int(user_id))
+    )
+    await db.commit()
+    return {"ok": True}
+
+
 # ── 경고 관리 ────────────────────────────────────────────────────────────────
 
 @router.get("/{guild_id}/warnings")

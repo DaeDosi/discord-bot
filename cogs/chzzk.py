@@ -137,7 +137,8 @@ class ChzzkCog(commands.Cog):
             "SELECT id, guild_id, discord_channel, chzzk_channel_id, chzzk_name, "
             "is_live, mention_role_id, custom_message, mention_everyone, "
             "notify_vod, notify_clip, notify_community, "
-            "last_vod_id, last_clip_id, last_post_id "
+            "last_vod_id, last_clip_id, last_post_id, "
+            "vod_channel, clip_channel, community_channel "
             "FROM chzzk_subscriptions"
         )).fetchall()
 
@@ -200,7 +201,13 @@ class ChzzkCog(commands.Cog):
                     try:
                         post = await fetch_latest_post(row["chzzk_channel_id"])
                         if post:
-                            post_id = str(post.get("postNo", post.get("id", "")))
+                            # API 응답 필드 다양성 대응
+                            post_id = str(
+                                post.get("postNo")
+                                or post.get("communityPostNo")
+                                or post.get("id")
+                                or ""
+                            )
                             if post_id:
                                 if row["last_post_id"] and post_id != row["last_post_id"]:
                                     await self._send_post_notification(row, post)
@@ -279,7 +286,8 @@ class ChzzkCog(commands.Cog):
         guild = self.bot.get_guild(row["guild_id"])
         if not guild:
             return
-        ch = guild.get_channel(row["discord_channel"])
+        ch_id = row["vod_channel"] or row["discord_channel"]
+        ch = guild.get_channel(ch_id)
         if not ch:
             return
 
@@ -310,7 +318,8 @@ class ChzzkCog(commands.Cog):
         guild = self.bot.get_guild(row["guild_id"])
         if not guild:
             return
-        ch = guild.get_channel(row["discord_channel"])
+        ch_id = row["clip_channel"] or row["discord_channel"]
+        ch = guild.get_channel(ch_id)
         if not ch:
             return
 
@@ -341,12 +350,13 @@ class ChzzkCog(commands.Cog):
         guild = self.bot.get_guild(row["guild_id"])
         if not guild:
             return
-        ch = guild.get_channel(row["discord_channel"])
+        ch_id = row["community_channel"] or row["discord_channel"]
+        ch = guild.get_channel(ch_id)
         if not ch:
             return
 
         name    = row["chzzk_name"] or "알 수 없음"
-        post_no = post.get("postNo", post.get("id", ""))
+        post_no = post.get("postNo") or post.get("communityPostNo") or post.get("id", "")
         content_data = post.get("content", {})
         if isinstance(content_data, dict):
             title = content_data.get("title") or "새 커뮤니티 게시글"

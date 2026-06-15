@@ -196,12 +196,15 @@ async def init_db():
                is_used      INTEGER DEFAULT 0,
                used_at      INTEGER
            )""",
-        "ALTER TABLE chzzk_subscriptions ADD COLUMN notify_vod       INTEGER DEFAULT 0",
-        "ALTER TABLE chzzk_subscriptions ADD COLUMN notify_clip      INTEGER DEFAULT 0",
-        "ALTER TABLE chzzk_subscriptions ADD COLUMN notify_community  INTEGER DEFAULT 0",
-        "ALTER TABLE chzzk_subscriptions ADD COLUMN last_vod_id      TEXT",
-        "ALTER TABLE chzzk_subscriptions ADD COLUMN last_clip_id     TEXT",
-        "ALTER TABLE chzzk_subscriptions ADD COLUMN last_post_id     TEXT",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN notify_vod        INTEGER DEFAULT 0",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN notify_clip       INTEGER DEFAULT 0",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN notify_community   INTEGER DEFAULT 0",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN last_vod_id       TEXT",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN last_clip_id      TEXT",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN last_post_id      TEXT",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN vod_channel       INTEGER",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN clip_channel      INTEGER",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN community_channel  INTEGER",
     ]:
         try:
             await db.execute(sql)

@@ -8,7 +8,7 @@ import type { LucideIcon } from "lucide-react";
 const ITEMS: { href: string; label: string; shortLabel: string; icon: LucideIcon }[] = [
   { href: "",               label: "일반 설정",    shortLabel: "일반설정", icon: Settings    },
   { href: "/verification",  label: "입장 인증",    shortLabel: "인증",     icon: UserCheck   },
-  { href: "/leveling",      label: "레벨링",       shortLabel: "레벨링",   icon: Zap         },
+  { href: "/leveling",      label: "레벨업",       shortLabel: "레벨업",   icon: Zap         },
   { href: "/moderation",    label: "관리",         shortLabel: "관리",     icon: Shield      },
   { href: "/points",        label: "포인트",       shortLabel: "포인트",   icon: Gem         },
   { href: "/chzzk",         label: "치지직",       shortLabel: "치지직",   icon: Radio       },
