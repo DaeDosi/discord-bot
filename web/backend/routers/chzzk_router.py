@@ -439,32 +439,37 @@ async def debug_status(user: dict = Depends(get_current_user)):
 async def debug_community(chzzk_id: str, user: dict = Depends(get_current_user)):
     """커뮤니티 API 엔드포인트 탐색 — 200을 리턴하는 경로 찾기"""
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-    base = "https://api.chzzk.naver.com"
+
     candidates = [
-        f"{base}/nng_main/v1/channels/{chzzk_id}/community-board",
-        f"{base}/nng_main/v1/channels/{chzzk_id}/community-boards",
-        f"{base}/nng_main/v2/channels/{chzzk_id}/community-board",
-        f"{base}/nng_main/v2/channels/{chzzk_id}/community-boards",
-        f"{base}/nng_main/v1/channels/{chzzk_id}/community",
-        f"{base}/nng_main/v2/channels/{chzzk_id}/community",
-        f"{base}/nng_main/v1/channels/{chzzk_id}/community/posts",
-        f"{base}/nng_main/v2/channels/{chzzk_id}/community/posts",
-        f"{base}/nng_main/v1/channels/{chzzk_id}/posts",
-        f"{base}/nng_main/v2/channels/{chzzk_id}/posts",
-        f"{base}/nng_main/v1/community-boards/{chzzk_id}/articles",
-        f"{base}/nng_main/v2/community-boards/{chzzk_id}/articles",
-        f"{base}/service/v1/channels/{chzzk_id}/community-board",
-        f"{base}/service/v2/channels/{chzzk_id}/community-board",
+        # api.chzzk.naver.com — nng_main
+        (f"https://api.chzzk.naver.com/nng_main/v1/channels/{chzzk_id}/community-board", {}),
+        (f"https://api.chzzk.naver.com/nng_main/v1/channels/{chzzk_id}/community-boards", {}),
+        (f"https://api.chzzk.naver.com/nng_main/v2/channels/{chzzk_id}/community-board", {}),
+        (f"https://api.chzzk.naver.com/nng_main/v1/community-boards/{chzzk_id}/articles", {"size": 1}),
+        (f"https://api.chzzk.naver.com/nng_main/v2/community-boards/{chzzk_id}/articles", {"size": 1}),
+        # community-boards with query param
+        (f"https://api.chzzk.naver.com/nng_main/v1/community-boards/articles", {"channelId": chzzk_id, "size": 1}),
+        (f"https://api.chzzk.naver.com/nng_main/v2/community-boards/articles", {"channelId": chzzk_id, "size": 1}),
+        # comm-api.game.naver.com (Naver 게임 커뮤니티)
+        (f"https://comm-api.game.naver.com/nng_main/v1/channels/{chzzk_id}/community-boards", {}),
+        (f"https://comm-api.game.naver.com/nng_main/v2/channels/{chzzk_id}/community-boards", {}),
+        (f"https://comm-api.game.naver.com/nng_main/v1/community-boards/{chzzk_id}/articles", {"size": 1}),
+        (f"https://comm-api.game.naver.com/nng_main/v2/community-boards/{chzzk_id}/articles", {"size": 1}),
+        # game.naver.com
+        (f"https://apis.naver.com/nng_main/v1/channels/{chzzk_id}/community-boards", {}),
+        # chzzk BFF
+        (f"https://chzzk.naver.com/nng_main/v1/channels/{chzzk_id}/community-boards", {}),
     ]
+
     results = []
-    async with httpx.AsyncClient(headers=headers, timeout=10) as client:
-        for url in candidates:
+    async with httpx.AsyncClient(headers=headers, timeout=10, follow_redirects=True) as client:
+        for url, params in candidates:
             try:
-                resp = await client.get(url, params={"size": 1, "page": 0})
-                body = resp.json() if resp.status_code == 200 else resp.text[:200]
-                results.append({"url": url.replace(base, ""), "status": resp.status_code, "body": body})
+                resp = await client.get(url, params=params)
+                body = resp.json() if resp.status_code == 200 else resp.text[:300]
+                results.append({"url": url, "status": resp.status_code, "body": body})
             except Exception as e:
-                results.append({"url": url.replace(base, ""), "status": "error", "body": str(e)})
+                results.append({"url": url, "status": "error", "body": str(e)})
     return results
 
 
