@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import uuid
 import json as _json
 import asyncio
@@ -10,31 +11,60 @@ from database import get_db
 # 서버 고유 device ID (Chzzk front-client 식별용)
 _DEVICE_ID = str(uuid.uuid4())
 
+# NID_AUT → NID_SES 갱신 캐시 (30분)
+_nid_ses_cache: dict = {"value": "", "expires": 0.0}
+
 CHZZK_API     = "https://api.chzzk.naver.com"
 DISCORD_API   = "https://discord.com/api/v10"
 POLL_INTERVAL = int(os.getenv("CHZZK_POLL_INTERVAL", 60))
 
 CHZZK_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
-def _naver_cookie() -> str:
-    # NAVER_COOKIE = full browser cookie string (preferred)
-    full = os.getenv("NAVER_COOKIE", "").strip()
-    if full:
-        return full
-    # fallback: individual NID values
-    parts = []
-    nid_aut = os.getenv("NAVER_NID_AUT", "")
-    nid_ses = os.getenv("NAVER_NID_SES", "")
-    if nid_aut:
-        parts.append(f"NID_AUT={nid_aut}")
-    if nid_ses:
-        parts.append(f"NID_SES={nid_ses}")
-    return "; ".join(parts)
+def _get_nid_aut() -> str:
+    """환경변수에서 NID_AUT 추출 (NAVER_COOKIE 우선, NAVER_NID_AUT 폴백)"""
+    full = os.getenv("NAVER_COOKIE", "")
+    m = re.search(r'NID_AUT=([^;]+)', full)
+    if m:
+        return m.group(1).strip()
+    return os.getenv("NAVER_NID_AUT", "").strip()
 
 
-def _extract_ba_uuid(cookie: str) -> str:
-    m = re.search(r'ba\.uuid=([^;]+)', cookie)
+def _get_ba_uuid() -> str:
+    full = os.getenv("NAVER_COOKIE", "")
+    m = re.search(r'ba\.uuid=([^;]+)', full)
     return m.group(1).strip() if m else _DEVICE_ID
+
+
+async def _get_fresh_nid_ses() -> str:
+    """NID_AUT로 이 서버 IP에서 새 NID_SES를 발급받아 캐시 (30분)."""
+    global _nid_ses_cache
+    if _nid_ses_cache["value"] and time.time() < _nid_ses_cache["expires"]:
+        return _nid_ses_cache["value"]
+
+    nid_aut = _get_nid_aut()
+    if not nid_aut:
+        return ""
+
+    ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+          "AppleWebKit/537.36 (KHTML, like Gecko) "
+          "Chrome/125.0.0.0 Safari/537.36")
+    async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+        await client.get("https://www.naver.com/", headers={
+            "User-Agent":    ua,
+            "Accept":        "text/html",
+            "Accept-Language": "ko-KR,ko;q=0.9",
+            "Cookie":        f"NID_AUT={nid_aut}",
+        })
+        nid_ses = client.cookies.get("NID_SES")
+
+    if nid_ses:
+        _nid_ses_cache["value"]   = nid_ses
+        _nid_ses_cache["expires"] = time.time() + 1800
+        _log(f"Naver 세션 갱신 성공 (NID_SES 앞 10자: {nid_ses[:10]}…)")
+    else:
+        _log("Naver 세션 갱신 실패 — NID_SES 미획득")
+
+    return _nid_ses_cache["value"]
 
 
 def _log(msg: str):
@@ -103,25 +133,50 @@ async def _fetch_latest_clip(chzzk_id: str) -> dict | None:
 
 
 async def _fetch_latest_post(chzzk_id: str) -> dict | None:
-    # 공식 Chzzk API — VOD/클립과 동일한 패턴, 인증 불필요
-    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/community/posts"
-    params = {"sortType": "RECENT", "page": 0, "size": 1}
-    async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=15) as client:
+    # NID_AUT로 Railway IP에서 새 NID_SES 발급 → IP 바인딩 우회
+    nid_aut = _get_nid_aut()
+    if not nid_aut:
+        _log("NAVER_NID_AUT 없음 — 커뮤니티 체크 건너뜀")
+        return None
+
+    nid_ses = await _get_fresh_nid_ses()
+    if not nid_ses:
+        _log("NID_SES 발급 실패 — 커뮤니티 체크 건너뜀")
+        return None
+
+    device_id = _get_ba_uuid()
+    cookie = f"NID_AUT={nid_aut}; NID_SES={nid_ses}"
+    url = (
+        "https://apis.naver.com/nng_main/nng_comment_api/v1"
+        f"/type/CHANNEL_POST/id/{chzzk_id}/comments"
+    )
+    headers = {
+        "User-Agent":                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept":                     "application/json, text/plain, */*",
+        "Accept-Language":            "ko,en-US;q=0.9,en;q=0.8",
+        "Origin":                     "https://chzzk.naver.com",
+        "Referer":                    f"https://chzzk.naver.com/{chzzk_id}/community",
+        "deviceid":                   device_id,
+        "front-client-platform-type": "PC",
+        "front-client-product-type":  "web",
+        "if-modified-since":          "Mon, 26 Jul 1997 05:00:00 GMT",
+        "Cookie":                     cookie,
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
         try:
-            resp = await client.get(url, params=params)
+            resp = await client.get(url, params={"limit": 1, "offset": 0, "orderType": "DESC", "pagingType": "PAGE"}, headers=headers)
             _log(f"커뮤니티 API → HTTP {resp.status_code}")
             if resp.status_code != 200:
                 _log(f"커뮤니티 오류: {resp.text[:200]}")
                 return None
             data = resp.json()
-            posts = data.get("content", {}).get("data", [])
-            if not posts:
+            comments_data = data.get("content", {}).get("comments", {}).get("data", [])
+            if not comments_data:
                 _log("커뮤니티 게시글 없음")
                 return None
-            post = posts[0]
-            post_id = post.get("postNo") or post.get("communityPostNo") or post.get("id")
-            _log(f"커뮤니티 성공! postNo={post_id}")
-            return post
+            comment = comments_data[0].get("comment", comments_data[0])
+            _log(f"커뮤니티 성공! commentId={comment.get('commentId')}")
+            return comment
         except Exception as e:
             _log(f"커뮤니티 오류: {e}")
             return None
@@ -274,7 +329,7 @@ async def _send_clip_notification(row, clip: dict):
 
 async def _send_post_notification(row, post: dict):
     name    = row["chzzk_name"] or "알 수 없음"
-    post_no = str(post.get("postNo") or post.get("communityPostNo") or post.get("commentId") or post.get("id") or "")
+    post_no = str(post.get("commentId") or post.get("postNo") or post.get("communityPostNo") or post.get("id") or "")
 
     # content 필드가 문자열 (게시글 본문)
     content_text = post.get("content") or ""
@@ -424,9 +479,9 @@ async def _check_once():
                     post = await _fetch_latest_post(row["chzzk_channel_id"])
                     if post:
                         post_id = str(
-                            post.get("postNo")
+                            post.get("commentId")
+                            or post.get("postNo")
                             or post.get("communityPostNo")
-                            or post.get("commentId")
                             or post.get("id")
                             or ""
                         )
