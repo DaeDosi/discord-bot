@@ -1,4 +1,6 @@
 import os
+import re
+import json as _json
 import asyncio
 import httpx
 from datetime import datetime, timezone
@@ -77,35 +79,84 @@ async def _fetch_latest_clip(chzzk_id: str) -> dict | None:
 
 
 async def _fetch_latest_post(chzzk_id: str) -> dict | None:
-    # 치지직 커뮤니티 = apis.naver.com nng_comment_api
-    url = (
-        f"https://apis.naver.com/nng_main/nng_comment_api/v1"
-        f"/type/CHANNEL_POST/id/{chzzk_id}/comments"
-    )
-    params = {"limit": 1, "offset": 0, "orderType": "DESC", "pagingType": "PAGE"}
-    headers = {
-        **CHZZK_HEADERS,
-        "Origin":  "https://chzzk.naver.com",
-        "Referer": f"https://chzzk.naver.com/{chzzk_id}/community",
-    }
+    # Step 1: try undocumented Chzzk API (same domain, no auth needed)
+    for path in [
+        f"/service/v2/channels/{chzzk_id}/community/posts",
+        f"/service/v1/channels/{chzzk_id}/community/posts",
+        f"/service/v1/channels/{chzzk_id}/community",
+    ]:
+        url = f"{CHZZK_API}{path}"
+        async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=10) as client:
+            try:
+                resp = await client.get(url, params={"size": 1, "page": 0})
+                if resp.status_code == 200:
+                    data = resp.json().get("content", {})
+                    items = data.get("data", data.get("posts", []))
+                    if items:
+                        post = items[0]
+                        _log(f"커뮤니티 API 성공 ({path}): {post.get('postNo') or post.get('commentId')}")
+                        return post
+            except Exception:
+                pass
 
-    async with httpx.AsyncClient(headers=headers, timeout=15) as client:
+    # Step 2: scrape community HTML — publicly accessible without login
+    page_url = f"https://chzzk.naver.com/{chzzk_id}/community"
+    html_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+    }
+    async with httpx.AsyncClient(headers=html_headers, timeout=15, follow_redirects=True) as client:
         try:
-            resp = await client.get(url, params=params)
-            _log(f"커뮤니티 API → HTTP {resp.status_code}")
+            resp = await client.get(page_url)
             if resp.status_code != 200:
-                _log(f"커뮤니티 오류 응답: {resp.text[:300]}")
+                _log(f"커뮤니티 HTML fetch 오류: HTTP {resp.status_code}")
                 return None
-            data = resp.json()
-            comments_data = data.get("content", {}).get("comments", {}).get("data", [])
-            if not comments_data:
-                _log(f"커뮤니티 게시글 없음")
-                return None
-            comment = comments_data[0].get("comment", comments_data[0])
-            _log(f"커뮤니티 성공! commentId={comment.get('commentId')}, content={str(comment.get('content',''))[:50]}")
-            return comment
+            html = resp.text
+
+            # Try __NEXT_DATA__ (SSR embedded JSON)
+            nd_match = re.search(
+                r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+                html, re.DOTALL,
+            )
+            if nd_match:
+                try:
+                    nd = _json.loads(nd_match.group(1))
+                    queries = (
+                        nd.get("props", {})
+                          .get("pageProps", {})
+                          .get("dehydratedState", {})
+                          .get("queries", [])
+                    )
+                    for q in queries:
+                        qdata = q.get("state", {}).get("data", {})
+                        pages = qdata.get("pages", [qdata])
+                        for page in pages:
+                            for key in ("data", "posts", "content", "list", "items"):
+                                items = page.get(key) if isinstance(page, dict) else None
+                                if items and isinstance(items, list):
+                                    post = items[0]
+                                    if post.get("postNo") or post.get("commentId"):
+                                        _log(f"커뮤니티 __NEXT_DATA__ 성공: {post.get('postNo') or post.get('commentId')}")
+                                        return post
+                except Exception as e:
+                    _log(f"커뮤니티 __NEXT_DATA__ 파싱 오류: {e}")
+
+            # Fallback: find /community/detail/{id} links in HTML
+            ids = re.findall(rf'/{re.escape(chzzk_id)}/community/detail/(\d+)', html)
+            if ids:
+                post_no = ids[0]
+                _log(f"커뮤니티 링크 스크래핑 성공: postNo={post_no}")
+                return {"commentId": int(post_no)}
+
+            _log("커뮤니티 게시글 발견 실패 (HTML에 링크 없음 — CSR 페이지일 수 있음)")
+            return None
         except Exception as e:
-            _log(f"커뮤니티 요청 오류: {e}")
+            _log(f"커뮤니티 HTML 오류: {e}")
             return None
 
 
