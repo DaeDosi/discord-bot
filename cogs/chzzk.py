@@ -79,13 +79,28 @@ async def fetch_latest_clip(chzzk_id: str) -> dict | None:
 
 async def fetch_latest_post(chzzk_id: str) -> dict | None:
     url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/community/posts"
-    params = {"page": 0, "size": 1}
-    async with httpx.AsyncClient(headers=HEADERS, timeout=10) as client:
+    params = {"sortType": "RECENT", "page": 0, "size": 1}
+    async with httpx.AsyncClient(headers=HEADERS, timeout=15) as client:
         resp = await client.get(url, params=params)
         if resp.status_code != 200:
+            print(f"[chzzk] fetch_latest_post HTTP {resp.status_code} for {chzzk_id}: {resp.text[:200]}")
             return None
         data = resp.json()
-        posts = data.get("content", {}).get("data", [])
+        content = data.get("content", {})
+        # 응답 구조가 버전마다 다를 수 있어 여러 경우 대응
+        if isinstance(content, list):
+            posts = content
+        elif isinstance(content, dict):
+            posts = (
+                content.get("data")
+                or content.get("posts")
+                or content.get("articles")
+                or []
+            )
+        else:
+            posts = []
+        if not posts:
+            print(f"[chzzk] fetch_latest_post: no posts found for {chzzk_id}, raw content keys={list(content.keys()) if isinstance(content, dict) else type(content)}")
         return posts[0] if posts else None
 
 
@@ -201,10 +216,12 @@ class ChzzkCog(commands.Cog):
                     try:
                         post = await fetch_latest_post(row["chzzk_channel_id"])
                         if post:
-                            # API 응답 필드 다양성 대응
+                            # 필드명이 버전마다 다를 수 있어 여러 후보 시도
                             post_id = str(
                                 post.get("postNo")
                                 or post.get("communityPostNo")
+                                or post.get("articleId")
+                                or post.get("no")
                                 or post.get("id")
                                 or ""
                             )
@@ -216,10 +233,13 @@ class ChzzkCog(commands.Cog):
                                         "UPDATE chzzk_subscriptions SET last_post_id=? WHERE id=?",
                                         (post_id, row["id"])
                                     )
-                    except Exception:
-                        pass
+                            else:
+                                print(f"[chzzk] community post has no ID, keys={list(post.keys())}")
+                    except Exception as e:
+                        print(f"[chzzk] community notify error for {row['chzzk_channel_id']}: {e}")
 
-            except Exception:
+            except Exception as e:
+                print(f"[chzzk] monitor_loop error for guild {row['guild_id']}: {e}")
                 continue
 
         await db.commit()

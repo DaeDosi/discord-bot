@@ -433,7 +433,7 @@ export default function ChzzkPage() {
 
       {/* 콘텐츠 알림 */}
       {subs.length > 0 && (
-        <div className="card space-y-4">
+        <div className="card space-y-3">
           <div>
             <h2 className="font-semibold text-white">콘텐츠 알림</h2>
             <p className="text-muted text-sm mt-1">
@@ -441,35 +441,42 @@ export default function ChzzkPage() {
               채널을 지정하지 않으면 방송 알림 채널이 사용됩니다.
             </p>
           </div>
-          {contentItems.map(({ key, chKey, label, desc }) => (
-            <div key={key} className="space-y-2">
-              <div
-                className="flex items-center justify-between p-3 rounded-lg border border-border hover:bg-bg-hover transition-colors cursor-pointer"
-                onClick={() => setContentNotify((p) => ({ ...p, [key]: !p[key] }))}
-              >
-                <div>
-                  <p className="text-sm font-medium text-white">{label}</p>
-                  <p className="text-sm text-muted mt-0.5">{desc}</p>
+          {contentItems.map(({ key, chKey, label, desc }) => {
+            const on = contentNotify[key];
+            return (
+              <div key={key}
+                   className={`rounded-lg border transition-colors ${on ? "border-accent/40 bg-accent/5" : "border-border"}`}>
+                {/* 토글 행 */}
+                <div
+                  className="flex items-center justify-between p-3 cursor-pointer"
+                  onClick={() => setContentNotify((p) => ({ ...p, [key]: !p[key] }))}
+                >
+                  <div>
+                    <p className={`text-sm font-medium ${on ? "text-white" : "text-muted"}`}>{label}</p>
+                    <p className="text-sm text-muted mt-0.5">{desc}</p>
+                  </div>
+                  {on
+                    ? <ToggleRight size={28} className="text-accent shrink-0" />
+                    : <ToggleLeft  size={28} className="text-muted  shrink-0" />}
                 </div>
-                {contentNotify[key]
-                  ? <ToggleRight size={28} className="text-accent shrink-0" />
-                  : <ToggleLeft  size={28} className="text-muted  shrink-0" />}
-              </div>
-              {contentNotify[key] && (
-                <div className="ml-3">
-                  <label className="label text-xs">알림 채널 (선택)</label>
+                {/* 채널 선택기 — 항상 표시, 비활성 시 dim */}
+                <div className={`px-3 pb-3 border-t border-border/50 pt-2 ${on ? "" : "opacity-40 pointer-events-none"}`}>
+                  <label className="text-xs text-muted block mb-1">
+                    {label} 알림 채널 (미선택 시 방송 알림 채널 사용)
+                  </label>
                   <select
                     className="select"
                     value={contentNotify[chKey] ?? ""}
                     onChange={(e) => setContentNotify((p) => ({ ...p, [chKey]: e.target.value || null }))}
+                    tabIndex={on ? 0 : -1}
                   >
                     <option value="">방송 알림 채널 사용</option>
                     {textChannels.map((c) => <option key={c.id} value={c.id}>#{c.name}</option>)}
                   </select>
                 </div>
-              )}
-            </div>
-          ))}
+              </div>
+            );
+          })}
           <button onClick={saveContentNotify} disabled={savingContent} className="btn-primary">
             {savedContent
               ? <><CheckCircle size={16} /> 저장됨</>
@@ -495,12 +502,13 @@ export default function ChzzkPage() {
             </div>
             <button
               onClick={openVerif}
-              className="ml-4 shrink-0 flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-accent/40
-                         text-accent hover:bg-accent/10 transition-colors"
+              className="ml-4 shrink-0 flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-lg
+                         border border-emerald-500/60 text-emerald-400 bg-emerald-500/10
+                         hover:bg-emerald-500/20 hover:border-emerald-400 transition-colors"
             >
-              <Users size={13} /> 팔로우 인원
+              <Users size={15} /> 팔로우 인원
               {verifications.length > 0 && (
-                <span className="ml-1 text-[10px] bg-accent/20 rounded-full px-1.5 py-0.5 font-semibold">
+                <span className="text-xs bg-emerald-500/30 rounded-full px-2 py-0.5 font-bold">
                   {verifications.length}
                 </span>
               )}
