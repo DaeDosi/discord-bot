@@ -1,7 +1,13 @@
 import os
 import asyncio
 import httpx
-from datetime import date
+from datetime import date, datetime, timezone, timedelta
+
+_KST = timezone(timedelta(hours=9))
+
+
+def _today_kst() -> date:
+    return datetime.now(_KST).date()
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
@@ -349,7 +355,7 @@ async def get_guild_verifications(
     for r, name in zip(rows, user_names):
         if r["follow_date"]:
             try:
-                fd = (date.today() - date.fromisoformat(str(r["follow_date"])[:10])).days
+                fd = (_today_kst() - date.fromisoformat(str(r["follow_date"])[:10])).days
             except Exception:
                 fd = r["follow_days"] if r["follow_days"] is not None else -1
         else:
