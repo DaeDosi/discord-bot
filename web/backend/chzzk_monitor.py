@@ -107,29 +107,37 @@ async def _fetch_live_detail(chzzk_id: str) -> dict | None:
 
 
 async def _fetch_latest_video(chzzk_id: str) -> dict | None:
-    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/videos"
-    params = {"sortType": "RECENT", "size": 1, "page": 0}
+    # sortType 없이 먼저 시도, 실패 시 다른 파라미터로 재시도
+    candidates = [
+        {"size": 1, "page": 0},
+        {"sortType": "RECENT", "size": 1, "page": 0},
+        {"sortType": "LATEST", "size": 1, "page": 0},
+    ]
     async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=10) as client:
-        resp = await client.get(url, params=params)
-        if resp.status_code != 200:
-            _log(f"VOD fetch 오류 ({chzzk_id}): HTTP {resp.status_code}")
-            return None
-        data = resp.json()
-        videos = data.get("content", {}).get("data", [])
-        return videos[0] if videos else None
+        for params in candidates:
+            url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/videos"
+            resp = await client.get(url, params=params)
+            if resp.status_code == 200:
+                videos = resp.json().get("content", {}).get("data", [])
+                return videos[0] if videos else None
+            _log(f"VOD fetch 오류 params={params}: HTTP {resp.status_code} {resp.text[:120]}")
+    return None
 
 
 async def _fetch_latest_clip(chzzk_id: str) -> dict | None:
-    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/clips"
-    params = {"sortType": "RECENT", "size": 1}
+    candidates = [
+        {"size": 1},
+        {"sortType": "RECENT", "size": 1},
+    ]
     async with httpx.AsyncClient(headers=CHZZK_HEADERS, timeout=10) as client:
-        resp = await client.get(url, params=params)
-        if resp.status_code != 200:
-            _log(f"클립 fetch 오류 ({chzzk_id}): HTTP {resp.status_code}")
-            return None
-        data = resp.json()
-        clips = data.get("content", {}).get("data", [])
-        return clips[0] if clips else None
+        for params in candidates:
+            url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/clips"
+            resp = await client.get(url, params=params)
+            if resp.status_code == 200:
+                clips = resp.json().get("content", {}).get("data", [])
+                return clips[0] if clips else None
+            _log(f"클립 fetch 오류 params={params}: HTTP {resp.status_code} {resp.text[:120]}")
+    return None
 
 
 async def _get_streamer_token(chzzk_id: str) -> str | None:
