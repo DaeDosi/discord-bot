@@ -10,21 +10,21 @@ from utils import is_mod_or_admin, success, error
 
 # ── 포인트 도박 세션 ──────────────────────────────────────────────────────────
 
-_NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
-
 
 class GamblingSession:
     def __init__(self, message: discord.Message, view: "GamblingView",
                  title: str, options: list[str], bet_amount: int, duration: int):
-        self.message    = message
-        self.view       = view
-        self.title      = title
-        self.options    = options
-        self.bet_amount = bet_amount
-        self.end_time   = time.time() + duration
+        self.message     = message
+        self.view        = view
+        self.title       = title
+        self.options     = options
+        self.bet_amount  = bet_amount
+        self.duration    = duration
+        self.start_time  = time.time()
+        self.end_time    = self.start_time + duration
         self.votes: dict[int, int] = {}  # user_id -> opt_index (0-based)
         self.task: asyncio.Task | None = None
-        self.ended      = False
+        self.ended       = False
 
 
 def _build_gambling_embed(session: GamblingSession, ended=False,
@@ -38,48 +38,53 @@ def _build_gambling_embed(session: GamblingSession, ended=False,
     if ended:
         embed = discord.Embed(title=f"🏆 {session.title} — 결과", color=discord.Color.gold())
         if winner_idx is not None:
-            embed.description = f"🎊 당첨: **{_NUMBER_EMOJIS[winner_idx]} {session.options[winner_idx]}**"
+            embed.description = f"🎊 당첨: **{winner_idx + 1}번** — {session.options[winner_idx]}"
         for i, (opt, cnt) in enumerate(zip(session.options, counts)):
-            em   = _NUMBER_EMOJIS[i] if i < len(_NUMBER_EMOJIS) else str(i + 1)
             pct  = f"{cnt / total * 100:.0f}%" if total else "0%"
             pts  = cnt * session.bet_amount
             if i == winner_idx:
                 val = f"✅ **{cnt}명** ({pct}) | **{pts:,}P** → 각 **+{winner_payout:,}P**"
             else:
                 val = f"❌ **{cnt}명** ({pct}) | **{pts:,}P**"
-            embed.add_field(name=f"{em} {opt}", value=val, inline=False)
+            embed.add_field(name=f"{i + 1}번 — {opt}", value=val, inline=False)
         embed.add_field(name="총 베팅 풀", value=f"**{pool:,}P**", inline=True)
         embed.add_field(name="참가자",     value=f"**{total}명**", inline=True)
         if winner_idx is not None and counts[winner_idx] == 0:
             embed.add_field(name="⚠️ 당첨자 없음", value="전원 베팅 포인트 환불됨", inline=False)
         embed.set_footer(text="도박 종료")
     else:
-        remaining = max(0, int(session.end_time - time.time()))
+        now       = time.time()
+        remaining = max(0, int(session.end_time - now))
+        elapsed   = now - session.start_time
+        pct_done  = min(1.0, elapsed / session.duration) if session.duration > 0 else 0
+        filled    = round(pct_done * 20)
+        bar       = "█" * filled + "░" * (20 - filled)
         embed = discord.Embed(
             title=f"🎰 {session.title}",
-            description=f"베팅 금액: **{session.bet_amount:,}P** | 총 풀: **{pool:,}P** | 참가: **{total}명**",
+            description=(
+                f"베팅 금액: **{session.bet_amount:,}P** | 총 풀: **{pool:,}P** | 참가: **{total}명**\n\n"
+                f"⏰ 남은 시간: **{remaining}초**\n"
+                f"`{bar}` {int(pct_done * 100)}%"
+            ),
             color=discord.Color.blurple(),
         )
         for i, (opt, cnt) in enumerate(zip(session.options, counts)):
-            em  = _NUMBER_EMOJIS[i] if i < len(_NUMBER_EMOJIS) else str(i + 1)
             pct = f"{cnt / total * 100:.0f}%" if total else "0%"
             embed.add_field(
-                name=f"{em} {opt}",
+                name=f"{i + 1}번 — {opt}",
                 value=f"**{cnt}명** ({pct}) | **{cnt * session.bet_amount:,}P**",
                 inline=False,
             )
-        embed.set_footer(text=f"⏰ 남은 시간: {remaining}초 | 버튼을 눌러 베팅하세요")
+        embed.set_footer(text="버튼 번호를 눌러 베팅하세요")
     return embed
 
 
 class GamblingButton(discord.ui.Button):
     def __init__(self, opt_index: int, content: str):
-        em = _NUMBER_EMOJIS[opt_index] if opt_index < len(_NUMBER_EMOJIS) else str(opt_index + 1)
         super().__init__(
-            label=content[:60],
+            label=str(opt_index + 1),
             style=discord.ButtonStyle.primary,
             custom_id=f"gb_opt_{opt_index}",
-            emoji=em,
             row=opt_index // 3,
         )
         self.opt_index = opt_index
@@ -405,8 +410,9 @@ class PointsCog(commands.Cog):
         if not session or session.ended:
             return
         session.ended = True
-        if session.task:
-            session.task.cancel()
+        # task.cancel() is intentionally omitted: when called from the update loop,
+        # cancelling the task here raises CancelledError on the next await, preventing
+        # the result embed from being sent. The loop exits on its own via session.ended.
 
         for item in session.view.children:
             item.disabled = True  # type: ignore
@@ -442,9 +448,30 @@ class PointsCog(commands.Cog):
                 )
         await db.commit()
 
-        embed = _build_gambling_embed(session, ended=True, winner_idx=winner_idx, winner_payout=winner_payout)
+        result_embed = _build_gambling_embed(session, ended=True, winner_idx=winner_idx, winner_payout=winner_payout)
         try:
-            await session.message.edit(embed=embed, view=session.view)
+            await session.message.edit(embed=result_embed, view=session.view)
+        except Exception:
+            pass
+
+        try:
+            opt_name = session.options[winner_idx] if winner_idx is not None else "?"
+            if winner_count > 0:
+                ann_desc = (
+                    f"🎊 **{winner_idx + 1}번** — {opt_name}\n"
+                    f"당첨자 **{winner_count}명**, 각 **+{winner_payout:,}P** 지급!"
+                )
+            else:
+                ann_desc = (
+                    f"🎰 **{winner_idx + 1 if winner_idx is not None else '?'}번** — {opt_name}\n"
+                    "당첨자가 없어 전원 베팅 포인트가 환불되었습니다."
+                )
+            ann_embed = discord.Embed(
+                title=f"🏆 {session.title} 도박 결과 발표!",
+                description=ann_desc,
+                color=discord.Color.gold(),
+            )
+            await session.message.channel.send(embed=ann_embed)
         except Exception:
             pass
 
