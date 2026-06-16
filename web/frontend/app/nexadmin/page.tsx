@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import {
-  Bot, Server, Users, Radio, ShieldCheck, Search,
+  Bot, Server, Radio, ShieldCheck, Search,
   Plus, X, RefreshCw, LogIn, ChevronDown, ChevronUp, LogOut,
 } from "lucide-react";
 
@@ -378,7 +378,7 @@ function LeaveGuildButton({ guildId, guildName, onLeft }: { guildId: string; gui
 }
 
 // ── 팔로우 현황 카드 ──────────────────────────────────────────────────────────
-function FollowStatCard({ stat, onLeft, onSubDeleted }: { stat: FollowStat; onLeft: (guildId: number) => void; onSubDeleted: (subId: number) => void }) {
+function FollowStatCard({ stat, onSubDeleted }: { stat: FollowStat; onSubDeleted: (subId: number) => void }) {
   const [expanded, setExpanded] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const t1 = stat.follow_months_tier1;
@@ -417,15 +417,11 @@ function FollowStatCard({ stat, onLeft, onSubDeleted }: { stat: FollowStat; onLe
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-xs text-muted">{stat.users.length}명 인증</span>
           <span className="text-xs text-muted/60">기준: {t1}개월 / {t2}개월</span>
-          {isGone ? (
-            <button onClick={deleteSub} disabled={deleting}
-                    title="구독 삭제 (봇이 없는 서버)"
-                    className="p-1.5 rounded-lg text-danger hover:bg-danger/10 transition-colors disabled:opacity-40">
-              <X size={14} />
-            </button>
-          ) : (
-            <LeaveGuildButton guildId={String(stat.guild_id)} guildName={guildName} onLeft={() => onLeft(stat.guild_id)} />
-          )}
+          <button onClick={deleteSub} disabled={deleting}
+                  title="팔로우 데이터 삭제"
+                  className="p-1.5 rounded-lg text-danger hover:bg-danger/10 transition-colors disabled:opacity-40">
+            <X size={14} />
+          </button>
           {expanded ? <ChevronUp size={16} className="text-muted" /> : <ChevronDown size={16} className="text-muted" />}
         </div>
       </button>
@@ -673,12 +669,11 @@ export default function AdminPage() {
       <main className="max-w-7xl mx-auto px-5 py-8 space-y-8">
 
         {/* 통계 카드 */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <StatCard icon={<Server size={22} />}      label="등록 서버"    value={overview?.guild_count    ?? null} color="#5865F2" />
-          <StatCard icon={<Users size={22} />}       label="멤버 수 합계" sub="상위 30개 서버 합산 (중복 포함)" value={overview?.total_users ?? null} color="#57F287" />
-          <StatCard icon={<Radio size={22} />}       label="치지직 구독"  value={overview?.chzzk_subs    ?? null} color="#03C75A" />
-          <StatCard icon={<ShieldCheck size={22} />} label="치지직 인증"  value={overview?.verifications ?? null} color="#EB459E" />
-          <StatCard icon={<Bot size={22} />}         label="오늘 방문자"  value={overview?.today_visitors ?? null} color="#FEE75C" />
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <StatCard icon={<Server size={22} />}      label="등록 서버"   value={overview?.guild_count    ?? null} color="#5865F2" />
+          <StatCard icon={<Radio size={22} />}       label="치지직 구독" value={overview?.chzzk_subs    ?? null} color="#03C75A" />
+          <StatCard icon={<ShieldCheck size={22} />} label="치지직 인증" value={overview?.verifications ?? null} color="#EB459E" />
+          <StatCard icon={<Bot size={22} />}         label="오늘 방문자" value={overview?.today_visitors ?? null} color="#FEE75C" />
         </div>
 
         {/* 탭 */}
@@ -805,7 +800,6 @@ export default function AdminPage() {
               <div className="space-y-3">
                 {followStats.map((stat) => (
                   <FollowStatCard key={stat.sub_id} stat={stat}
-                    onLeft={(id) => leaveGuild(String(id))}
                     onSubDeleted={deleteFollowSub} />
                 ))}
               </div>

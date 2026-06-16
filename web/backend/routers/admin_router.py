@@ -218,7 +218,13 @@ async def verifications(
 
     result = []
     for r, name in zip(rows, user_names):
-        fd = r["follow_days"] if r["follow_days"] is not None else -1
+        if r["follow_date"]:
+            try:
+                fd = (date.today() - date.fromisoformat(str(r["follow_date"])[:10])).days
+            except Exception:
+                fd = r["follow_days"] if r["follow_days"] is not None else -1
+        else:
+            fd = r["follow_days"] if r["follow_days"] is not None else -1
         result.append({
             "guild_id":     str(r["guild_id"]),
             "user_id":      str(r["user_id"]),

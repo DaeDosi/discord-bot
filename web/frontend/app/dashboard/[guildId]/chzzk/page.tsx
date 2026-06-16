@@ -3,9 +3,8 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Image from "next/image";
 import {
-  Radio, Trash2, Bell, BellOff, Save, CheckCircle,
+  Radio, Trash2, Bell, BellOff,
   ExternalLink, Plus, Users, X, ChevronLeft, ChevronRight,
-  ToggleLeft, ToggleRight,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier, ChzzkVerification } from "@/lib/types";
@@ -236,14 +235,6 @@ export default function ChzzkPage() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [roles, setRoles]       = useState<Role[]>([]);
 
-  const [contentNotify, setContentNotify] = useState<{
-    notify_vod: boolean; notify_clip: boolean; notify_community: boolean;
-    vod_channel: string | null; clip_channel: string | null; community_channel: string | null;
-  }>({ notify_vod: false, notify_clip: false, notify_community: false,
-       vod_channel: null, clip_channel: null, community_channel: null });
-  const [savingContent, setSavingContent] = useState(false);
-  const [savedContent, setSavedContent]   = useState(false);
-
   const [followTiers, setFollowTiers] = useState<FollowRoleTier[]>([]);
   const [newMonths, setNewMonths]     = useState("");
   const [newRole, setNewRole]         = useState("");
@@ -256,21 +247,16 @@ export default function ChzzkPage() {
   const textChannels = channels.filter((c) => c.type === 0);
 
   const load = async () => {
-    const [s, ch, r, ft, cn] = await Promise.all([
+    const [s, ch, r, ft] = await Promise.all([
       api.chzzk.list(guildId),
       api.guilds.channels(guildId),
       api.guilds.roles(guildId),
       api.chzzk.followTiers.list(guildId).catch(() => [] as FollowRoleTier[]),
-      api.chzzk.contentNotify.get(guildId).catch(() => ({
-        notify_vod: false, notify_clip: false, notify_community: false,
-        vod_channel: null, clip_channel: null, community_channel: null,
-      })),
     ]);
     setSubs(s);
     setChannels(ch);
     setRoles(r);
     setFollowTiers(ft);
-    setContentNotify(cn);
   };
 
   const openVerif = async () => {
@@ -291,14 +277,6 @@ export default function ChzzkPage() {
       load();
     }
   }, [guildId]);
-
-  const saveContentNotify = async () => {
-    setSavingContent(true);
-    await api.chzzk.contentNotify.save(guildId, contentNotify).catch(() => {});
-    setSavingContent(false);
-    setSavedContent(true);
-    setTimeout(() => setSavedContent(false), 2500);
-  };
 
   const addTier = async () => {
     if (!newMonths || !newRole) return;
@@ -323,12 +301,6 @@ export default function ChzzkPage() {
   };
 
   const findChannel = (id: number) => channels.find((c) => String(c.id) === String(id));
-
-  const contentItems = [
-    { key: "notify_vod"       as const, chKey: "vod_channel"       as const, label: "동영상 (다시보기)", desc: "새 다시보기 영상이 업로드되면 알림" },
-    { key: "notify_clip"      as const, chKey: "clip_channel"       as const, label: "클립",              desc: "새 클립이 등록되면 알림" },
-    { key: "notify_community" as const, chKey: "community_channel"  as const, label: "커뮤니티 게시글",   desc: "새 게시글이 작성되면 알림" },
-  ];
 
   return (
     <div className="space-y-6">
@@ -429,60 +401,6 @@ export default function ChzzkPage() {
         <p className="text-sm text-muted text-center">
           서버당 1명만 등록 가능합니다. 기존 구독을 삭제 후 다시 연동하세요.
         </p>
-      )}
-
-      {/* 콘텐츠 알림 */}
-      {subs.length > 0 && (
-        <div className="card space-y-3">
-          <div>
-            <h2 className="font-semibold text-white">콘텐츠 알림</h2>
-            <p className="text-muted text-sm mt-1">
-              새 콘텐츠가 등록될 때 지정한 채널에 자동으로 알림을 보냅니다.
-              채널을 지정하지 않으면 방송 알림 채널이 사용됩니다.
-            </p>
-          </div>
-          {contentItems.map(({ key, chKey, label, desc }) => {
-            const on = contentNotify[key];
-            return (
-              <div key={key}
-                   className={`rounded-lg border transition-colors ${on ? "border-accent/40 bg-accent/5" : "border-border"}`}>
-                {/* 토글 행 */}
-                <div
-                  className="flex items-center justify-between p-3 cursor-pointer"
-                  onClick={() => setContentNotify((p) => ({ ...p, [key]: !p[key] }))}
-                >
-                  <div>
-                    <p className={`text-sm font-medium ${on ? "text-white" : "text-muted"}`}>{label}</p>
-                    <p className="text-sm text-muted mt-0.5">{desc}</p>
-                  </div>
-                  {on
-                    ? <ToggleRight size={28} className="text-accent shrink-0" />
-                    : <ToggleLeft  size={28} className="text-muted  shrink-0" />}
-                </div>
-                {/* 채널 선택기 — 항상 표시, 비활성 시 dim */}
-                <div className={`px-3 pb-3 border-t border-border/50 pt-2 ${on ? "" : "opacity-40 pointer-events-none"}`}>
-                  <label className="text-xs text-muted block mb-1">
-                    {label} 알림 채널 (미선택 시 방송 알림 채널 사용)
-                  </label>
-                  <select
-                    className="select"
-                    value={contentNotify[chKey] ?? ""}
-                    onChange={(e) => setContentNotify((p) => ({ ...p, [chKey]: e.target.value || null }))}
-                    tabIndex={on ? 0 : -1}
-                  >
-                    <option value="">방송 알림 채널 사용</option>
-                    {textChannels.map((c) => <option key={c.id} value={c.id}>#{c.name}</option>)}
-                  </select>
-                </div>
-              </div>
-            );
-          })}
-          <button onClick={saveContentNotify} disabled={savingContent} className="btn-primary">
-            {savedContent
-              ? <><CheckCircle size={16} /> 저장됨</>
-              : <><Save size={16} /> {savingContent ? "저장 중..." : "저장"}</>}
-          </button>
-        </div>
       )}
 
       {/* 팔로워 역할 지급 */}
