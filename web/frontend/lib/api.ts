@@ -126,6 +126,14 @@ export const api = {
       reject:  (gid: string, id: number) =>
         request(`/api/points/${gid}/submissions/${id}/reject`, { method: "POST" }),
     },
+    gambling: {
+      get:  (gid: string) =>
+        request<{ title: string; duration: number; bet_amount: number; options: string[] }>(
+          `/api/points/${gid}/gambling`
+        ),
+      save: (gid: string, data: { title: string; duration: number; bet_amount: number; options: string[] }) =>
+        request(`/api/points/${gid}/gambling`, { method: "PUT", body: JSON.stringify(data) }),
+    },
     shop: {
       items: {
         list:   (gid: string) =>

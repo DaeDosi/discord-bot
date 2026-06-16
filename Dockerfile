@@ -6,7 +6,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# cache-bust: 20260617-21
+# cache-bust: 20260617-22
 COPY . .
 
 RUN chmod +x /app/start.sh

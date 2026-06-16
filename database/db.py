@@ -205,6 +205,19 @@ async def init_db():
         "ALTER TABLE chzzk_subscriptions ADD COLUMN vod_channel       INTEGER",
         "ALTER TABLE chzzk_subscriptions ADD COLUMN clip_channel      INTEGER",
         "ALTER TABLE chzzk_subscriptions ADD COLUMN community_channel  INTEGER",
+        """CREATE TABLE IF NOT EXISTS points_gambling_config (
+               guild_id    INTEGER PRIMARY KEY,
+               title       TEXT    NOT NULL DEFAULT '포인트 도박',
+               duration    INTEGER NOT NULL DEFAULT 60,
+               bet_amount  INTEGER NOT NULL DEFAULT 100
+           )""",
+        """CREATE TABLE IF NOT EXISTS points_gambling_options (
+               id          INTEGER PRIMARY KEY AUTOINCREMENT,
+               guild_id    INTEGER NOT NULL,
+               opt_index   INTEGER NOT NULL,
+               content     TEXT    NOT NULL,
+               UNIQUE(guild_id, opt_index)
+           )""",
     ]:
         try:
             await db.execute(sql)

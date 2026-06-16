@@ -378,8 +378,8 @@ export default function ChzzkPage() {
                   팔로우 기간 조회를 위해 스트리머({sub.chzzk_name}) 본인이 아래 버튼으로 치지직 계정을 연동해야 합니다.
                 </p>
                 <button onClick={handleRelink}
-                  className="flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-colors">
-                  <ExternalLink size={12} />
+                  className="flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-lg border border-accent/60 text-accent hover:bg-accent/15 hover:border-accent transition-colors">
+                  <ExternalLink size={15} />
                   스트리머 팔로워 조회 연동
                 </button>
               </div>

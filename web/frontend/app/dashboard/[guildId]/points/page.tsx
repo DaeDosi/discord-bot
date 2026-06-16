@@ -4,12 +4,13 @@ import { useParams } from "next/navigation";
 import {
   Gem, Plus, Edit2, Trash2, Check, X, CheckCircle,
   Trophy, ClipboardList, Users, ShoppingBag, Image as ImageIcon,
+  Dices, Save,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Mission, MissionSubmission, PointsEntry, ShopItem, ShopExchange, GuildMember } from "@/lib/types";
 import MemberSearch from "@/components/MemberSearch";
 
-type Tab = "missions" | "submissions" | "leaderboard" | "adjust" | "shop";
+type Tab = "missions" | "submissions" | "leaderboard" | "adjust" | "shop" | "gambling";
 
 // ── Mission form modal ────────────────────────────────────────────────────────
 function MissionModal({
@@ -250,6 +251,12 @@ export default function PointsPage() {
   const [shopItems, setShopItems]     = useState<ShopItem[]>([]);
   const [exchanges, setExchanges]     = useState<ShopExchange[]>([]);
 
+  const [gamblingConfig, setGamblingConfig] = useState<{
+    title: string; duration: number; bet_amount: number; options: string[];
+  }>({ title: "포인트 도박", duration: 60, bet_amount: 100, options: ["", ""] });
+  const [savingGambling, setSavingGambling] = useState(false);
+  const [savedGambling, setSavedGambling]   = useState(false);
+
   const [missionModal, setMissionModal] = useState<"new" | Mission | null>(null);
   const [shopModal, setShopModal]       = useState<"new" | ShopItem | null>(null);
   const [adjustModal, setAdjustModal]   = useState(false);
@@ -262,11 +269,14 @@ export default function PointsPage() {
   const loadLeaderboard = useCallback(() => api.points.leaderboard(guildId).then(setLeaderboard).catch(() => {}), [guildId]);
   const loadShopItems   = useCallback(() => api.points.shop.items.list(guildId).then(setShopItems).catch(() => {}), [guildId]);
   const loadExchanges   = useCallback(() => api.points.shop.exchanges.list(guildId).then(setExchanges).catch(() => {}), [guildId]);
+  const loadGambling    = useCallback(() =>
+    api.points.gambling.get(guildId).then((d) => setGamblingConfig(d)).catch(() => {}), [guildId]);
 
   useEffect(() => { loadMissions(); }, [loadMissions]);
   useEffect(() => { if (tab === "submissions") loadSubmissions(); }, [tab, loadSubmissions]);
   useEffect(() => { if (tab === "leaderboard") loadLeaderboard(); }, [tab, loadLeaderboard]);
   useEffect(() => { if (tab === "shop") { loadShopItems(); loadExchanges(); } }, [tab, loadShopItems, loadExchanges]);
+  useEffect(() => { if (tab === "gambling") loadGambling(); }, [tab, loadGambling]);
 
   const saveMission = async (data: { title: string; description: string; points: number }) => {
     const payload = { ...data, is_active: true };
@@ -330,6 +340,22 @@ export default function PointsPage() {
     if (tab === "leaderboard") loadLeaderboard();
   };
 
+  const saveGambling = async () => {
+    const options = gamblingConfig.options.map((o) => o.trim()).filter(Boolean);
+    if (options.length < 2) { showToast("옵션은 최소 2개 이상 입력해야 합니다."); return; }
+    setSavingGambling(true);
+    try {
+      await api.points.gambling.save(guildId, { ...gamblingConfig, options });
+      setSavedGambling(true);
+      setTimeout(() => setSavedGambling(false), 2500);
+      showToast("도박 설정이 저장되었습니다.");
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : "저장 실패");
+    } finally {
+      setSavingGambling(false);
+    }
+  };
+
   const pendingCount = submissions.filter((s) => s.status === "pending").length;
 
   const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
@@ -338,6 +364,7 @@ export default function PointsPage() {
     { key: "leaderboard", label: "순위표",    icon: <Trophy size={14} />        },
     { key: "adjust",      label: "수동 지급", icon: <Users size={14} />         },
     { key: "shop",        label: "상점",      icon: <ShoppingBag size={14} />   },
+    { key: "gambling",    label: "포인트 도박", icon: <Dices size={14} />       },
   ];
 
   return (
@@ -522,6 +549,119 @@ export default function PointsPage() {
           <p className="text-muted text-sm">특정 멤버에게 포인트를 지급하거나 차감합니다.</p>
           <button onClick={() => setAdjustModal(true)} className="btn-primary flex items-center gap-2">
             <Gem size={15} /> 포인트 지급 / 차감
+          </button>
+        </div>
+      )}
+
+      {/* ── 포인트 도박 ── */}
+      {tab === "gambling" && (
+        <div className="card space-y-5">
+          <div>
+            <h2 className="font-semibold text-white flex items-center gap-2">
+              <Dices size={16} className="text-accent" /> 포인트 도박 설정
+            </h2>
+            <p className="text-muted text-sm mt-1">
+              Discord에서{" "}
+              <code className="bg-bg px-1.5 py-0.5 rounded text-accent text-xs">/포인트도박</code>을 입력하면
+              저장된 옵션과 시간으로 도박이 시작됩니다. 관리자 전용 명령어입니다.
+            </p>
+          </div>
+
+          {/* 기본 설정 */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="label">도박 제목</label>
+              <input
+                className="input"
+                placeholder="예: 오늘의 도박"
+                value={gamblingConfig.title}
+                onChange={(e) => setGamblingConfig((p) => ({ ...p, title: e.target.value }))}
+              />
+            </div>
+            <div>
+              <label className="label">진행 시간 (초)</label>
+              <input
+                className="input"
+                type="number"
+                min={10}
+                max={3600}
+                placeholder="60"
+                value={gamblingConfig.duration}
+                onChange={(e) => setGamblingConfig((p) => ({ ...p, duration: Number(e.target.value) || 60 }))}
+              />
+            </div>
+            <div>
+              <label className="label">1인 베팅 포인트</label>
+              <input
+                className="input"
+                type="number"
+                min={1}
+                placeholder="100"
+                value={gamblingConfig.bet_amount}
+                onChange={(e) => setGamblingConfig((p) => ({ ...p, bet_amount: Number(e.target.value) || 100 }))}
+              />
+            </div>
+          </div>
+
+          {/* 옵션 목록 */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="label mb-0">도박 옵션 (최소 2개 · 최대 5개)</label>
+              {gamblingConfig.options.length < 5 && (
+                <button
+                  onClick={() => setGamblingConfig((p) => ({ ...p, options: [...p.options, ""] }))}
+                  className="flex items-center gap-1 text-xs text-accent hover:text-white transition-colors"
+                >
+                  <Plus size={13} /> 옵션 추가
+                </button>
+              )}
+            </div>
+            {gamblingConfig.options.map((opt, idx) => {
+              const nums = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"];
+              return (
+                <div key={idx} className="flex items-center gap-2">
+                  <span className="text-lg shrink-0">{nums[idx] ?? `${idx + 1}`}</span>
+                  <input
+                    className="input flex-1"
+                    placeholder={`옵션 ${idx + 1} 내용...`}
+                    value={opt}
+                    onChange={(e) => setGamblingConfig((p) => {
+                      const next = [...p.options];
+                      next[idx] = e.target.value;
+                      return { ...p, options: next };
+                    })}
+                  />
+                  {gamblingConfig.options.length > 2 && (
+                    <button
+                      onClick={() => setGamblingConfig((p) => ({
+                        ...p, options: p.options.filter((_, i) => i !== idx),
+                      }))}
+                      className="p-1.5 text-muted hover:text-danger transition-colors"
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 사용법 안내 */}
+          <div className="rounded-lg bg-bg border border-border p-3 text-xs text-muted space-y-1">
+            <p className="font-semibold text-fg">사용 방법</p>
+            <p>• <code className="text-accent">/포인트도박</code> — 도박 시작 (위 설정 불러옴, 관리자 전용)</p>
+            <p>• <code className="text-accent">/포인트도박종료 [번호]</code> — 강제 종료 및 당첨자 결정. 번호 미입력 시 랜덤 추첨</p>
+            <p>• 유저가 버튼 클릭 시 베팅 포인트 차감 → 당첨 옵션 선택자끼리 총 풀 균등 분배</p>
+          </div>
+
+          <button
+            onClick={saveGambling}
+            disabled={savingGambling}
+            className="btn-primary"
+          >
+            {savedGambling
+              ? <><CheckCircle size={15} /> 저장됨</>
+              : <><Save size={15} /> {savingGambling ? "저장 중..." : "설정 저장"}</>}
           </button>
         </div>
       )}

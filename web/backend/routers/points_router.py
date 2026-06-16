@@ -324,6 +324,73 @@ async def list_shop_exchanges(
     ]
 
 
+# ── 포인트 도박 설정 ──────────────────────────────────────────────────────────
+
+class GamblingConfigSave(BaseModel):
+    title:      str = "포인트 도박"
+    duration:   int = 60
+    bet_amount: int = 100
+    options:    list[str] = []
+
+
+@router.get("/{guild_id}/gambling")
+async def get_gambling_config(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    cfg = await (await db.execute(
+        "SELECT title, duration, bet_amount FROM points_gambling_config WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone()
+    opts = await (await db.execute(
+        "SELECT content FROM points_gambling_options WHERE guild_id=? ORDER BY opt_index",
+        (int(guild_id),)
+    )).fetchall()
+    return {
+        "title":      cfg["title"]      if cfg else "포인트 도박",
+        "duration":   cfg["duration"]   if cfg else 60,
+        "bet_amount": cfg["bet_amount"] if cfg else 100,
+        "options":    [r["content"] for r in opts],
+    }
+
+
+@router.put("/{guild_id}/gambling")
+async def save_gambling_config(
+    guild_id: str,
+    body: GamblingConfigSave,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    options = [o.strip() for o in body.options if o.strip()]
+    if len(options) < 2:
+        raise HTTPException(status_code=400, detail="옵션은 최소 2개 이상 필요합니다.")
+    if len(options) > 5:
+        raise HTTPException(status_code=400, detail="옵션은 최대 5개까지 가능합니다.")
+
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO points_gambling_config(guild_id, title, duration, bet_amount)
+           VALUES(?,?,?,?)
+           ON CONFLICT(guild_id) DO UPDATE SET
+               title=excluded.title,
+               duration=excluded.duration,
+               bet_amount=excluded.bet_amount""",
+        (int(guild_id), body.title or "포인트 도박", max(10, body.duration), max(1, body.bet_amount))
+    )
+    await db.execute(
+        "DELETE FROM points_gambling_options WHERE guild_id=?", (int(guild_id),)
+    )
+    for i, content in enumerate(options):
+        await db.execute(
+            "INSERT INTO points_gambling_options(guild_id, opt_index, content) VALUES(?,?,?)",
+            (int(guild_id), i, content)
+        )
+    await db.commit()
+    return {"ok": True}
+
+
 @router.post("/{guild_id}/shop/exchanges/{exchange_id}/use")
 async def mark_exchange_used(
     guild_id: str,
