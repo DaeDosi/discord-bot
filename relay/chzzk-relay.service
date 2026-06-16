@@ -1,0 +1,16 @@
+[Unit]
+Description=Chzzk Community Relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/relay
+EnvironmentFile=/home/ubuntu/relay/.env
+ExecStart=/usr/bin/python3 /home/ubuntu/relay/relay.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
