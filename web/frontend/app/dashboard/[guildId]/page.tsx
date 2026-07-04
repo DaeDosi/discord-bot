@@ -81,7 +81,7 @@ export default function GeneralSettingsPage() {
             options={textChannels} placeholder="채널 선택..." />
           <SelectField label="중재 로그 채널"   value={cfg.log_channel || ""}     onChange={set("log_channel")}
             options={textChannels} placeholder="채널 선택..." />
-          <SelectField label="레벨업 알림 채널" value={cfg.levelup_channel || ""} onChange={set("levelup_channel")}
+          <SelectField label="애정도 레벨업 알림 채널" value={cfg.levelup_channel || ""} onChange={set("levelup_channel")}
             options={textChannels} placeholder="현재 채널 (기본)" />
         </div>
       </div>
@@ -116,7 +116,7 @@ export default function GeneralSettingsPage() {
 
       {/* 레벨업 DM */}
       <div className="card space-y-4">
-        <h2 className="section-title">레벨업 알림</h2>
+        <h2 className="section-title">애정도 레벨업 알림</h2>
         <label className="flex items-center gap-3 cursor-pointer">
           <input
             type="checkbox"
@@ -124,7 +124,7 @@ export default function GeneralSettingsPage() {
             onChange={(e) => set("levelup_dm")(e.target.checked)}
             className="w-4 h-4 accent-accent"
           />
-          <span className="text-sm">레벨업 알림을 DM으로 전송</span>
+          <span className="text-sm">애정도 레벨업 알림을 DM으로 전송</span>
         </label>
       </div>
 

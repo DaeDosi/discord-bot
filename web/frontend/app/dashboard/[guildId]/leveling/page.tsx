@@ -85,21 +85,21 @@ export default function LevelingPage() {
       )}
 
       <div>
-        <h1 className="page-title">레벨업 시스템</h1>
-        <p className="page-subtitle">레벨 보상 역할 및 리더보드를 관리합니다.</p>
+        <h1 className="page-title">애정도 시스템</h1>
+        <p className="page-subtitle">애정도 등급 보상 및 리더보드를 관리합니다.</p>
       </div>
 
       {/* 요약 통계 */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-        <StatTile icon={<Zap size={18} />}    label="등록된 레벨 보상" value={rewards.length}   color="#FEE75C" />
+        <StatTile icon={<Zap size={18} />}    label="등록된 애정도 보상" value={rewards.length}   color="#FEE75C" />
         <StatTile icon={<Trophy size={18} />} label="리더보드 참여자"  value={lb.length}         color="#5865F2" />
-        <StatTile icon={<Award size={18} />}  label="최고 레벨"        value={lb[0]?.level ?? 0} color="#57F287" />
+        <StatTile icon={<Award size={18} />}  label="최고 애정도 레벨"        value={lb[0]?.level ?? 0} color="#57F287" />
       </div>
 
       {/* 레벨 보상 */}
       <div className="card space-y-4">
         <h2 className="section-title flex items-center gap-2">
-          <Zap size={16} className="text-warning" /> 레벨 보상 역할
+          <Zap size={16} className="text-warning" /> 애정도 등급 보상
         </h2>
         <div className="space-y-2">
           {rewards.map((r) => {
@@ -108,7 +108,7 @@ export default function LevelingPage() {
               <div key={r.level}
                 className="flex items-center justify-between bg-bg rounded-lg px-4 py-3 border border-border">
                 <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold text-accent w-20">레벨 {r.level}</span>
+                  <span className="text-sm font-semibold text-accent w-20">애정도 Lv.{r.level}</span>
                   {role && (
                     <span className="text-sm px-2 py-0.5 rounded-full border border-border"
                           style={{ color: role.color ? `#${role.color.toString(16).padStart(6,"0")}` : "#fff" }}>
@@ -123,7 +123,7 @@ export default function LevelingPage() {
             );
           })}
           {rewards.length === 0 && (
-            <p className="text-muted text-sm text-center py-4">등록된 레벨 보상이 없습니다.</p>
+            <p className="text-muted text-sm text-center py-4">등록된 애정도 보상이 없습니다.</p>
           )}
         </div>
 
@@ -149,7 +149,7 @@ export default function LevelingPage() {
       {/* 리더보드 */}
       <div className="card space-y-3">
         <h2 className="section-title flex items-center gap-2">
-          <Trophy size={16} className="text-warning" /> 서버 리더보드 (상위 20)
+          <Trophy size={16} className="text-warning" /> 서버 애정도 리더보드 (상위 20)
         </h2>
         <div className="space-y-2">
           {lb.map((entry, i) => (
@@ -161,11 +161,11 @@ export default function LevelingPage() {
               </span>
               <span className="text-sm text-fg flex-1 truncate">{entry.display_name || entry.user_id}</span>
               <span className="text-xs text-muted">Lv.{entry.level}</span>
-              <span className="text-xs text-accent font-medium">{entry.xp.toLocaleString()} XP</span>
+              <span className="text-xs text-accent font-medium">{entry.xp.toLocaleString()} 애정도</span>
               <button
                 onClick={() => deleteLbEntry(String(entry.user_id))}
                 disabled={deletingId === String(entry.user_id)}
-                title="XP 삭제"
+                title="애정도 삭제"
                 className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger transition-all p-1 shrink-0"
               >
                 <X size={13} />
@@ -173,7 +173,7 @@ export default function LevelingPage() {
             </div>
           ))}
           {lb.length === 0 && (
-            <p className="text-muted text-sm text-center py-4">아직 XP 데이터가 없습니다.</p>
+            <p className="text-muted text-sm text-center py-4">아직 애정도 데이터가 없습니다.</p>
           )}
         </div>
       </div>

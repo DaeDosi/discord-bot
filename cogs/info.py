@@ -34,7 +34,7 @@ class InfoCog(commands.Cog):
         embed = discord.Embed(
             title="🤖 NexBot 정보",
             description=(
-                "치지직 알림, 서버 관리, 레벨링, 입장 인증까지 한 번에!\n"
+                "치지직 알림, 서버 관리, 애정도, 입장 인증까지 한 번에!\n"
                 "웹 대시보드로 간편하게 설정하세요."
             ),
             color=0x5865F2,
@@ -57,10 +57,10 @@ class InfoCog(commands.Cog):
             color=0x5865F2,
         )
         embed.add_field(
-            name="⭐ 레벨링",
+            name="⭐ 애정도",
             value=(
-                "`/랭크` — 자신(또는 멤버)의 레벨·XP를 확인합니다\n"
-                "`/리더보드` — 서버 레벨 랭킹 상위 10명을 확인합니다"
+                "`/랭크` — 자신(또는 멤버)의 애정도 레벨/경험치를 확인합니다\n"
+                "`/리더보드` — 서버 애정도 랭킹 상위 10명을 확인합니다"
             ),
             inline=False,
         )
@@ -101,11 +101,11 @@ class InfoCog(commands.Cog):
             color=0xED4245,
         )
         embed.add_field(
-            name="⭐ 레벨링",
+            name="⭐ 애정도",
             value=(
-                "`/랭크` — 레벨·XP 확인\n"
+                "`/랭크` — 애정도 레벨/경험치 확인\n"
                 "`/리더보드` — 서버 랭킹 상위 10명\n"
-                "`/xp설정` — 멤버 XP 직접 설정 🔒"
+                "`/xp설정` — 멤버 애정도 경험치 직접 설정 🔒"
             ),
             inline=False,
         )

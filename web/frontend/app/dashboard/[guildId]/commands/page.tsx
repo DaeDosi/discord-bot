@@ -37,12 +37,12 @@ const CATEGORIES: Category[] = [
     ],
   },
   {
-    label: "레벨업",
+    label: "애정도",
     color: "#FEE75C",
     cmds: [
-      { name: "/랭크",    desc: "자신(또는 멤버)의 레벨·XP를 확인합니다" },
-      { name: "/리더보드", desc: "서버 레벨 랭킹 상위 10명을 확인합니다" },
-      { name: "/xp설정",  desc: "멤버의 XP를 직접 설정합니다",              admin: true },
+      { name: "/랭크",    desc: "자신(또는 멤버)의 애정도 레벨/경험치를 확인합니다" },
+      { name: "/리더보드", desc: "서버 애정도 랭킹 상위 10명을 확인합니다" },
+      { name: "/xp설정",  desc: "멤버의 애정도 경험치를 직접 설정합니다",              admin: true },
     ],
   },
   {
