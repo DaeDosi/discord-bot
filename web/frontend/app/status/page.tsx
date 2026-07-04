@@ -27,10 +27,10 @@ const INCIDENTS: {
 ];
 
 const STATUS_META: Record<ServiceStatus, { label: string; color: string; icon: React.ReactNode }> = {
-  operational:  { label: "정상",      color: "text-green-400",  icon: <CheckCircle size={16} className="text-green-400" />  },
-  degraded:     { label: "성능 저하", color: "text-yellow-400", icon: <AlertCircle size={16} className="text-yellow-400" /> },
-  outage:       { label: "장애",      color: "text-red-400",    icon: <AlertCircle size={16} className="text-red-400" />    },
-  maintenance:  { label: "점검 중",   color: "text-blue-400",   icon: <Clock       size={16} className="text-blue-400" />   },
+  operational:  { label: "정상",      color: "text-success",  icon: <CheckCircle size={16} className="text-success" />  },
+  degraded:     { label: "성능 저하", color: "text-warning",  icon: <AlertCircle size={16} className="text-warning" /> },
+  outage:       { label: "장애",      color: "text-danger",   icon: <AlertCircle size={16} className="text-danger" />    },
+  maintenance:  { label: "점검 중",   color: "text-blue-400", icon: <Clock       size={16} className="text-blue-400" />   },
 };
 
 function overallStatus(services: typeof SERVICES): ServiceStatus {
@@ -42,9 +42,9 @@ function overallStatus(services: typeof SERVICES): ServiceStatus {
 
 const overall = overallStatus(SERVICES);
 const OVERALL_BANNERS: Record<ServiceStatus, { bg: string; text: string; label: string }> = {
-  operational:  { bg: "bg-green-500/10 border border-green-500/20",  text: "text-green-400",  label: "모든 시스템이 정상 운영 중입니다." },
-  degraded:     { bg: "bg-yellow-500/10 border border-yellow-500/20", text: "text-yellow-400", label: "일부 서비스에 성능 저하가 발생하고 있습니다." },
-  outage:       { bg: "bg-red-500/10 border border-red-500/20",      text: "text-red-400",    label: "일부 서비스에 장애가 발생하고 있습니다." },
+  operational:  { bg: "bg-success/10 border border-success/20",  text: "text-success",  label: "모든 시스템이 정상 운영 중입니다." },
+  degraded:     { bg: "bg-warning/10 border border-warning/20", text: "text-warning", label: "일부 서비스에 성능 저하가 발생하고 있습니다." },
+  outage:       { bg: "bg-danger/10 border border-danger/20",      text: "text-danger",    label: "일부 서비스에 장애가 발생하고 있습니다." },
   maintenance:  { bg: "bg-blue-500/10 border border-blue-500/20",    text: "text-blue-400",   label: "현재 점검이 진행 중입니다." },
 };
 const banner = OVERALL_BANNERS[overall];
@@ -69,7 +69,7 @@ export default function StatusPage() {
           <ChevronLeft size={15} /> 홈으로
         </Link>
 
-        <h1 className="text-3xl font-bold text-fg mb-2">서버 상태</h1>
+        <h1 className="page-title mb-2">서버 상태</h1>
         <p className="text-muted mb-8">NexBot 서비스의 운영 현황 및 장애 내역을 확인하세요.</p>
 
         {/* Overall status banner */}
@@ -101,10 +101,10 @@ export default function StatusPage() {
         </div>
 
         {/* Incidents */}
-        <h2 className="text-xl font-bold text-fg mb-4">장애 / 공지 내역</h2>
+        <h2 className="section-title mb-4">장애 / 공지 내역</h2>
         {INCIDENTS.length === 0 ? (
           <div className="rounded-xl bg-bg-card border border-border px-5 py-10 text-center">
-            <CheckCircle size={32} className="mx-auto mb-3 text-green-400 opacity-60" />
+            <CheckCircle size={32} className="mx-auto mb-3 text-success opacity-60" />
             <p className="text-muted">최근 장애 내역이 없습니다.</p>
           </div>
         ) : (
@@ -113,13 +113,13 @@ export default function StatusPage() {
               <div key={inc.title} className="rounded-xl bg-bg-card border border-border p-5">
                 <div className="flex items-center gap-2 mb-2">
                   {inc.resolved
-                    ? <CheckCircle size={15} className="text-green-400" />
-                    : <AlertCircle size={15} className="text-red-400" />}
+                    ? <CheckCircle size={15} className="text-success" />
+                    : <AlertCircle size={15} className="text-danger" />}
                   <p className="font-semibold text-fg">{inc.title}</p>
                   <span className="ml-auto text-xs text-muted">{inc.date}</span>
                 </div>
                 <p className="text-sm text-muted leading-relaxed">{inc.description}</p>
-                <p className={`text-xs mt-2 font-medium ${inc.resolved ? "text-green-400" : "text-red-400"}`}>
+                <p className={`text-xs mt-2 font-medium ${inc.resolved ? "text-success" : "text-danger"}`}>
                   {inc.resolved ? "해결됨" : "처리 중"}
                 </p>
               </div>

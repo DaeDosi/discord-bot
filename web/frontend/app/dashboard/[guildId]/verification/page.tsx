@@ -92,8 +92,8 @@ export default function VerificationPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-bold text-fg">입장 인증</h1>
-        <p className="text-muted text-sm mt-1">
+        <h1 className="page-title">입장 인증</h1>
+        <p className="page-subtitle">
           신규 멤버 입장 인증 흐름을 설정합니다.
           설정 저장 후 Discord에서 <code className="text-accent">/입장메시지설정</code> 명령어를 실행하면
           아래 설정값으로 입장 채널에 인증 임베드가 전송(또는 수정)됩니다.
@@ -108,7 +108,7 @@ export default function VerificationPage() {
 
       {/* 채널 · 역할 */}
       <div className="card space-y-4">
-        <h2 className="font-semibold text-fg">채널 &amp; 역할</h2>
+        <h2 className="section-title">채널 &amp; 역할</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <SelectField
             label="입장 인증 채널"
@@ -140,7 +140,7 @@ export default function VerificationPage() {
 
       {/* 인증 방식 */}
       <div className="card space-y-4">
-        <h2 className="font-semibold text-fg">인증 방식</h2>
+        <h2 className="section-title">인증 방식</h2>
         <div
           className="flex items-center justify-between p-3 rounded-lg border border-border
                      hover:bg-bg-hover transition-colors cursor-pointer"
@@ -160,7 +160,7 @@ export default function VerificationPage() {
 
       {/* 임베드 디자인 */}
       <div className="card space-y-4">
-        <h2 className="font-semibold text-fg">임베드 디자인</h2>
+        <h2 className="section-title">임베드 디자인</h2>
 
         <div>
           <label className="label">임베드 제목</label>
@@ -202,7 +202,7 @@ export default function VerificationPage() {
 
       {/* 입장 메시지 */}
       <div className="card space-y-3">
-        <h2 className="font-semibold text-fg">입장 메시지</h2>
+        <h2 className="section-title">입장 메시지</h2>
         <p className="text-sm text-muted">
           인증 임베드 본문에 표시될 텍스트입니다. 비워두면 기본 메시지가 사용됩니다.
         </p>

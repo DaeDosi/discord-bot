@@ -51,7 +51,7 @@ const FAQS: FaqItem[] = [
           <li>입장 인증 채널 선택</li>
           <li>미인증 역할 / 인증됨 역할 선택</li>
           <li><span className="text-accent">변경사항 저장</span> 클릭</li>
-          <li>Discord에서 <code className="text-accent bg-black/30 px-1 rounded">/입장메시지설정</code> 다시 실행</li>
+          <li>Discord에서 <code className="text-accent bg-bg px-1 rounded">/입장메시지설정</code> 다시 실행</li>
         </ol>
       </div>
     ),
@@ -122,7 +122,7 @@ const FAQS: FaqItem[] = [
         <ol className="list-decimal list-inside space-y-1 pl-1">
           <li>Railway 대시보드에서 서비스 상태 확인</li>
           <li>배포 로그에서 오류 확인</li>
-          <li>환경변수(특히 <code className="text-accent bg-black/30 px-1 rounded">DISCORD_TOKEN</code>)가 올바른지 확인</li>
+          <li>환경변수(특히 <code className="text-accent bg-bg px-1 rounded">DISCORD_TOKEN</code>)가 올바른지 확인</li>
         </ol>
       </div>
     ),
@@ -167,7 +167,7 @@ const FAQS: FaqItem[] = [
         <p>이 명령어는 대시보드에 저장된 치지직 설정을 Discord에서 확인하고 알림 채널을 빠르게 변경할 수 있게 합니다.</p>
         <p className="font-medium text-fg">사용 방법:</p>
         <ol className="list-decimal list-inside space-y-1 pl-1">
-          <li>Discord에서 <code className="text-accent bg-black/30 px-1 rounded">/치지직설정불러오기</code> 실행</li>
+          <li>Discord에서 <code className="text-accent bg-bg px-1 rounded">/치지직설정불러오기</code> 실행</li>
           <li>현재 설정(스트리머, 알림 채널, 콘텐츠 알림 상태)이 표시됩니다</li>
           <li>채널 선택 드롭다운에서 원하는 채널을 선택하면 즉시 적용됩니다</li>
         </ol>
@@ -210,8 +210,8 @@ export default function HelpPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-bold text-fg">문제 해결 가이드</h1>
-        <p className="text-muted text-sm mt-1">자주 발생하는 문제와 해결 방법을 확인하세요.</p>
+        <h1 className="page-title">문제 해결 가이드</h1>
+        <p className="page-subtitle">자주 발생하는 문제와 해결 방법을 확인하세요.</p>
       </div>
 
       {/* 태그 필터 */}

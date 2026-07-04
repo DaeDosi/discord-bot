@@ -98,14 +98,14 @@ export default function CommandsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-bold text-fg flex items-center gap-2">
+        <h1 className="page-title flex items-center gap-2">
           <Terminal size={20} className="text-accent" /> 명령어 목록
         </h1>
-        <p className="text-muted text-sm mt-1">
+        <p className="page-subtitle">
           NexBot의 모든 슬래시 명령어를 확인합니다. Discord에서{" "}
-          <code className="font-sans text-accent bg-black/20 px-1 rounded">/도움말</code>
+          <code className="font-sans text-accent bg-bg px-1 rounded">/도움말</code>
           {" "}(일반) 또는{" "}
-          <code className="font-sans text-accent bg-black/20 px-1 rounded">/도움말관리</code>
+          <code className="font-sans text-accent bg-bg px-1 rounded">/도움말관리</code>
           {" "}(관리자)를 입력해도 볼 수 있습니다.
         </p>
       </div>
@@ -113,7 +113,7 @@ export default function CommandsPage() {
       <div className="grid grid-cols-1 gap-4">
         {CATEGORIES.map(({ label, color, cmds }) => (
           <div key={label} className="card space-y-3">
-            <h2 className="font-semibold text-fg flex items-center gap-2">
+            <h2 className="section-title flex items-center gap-2">
               <span
                 className="w-2.5 h-2.5 rounded-full inline-block shrink-0"
                 style={{ background: color }}

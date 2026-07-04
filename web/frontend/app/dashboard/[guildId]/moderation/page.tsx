@@ -75,7 +75,7 @@ function ManagerModal({
                   <p className="text-sm font-medium text-fg">{m.display_name}</p>
                   <button
                     onClick={() => onRemove(m.user_id)}
-                    className="text-muted hover:text-red-400 transition-colors p-1"
+                    className="text-muted hover:text-danger transition-colors p-1"
                   >
                     <X size={14} />
                   </button>
@@ -169,7 +169,7 @@ function WarnModal({
             </button>
           ) : (
             <p className="font-semibold text-fg flex items-center gap-2">
-              <AlertTriangle size={16} className="text-yellow-400" /> 경고 현황
+              <AlertTriangle size={16} className="text-warning" /> 경고 현황
             </p>
           )}
           <button onClick={onClose} className="text-muted hover:text-fg transition-colors">
@@ -203,7 +203,7 @@ function WarnModal({
                         </p>
                       </div>
                       <div className="flex items-center gap-2 shrink-0 ml-2">
-                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/20">
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-danger/15 text-danger border border-danger/20">
                           {u.count}회
                         </span>
                         <ChevronRight size={14} className="text-muted" />
@@ -241,7 +241,7 @@ function WarnModal({
                       </div>
                       <button
                         onClick={() => deleteOne(w.id)}
-                        className="shrink-0 text-muted hover:text-red-400 transition-colors p-1"
+                        className="shrink-0 text-muted hover:text-danger transition-colors p-1"
                         title="경고 삭제"
                       >
                         <Trash2 size={14} />
@@ -260,8 +260,8 @@ function WarnModal({
             <button onClick={() => setSelected(null)} className="btn-secondary text-sm">닫기</button>
             <button
               onClick={clearAll}
-              className="text-sm px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20
-                         hover:bg-red-500/20 transition-colors flex items-center gap-1.5"
+              className="text-sm px-3 py-1.5 rounded-lg bg-danger/10 text-danger border border-danger/20
+                         hover:bg-danger/20 transition-colors flex items-center gap-1.5"
             >
               <Trash2 size={14} /> 전체 삭제
             </button>
@@ -339,16 +339,16 @@ export default function ModerationPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-fg flex items-center gap-2">
+          <h1 className="page-title flex items-center gap-2">
             <Shield size={20} className="text-accent" /> 관리 설정
           </h1>
-          <p className="text-muted text-sm mt-1">매니저 역할, 로그 채널, 자동 관리를 설정합니다.</p>
+          <p className="page-subtitle">매니저 역할, 로그 채널, 자동 관리를 설정합니다.</p>
         </div>
         <button
           onClick={() => setWarnOpen(true)}
           className="shrink-0 flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium
-                     bg-yellow-500/10 text-yellow-400 border border-yellow-500/20
-                     hover:bg-yellow-500/20 transition-colors"
+                     bg-warning/10 text-warning border border-warning/20
+                     hover:bg-warning/20 transition-colors"
         >
           <AlertTriangle size={15} /> 경고 현황
         </button>
@@ -357,7 +357,7 @@ export default function ModerationPage() {
       {/* ── 기본 설정 ── */}
       <div className="card space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-fg">기본 설정</h2>
+          <h2 className="section-title">기본 설정</h2>
           <button
             onClick={() => setMgrOpen(true)}
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-accent/40
@@ -391,7 +391,7 @@ export default function ModerationPage() {
 
       {/* ── 경고 자동 처리 ── */}
       <div className="card space-y-4">
-        <h2 className="font-semibold text-fg">경고 자동 처리</h2>
+        <h2 className="section-title">경고 자동 처리</h2>
         <p className="text-sm text-muted">0으로 설정하면 비활성화됩니다.</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
@@ -419,7 +419,7 @@ export default function ModerationPage() {
 
       {/* ── Auto-Mod ── */}
       <div className="card space-y-4">
-        <h2 className="font-semibold text-fg">자동 관리 (Auto-Mod)</h2>
+        <h2 className="section-title">자동 관리 (Auto-Mod)</h2>
         <label className="flex items-center justify-between cursor-pointer p-3 rounded-lg bg-bg border border-border">
           <div>
             <p className="text-sm font-medium">자동 관리 활성화</p>

@@ -152,7 +152,7 @@ function VerifyContent() {
 
         {status === "success" && (
           <>
-            <CheckCircle size={48} className="text-green-400" />
+            <CheckCircle size={48} className="text-success" />
             <div className="text-center space-y-1">
               <p className="font-semibold text-fg">인증 완료!</p>
               <p className="text-sm text-muted">{message}</p>

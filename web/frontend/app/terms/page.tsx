@@ -198,7 +198,7 @@ export default function TermsPage() {
           <span className="text-fg">이용약관</span>
         </div>
 
-        <h1 className="text-3xl sm:text-4xl font-bold text-fg mb-3">이용약관</h1>
+        <h1 className="page-title sm:text-4xl mb-3">이용약관</h1>
         <p className="text-muted">
           시행일: <span className="text-fg">{EFFECTIVE_DATE}</span>
           <span className="mx-3 text-border">|</span>

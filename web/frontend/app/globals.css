@@ -43,7 +43,7 @@ html.light {
 /* ── Component classes ────────────────────────────────────────────────── */
 @layer components {
   .card {
-    @apply bg-bg-card rounded-xl border border-border p-4 md:p-6;
+    @apply bg-bg-card rounded-xl border border-border p-5 md:p-7;
   }
   .btn-primary {
     @apply bg-accent hover:bg-accent-hover text-white font-medium px-4 py-2 rounded-lg
@@ -68,17 +68,17 @@ html.light {
   .label {
     @apply text-sm font-medium text-muted mb-1 block;
   }
-  /* ── 타이포 위계 (opt-in) ──────────────────────────────────────────────
-     페이지 제목 → 본문 → 보조설명의 크기·굵기 차이를 명확히 벌려서
-     "회색 텍스트 위주"로 밋밋해 보이는 문제를 완화한다. */
+  /* ── 타이포 위계 ────────────────────────────────────────────────────────
+     페이지 제목 → 섹션 제목 → 본문 → 보조설명 사이의 크기·굵기 차이를
+     확실히 벌려서 "다 비슷비슷한 텍스트"로 보이는 문제를 해소한다. */
   .page-title {
-    @apply text-2xl font-bold text-fg tracking-tight;
+    @apply text-3xl font-extrabold text-fg tracking-tight leading-tight;
   }
   .page-subtitle {
-    @apply text-sm text-muted mt-1;
+    @apply text-base text-muted mt-2 leading-relaxed;
   }
   .section-title {
-    @apply text-base font-semibold text-fg;
+    @apply text-lg font-bold text-fg tracking-tight;
   }
   .text-caption {
     @apply text-xs text-muted/80;

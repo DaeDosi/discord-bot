@@ -89,7 +89,7 @@ export default function GuidePage() {
         </div>
 
         {/* Hero */}
-        <h1 className="text-3xl sm:text-4xl font-bold text-fg mb-3">시작 가이드</h1>
+        <h1 className="page-title sm:text-4xl mb-3">시작 가이드</h1>
         <p className="text-muted text-base sm:text-lg leading-relaxed mb-12">
           몇 가지 간단한 단계로 NexBot을 설정하세요.
         </p>

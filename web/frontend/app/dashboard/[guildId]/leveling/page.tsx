@@ -67,13 +67,13 @@ export default function LevelingPage() {
       )}
 
       <div>
-        <h1 className="text-xl font-bold text-fg">레벨업 시스템</h1>
-        <p className="text-muted text-sm mt-1">레벨 보상 역할 및 리더보드를 관리합니다.</p>
+        <h1 className="page-title">레벨업 시스템</h1>
+        <p className="page-subtitle">레벨 보상 역할 및 리더보드를 관리합니다.</p>
       </div>
 
       {/* 레벨 보상 */}
       <div className="card space-y-4">
-        <h2 className="font-semibold text-fg flex items-center gap-2">
+        <h2 className="section-title flex items-center gap-2">
           <Zap size={16} className="text-warning" /> 레벨 보상 역할
         </h2>
         <div className="space-y-2">
@@ -123,7 +123,7 @@ export default function LevelingPage() {
 
       {/* 리더보드 */}
       <div className="card space-y-3">
-        <h2 className="font-semibold text-fg flex items-center gap-2">
+        <h2 className="section-title flex items-center gap-2">
           <Trophy size={16} className="text-warning" /> 서버 리더보드 (상위 20)
         </h2>
         <div className="space-y-2">

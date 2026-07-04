@@ -54,7 +54,7 @@ export default function FaqPage() {
           <ChevronLeft size={15} /> 홈으로
         </Link>
 
-        <h1 className="text-3xl font-bold text-fg mb-2">자주 묻는 질문</h1>
+        <h1 className="page-title mb-2">자주 묻는 질문</h1>
         <p className="text-muted mb-10">NexBot 사용 중 궁금한 점을 확인하세요.</p>
 
         <div className="space-y-4">
