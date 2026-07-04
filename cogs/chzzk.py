@@ -53,57 +53,6 @@ async def search_channels(keyword: str) -> list[dict]:
         return data.get("content", {}).get("data", [])
 
 
-async def fetch_latest_video(chzzk_id: str) -> dict | None:
-    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/videos"
-    params = {"sortType": "RECENT", "size": 1, "page": 0}
-    async with httpx.AsyncClient(headers=HEADERS, timeout=10) as client:
-        resp = await client.get(url, params=params)
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-        videos = data.get("content", {}).get("data", [])
-        return videos[0] if videos else None
-
-
-async def fetch_latest_clip(chzzk_id: str) -> dict | None:
-    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/clips"
-    params = {"sortType": "RECENT", "size": 1}
-    async with httpx.AsyncClient(headers=HEADERS, timeout=10) as client:
-        resp = await client.get(url, params=params)
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-        clips = data.get("content", {}).get("data", [])
-        return clips[0] if clips else None
-
-
-async def fetch_latest_post(chzzk_id: str) -> dict | None:
-    url = f"{CHZZK_API}/service/v1/channels/{chzzk_id}/community/posts"
-    params = {"sortType": "RECENT", "page": 0, "size": 1}
-    async with httpx.AsyncClient(headers=HEADERS, timeout=15) as client:
-        resp = await client.get(url, params=params)
-        if resp.status_code != 200:
-            print(f"[chzzk] fetch_latest_post HTTP {resp.status_code} for {chzzk_id}: {resp.text[:200]}")
-            return None
-        data = resp.json()
-        content = data.get("content", {})
-        # 응답 구조가 버전마다 다를 수 있어 여러 경우 대응
-        if isinstance(content, list):
-            posts = content
-        elif isinstance(content, dict):
-            posts = (
-                content.get("data")
-                or content.get("posts")
-                or content.get("articles")
-                or []
-            )
-        else:
-            posts = []
-        if not posts:
-            print(f"[chzzk] fetch_latest_post: no posts found for {chzzk_id}, raw content keys={list(content.keys()) if isinstance(content, dict) else type(content)}")
-        return posts[0] if posts else None
-
-
 # ── 치지직 설정 채널 선택 View ────────────────────────────────────────────────
 class ChzzkChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, sub_id: int, guild_id: int):
@@ -150,10 +99,7 @@ class ChzzkCog(commands.Cog):
         db = await get_db()
         rows = await (await db.execute(
             "SELECT id, guild_id, discord_channel, chzzk_channel_id, chzzk_name, "
-            "is_live, mention_role_id, custom_message, mention_everyone, "
-            "notify_vod, notify_clip, notify_community, "
-            "last_vod_id, last_clip_id, last_post_id, "
-            "vod_channel, clip_channel, community_channel "
+            "is_live, mention_role_id, custom_message, mention_everyone "
             "FROM chzzk_subscriptions"
         )).fetchall()
 
@@ -176,67 +122,6 @@ class ChzzkCog(commands.Cog):
                     "UPDATE chzzk_subscriptions SET is_live=? WHERE id=?",
                     (int(now_live), row["id"])
                 )
-
-                # ── VOD 알림 ──────────────────────────────────────────────
-                if bool(row["notify_vod"]):
-                    try:
-                        video = await fetch_latest_video(row["chzzk_channel_id"])
-                        if video:
-                            vid_id = str(video.get("videoNo", ""))
-                            if vid_id:
-                                if row["last_vod_id"] and vid_id != row["last_vod_id"]:
-                                    await self._send_video_notification(row, video)
-                                if vid_id != (row["last_vod_id"] or ""):
-                                    await db.execute(
-                                        "UPDATE chzzk_subscriptions SET last_vod_id=? WHERE id=?",
-                                        (vid_id, row["id"])
-                                    )
-                    except Exception:
-                        pass
-
-                # ── 클립 알림 ─────────────────────────────────────────────
-                if bool(row["notify_clip"]):
-                    try:
-                        clip = await fetch_latest_clip(row["chzzk_channel_id"])
-                        if clip:
-                            clip_id = str(clip.get("clipNo", clip.get("clipUID", "")))
-                            if clip_id:
-                                if row["last_clip_id"] and clip_id != row["last_clip_id"]:
-                                    await self._send_clip_notification(row, clip)
-                                if clip_id != (row["last_clip_id"] or ""):
-                                    await db.execute(
-                                        "UPDATE chzzk_subscriptions SET last_clip_id=? WHERE id=?",
-                                        (clip_id, row["id"])
-                                    )
-                    except Exception:
-                        pass
-
-                # ── 커뮤니티 게시글 알림 ────────────────────────────────
-                if bool(row["notify_community"]):
-                    try:
-                        post = await fetch_latest_post(row["chzzk_channel_id"])
-                        if post:
-                            # 필드명이 버전마다 다를 수 있어 여러 후보 시도
-                            post_id = str(
-                                post.get("postNo")
-                                or post.get("communityPostNo")
-                                or post.get("articleId")
-                                or post.get("no")
-                                or post.get("id")
-                                or ""
-                            )
-                            if post_id:
-                                if row["last_post_id"] and post_id != row["last_post_id"]:
-                                    await self._send_post_notification(row, post)
-                                if post_id != (row["last_post_id"] or ""):
-                                    await db.execute(
-                                        "UPDATE chzzk_subscriptions SET last_post_id=? WHERE id=?",
-                                        (post_id, row["id"])
-                                    )
-                            else:
-                                print(f"[chzzk] community post has no ID, keys={list(post.keys())}")
-                    except Exception as e:
-                        print(f"[chzzk] community notify error for {row['chzzk_channel_id']}: {e}")
 
             except Exception as e:
                 print(f"[chzzk] monitor_loop error for guild {row['guild_id']}: {e}")
@@ -301,107 +186,6 @@ class ChzzkCog(commands.Cog):
         )
         embed.set_footer(text="NexBot • nexbot.shop")
         await ch.send(embed=embed)
-
-    async def _send_video_notification(self, row, video: dict):
-        guild = self.bot.get_guild(row["guild_id"])
-        if not guild:
-            return
-        ch_id = row["vod_channel"] or row["discord_channel"]
-        ch = guild.get_channel(ch_id)
-        if not ch:
-            return
-
-        name      = row["chzzk_name"] or "알 수 없음"
-        title     = video.get("videoTitle", "새 다시보기")
-        vid_no    = video.get("videoNo", "")
-        thumbnail = video.get("thumbnailImageUrl", "")
-        video_url = f"https://chzzk.naver.com/video/{vid_no}" if vid_no else ""
-
-        embed = discord.Embed(
-            title=title,
-            url=video_url or None,
-            description=f"**{name}**님이 새 다시보기 영상을 업로드했습니다.",
-            color=0x03C75A,
-            timestamp=discord.utils.utcnow(),
-        )
-        if thumbnail:
-            embed.set_thumbnail(url=thumbnail)
-        embed.set_footer(text="NexBot • nexbot.shop")
-
-        view = discord.ui.View()
-        if video_url:
-            view.add_item(discord.ui.Button(label="영상 바로가기", url=video_url, style=discord.ButtonStyle.link))
-
-        await ch.send(embed=embed, view=view)
-
-    async def _send_clip_notification(self, row, clip: dict):
-        guild = self.bot.get_guild(row["guild_id"])
-        if not guild:
-            return
-        ch_id = row["clip_channel"] or row["discord_channel"]
-        ch = guild.get_channel(ch_id)
-        if not ch:
-            return
-
-        name      = row["chzzk_name"] or "알 수 없음"
-        title     = clip.get("clipTitle", "새 클립")
-        clip_no   = clip.get("clipNo", clip.get("clipUID", ""))
-        thumbnail = clip.get("thumbnailImageUrl", "")
-        clip_url  = f"https://chzzk.naver.com/clips/{clip_no}" if clip_no else ""
-
-        embed = discord.Embed(
-            title=title,
-            url=clip_url or None,
-            description=f"**{name}**님이 새 클립을 등록했습니다.",
-            color=0x03C75A,
-            timestamp=discord.utils.utcnow(),
-        )
-        if thumbnail:
-            embed.set_thumbnail(url=thumbnail)
-        embed.set_footer(text="NexBot • nexbot.shop")
-
-        view = discord.ui.View()
-        if clip_url:
-            view.add_item(discord.ui.Button(label="클립 바로가기", url=clip_url, style=discord.ButtonStyle.link))
-
-        await ch.send(embed=embed, view=view)
-
-    async def _send_post_notification(self, row, post: dict):
-        guild = self.bot.get_guild(row["guild_id"])
-        if not guild:
-            return
-        ch_id = row["community_channel"] or row["discord_channel"]
-        ch = guild.get_channel(ch_id)
-        if not ch:
-            return
-
-        name    = row["chzzk_name"] or "알 수 없음"
-        post_no = post.get("postNo") or post.get("communityPostNo") or post.get("id", "")
-        content_data = post.get("content", {})
-        if isinstance(content_data, dict):
-            title = content_data.get("title") or "새 커뮤니티 게시글"
-        elif isinstance(content_data, str):
-            title = content_data[:50] + ("..." if len(content_data) > 50 else "")
-        else:
-            title = "새 커뮤니티 게시글"
-
-        channel_id = row["chzzk_channel_id"]
-        post_url = f"https://chzzk.naver.com/community/{channel_id}/post/{post_no}" if post_no else ""
-
-        embed = discord.Embed(
-            title=title,
-            url=post_url or None,
-            description=f"**{name}**님이 새 커뮤니티 게시글을 작성했습니다.",
-            color=0x03C75A,
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.set_footer(text="NexBot • nexbot.shop")
-
-        view = discord.ui.View()
-        if post_url:
-            view.add_item(discord.ui.Button(label="게시글 바로가기", url=post_url, style=discord.ButtonStyle.link))
-
-        await ch.send(embed=embed, view=view)
 
     @monitor_loop.before_loop
     async def before_monitor(self):
@@ -517,8 +301,7 @@ class ChzzkCog(commands.Cog):
 
         db = await get_db()
         row = await (await db.execute(
-            "SELECT id, discord_channel, chzzk_name, mention_everyone, "
-            "notify_vod, notify_clip, notify_community "
+            "SELECT id, discord_channel, chzzk_name, mention_everyone "
             "FROM chzzk_subscriptions WHERE guild_id=? LIMIT 1",
             (interaction.guild_id,)
         )).fetchone()
@@ -530,11 +313,6 @@ class ChzzkCog(commands.Cog):
             )
 
         current_ch = interaction.guild.get_channel(row["discord_channel"])
-
-        content_items = []
-        if row["notify_vod"]:       content_items.append("동영상(다시보기)")
-        if row["notify_clip"]:      content_items.append("클립")
-        if row["notify_community"]: content_items.append("커뮤니티")
 
         embed = discord.Embed(
             title="치지직 설정 현황",
@@ -548,11 +326,6 @@ class ChzzkCog(commands.Cog):
             inline=True,
         )
         embed.add_field(name="@everyone 멘션", value="켜짐" if row["mention_everyone"] else "꺼짐", inline=True)
-        embed.add_field(
-            name="콘텐츠 알림",
-            value=", ".join(content_items) if content_items else "없음",
-            inline=False,
-        )
         embed.set_footer(text="채널 선택 드롭다운으로 알림 채널을 변경하세요.")
 
         view = ChzzkSettingsView(sub_id=row["id"], guild_id=interaction.guild_id)
