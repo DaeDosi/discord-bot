@@ -12,6 +12,24 @@ import MemberSearch from "@/components/MemberSearch";
 
 type Tab = "missions" | "submissions" | "leaderboard" | "adjust" | "shop" | "gambling";
 
+// ── 요약 통계 타일 ────────────────────────────────────────────────────────────
+function StatTile({
+  icon, label, value, color,
+}: { icon: React.ReactNode; label: string; value: number; color: string }) {
+  return (
+    <div className="rounded-2xl border border-border bg-bg-card p-4 flex items-center gap-3">
+      <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+           style={{ background: `${color}18`, color }}>
+        {icon}
+      </div>
+      <div>
+        <p className="text-xl font-bold text-fg">{value.toLocaleString()}</p>
+        <p className="text-xs text-muted">{label}</p>
+      </div>
+    </div>
+  );
+}
+
 // ── Mission form modal ────────────────────────────────────────────────────────
 function MissionModal({
   initial,
@@ -272,11 +290,15 @@ export default function PointsPage() {
   const loadGambling    = useCallback(() =>
     api.points.gambling.get(guildId).then((d) => setGamblingConfig(d)).catch(() => {}), [guildId]);
 
-  useEffect(() => { loadMissions(); }, [loadMissions]);
-  useEffect(() => { if (tab === "submissions") loadSubmissions(); }, [tab, loadSubmissions]);
-  useEffect(() => { if (tab === "leaderboard") loadLeaderboard(); }, [tab, loadLeaderboard]);
-  useEffect(() => { if (tab === "shop") { loadShopItems(); loadExchanges(); } }, [tab, loadShopItems, loadExchanges]);
-  useEffect(() => { if (tab === "gambling") loadGambling(); }, [tab, loadGambling]);
+  // 탭과 무관하게 한 번에 불러온다 — 상단 요약 통계 타일이 항상 최신 값을 보여주기 위함
+  useEffect(() => {
+    loadMissions();
+    loadSubmissions();
+    loadLeaderboard();
+    loadShopItems();
+    loadExchanges();
+    loadGambling();
+  }, [loadMissions, loadSubmissions, loadLeaderboard, loadShopItems, loadExchanges, loadGambling]);
 
   const saveMission = async (data: { title: string; description: string; points: number }) => {
     const payload = { ...data, is_active: true };
@@ -400,6 +422,14 @@ export default function PointsPage() {
           <Gem size={20} className="text-accent" /> 포인트 관리
         </h1>
         <p className="page-subtitle">미션, 신청 승인, 리더보드, 포인트 상점 관리</p>
+      </div>
+
+      {/* 요약 통계 */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatTile icon={<ClipboardList size={18} />} label="등록된 미션"   value={missions.length}    color="#5865F2" />
+        <StatTile icon={<CheckCircle size={18} />}   label="대기중 신청"   value={pendingCount}       color="#FEE75C" />
+        <StatTile icon={<ShoppingBag size={18} />}   label="상점 아이템"   value={shopItems.length}   color="#A855F7" />
+        <StatTile icon={<Trophy size={18} />}        label="리더보드 참여" value={leaderboard.length} color="#57F287" />
       </div>
 
       {/* Tabs */}
@@ -568,6 +598,8 @@ export default function PointsPage() {
           </div>
 
           {/* 기본 설정 */}
+          <div className="space-y-3">
+            <p className="text-xs font-semibold text-muted uppercase tracking-wider">기본 설정</p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
               <label className="label">도박 제목</label>
@@ -602,11 +634,12 @@ export default function PointsPage() {
               />
             </div>
           </div>
+          </div>
 
           {/* 옵션 목록 */}
-          <div className="space-y-2">
+          <div className="space-y-2 pt-5 border-t border-border">
             <div className="flex items-center justify-between">
-              <label className="label mb-0">도박 옵션 (최소 2개 · 최대 10개)</label>
+              <p className="text-xs font-semibold text-muted uppercase tracking-wider">도박 옵션 (최소 2개 · 최대 10개)</p>
               {gamblingConfig.options.length < 10 && (
                 <button
                   onClick={() => setGamblingConfig((p) => ({ ...p, options: [...p.options, ""] }))}
@@ -647,11 +680,13 @@ export default function PointsPage() {
           </div>
 
           {/* 사용법 안내 */}
+          <div className="pt-5 border-t border-border">
+          <p className="text-xs font-semibold text-muted uppercase tracking-wider mb-2">사용 방법</p>
           <div className="rounded-lg bg-bg border border-border p-3 text-xs text-muted space-y-1">
-            <p className="font-semibold text-fg">사용 방법</p>
             <p>• <code className="text-accent">/포인트도박</code> — 도박 시작 (위 설정 불러옴, 관리자 전용)</p>
             <p>• <code className="text-accent">/포인트도박종료 [번호]</code> — 강제 종료 및 당첨자 결정. 번호 미입력 시 랜덤 추첨</p>
             <p>• 유저가 버튼 클릭 시 베팅 포인트 차감 → 당첨 옵션 선택자끼리 총 풀 균등 분배</p>
+          </div>
           </div>
 
           <button

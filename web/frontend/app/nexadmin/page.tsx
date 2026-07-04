@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import {
   Bot, Server, Radio, ShieldCheck, Search,
@@ -686,6 +686,18 @@ export default function AdminPage() {
   const followCount = followStats?.reduce((s, f) => s + f.users.length, 0) ?? null;
   const verifCount  = verifUsers?.length ?? null;
 
+  // 서버별로 그룹핑 — 여러 서버 유저가 한 줄로 뒤섞여 스캔하기 어려운 문제를 해소.
+  // verifUsers는 verified_at DESC로 오므로, Map 삽입 순서상 가장 최근 활동이 있던 서버가 먼저 나온다.
+  const verifByGuild = useMemo(() => {
+    if (!verifUsers) return [];
+    const map = new Map<string, { guildName: string; users: VerifUser[] }>();
+    for (const v of verifUsers) {
+      if (!map.has(v.guild_id)) map.set(v.guild_id, { guildName: v.guild_name, users: [] });
+      map.get(v.guild_id)!.users.push(v);
+    }
+    return Array.from(map.values());
+  }, [verifUsers]);
+
   const tabs = [
     { key: "guilds", label: `서버 목록 (${guilds.length})` },
     { key: "verif",  label: verifUsers === null ? "인증 현황 (로딩 중...)" : `인증 현황 (${verifCount}명)` },
@@ -821,29 +833,37 @@ export default function AdminPage() {
                     <tr className="border-b border-border bg-bg-card/60">
                       <th className="text-left px-4 py-3 text-muted font-medium">유저명</th>
                       <th className="text-left px-4 py-3 text-muted font-medium hidden md:table-cell">유저 ID</th>
-                      <th className="text-left px-4 py-3 text-muted font-medium">서버</th>
                       <th className="text-left px-4 py-3 text-muted font-medium hidden lg:table-cell">인증 일시</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-border">
-                    {verifUsers.map((v) => (
-                      <tr
-                        key={`${v.guild_id}-${v.user_id}`}
-                        onClick={() => setSelectedVerif(v)}
-                        className="hover:bg-bg-hover/40 transition-colors cursor-pointer"
-                      >
-                        <td className="px-4 py-3 text-fg font-medium">{v.user_name}</td>
-                        <td className="px-4 py-3 font-mono text-xs text-muted select-all hidden md:table-cell">{v.user_id}</td>
-                        <td className="px-4 py-3 text-sm text-muted">{v.guild_name}</td>
-                        <td className="px-4 py-3 text-xs text-muted hidden lg:table-cell">
-                          {new Date(v.verified_at * 1000).toLocaleString("ko-KR")}
-                        </td>
-                      </tr>
-                    ))}
-                    {verifUsers.length === 0 && (
-                      <tr><td colSpan={4} className="px-4 py-8 text-center text-muted">인증한 유저 없음</td></tr>
-                    )}
-                  </tbody>
+                  {verifUsers.length === 0 ? (
+                    <tbody>
+                      <tr><td colSpan={3} className="px-4 py-8 text-center text-muted">인증한 유저 없음</td></tr>
+                    </tbody>
+                  ) : (
+                    verifByGuild.map(({ guildName, users }) => (
+                      <tbody key={users[0].guild_id} className="divide-y divide-border">
+                        <tr className="bg-bg-hover/40">
+                          <td colSpan={3} className="px-4 py-2 text-xs font-semibold text-muted uppercase tracking-wider">
+                            {guildName ?? `서버 ${users[0].guild_id}`} · {users.length}명
+                          </td>
+                        </tr>
+                        {users.map((v) => (
+                          <tr
+                            key={`${v.guild_id}-${v.user_id}`}
+                            onClick={() => setSelectedVerif(v)}
+                            className="hover:bg-bg-hover/40 transition-colors cursor-pointer"
+                          >
+                            <td className="px-4 py-3 text-fg font-medium">{v.user_name}</td>
+                            <td className="px-4 py-3 font-mono text-xs text-muted select-all hidden md:table-cell">{v.user_id}</td>
+                            <td className="px-4 py-3 text-xs text-muted hidden lg:table-cell">
+                              {new Date(v.verified_at * 1000).toLocaleString("ko-KR")}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    ))
+                  )}
                 </table>
               )}
             </div>
