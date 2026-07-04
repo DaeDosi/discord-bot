@@ -4,7 +4,24 @@
       "PowerShell(Get-ChildItem *)",
       "Bash(gh repo *)",
       "Bash(gh api *)",
-      "Skill(update-config)"
+      "Skill(update-config)",
+      "Bash(git add *)",
+      "Bash(git push *)",
+      "PowerShell(git *)",
+      "Bash(cat web/backend/Dockerfile)",
+      "Bash(cat Dockerfile)",
+      "Bash(cat railway.toml)",
+      "Bash(ls web/backend/)",
+      "Bash(npm run *)",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "WebFetch(domain:chzzk.gitbook.io)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(Get-ChildItem *)",
+      "Bash(rtk ls *)",
+      "PowerShell(rtk ls *)",
+      "Bash(cat start.sh)",
+      "Bash(cat .gitignore)"
     ]
   }
 }
