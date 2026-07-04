@@ -396,10 +396,10 @@ export default function PointsPage() {
 
       {/* Header */}
       <div>
-        <h1 className="text-xl font-bold text-fg flex items-center gap-2">
+        <h1 className="page-title flex items-center gap-2">
           <Gem size={20} className="text-accent" /> 포인트 관리
         </h1>
-        <p className="text-muted text-sm mt-1">미션, 신청 승인, 리더보드, 포인트 상점 관리</p>
+        <p className="page-subtitle">미션, 신청 승인, 리더보드, 포인트 상점 관리</p>
       </div>
 
       {/* Tabs */}
@@ -427,7 +427,7 @@ export default function PointsPage() {
       {tab === "missions" && (
         <div className="card space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-fg">등록된 미션</h2>
+            <h2 className="section-title">등록된 미션</h2>
             <button onClick={() => setMissionModal("new")} className="btn-primary text-sm flex items-center gap-1.5">
               <Plus size={14} /> 미션 추가
             </button>
@@ -464,7 +464,7 @@ export default function PointsPage() {
       {tab === "submissions" && (
         <div className="card space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-fg">미션 신청 현황</h2>
+            <h2 className="section-title">미션 신청 현황</h2>
             <button onClick={loadSubmissions} className="text-sm text-muted hover:text-fg transition-colors">새로고침</button>
           </div>
           {submissions.length === 0 ? (
@@ -494,18 +494,18 @@ export default function PointsPage() {
                         {s.status === "pending" ? (
                           <div className="flex gap-1">
                             <button onClick={() => approve(s.id)}
-                              className="p-1 rounded-md bg-green-500/10 text-green-400 hover:bg-green-500/20 transition-colors" title="승인">
+                              className="p-1 rounded-md bg-success/10 text-success hover:bg-success/20 transition-colors" title="승인">
                               <Check size={14} />
                             </button>
                             <button onClick={() => reject(s.id)}
-                              className="p-1 rounded-md bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors" title="거절">
+                              className="p-1 rounded-md bg-danger/10 text-danger hover:bg-danger/20 transition-colors" title="거절">
                               <X size={14} />
                             </button>
                           </div>
                         ) : s.status === "approved" ? (
-                          <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20">승인</span>
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-success/15 text-success border border-success/20">승인</span>
                         ) : (
-                          <span className="text-xs px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/20">거절</span>
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-danger/15 text-danger border border-danger/20">거절</span>
                         )}
                       </td>
                     </tr>
@@ -521,7 +521,7 @@ export default function PointsPage() {
       {tab === "leaderboard" && (
         <div className="card space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-fg">포인트 순위표</h2>
+            <h2 className="section-title">포인트 순위표</h2>
             <button onClick={loadLeaderboard} className="text-sm text-muted hover:text-fg transition-colors">새로고침</button>
           </div>
           {leaderboard.length === 0 ? (
@@ -545,7 +545,7 @@ export default function PointsPage() {
       {/* ── 수동 지급 ── */}
       {tab === "adjust" && (
         <div className="card space-y-4">
-          <h2 className="font-semibold text-fg">포인트 수동 조정</h2>
+          <h2 className="section-title">포인트 수동 조정</h2>
           <p className="text-muted text-sm">특정 멤버에게 포인트를 지급하거나 차감합니다.</p>
           <button onClick={() => setAdjustModal(true)} className="btn-primary flex items-center gap-2">
             <Gem size={15} /> 포인트 지급 / 차감
@@ -557,7 +557,7 @@ export default function PointsPage() {
       {tab === "gambling" && (
         <div className="card space-y-5">
           <div>
-            <h2 className="font-semibold text-fg flex items-center gap-2">
+            <h2 className="section-title flex items-center gap-2">
               <Dices size={16} className="text-accent" /> 포인트 도박 설정
             </h2>
             <p className="text-muted text-sm mt-1">
@@ -672,7 +672,7 @@ export default function PointsPage() {
           {/* 아이템 관리 */}
           <div className="card space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="font-semibold text-fg flex items-center gap-2">
+              <h2 className="section-title flex items-center gap-2">
                 <ShoppingBag size={16} className="text-accent" /> 아이템 관리
               </h2>
               <button onClick={() => setShopModal("new")} className="btn-primary text-sm flex items-center gap-1.5">
@@ -726,7 +726,7 @@ export default function PointsPage() {
           {/* 교환 내역 */}
           <div className="card space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="font-semibold text-fg">교환 내역</h2>
+              <h2 className="section-title">교환 내역</h2>
               <button onClick={loadExchanges} className="text-sm text-muted hover:text-fg transition-colors">새로고침</button>
             </div>
             {exchanges.length === 0 ? (
@@ -761,7 +761,7 @@ export default function PointsPage() {
                         </td>
                         <td className="py-2.5">
                           {ex.is_used ? (
-                            <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20">사용됨</span>
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-success/15 text-success border border-success/20">사용됨</span>
                           ) : (
                             <button
                               onClick={() => markUsed(ex.id)}

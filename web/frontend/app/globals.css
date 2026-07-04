@@ -9,9 +9,9 @@
   --color-bg-rgb:       15 17 23;      /* #0f1117 */
   --color-bg-card-rgb:  26 29 39;      /* #1a1d27 */
   --color-bg-hover-rgb: 30 34 50;      /* #1e2232 */
-  --color-border-rgb:   45 48 72;      /* #2d3048 */
-  --color-muted-rgb:    139 143 168;   /* #8b8fa8 */
-  --color-fg-rgb:       226 232 240;   /* #e2e8f0 */
+  --color-border-rgb:   36 39 54;      /* #242736 — subtle hairline, recedes instead of competing with text */
+  --color-muted-rgb:    139 143 168;   /* #8b8fa8 — kept at ~5.3:1 contrast (AA) against bg-card */
+  --color-fg-rgb:       235 239 246;   /* #ebeff6 — crisper near-white for more separation from muted */
 }
 
 html.light {
@@ -19,9 +19,9 @@ html.light {
   --color-bg-rgb:       240 242 245;   /* #f0f2f5 */
   --color-bg-card-rgb:  255 255 255;   /* #ffffff */
   --color-bg-hover-rgb: 232 234 238;   /* #e8eaee */
-  --color-border-rgb:   220 224 232;   /* #dce0e8 */
+  --color-border-rgb:   227 230 236;   /* #e3e6ec — softer hairline */
   --color-muted-rgb:    94 98 120;     /* #5e6278 */
-  --color-fg-rgb:       30 34 40;      /* #1e2228 */
+  --color-fg-rgb:       18 21 26;      /* #12151a — deeper near-black for more separation from muted */
 }
 
 /* ── Base ─────────────────────────────────────────────────────────────── */
@@ -67,6 +67,21 @@ html.light {
   }
   .label {
     @apply text-sm font-medium text-muted mb-1 block;
+  }
+  /* ── 타이포 위계 (opt-in) ──────────────────────────────────────────────
+     페이지 제목 → 본문 → 보조설명의 크기·굵기 차이를 명확히 벌려서
+     "회색 텍스트 위주"로 밋밋해 보이는 문제를 완화한다. */
+  .page-title {
+    @apply text-2xl font-bold text-fg tracking-tight;
+  }
+  .page-subtitle {
+    @apply text-sm text-muted mt-1;
+  }
+  .section-title {
+    @apply text-base font-semibold text-fg;
+  }
+  .text-caption {
+    @apply text-xs text-muted/80;
   }
   .badge-live {
     @apply inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium

@@ -156,10 +156,10 @@ function VerifModal({
                       const qualified = selected.tier_months >= tier.months;
                       return (
                         <div key={tier.id}
-                             className="flex items-center gap-3 px-3 py-2 rounded-lg border"
-                             style={qualified
-                               ? { background: "rgba(99,102,241,0.08)", borderColor: "rgba(99,102,241,0.3)" }
-                               : { borderColor: "var(--color-border)" }}>
+                             className={clsx(
+                               "flex items-center gap-3 px-3 py-2 rounded-lg border",
+                               qualified ? "bg-accent/10 border-accent/30" : "border-border"
+                             )}>
                           <span className={`text-xs font-semibold w-16 shrink-0 ${qualified ? "text-accent" : "text-muted"}`}>
                             {tier.months}개월+
                           </span>
@@ -330,10 +330,10 @@ export default function ChzzkPage() {
       )}
 
       <div>
-        <h1 className="text-xl font-bold text-fg flex items-center gap-2">
+        <h1 className="page-title flex items-center gap-2">
           <Radio size={20} className="text-chzzk" /> 방송설정
         </h1>
-        <p className="text-muted text-sm mt-1">
+        <p className="page-subtitle">
           스트리머 방송 시작 시 Discord 채널에 알림을 보냅니다.
         </p>
       </div>
@@ -436,25 +436,25 @@ export default function ChzzkPage() {
         <div className="card space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="font-semibold text-fg">팔로워 역할 지급</h2>
-              <p className="text-muted text-sm mt-1">
+              <h2 className="section-title">팔로워 역할 지급</h2>
+              <p className="page-subtitle">
                 치지직 OAuth 인증 시 팔로우 기간에 따라 역할을 자동으로 부여합니다.
                 티어를 여러 개 추가할 수 있으며, 조건을 만족하는 티어 중 가장 높은 역할이 지급됩니다.
                 <br />
                 Discord에서{" "}
-                <code className="text-accent bg-black/20 px-1 rounded">/팔로우불러오기</code>
+                <code className="text-accent bg-bg px-1 rounded">/팔로우불러오기</code>
                 로 기존 인증 유저에 재적용할 수 있습니다.
               </p>
             </div>
             <button
               onClick={openVerif}
               className="ml-4 shrink-0 flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-lg
-                         border border-emerald-500/60 text-emerald-400 bg-emerald-500/10
-                         hover:bg-emerald-500/20 hover:border-emerald-400 transition-colors"
+                         border border-chzzk/60 text-chzzk bg-chzzk/10
+                         hover:bg-chzzk/20 hover:border-chzzk transition-colors"
             >
               <Users size={15} /> 팔로우 인원
               {verifications.length > 0 && (
-                <span className="text-xs bg-emerald-500/30 rounded-full px-2 py-0.5 font-bold">
+                <span className="text-xs bg-chzzk/30 rounded-full px-2 py-0.5 font-bold">
                   {verifications.length}
                 </span>
               )}

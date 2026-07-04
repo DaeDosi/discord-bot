@@ -90,7 +90,7 @@ export default function DashboardPage() {
   return (
     <div className="max-w-3xl mx-auto px-4 py-10">
       <div className="flex items-center justify-between mb-1">
-        <h1 className="text-2xl font-bold text-fg">내 서버</h1>
+        <h1 className="page-title">내 서버</h1>
         <button
           onClick={() => { setRefreshing(true); loadGuilds(); }}
           disabled={refreshing}
@@ -100,7 +100,7 @@ export default function DashboardPage() {
           <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
         </button>
       </div>
-      <p className="text-muted mb-8">관리자 권한이 있는 서버만 표시됩니다.</p>
+      <p className="page-subtitle mb-8">관리자 권한이 있는 서버만 표시됩니다.</p>
 
       {loading ? (
         <div className="space-y-4">
