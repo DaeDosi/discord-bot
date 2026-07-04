@@ -2,7 +2,7 @@ import os
 import httpx
 from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Depends
-from deps import get_current_user
+from deps import get_current_user, require_guild_admin
 from auth import get_discord_guilds
 
 router = APIRouter(prefix="/api/guilds", tags=["guilds"])
@@ -49,7 +49,11 @@ async def list_guilds(user: dict = Depends(get_current_user)):
 
 
 @router.get("/{guild_id}/channels")
-async def get_channels(guild_id: str, user: dict = Depends(get_current_user)):
+async def get_channels(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
     if not BOT_TOKEN:
         raise HTTPException(status_code=500, detail="봇 토큰이 설정되지 않았습니다.")
     async with httpx.AsyncClient() as client:
@@ -73,7 +77,11 @@ async def get_channels(guild_id: str, user: dict = Depends(get_current_user)):
 
 
 @router.get("/{guild_id}/roles")
-async def get_roles(guild_id: str, user: dict = Depends(get_current_user)):
+async def get_roles(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"{DISCORD_API}/guilds/{guild_id}/roles", headers=BOT_HEADERS
@@ -89,7 +97,12 @@ async def get_roles(guild_id: str, user: dict = Depends(get_current_user)):
 
 
 @router.get("/{guild_id}/members/search")
-async def search_members(guild_id: str, query: str = "", user: dict = Depends(get_current_user)):
+async def search_members(
+    guild_id: str,
+    query: str = "",
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
     if not query.strip():
         return []
     async with httpx.AsyncClient() as client:

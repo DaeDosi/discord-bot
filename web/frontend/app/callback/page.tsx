@@ -26,8 +26,14 @@ function CallbackInner() {
     }
 
     // 백엔드가 직접 token을 전달한 경우 (GET /auth/callback 경유)
-    const token = params.get("token");
+    // 서버 접근 로그/Referer에 남지 않도록 쿼리스트링이 아닌 URL 프래그먼트(#token=...)로 전달됨
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const token = hashParams.get("token") || params.get("token");
     if (token) {
+      // 프래그먼트를 주소창에서 즉시 제거 — 브라우저 히스토리에 남지 않도록
+      if (window.location.hash) {
+        window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      }
       localStorage.setItem("token", token);
       // 유저 정보를 미리 캐싱해 어느 페이지에서든 즉시 로그인 상태 표시
       api.auth.me()

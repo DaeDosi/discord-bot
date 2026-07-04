@@ -12,8 +12,6 @@ import type { LucideIcon } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier, ChzzkVerification } from "@/lib/types";
 
-const BACKEND = process.env.NEXT_PUBLIC_API_URL || "";
-
 type Platform = "chzzk" | "youtube" | "soop";
 
 const PLATFORM_TABS: { key: Platform; label: string; icon: LucideIcon }[] = [
@@ -195,20 +193,12 @@ function AddStreamerForm({ channels, guildId }: { channels: Channel[]; guildId: 
   const [discordChannel, setDiscordChannel] = useState("");
   const [mentionEveryone, setMentionEveryone] = useState(false);
 
-  const handleConnect = () => {
+  const handleConnect = async () => {
     if (!discordChannel) return;
-    let discordUserId = "";
     try {
-      const raw = localStorage.getItem("discord_user");
-      if (raw) discordUserId = JSON.parse(raw).id || "";
+      const d = await api.chzzkAuth.getStreamerLoginUrl(guildId, discordChannel, mentionEveryone);
+      window.location.href = d.url;
     } catch {}
-    const params = new URLSearchParams({
-      guild_id:         guildId,
-      discord_channel:  discordChannel,
-      mention_everyone: mentionEveryone ? "1" : "0",
-      discord_user_id:  discordUserId,
-    });
-    window.location.href = `${BACKEND}/api/chzzk-auth/streamer-login?${params}`;
   };
 
   return (
@@ -373,19 +363,13 @@ export default function ChzzkPage() {
       <div className="space-y-3">
         {subs.map((sub) => {
           const ch = findChannel(sub.discord_channel);
-          const handleRelink = () => {
-            let discordUserId = "";
+          const handleRelink = async () => {
             try {
-              const raw = localStorage.getItem("discord_user");
-              if (raw) discordUserId = JSON.parse(raw).id || "";
+              const d = await api.chzzkAuth.getStreamerLoginUrl(
+                guildId, String(sub.discord_channel), !!sub.mention_everyone
+              );
+              window.location.href = d.url;
             } catch {}
-            const params = new URLSearchParams({
-              guild_id:         guildId,
-              discord_channel:  String(sub.discord_channel),
-              mention_everyone: sub.mention_everyone ? "1" : "0",
-              discord_user_id:  discordUserId,
-            });
-            window.location.href = `${BACKEND}/api/chzzk-auth/streamer-login?${params}`;
           };
           return (
             <div key={sub.id} className="card space-y-3">

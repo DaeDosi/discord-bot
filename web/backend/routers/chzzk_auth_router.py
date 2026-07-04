@@ -6,11 +6,12 @@ import traceback
 import httpx
 from urllib.parse import urlencode, quote
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from jose import jwt, JWTError
 from auth import JWT_SECRET, JWT_ALGORITHM, FRONTEND_URL
 from database.db import get_db
+from deps import get_current_user, require_guild_admin
 from routers.verify_router import _add_role, _remove_role
 
 router = APIRouter(prefix="/api/chzzk-auth", tags=["chzzk-auth"])
@@ -454,43 +455,45 @@ def _err(msg: str, guild_id: str = "") -> RedirectResponse:
 
 # ── OAuth 엔드포인트 ──────────────────────────────────────────────────────────
 
-@router.get("/streamer-login")
-async def chzzk_streamer_login(
+@router.get("/streamer-login-url")
+async def chzzk_streamer_login_url(
     guild_id:         str = Query(...),
     discord_channel:  str = Query(...),
     mention_everyone: int = Query(0),
-    discord_user_id:  str = Query(...),
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
 ):
+    """스트리머 계정 연동용 치지직 OAuth URL 발급. 대시보드 관리자 세션(JWT)으로만 호출 가능하며,
+    discord_user_id는 클라이언트 입력이 아닌 인증된 세션에서 직접 가져온다."""
     if not CHZZK_CLIENT_ID:
-        return _err("chzzk_not_configured", guild_id)
-    state  = _build_streamer_state(guild_id, discord_channel, mention_everyone, discord_user_id)
+        raise HTTPException(status_code=400, detail="chzzk_not_configured")
+    state  = _build_streamer_state(guild_id, discord_channel, mention_everyone, user["sub"])
     params = {
         "clientId":    CHZZK_CLIENT_ID,
         "redirectUri": CHZZK_REDIRECT_URI,
         "state":       state,
         "scope":       "채널 팔로워 조회",
     }
-    return RedirectResponse(f"{CHZZK_AUTH_URL}?{urlencode(params)}")
+    return {"url": f"{CHZZK_AUTH_URL}?{urlencode(params)}"}
 
 
-@router.get("/login")
-async def chzzk_login(
-    guild_id:        str = Query(...),
-    discord_user_id: str = Query(...),
+@router.get("/login-url")
+async def chzzk_login_url(
+    guild_id: str = Query(...),
+    user: dict = Depends(get_current_user),
 ):
+    """시청자 인증용 치지직 OAuth URL 발급. discord_user_id는 인증된 세션(JWT)에서 가져온다 —
+    클라이언트가 임의의 유저를 지정해 인증/역할을 대신 완료시키는 것을 방지."""
     if not CHZZK_CLIENT_ID:
-        return _err("chzzk_not_configured", guild_id)
-    if not discord_user_id:
-        return _err("discord_not_logged_in", guild_id)
-
-    state  = _build_state(guild_id, discord_user_id)
+        raise HTTPException(status_code=400, detail="chzzk_not_configured")
+    state  = _build_state(guild_id, user["sub"])
     params = {
         "clientId":    CHZZK_CLIENT_ID,
         "redirectUri": CHZZK_REDIRECT_URI,
         "state":       state,
         "scope":       "채널 팔로워 조회",
     }
-    return RedirectResponse(f"{CHZZK_AUTH_URL}?{urlencode(params)}")
+    return {"url": f"{CHZZK_AUTH_URL}?{urlencode(params)}"}
 
 
 @router.get("/callback")

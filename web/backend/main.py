@@ -74,7 +74,8 @@ async def auth_callback_compat(code: str = None, state: str = None, error: str =
             avatar=user.get("avatar", ""),
             access_token=access_token,
         )
-        return RedirectResponse(f"{FRONTEND_URL}/callback?token={jwt_token}")
+        # URL 프래그먼트(#)로 전달 — 쿼리스트링과 달리 서버 접근 로그/Referer에 남지 않음
+        return RedirectResponse(f"{FRONTEND_URL}/callback#token={jwt_token}")
     except Exception as e:
         return RedirectResponse(f"{FRONTEND_URL}/login?error={quote(str(e))}")
 

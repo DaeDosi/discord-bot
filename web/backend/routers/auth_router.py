@@ -35,7 +35,8 @@ async def oauth_callback(
             access_token=access_token,
             global_name=user.get("global_name") or user.get("username", ""),
         )
-        return RedirectResponse(f"{FRONTEND_URL}/callback?token={jwt_token}")
+        # URL 프래그먼트(#)로 전달 — 쿼리스트링과 달리 서버 접근 로그/Referer에 남지 않음
+        return RedirectResponse(f"{FRONTEND_URL}/callback#token={jwt_token}")
     except Exception as e:
         return RedirectResponse(f"{FRONTEND_URL}/login?error={quote(str(e))}")
 

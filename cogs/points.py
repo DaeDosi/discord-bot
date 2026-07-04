@@ -30,31 +30,62 @@ async def _handle_shop_buy(interaction: discord.Interaction, item_id: int):
         if sold and sold["cnt"] >= item["stock"]:
             return await interaction.response.send_message("품절된 아이템입니다.", ephemeral=True)
 
-    pts_row = await (await db.execute(
-        "SELECT points FROM user_points WHERE guild_id=? AND user_id=?",
-        (interaction.guild_id, interaction.user.id)
-    )).fetchone()
-    current_pts = pts_row["points"] if pts_row else 0
+    cost = item["points_cost"]
 
-    if current_pts < item["points_cost"]:
-        return await interaction.response.send_message(
-            f"포인트가 부족합니다. (보유: **{current_pts:,}** P / 필요: **{item['points_cost']:,}** P)",
-            ephemeral=True
+    # 잔액 확인과 차감을 단일 원자적 UPDATE로 처리 — 연타/동시 요청으로 인한
+    # 잔액 부족 상태의 중복 구매(TOCTOU 레이스)를 방지한다.
+    cur = await db.execute(
+        "UPDATE user_points SET points = points - ? WHERE guild_id=? AND user_id=? AND points >= ?",
+        (cost, interaction.guild_id, interaction.user.id, cost)
+    )
+    if cur.rowcount == 0:
+        pts_row = await (await db.execute(
+            "SELECT points FROM user_points WHERE guild_id=? AND user_id=?",
+            (interaction.guild_id, interaction.user.id)
+        )).fetchone()
+        current_pts = pts_row["points"] if pts_row else 0
+        if current_pts < cost:
+            await db.commit()
+            return await interaction.response.send_message(
+                f"포인트가 부족합니다. (보유: **{current_pts:,}** P / 필요: **{cost:,}** P)",
+                ephemeral=True
+            )
+        # cost가 0인데 포인트 기록 자체가 없던 유저 — 기록만 생성
+        await db.execute(
+            "INSERT INTO user_points(guild_id, user_id, points) VALUES(?,?,0)",
+            (interaction.guild_id, interaction.user.id)
         )
 
-    await db.execute(
-        "UPDATE user_points SET points = MAX(0, points - ?) WHERE guild_id=? AND user_id=?",
-        (item["points_cost"], interaction.guild_id, interaction.user.id)
-    )
+    if item["stock"] != -1:
+        sold = await (await db.execute(
+            "SELECT COUNT(*) AS cnt FROM shop_exchanges WHERE item_id=? AND guild_id=?",
+            (item_id, interaction.guild_id)
+        )).fetchone()
+        if sold and sold["cnt"] >= item["stock"]:
+            # 재고 마감 — 방금 차감한 포인트 환불 후 취소
+            await db.execute(
+                "UPDATE user_points SET points = points + ? WHERE guild_id=? AND user_id=?",
+                (cost, interaction.guild_id, interaction.user.id)
+            )
+            await db.commit()
+            return await interaction.response.send_message("품절된 아이템입니다.", ephemeral=True)
+
     await db.execute(
         "INSERT INTO shop_exchanges(guild_id, user_id, item_id, exchanged_at) VALUES(?,?,?,?)",
         (interaction.guild_id, interaction.user.id, item_id, int(time.time()))
     )
     await db.commit()
+
+    row = await (await db.execute(
+        "SELECT points FROM user_points WHERE guild_id=? AND user_id=?",
+        (interaction.guild_id, interaction.user.id)
+    )).fetchone()
+    remaining = row["points"] if row else 0
+
     await interaction.response.send_message(
         f"✅ **{item['name']}** 교환 완료!\n"
-        f"사용한 포인트: **{item['points_cost']:,}** P\n"
-        f"남은 포인트: **{current_pts - item['points_cost']:,}** P",
+        f"사용한 포인트: **{cost:,}** P\n"
+        f"남은 포인트: **{remaining:,}** P",
         ephemeral=True
     )
 

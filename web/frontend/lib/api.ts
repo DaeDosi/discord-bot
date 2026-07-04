@@ -154,6 +154,17 @@ export const api = {
     },
   },
 
+  chzzkAuth: {
+    getLoginUrl: (gid: string) =>
+      request<{ url: string }>(`/api/chzzk-auth/login-url?guild_id=${encodeURIComponent(gid)}`),
+    getStreamerLoginUrl: (gid: string, discordChannel: string, mentionEveryone: boolean) =>
+      request<{ url: string }>(
+        `/api/chzzk-auth/streamer-login-url?guild_id=${encodeURIComponent(gid)}` +
+        `&discord_channel=${encodeURIComponent(discordChannel)}` +
+        `&mention_everyone=${mentionEveryone ? 1 : 0}`
+      ),
+  },
+
   chzzk: {
     search:  (keyword: string) =>
       request<import("./types").ChzzkSearchResult[]>(`/api/chzzk/search?keyword=${encodeURIComponent(keyword)}`),

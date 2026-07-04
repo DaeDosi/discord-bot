@@ -5,8 +5,6 @@ import Link from "next/link";
 import { Bot, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
 type Status = "loading" | "unauthenticated" | "ready" | "verifying" | "success" | "error";
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -76,17 +74,20 @@ function VerifyContent() {
     } catch {}
   };
 
-  const handleChzzkVerify = () => {
+  const handleChzzkVerify = async () => {
     if (!guildId) {
       setStatus("error");
       setMessage("guild_id가 없습니다. 디스코드 서버의 인증 링크를 다시 클릭해주세요.");
       return;
     }
     setStatus("verifying");
-    const userStr = localStorage.getItem("discord_user");
-    const userId  = userStr ? (JSON.parse(userStr).id as string) : "";
-    window.location.href =
-      `${BASE}/api/chzzk-auth/login?guild_id=${encodeURIComponent(guildId)}&discord_user_id=${encodeURIComponent(userId)}`;
+    try {
+      const d = await api.chzzkAuth.getLoginUrl(guildId);
+      window.location.href = d.url;
+    } catch {
+      setStatus("error");
+      setMessage("치지직 인증 URL을 가져오지 못했습니다. 다시 로그인 후 시도해주세요.");
+    }
   };
 
   return (
