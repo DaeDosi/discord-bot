@@ -11,6 +11,7 @@ CHZZK_CLIENT_ID/SECRET이 없으면 이 cog는 조용히 비활성화된다.
 """
 import os
 import time
+import asyncio
 import logging
 import discord
 from discord.ext import commands, tasks
@@ -46,6 +47,7 @@ class ChzzkChatCog(commands.Cog):
         self.bot = bot
         self.client = None
         self.session_id: str | None = None
+        self._session_ready = asyncio.Event()
         # chzzk_channel_id -> {"guild_id": int, "user_client": UserClient, "commands": {trigger_text: row}}
         self._channels: dict[str, dict] = {}
         self._enabled = bool(_CHZZKPY_AVAILABLE and _CHZZK_CLIENT_ID and _CHZZK_CLIENT_SECRET)
@@ -77,21 +79,31 @@ class ChzzkChatCog(commands.Cog):
 
     async def _ensure_client(self) -> bool:
         if self.client is not None:
-            return True
+            return self.session_id is not None
         self.client = ChzzkSessionClient(_CHZZK_CLIENT_ID, _CHZZK_CLIENT_SECRET)
 
         @self.client.event
         async def on_chat(message):
             await self._on_chat(message)
 
+        # 주의: Client.connect()의 반환값은 소켓(Engine.IO) transport ID이지
+        # 구독 API가 요구하는 치지직 세션 키(sessionKey)가 아니다. 실제 세션 키는
+        # "connected" 시스템 이벤트(on_connect)로 별도 전달되므로 그걸 사용해야 한다.
+        @self.client.event
+        async def on_connect(session_id):
+            self.session_id = session_id
+            self._session_ready.set()
+            log.info(f"치지직 채팅 세션 연결됨 (session={session_id})")
+
         try:
             # addition_connect=True 로 호출해야 연결 후 즉시 반환됨(그렇지 않으면 연결이 끊길 때까지 블로킹됨)
-            self.session_id = await self.client.connect(addition_connect=True)
+            await self.client.connect(addition_connect=True)
+            await asyncio.wait_for(self._session_ready.wait(), timeout=10)
         except Exception:
             log.exception("치지직 채팅 세션 연결 실패")
             self.client = None
+            self.session_id = None
             return False
-        log.info(f"치지직 채팅 세션 연결됨 (session={self.session_id})")
         return True
 
     async def _ensure_fresh_token(self, row) -> tuple[str, str, int] | tuple[None, None, None]:

@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { Plus, Trash2, Zap, Trophy, Award, X } from "lucide-react";
+import { Plus, Trash2, Heart, Trophy, Award, X } from "lucide-react";
 import { api } from "@/lib/api";
 import type { LevelReward, Role } from "@/lib/types";
 
@@ -85,13 +85,13 @@ export default function LevelingPage() {
       )}
 
       <div>
-        <h1 className="page-title">애정도 시스템</h1>
+        <h1 className="page-title">애정도</h1>
         <p className="page-subtitle">애정도 등급 보상 및 리더보드를 관리합니다.</p>
       </div>
 
       {/* 요약 통계 */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-        <StatTile icon={<Zap size={18} />}    label="등록된 애정도 보상" value={rewards.length}   color="#FEE75C" />
+        <StatTile icon={<Heart size={18} />}  label="등록된 애정도 보상" value={rewards.length}   color="#EB459E" />
         <StatTile icon={<Trophy size={18} />} label="리더보드 참여자"  value={lb.length}         color="#5865F2" />
         <StatTile icon={<Award size={18} />}  label="최고 애정도 레벨"        value={lb[0]?.level ?? 0} color="#57F287" />
       </div>
@@ -99,7 +99,7 @@ export default function LevelingPage() {
       {/* 레벨 보상 */}
       <div className="card space-y-4">
         <h2 className="section-title flex items-center gap-2">
-          <Zap size={16} className="text-warning" /> 애정도 등급 보상
+          <Heart size={16} style={{ color: "#EB459E" }} /> 애정도 등급 보상
         </h2>
         <div className="space-y-2">
           {rewards.map((r) => {

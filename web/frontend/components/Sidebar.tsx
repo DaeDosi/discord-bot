@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { clsx } from "clsx";
-import { Settings, Zap, Shield, Radio, UserCheck, HelpCircle, ChevronLeft, Terminal, Gem, Youtube, Tv } from "lucide-react";
+import { Settings, Heart, Shield, Radio, UserCheck, HelpCircle, ChevronLeft, Terminal, Gem, Youtube, Tv } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 interface NavItem { href: string; label: string; shortLabel: string; icon: LucideIcon }
@@ -15,7 +15,7 @@ const GROUPS: NavGroup[] = [
     items: [
       { href: "",               label: "일반 설정", shortLabel: "일반설정", icon: Settings  },
       { href: "/verification",  label: "입장 인증", shortLabel: "인증",     icon: UserCheck },
-      { href: "/leveling",      label: "애정도",    shortLabel: "애정도",   icon: Zap       },
+      { href: "/leveling",      label: "애정도",    shortLabel: "애정도",   icon: Heart     },
       { href: "/moderation",    label: "관리",      shortLabel: "관리",     icon: Shield    },
       { href: "/points",        label: "포인트",    shortLabel: "포인트",   icon: Gem       },
     ],
