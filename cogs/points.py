@@ -1,132 +1,16 @@
+import json
 import time
-import random
-import asyncio
+import datetime
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from database import get_db
 from utils import is_mod_or_admin, success, error
 
-
-# ── 포인트 도박 세션 ──────────────────────────────────────────────────────────
-
-
-class GamblingSession:
-    def __init__(self, message: discord.Message, view: "GamblingView",
-                 title: str, options: list[str], bet_amount: int, duration: int):
-        self.message     = message
-        self.view        = view
-        self.title       = title
-        self.options     = options
-        self.bet_amount  = bet_amount
-        self.duration    = duration
-        self.start_time  = time.time()
-        self.end_time    = self.start_time + duration
-        self.votes: dict[int, int] = {}  # user_id -> opt_index (0-based)
-        self.task: asyncio.Task | None = None
-        self.ended       = False
-
-
-def _build_gambling_embed(session: GamblingSession, ended=False,
-                          winner_idx: int | None = None, winner_payout: int = 0) -> discord.Embed:
-    total = len(session.votes)
-    pool  = total * session.bet_amount
-    counts = [0] * len(session.options)
-    for v in session.votes.values():
-        counts[v] += 1
-
-    if ended:
-        embed = discord.Embed(title=f"🏆 {session.title} — 결과", color=discord.Color.gold())
-        if winner_idx is not None:
-            embed.description = f"🎊 당첨: **{winner_idx + 1}번** — {session.options[winner_idx]}"
-        for i, (opt, cnt) in enumerate(zip(session.options, counts)):
-            pct  = f"{cnt / total * 100:.0f}%" if total else "0%"
-            pts  = cnt * session.bet_amount
-            if i == winner_idx:
-                val = f"✅ **{cnt}명** ({pct}) | **{pts:,}P** → 각 **+{winner_payout:,}P**"
-            else:
-                val = f"❌ **{cnt}명** ({pct}) | **{pts:,}P**"
-            embed.add_field(name=f"{i + 1}번 — {opt}", value=val, inline=False)
-        embed.add_field(name="총 베팅 풀", value=f"**{pool:,}P**", inline=True)
-        embed.add_field(name="참가자",     value=f"**{total}명**", inline=True)
-        if winner_idx is not None and counts[winner_idx] == 0:
-            embed.add_field(name="⚠️ 당첨자 없음", value="전원 베팅 포인트 환불됨", inline=False)
-        embed.set_footer(text="도박 종료")
-    else:
-        now       = time.time()
-        remaining = max(0, int(session.end_time - now))
-        elapsed   = now - session.start_time
-        pct_done  = min(1.0, elapsed / session.duration) if session.duration > 0 else 0
-        filled    = round(pct_done * 20)
-        bar       = "█" * filled + "░" * (20 - filled)
-        embed = discord.Embed(
-            title=f"🎰 {session.title}",
-            description=(
-                f"베팅 금액: **{session.bet_amount:,}P** | 총 풀: **{pool:,}P** | 참가: **{total}명**\n\n"
-                f"⏰ 남은 시간: **{remaining}초**\n"
-                f"`{bar}` {int(pct_done * 100)}%"
-            ),
-            color=discord.Color.blurple(),
-        )
-        for i, (opt, cnt) in enumerate(zip(session.options, counts)):
-            pct = f"{cnt / total * 100:.0f}%" if total else "0%"
-            embed.add_field(
-                name=f"{i + 1}번 — {opt}",
-                value=f"**{cnt}명** ({pct}) | **{cnt * session.bet_amount:,}P**",
-                inline=False,
-            )
-        embed.set_footer(text="버튼 번호를 눌러 베팅하세요")
-    return embed
-
-
-class GamblingButton(discord.ui.Button):
-    def __init__(self, opt_index: int, content: str):
-        super().__init__(
-            label=str(opt_index + 1),
-            style=discord.ButtonStyle.primary,
-            custom_id=f"gb_opt_{opt_index}",
-            row=opt_index // 3,
-        )
-        self.opt_index = opt_index
-
-    async def callback(self, interaction: discord.Interaction):
-        cog: "PointsCog | None" = interaction.client.cogs.get("PointsCog")  # type: ignore
-        session = cog.active_gambling.get(interaction.guild_id) if cog else None
-
-        if not session or session.ended:
-            return await interaction.response.send_message("현재 진행 중인 도박이 없습니다.", ephemeral=True)
-        if interaction.user.id in session.votes:
-            return await interaction.response.send_message("이미 베팅했습니다.", ephemeral=True)
-
-        db = await get_db()
-        pts_row = await (await db.execute(
-            "SELECT points FROM user_points WHERE guild_id=? AND user_id=?",
-            (interaction.guild_id, interaction.user.id)
-        )).fetchone()
-        current = pts_row["points"] if pts_row else 0
-        if current < session.bet_amount:
-            return await interaction.response.send_message(
-                f"포인트가 부족합니다. (보유: **{current:,}P** / 필요: **{session.bet_amount:,}P**)",
-                ephemeral=True,
-            )
-
-        await db.execute(
-            "UPDATE user_points SET points = MAX(0, points - ?) WHERE guild_id=? AND user_id=?",
-            (session.bet_amount, interaction.guild_id, interaction.user.id)
-        )
-        await db.commit()
-        session.votes[interaction.user.id] = self.opt_index
-        opt_name = session.options[self.opt_index]
-        await interaction.response.send_message(
-            f"✅ **{opt_name}**에 **{session.bet_amount:,}P** 베팅 완료!", ephemeral=True
-        )
-
-
-class GamblingView(discord.ui.View):
-    def __init__(self, options: list[str]):
-        super().__init__(timeout=None)
-        for i, content in enumerate(options):
-            self.add_item(GamblingButton(opt_index=i, content=content))
+# discord.Poll 최대 진행 시간 (32일 = 768시간, Discord API 상한)
+MAX_POLL_HOURS = 768
+# 정산되지 않은 도박 라운드를 주기적으로 확인하는 간격 (poll_result 이벤트를 놓쳤을 때의 안전망)
+RECONCILE_INTERVAL_SECONDS = 300
 
 
 async def _handle_shop_buy(interaction: discord.Interaction, item_id: int):
@@ -250,7 +134,10 @@ class ShopView(discord.ui.View):
 class PointsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.active_gambling: dict[int, GamblingSession] = {}  # guild_id -> session
+        self.reconcile_gambling_loop.start()
+
+    def cog_unload(self):
+        self.reconcile_gambling_loop.cancel()
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -388,107 +275,173 @@ class PointsCog(commands.Cog):
             f"💎 내 보유 포인트: **{current_pts:,}** P", ephemeral=True
         )
 
-    # ── 포인트 도박 내부 메서드 ──────────────────────────────────────────────
+    # ── 포인트 도박 (discord.Poll 기반) ──────────────────────────────────────
+    #
+    # 승자는 득표(베팅) 최다 옵션으로 자동 결정되며, 정산은 베팅 시점이 아니라
+    # 라운드 종료 시점의 잔액을 기준으로 이뤄진다 (discord.Poll은 투표를 사전에
+    # 막을 방법이 없으므로, 잔액이 부족한 참가자는 정산에서 조용히 제외된다).
 
-    async def _gambling_update_loop(self, guild_id: int):
-        while True:
-            await asyncio.sleep(5)
-            session = self.active_gambling.get(guild_id)
-            if not session or session.ended:
-                return
-            if time.time() >= session.end_time:
-                await self._end_gambling(guild_id, winner_idx=None)
-                return
-            try:
-                embed = _build_gambling_embed(session)
-                await session.message.edit(embed=embed)
-            except Exception:
-                pass
-
-    async def _end_gambling(self, guild_id: int, winner_idx: int | None):
-        session = self.active_gambling.pop(guild_id, None)
-        if not session or session.ended:
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.type != discord.MessageType.poll_result:
             return
-        session.ended = True
-        # task.cancel() is intentionally omitted: when called from the update loop,
-        # cancelling the task here raises CancelledError on the next await, preventing
-        # the result embed from being sent. The loop exits on its own via session.ended.
+        ref = message.reference
+        if not ref or not ref.message_id:
+            return
+        await self._settle_poll_session(ref.message_id, message.channel)
 
-        for item in session.view.children:
-            item.disabled = True  # type: ignore
-
-        total   = len(session.votes)
-        pool    = total * session.bet_amount
-        counts  = [0] * len(session.options)
-        for v in session.votes.values():
-            counts[v] += 1
-
-        if winner_idx is None:
-            winner_idx = random.randint(0, len(session.options) - 1)
-
-        winner_count   = counts[winner_idx]
-        winner_payout  = pool // winner_count if winner_count > 0 else 0
-        winner_users   = [uid for uid, opt in session.votes.items() if opt == winner_idx]
-
+    @tasks.loop(seconds=RECONCILE_INTERVAL_SECONDS)
+    async def reconcile_gambling_loop(self):
         db = await get_db()
-        if winner_count == 0:
-            # 당첨자 없음 → 전원 환불
-            for uid in session.votes:
-                await db.execute(
-                    """INSERT INTO user_points(guild_id, user_id, points) VALUES(?,?,?)
-                       ON CONFLICT(guild_id, user_id) DO UPDATE SET points=points+?""",
-                    (guild_id, uid, session.bet_amount, session.bet_amount)
-                )
-        else:
-            for uid in winner_users:
-                await db.execute(
-                    """INSERT INTO user_points(guild_id, user_id, points) VALUES(?,?,?)
-                       ON CONFLICT(guild_id, user_id) DO UPDATE SET points=points+?""",
-                    (guild_id, uid, winner_payout, winner_payout)
-                )
+        rows = await (await db.execute(
+            "SELECT message_id, channel_id FROM points_poll_sessions WHERE settled=0"
+        )).fetchall()
+        for row in rows:
+            channel = self.bot.get_channel(row["channel_id"])
+            if not channel:
+                continue
+            try:
+                message = await channel.fetch_message(row["message_id"])
+            except (discord.NotFound, discord.Forbidden):
+                continue
+            except Exception:
+                continue
+            if message.poll and message.poll.is_finalized():
+                await self._settle_poll_session(row["message_id"], channel)
+
+    @reconcile_gambling_loop.before_loop
+    async def before_reconcile_gambling_loop(self):
+        await self.bot.wait_until_ready()
+
+    async def _settle_poll_session(self, message_id: int, channel: discord.abc.Messageable):
+        db = await get_db()
+        row = await (await db.execute(
+            "SELECT * FROM points_poll_sessions WHERE message_id=? AND settled=0",
+            (message_id,)
+        )).fetchone()
+        if not row:
+            return
+        # 동시 실행(정산 중복) 방지를 위해 먼저 settled 플래그부터 세운다.
+        await db.execute("UPDATE points_poll_sessions SET settled=1 WHERE id=?", (row["id"],))
         await db.commit()
 
-        result_embed = _build_gambling_embed(session, ended=True, winner_idx=winner_idx, winner_payout=winner_payout)
         try:
-            await session.message.edit(embed=result_embed, view=session.view)
+            message = await channel.fetch_message(message_id)
         except Exception:
-            pass
+            return
+        poll = message.poll
+        if not poll:
+            return
 
-        try:
-            opt_name = session.options[winner_idx] if winner_idx is not None else "?"
-            if winner_count > 0:
-                ann_desc = (
-                    f"🎊 **{winner_idx + 1}번** — {opt_name}\n"
-                    f"당첨자 **{winner_count}명**, 각 **+{winner_payout:,}P** 지급!"
+        guild_id   = row["guild_id"]
+        bet_amount = row["bet_amount"]
+        answers    = sorted(poll.answers, key=lambda a: a.id)
+
+        # 옵션별 투표자 수집 (봇 제외, 중복 방지)
+        voters_by_answer: dict[int, list[int]] = {}
+        seen: set[int] = set()
+        for answer in answers:
+            uids = []
+            async for u in answer.voters():
+                if u.bot or u.id in seen:
+                    continue
+                seen.add(u.id)
+                uids.append(u.id)
+            voters_by_answer[answer.id] = uids
+
+        winner_id = poll.victor_answer_id
+        if winner_id is None and poll.total_votes > 0:
+            # 동률 등으로 victor가 결정되지 않은 경우 최다 득표 옵션으로 직접 판정
+            winner_id = max(answers, key=lambda a: a.vote_count).id
+
+        # 정산 시점 잔액 기준으로 베팅 차감
+        charged_by_answer: dict[int, list[int]] = {a.id: [] for a in answers}
+        for answer_id, uids in voters_by_answer.items():
+            for uid in uids:
+                pts_row = await (await db.execute(
+                    "SELECT points FROM user_points WHERE guild_id=? AND user_id=?",
+                    (guild_id, uid)
+                )).fetchone()
+                current = pts_row["points"] if pts_row else 0
+                if current < bet_amount:
+                    continue
+                await db.execute(
+                    "UPDATE user_points SET points = points - ? WHERE guild_id=? AND user_id=?",
+                    (bet_amount, guild_id, uid)
+                )
+                charged_by_answer[answer_id].append(uid)
+
+        winners       = charged_by_answer.get(winner_id, []) if winner_id is not None else []
+        total_charged = sum(len(v) for v in charged_by_answer.values())
+        pool          = total_charged * bet_amount
+        payout        = pool // len(winners) if winners else 0
+
+        if winners:
+            for uid in winners:
+                await db.execute(
+                    """INSERT INTO user_points(guild_id, user_id, points) VALUES(?,?,?)
+                       ON CONFLICT(guild_id, user_id) DO UPDATE SET points=points+?""",
+                    (guild_id, uid, payout, payout)
+                )
+        else:
+            # 승자 없음(참여 0명 또는 승자 옵션에 유효 참가자 없음) → 차감된 전원 환불
+            for uids in charged_by_answer.values():
+                for uid in uids:
+                    await db.execute(
+                        """INSERT INTO user_points(guild_id, user_id, points) VALUES(?,?,?)
+                           ON CONFLICT(guild_id, user_id) DO UPDATE SET points=points+?""",
+                        (guild_id, uid, bet_amount, bet_amount)
+                    )
+        await db.commit()
+
+        embed = discord.Embed(title="🏆 포인트 도박 결과", color=discord.Color.gold())
+        if winner_id is None:
+            embed.description = "참여자가 없어 정산할 내용이 없습니다."
+        else:
+            winner_answer = next(a for a in answers if a.id == winner_id)
+            if winners:
+                embed.description = (
+                    f"🎊 당첨: **{winner_answer.text}**\n"
+                    f"당첨자 **{len(winners)}명**, 각 **+{payout:,}P** 지급!"
                 )
             else:
-                ann_desc = (
-                    f"🎰 **{winner_idx + 1 if winner_idx is not None else '?'}번** — {opt_name}\n"
-                    "당첨자가 없어 전원 베팅 포인트가 환불되었습니다."
+                embed.description = (
+                    f"🎰 **{winner_answer.text}**가 최다 득표했지만 유효 참가자가 없어 "
+                    "베팅 포인트가 전원 환불되었습니다."
                 )
-            ann_embed = discord.Embed(
-                title=f"🏆 {session.title} 도박 결과 발표!",
-                description=ann_desc,
-                color=discord.Color.gold(),
+        for answer in answers:
+            cnt = len(charged_by_answer.get(answer.id, []))
+            mark = "✅" if answer.id == winner_id and winners else "❌"
+            embed.add_field(
+                name=answer.text,
+                value=f"{mark} **{cnt}명** | **{cnt * bet_amount:,}P**",
+                inline=False,
             )
-            await session.message.channel.send(embed=ann_embed)
+        embed.add_field(name="총 베팅 풀", value=f"**{pool:,}P**", inline=True)
+        embed.add_field(name="참가자",     value=f"**{total_charged}명**", inline=True)
+        embed.set_footer(text="NexBot • nexbot.shop")
+        try:
+            await channel.send(embed=embed)
         except Exception:
             pass
-
-    # ── 도박 슬래시 명령어 ────────────────────────────────────────────────────
 
     @app_commands.command(name="포인트도박", description="[관리자] 포인트 도박을 시작합니다.")
     @app_commands.default_permissions(administrator=True)
     @is_mod_or_admin()
     async def start_gambling(self, interaction: discord.Interaction):
         guild_id = interaction.guild_id
-        if guild_id in self.active_gambling:
+        db = await get_db()
+
+        existing = await (await db.execute(
+            "SELECT id FROM points_poll_sessions WHERE guild_id=? AND settled=0",
+            (guild_id,)
+        )).fetchone()
+        if existing:
             return await interaction.response.send_message(
                 embed=error("진행 중", "이미 진행 중인 도박이 있습니다. `/포인트도박종료`로 먼저 종료하세요."),
                 ephemeral=True,
             )
 
-        db = await get_db()
         cfg = await (await db.execute(
             "SELECT title, duration, bet_amount FROM points_gambling_config WHERE guild_id=?",
             (guild_id,)
@@ -504,47 +457,57 @@ class PointsCog(commands.Cog):
                 ephemeral=True,
             )
 
-        options    = [r["content"] for r in opts]
+        options    = [r["content"] for r in opts][:10]  # discord.Poll 최대 10개 옵션
         bet_amount = cfg["bet_amount"]
-        duration   = cfg["duration"]
+        hours      = max(1, min(MAX_POLL_HOURS, int(cfg["duration"])))
         title      = cfg["title"]
 
-        view    = GamblingView(options)
-        session = GamblingSession(
-            message=None, view=view, title=title,
-            options=options, bet_amount=bet_amount, duration=duration,
-        )
-        embed = _build_gambling_embed(session)
-        await interaction.response.send_message("🎰 포인트 도박을 시작합니다!", ephemeral=True)
-        msg = await interaction.channel.send(embed=embed, view=view)
-        session.message = msg
-        self.active_gambling[guild_id] = session
-        session.task = asyncio.create_task(self._gambling_update_loop(guild_id))
+        poll = discord.Poll(question=title, duration=datetime.timedelta(hours=hours))
+        for opt in options:
+            poll.add_answer(text=opt)
 
-    @app_commands.command(name="포인트도박종료", description="[관리자] 진행 중인 포인트 도박을 종료합니다.")
-    @app_commands.describe(번호="당첨 옵션 번호 (1-based). 미입력 시 랜덤 추첨")
+        await interaction.response.send_message("🎰 포인트 도박을 시작합니다!", ephemeral=True)
+        msg = await interaction.channel.send(poll=poll)
+
+        await db.execute(
+            """INSERT INTO points_poll_sessions(guild_id, channel_id, message_id, bet_amount, options, settled, created_at)
+               VALUES(?,?,?,?,?,0,?)""",
+            (guild_id, interaction.channel_id, msg.id, bet_amount, json.dumps(options), int(time.time()))
+        )
+        await db.commit()
+
+    @app_commands.command(name="포인트도박종료", description="[관리자] 진행 중인 포인트 도박을 조기 종료합니다.")
     @app_commands.default_permissions(administrator=True)
     @is_mod_or_admin()
-    async def end_gambling(self, interaction: discord.Interaction, 번호: int | None = None):
+    async def end_gambling(self, interaction: discord.Interaction):
         guild_id = interaction.guild_id
-        if guild_id not in self.active_gambling:
+        db = await get_db()
+        row = await (await db.execute(
+            "SELECT channel_id, message_id FROM points_poll_sessions WHERE guild_id=? AND settled=0",
+            (guild_id,)
+        )).fetchone()
+        if not row:
             return await interaction.response.send_message(
                 embed=error("없음", "현재 진행 중인 도박이 없습니다."), ephemeral=True
             )
-        session = self.active_gambling[guild_id]
-        n_opts  = len(session.options)
 
-        if 번호 is not None:
-            if not (1 <= 번호 <= n_opts):
-                return await interaction.response.send_message(
-                    embed=error("범위 오류", f"번호는 1 ~ {n_opts} 사이여야 합니다."), ephemeral=True
-                )
-            winner_idx = 번호 - 1
-        else:
-            winner_idx = None
+        channel = interaction.guild.get_channel(row["channel_id"])
+        if not channel:
+            return await interaction.response.send_message(
+                embed=error("오류", "도박이 게시된 채널을 찾을 수 없습니다."), ephemeral=True
+            )
 
-        await interaction.response.send_message("✅ 도박을 종료합니다.", ephemeral=True)
-        await self._end_gambling(guild_id, winner_idx=winner_idx)
+        try:
+            message = await channel.fetch_message(row["message_id"])
+            await message.end_poll()
+        except Exception as e:
+            return await interaction.response.send_message(
+                embed=error("종료 실패", f"투표 종료 중 오류가 발생했습니다: {e}"), ephemeral=True
+            )
+
+        await interaction.response.send_message(
+            "✅ 도박을 종료합니다. 잠시 후 정산 결과가 게시됩니다.", ephemeral=True
+        )
 
     async def cog_app_command_error(self, interaction: discord.Interaction, err: app_commands.AppCommandError):
         if isinstance(err, app_commands.MissingPermissions):

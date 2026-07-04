@@ -253,7 +253,7 @@ export default function PointsPage() {
 
   const [gamblingConfig, setGamblingConfig] = useState<{
     title: string; duration: number; bet_amount: number; options: string[];
-  }>({ title: "포인트 도박", duration: 60, bet_amount: 100, options: ["", ""] });
+  }>({ title: "포인트 도박", duration: 1, bet_amount: 100, options: ["", ""] });
   const [savingGambling, setSavingGambling] = useState(false);
   const [savedGambling, setSavedGambling]   = useState(false);
 
@@ -579,15 +579,15 @@ export default function PointsPage() {
               />
             </div>
             <div>
-              <label className="label">진행 시간 (초)</label>
+              <label className="label">진행 시간 (시간)</label>
               <input
                 className="input"
                 type="number"
-                min={10}
-                max={3600}
-                placeholder="60"
+                min={1}
+                max={768}
+                placeholder="1"
                 value={gamblingConfig.duration}
-                onChange={(e) => setGamblingConfig((p) => ({ ...p, duration: Number(e.target.value) || 60 }))}
+                onChange={(e) => setGamblingConfig((p) => ({ ...p, duration: Number(e.target.value) || 1 }))}
               />
             </div>
             <div>
@@ -606,8 +606,8 @@ export default function PointsPage() {
           {/* 옵션 목록 */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <label className="label mb-0">도박 옵션 (최소 2개 · 최대 5개)</label>
-              {gamblingConfig.options.length < 5 && (
+              <label className="label mb-0">도박 옵션 (최소 2개 · 최대 10개)</label>
+              {gamblingConfig.options.length < 10 && (
                 <button
                   onClick={() => setGamblingConfig((p) => ({ ...p, options: [...p.options, ""] }))}
                   className="flex items-center gap-1 text-xs text-accent hover:text-white transition-colors"
@@ -617,7 +617,7 @@ export default function PointsPage() {
               )}
             </div>
             {gamblingConfig.options.map((opt, idx) => {
-              const nums = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"];
+              const nums = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
               return (
                 <div key={idx} className="flex items-center gap-2">
                   <span className="text-lg shrink-0">{nums[idx] ?? `${idx + 1}`}</span>

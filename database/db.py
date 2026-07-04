@@ -218,6 +218,24 @@ async def init_db():
                content     TEXT    NOT NULL,
                UNIQUE(guild_id, opt_index)
            )""",
+        """CREATE TABLE IF NOT EXISTS points_poll_sessions (
+               id          INTEGER PRIMARY KEY AUTOINCREMENT,
+               guild_id    INTEGER NOT NULL,
+               channel_id  INTEGER NOT NULL,
+               message_id  INTEGER NOT NULL,
+               bet_amount  INTEGER NOT NULL,
+               options     TEXT    NOT NULL,
+               settled     INTEGER NOT NULL DEFAULT 0,
+               created_at  INTEGER NOT NULL,
+               UNIQUE(guild_id, message_id)
+           )""",
+        # points_gambling_config.duration was originally seconds (10~3600); the
+        # discord.Poll-based rewrite requires whole hours. One-time conversion,
+        # gated by duration_unit_migrated so re-running on every startup doesn't
+        # keep clobbering admin-set hour values back down to 1.
+        "ALTER TABLE points_gambling_config ADD COLUMN duration_unit_migrated INTEGER DEFAULT 0",
+        """UPDATE points_gambling_config SET duration = 1, duration_unit_migrated = 1
+           WHERE duration_unit_migrated = 0""",
     ]:
         try:
             await db.execute(sql)

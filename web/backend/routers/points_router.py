@@ -328,7 +328,7 @@ async def list_shop_exchanges(
 
 class GamblingConfigSave(BaseModel):
     title:      str = "포인트 도박"
-    duration:   int = 60
+    duration:   int = 1   # 시간(hour) 단위 — discord.Poll 진행 시간
     bet_amount: int = 100
     options:    list[str] = []
 
@@ -350,7 +350,7 @@ async def get_gambling_config(
     )).fetchall()
     return {
         "title":      cfg["title"]      if cfg else "포인트 도박",
-        "duration":   cfg["duration"]   if cfg else 60,
+        "duration":   cfg["duration"]   if cfg else 1,
         "bet_amount": cfg["bet_amount"] if cfg else 100,
         "options":    [r["content"] for r in opts],
     }
@@ -366,18 +366,19 @@ async def save_gambling_config(
     options = [o.strip() for o in body.options if o.strip()]
     if len(options) < 2:
         raise HTTPException(status_code=400, detail="옵션은 최소 2개 이상 필요합니다.")
-    if len(options) > 5:
-        raise HTTPException(status_code=400, detail="옵션은 최대 5개까지 가능합니다.")
+    if len(options) > 10:
+        raise HTTPException(status_code=400, detail="옵션은 최대 10개까지 가능합니다.")
 
     db = await get_db()
     await db.execute(
-        """INSERT INTO points_gambling_config(guild_id, title, duration, bet_amount)
-           VALUES(?,?,?,?)
+        """INSERT INTO points_gambling_config(guild_id, title, duration, bet_amount, duration_unit_migrated)
+           VALUES(?,?,?,?,1)
            ON CONFLICT(guild_id) DO UPDATE SET
                title=excluded.title,
                duration=excluded.duration,
-               bet_amount=excluded.bet_amount""",
-        (int(guild_id), body.title or "포인트 도박", max(10, body.duration), max(1, body.bet_amount))
+               bet_amount=excluded.bet_amount,
+               duration_unit_migrated=1""",
+        (int(guild_id), body.title or "포인트 도박", max(1, min(768, body.duration)), max(1, body.bet_amount))
     )
     await db.execute(
         "DELETE FROM points_gambling_options WHERE guild_id=?", (int(guild_id),)
