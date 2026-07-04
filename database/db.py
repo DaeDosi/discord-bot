@@ -10,6 +10,13 @@ DB_PATH = _raw if os.path.isabs(_raw) else os.path.normpath(os.path.join(_PROJEC
 
 _db: aiosqlite.Connection | None = None
 
+# 프로세스 시작 시 DB 파일이 이미 있었는지(볼륨이 유지됨) 새로 생겼는지(볼륨 초기화됨)
+# 배포/재시작할 때마다 로그로 확인할 수 있도록 기록
+if os.path.exists(DB_PATH):
+    print(f"[database] DB_PATH={DB_PATH} (기존 파일 발견, 크기={os.path.getsize(DB_PATH)} bytes)", flush=True)
+else:
+    print(f"[database] DB_PATH={DB_PATH} (파일 없음 — 새로 생성됩니다. 볼륨이 유지되지 않았을 수 있습니다)", flush=True)
+
 
 async def _new_connection() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(DB_PATH)
