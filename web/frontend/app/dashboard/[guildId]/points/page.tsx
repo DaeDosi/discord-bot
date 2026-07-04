@@ -41,8 +41,8 @@ function MissionModal({
     >
       <div className="bg-bg-card border border-border rounded-xl w-full max-w-md shadow-xl">
         <div className="flex items-center justify-between p-4 border-b border-border">
-          <p className="font-semibold text-white">{initial ? "미션 수정" : "미션 추가"}</p>
-          <button onClick={onClose} className="text-muted hover:text-white transition-colors"><X size={18} /></button>
+          <p className="font-semibold text-fg">{initial ? "미션 수정" : "미션 추가"}</p>
+          <button onClick={onClose} className="text-muted hover:text-fg transition-colors"><X size={18} /></button>
         </div>
         <div className="p-4 space-y-3">
           <div>
@@ -117,8 +117,8 @@ function ShopItemModal({
     >
       <div className="bg-bg-card border border-border rounded-xl w-full max-w-md shadow-xl">
         <div className="flex items-center justify-between p-4 border-b border-border">
-          <p className="font-semibold text-white">{initial ? "아이템 수정" : "아이템 추가"}</p>
-          <button onClick={onClose} className="text-muted hover:text-white transition-colors"><X size={18} /></button>
+          <p className="font-semibold text-fg">{initial ? "아이템 수정" : "아이템 추가"}</p>
+          <button onClick={onClose} className="text-muted hover:text-fg transition-colors"><X size={18} /></button>
         </div>
         <div className="p-4 space-y-3">
           <div>
@@ -208,8 +208,8 @@ function AdjustModal({
     >
       <div className="bg-bg-card border border-border rounded-xl w-full max-w-sm shadow-xl">
         <div className="flex items-center justify-between p-4 border-b border-border">
-          <p className="font-semibold text-white">포인트 수동 지급</p>
-          <button onClick={onClose} className="text-muted hover:text-white transition-colors"><X size={18} /></button>
+          <p className="font-semibold text-fg">포인트 수동 지급</p>
+          <button onClick={onClose} className="text-muted hover:text-fg transition-colors"><X size={18} /></button>
         </div>
         <div className="p-4 space-y-3">
           <div>
@@ -396,7 +396,7 @@ export default function PointsPage() {
 
       {/* Header */}
       <div>
-        <h1 className="text-xl font-bold text-white flex items-center gap-2">
+        <h1 className="text-xl font-bold text-fg flex items-center gap-2">
           <Gem size={20} className="text-accent" /> 포인트 관리
         </h1>
         <p className="text-muted text-sm mt-1">미션, 신청 승인, 리더보드, 포인트 상점 관리</p>
@@ -409,7 +409,7 @@ export default function PointsPage() {
             key={t.key}
             onClick={() => setTab(t.key)}
             className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-              tab === t.key ? "bg-accent/15 text-accent" : "text-muted hover:text-white"
+              tab === t.key ? "bg-accent/15 text-accent" : "text-muted hover:text-fg"
             }`}
           >
             {t.icon}
@@ -427,7 +427,7 @@ export default function PointsPage() {
       {tab === "missions" && (
         <div className="card space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-white">등록된 미션</h2>
+            <h2 className="font-semibold text-fg">등록된 미션</h2>
             <button onClick={() => setMissionModal("new")} className="btn-primary text-sm flex items-center gap-1.5">
               <Plus size={14} /> 미션 추가
             </button>
@@ -439,13 +439,13 @@ export default function PointsPage() {
               {missions.map((m) => (
                 <div key={m.id} className="flex items-start justify-between gap-3 p-3 rounded-lg bg-bg border border-border">
                   <div className="min-w-0">
-                    <p className="text-sm font-medium text-white truncate">{m.title}</p>
+                    <p className="text-sm font-medium text-fg truncate">{m.title}</p>
                     {m.description && <p className="text-sm text-muted mt-0.5 line-clamp-2">{m.description}</p>}
                     <p className="text-sm text-accent font-semibold mt-1">{m.points.toLocaleString()} 포인트</p>
                   </div>
                   <div className="flex gap-1 shrink-0">
                     <button onClick={() => setMissionModal(m)}
-                      className="p-1.5 rounded-lg text-muted hover:text-white hover:bg-bg-hover transition-colors">
+                      className="p-1.5 rounded-lg text-muted hover:text-fg hover:bg-bg-hover transition-colors">
                       <Edit2 size={14} />
                     </button>
                     <button onClick={() => deleteMission(m.id)}
@@ -464,8 +464,8 @@ export default function PointsPage() {
       {tab === "submissions" && (
         <div className="card space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-white">미션 신청 현황</h2>
-            <button onClick={loadSubmissions} className="text-sm text-muted hover:text-white transition-colors">새로고침</button>
+            <h2 className="font-semibold text-fg">미션 신청 현황</h2>
+            <button onClick={loadSubmissions} className="text-sm text-muted hover:text-fg transition-colors">새로고침</button>
           </div>
           {submissions.length === 0 ? (
             <p className="text-muted text-sm text-center py-8">신청 내역이 없습니다.</p>
@@ -484,7 +484,7 @@ export default function PointsPage() {
                 <tbody className="divide-y divide-border">
                   {submissions.map((s) => (
                     <tr key={s.id} className="hover:bg-bg-hover transition-colors">
-                      <td className="py-2.5 pr-3 text-white font-medium truncate max-w-[100px]">{s.user_name}</td>
+                      <td className="py-2.5 pr-3 text-fg font-medium truncate max-w-[100px]">{s.user_name}</td>
                       <td className="py-2.5 pr-3 text-muted truncate max-w-[130px]">{s.title}</td>
                       <td className="py-2.5 pr-3 text-accent font-semibold">{s.points.toLocaleString()}</td>
                       <td className="py-2.5 pr-3 text-muted text-xs whitespace-nowrap">
@@ -521,8 +521,8 @@ export default function PointsPage() {
       {tab === "leaderboard" && (
         <div className="card space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-white">포인트 순위표</h2>
-            <button onClick={loadLeaderboard} className="text-sm text-muted hover:text-white transition-colors">새로고침</button>
+            <h2 className="font-semibold text-fg">포인트 순위표</h2>
+            <button onClick={loadLeaderboard} className="text-sm text-muted hover:text-fg transition-colors">새로고침</button>
           </div>
           {leaderboard.length === 0 ? (
             <p className="text-muted text-sm text-center py-8">포인트 데이터가 없습니다.</p>
@@ -533,7 +533,7 @@ export default function PointsPage() {
                   <span className={`w-6 text-center text-sm font-bold ${
                     i === 0 ? "text-yellow-400" : i === 1 ? "text-gray-300" : i === 2 ? "text-amber-600" : "text-muted"
                   }`}>{i + 1}</span>
-                  <p className="flex-1 text-sm text-white font-medium truncate">{e.display_name}</p>
+                  <p className="flex-1 text-sm text-fg font-medium truncate">{e.display_name}</p>
                   <p className="text-sm font-bold text-accent">{e.points.toLocaleString()} P</p>
                 </div>
               ))}
@@ -545,7 +545,7 @@ export default function PointsPage() {
       {/* ── 수동 지급 ── */}
       {tab === "adjust" && (
         <div className="card space-y-4">
-          <h2 className="font-semibold text-white">포인트 수동 조정</h2>
+          <h2 className="font-semibold text-fg">포인트 수동 조정</h2>
           <p className="text-muted text-sm">특정 멤버에게 포인트를 지급하거나 차감합니다.</p>
           <button onClick={() => setAdjustModal(true)} className="btn-primary flex items-center gap-2">
             <Gem size={15} /> 포인트 지급 / 차감
@@ -557,7 +557,7 @@ export default function PointsPage() {
       {tab === "gambling" && (
         <div className="card space-y-5">
           <div>
-            <h2 className="font-semibold text-white flex items-center gap-2">
+            <h2 className="font-semibold text-fg flex items-center gap-2">
               <Dices size={16} className="text-accent" /> 포인트 도박 설정
             </h2>
             <p className="text-muted text-sm mt-1">
@@ -610,7 +610,7 @@ export default function PointsPage() {
               {gamblingConfig.options.length < 10 && (
                 <button
                   onClick={() => setGamblingConfig((p) => ({ ...p, options: [...p.options, ""] }))}
-                  className="flex items-center gap-1 text-xs text-accent hover:text-white transition-colors"
+                  className="flex items-center gap-1 text-xs text-accent hover:text-fg transition-colors"
                 >
                   <Plus size={13} /> 옵션 추가
                 </button>
@@ -672,7 +672,7 @@ export default function PointsPage() {
           {/* 아이템 관리 */}
           <div className="card space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="font-semibold text-white flex items-center gap-2">
+              <h2 className="font-semibold text-fg flex items-center gap-2">
                 <ShoppingBag size={16} className="text-accent" /> 아이템 관리
               </h2>
               <button onClick={() => setShopModal("new")} className="btn-primary text-sm flex items-center gap-1.5">
@@ -697,7 +697,7 @@ export default function PointsPage() {
                         </div>
                       )}
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-white truncate">{item.name}</p>
+                        <p className="text-sm font-medium text-fg truncate">{item.name}</p>
                         {item.description && <p className="text-sm text-muted mt-0.5 line-clamp-1">{item.description}</p>}
                         <div className="flex items-center gap-3 mt-1">
                           <span className="text-sm font-semibold text-accent">{item.points_cost.toLocaleString()} P</span>
@@ -709,7 +709,7 @@ export default function PointsPage() {
                     </div>
                     <div className="flex gap-1 shrink-0">
                       <button onClick={() => setShopModal(item)}
-                        className="p-1.5 rounded-lg text-muted hover:text-white hover:bg-bg-hover transition-colors">
+                        className="p-1.5 rounded-lg text-muted hover:text-fg hover:bg-bg-hover transition-colors">
                         <Edit2 size={14} />
                       </button>
                       <button onClick={() => deleteShopItem(item.id)}
@@ -726,8 +726,8 @@ export default function PointsPage() {
           {/* 교환 내역 */}
           <div className="card space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="font-semibold text-white">교환 내역</h2>
-              <button onClick={loadExchanges} className="text-sm text-muted hover:text-white transition-colors">새로고침</button>
+              <h2 className="font-semibold text-fg">교환 내역</h2>
+              <button onClick={loadExchanges} className="text-sm text-muted hover:text-fg transition-colors">새로고침</button>
             </div>
             {exchanges.length === 0 ? (
               <p className="text-muted text-sm text-center py-6">교환 내역이 없습니다.</p>
@@ -746,7 +746,7 @@ export default function PointsPage() {
                   <tbody className="divide-y divide-border">
                     {exchanges.map((ex) => (
                       <tr key={ex.id} className="hover:bg-bg-hover transition-colors">
-                        <td className="py-2.5 pr-3 text-white font-medium truncate max-w-[100px]">{ex.user_name}</td>
+                        <td className="py-2.5 pr-3 text-fg font-medium truncate max-w-[100px]">{ex.user_name}</td>
                         <td className="py-2.5 pr-3">
                           <div className="flex items-center gap-2">
                             {ex.image_url && (
@@ -765,7 +765,7 @@ export default function PointsPage() {
                           ) : (
                             <button
                               onClick={() => markUsed(ex.id)}
-                              className="text-xs px-2 py-0.5 rounded-full bg-bg-hover text-muted border border-border hover:border-accent/40 hover:text-white transition-colors"
+                              className="text-xs px-2 py-0.5 rounded-full bg-bg-hover text-muted border border-border hover:border-accent/40 hover:text-fg transition-colors"
                             >
                               미사용 → 처리
                             </button>

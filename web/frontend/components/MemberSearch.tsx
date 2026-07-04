@@ -74,7 +74,7 @@ export default function MemberSearch({
               className="w-full flex items-center gap-2 px-3 py-2 hover:bg-bg-hover transition-colors text-left"
             >
               <img src={avatarUrl(m)} alt="" className="w-6 h-6 rounded-full shrink-0" />
-              <span className="text-sm text-white truncate">{m.display_name}</span>
+              <span className="text-sm text-fg truncate">{m.display_name}</span>
               {m.nick && m.username !== m.display_name && (
                 <span className="text-xs text-muted truncate">({m.username})</span>
               )}

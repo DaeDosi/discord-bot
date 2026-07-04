@@ -87,7 +87,7 @@ function StatCard({
         <span style={{ color }}>{icon}</span>
       </div>
       <div>
-        <p className="text-2xl font-bold text-white">
+        <p className="text-2xl font-bold text-fg">
           {value === null
             ? <span className="animate-pulse text-muted text-lg">집계 중...</span>
             : value.toLocaleString()}
@@ -167,8 +167,8 @@ function AddChzzkModal({
       <div className="bg-bg-card border border-border rounded-2xl w-full max-w-lg shadow-2xl"
            onClick={(e) => e.stopPropagation()}>
         <div className="p-4 border-b border-border flex items-center justify-between">
-          <h3 className="font-semibold text-white">치지직 구독 추가</h3>
-          <button onClick={onClose} className="text-muted hover:text-white"><X size={18} /></button>
+          <h3 className="font-semibold text-fg">치지직 구독 추가</h3>
+          <button onClick={onClose} className="text-muted hover:text-fg"><X size={18} /></button>
         </div>
         <div className="p-4 space-y-4">
           {!selected ? (
@@ -187,7 +187,7 @@ function AddChzzkModal({
                       ? <Image src={r.channelImageUrl} alt={r.channelName} width={36} height={36} className="rounded-full shrink-0" />
                       : <div className="w-9 h-9 rounded-full bg-bg-hover shrink-0" />}
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-white truncate">{r.channelName}</p>
+                      <p className="text-sm font-medium text-fg truncate">{r.channelName}</p>
                       <p className="text-xs text-muted">팔로워 {r.followerCount.toLocaleString()}명</p>
                     </div>
                     {r.openLive && (
@@ -205,10 +205,10 @@ function AddChzzkModal({
                   ? <Image src={selected.channelImageUrl} alt={selected.channelName} width={40} height={40} className="rounded-full" />
                   : <div className="w-10 h-10 rounded-full bg-bg-hover" />}
                 <div className="flex-1">
-                  <p className="font-medium text-white">{selected.channelName}</p>
+                  <p className="font-medium text-fg">{selected.channelName}</p>
                   <p className="text-xs text-muted">팔로워 {selected.followerCount.toLocaleString()}명</p>
                 </div>
-                <button onClick={() => setSelected(null)} className="text-muted hover:text-white"><X size={14} /></button>
+                <button onClick={() => setSelected(null)} className="text-muted hover:text-fg"><X size={14} /></button>
               </div>
               <div>
                 <label className="label">대상 서버</label>
@@ -273,8 +273,8 @@ function GuildDetailModal({ guildId, onClose, onLeft }: { guildId: string; onClo
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={onClose}>
       <div className="bg-bg-card border border-border rounded-2xl w-full max-w-md shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="p-4 border-b border-border flex items-center justify-between">
-          <h3 className="font-semibold text-white text-sm">서버 상세 정보</h3>
-          <button onClick={onClose} className="text-muted hover:text-white"><X size={16} /></button>
+          <h3 className="font-semibold text-fg text-sm">서버 상세 정보</h3>
+          <button onClick={onClose} className="text-muted hover:text-fg"><X size={16} /></button>
         </div>
 
         {loading ? (
@@ -289,7 +289,7 @@ function GuildDetailModal({ guildId, onClose, onLeft }: { guildId: string; onClo
                 ? <Image src={`https://cdn.discordapp.com/icons/${detail.id}/${detail.icon}.png?size=128`} alt={detail.name} width={56} height={56} className="rounded-2xl shrink-0" />
                 : <div className="w-14 h-14 rounded-2xl bg-bg-hover flex items-center justify-center shrink-0"><Server size={22} className="text-muted" /></div>}
               <div>
-                <p className="font-bold text-white text-base">{detail.name}</p>
+                <p className="font-bold text-fg text-base">{detail.name}</p>
                 {detail.description && <p className="text-xs text-muted mt-0.5 line-clamp-2">{detail.description}</p>}
               </div>
             </div>
@@ -302,11 +302,11 @@ function GuildDetailModal({ guildId, onClose, onLeft }: { guildId: string; onClo
               </div>
               <div className="flex justify-between px-3 py-2">
                 <span className="text-muted">멤버 수</span>
-                <span className="text-white font-medium">{detail.member_count.toLocaleString()}명</span>
+                <span className="text-fg font-medium">{detail.member_count.toLocaleString()}명</span>
               </div>
               <div className="flex justify-between px-3 py-2">
                 <span className="text-muted">치지직 인증</span>
-                <span className="text-white font-medium">{detail.verif_count}명</span>
+                <span className="text-fg font-medium">{detail.verif_count}명</span>
               </div>
               {detail.owner_id && (
                 <div className="flex justify-between px-3 py-2">
@@ -324,7 +324,7 @@ function GuildDetailModal({ guildId, onClose, onLeft }: { guildId: string; onClo
                   {detail.chzzk.chzzk_image_url
                     ? <Image src={detail.chzzk.chzzk_image_url} alt={detail.chzzk.chzzk_name} width={28} height={28} className="rounded-full" />
                     : <div className="w-7 h-7 rounded-full bg-bg-hover" />}
-                  <span className="font-medium text-white">{detail.chzzk.chzzk_name}</span>
+                  <span className="font-medium text-fg">{detail.chzzk.chzzk_name}</span>
                   {detail.chzzk.is_live ? (
                     <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ color: "#03C75A", background: "rgba(3,199,90,0.15)" }}>LIVE</span>
                   ) : null}
@@ -409,7 +409,7 @@ function FollowStatCard({ stat, onSubDeleted }: { stat: FollowStat; onSubDeleted
           ? <Image src={stat.chzzk_image_url} alt={stat.chzzk_name} width={36} height={36} className="rounded-full shrink-0" />
           : <div className="w-9 h-9 rounded-full bg-bg-hover shrink-0 flex items-center justify-center"><Radio size={14} className="text-muted" /></div>}
         <div className="flex-1 min-w-0">
-          <p className="font-semibold text-white text-sm">{stat.chzzk_name}</p>
+          <p className="font-semibold text-fg text-sm">{stat.chzzk_name}</p>
           <p className={`text-xs ${isGone ? "text-danger/70" : "text-muted"}`}>
             {guildName} <span className="font-mono">({stat.guild_id})</span>
           </p>
@@ -442,7 +442,7 @@ function FollowStatCard({ stat, onSubDeleted }: { stat: FollowStat; onSubDeleted
             <tbody className="divide-y divide-border">
               {stat.users.map((u) => (
                 <tr key={u.user_id} className="hover:bg-bg-hover/30 transition-colors">
-                  <td className="px-4 py-2.5 text-white font-medium">{u.user_name}</td>
+                  <td className="px-4 py-2.5 text-fg font-medium">{u.user_name}</td>
                   <td className="px-4 py-2.5 font-mono text-xs text-muted hidden md:table-cell">{u.user_id}</td>
                   <td className="px-4 py-2.5">
                     <span className={`text-sm font-bold ${
@@ -491,13 +491,13 @@ function VerifDetailModal({
       <div className="bg-bg-card border border-border rounded-2xl w-full max-w-sm shadow-2xl"
            onClick={(e) => e.stopPropagation()}>
         <div className="p-4 border-b border-border flex items-center justify-between">
-          <h3 className="font-semibold text-white text-sm">인증 상세 정보</h3>
-          <button onClick={onClose} className="text-muted hover:text-white"><X size={16} /></button>
+          <h3 className="font-semibold text-fg text-sm">인증 상세 정보</h3>
+          <button onClick={onClose} className="text-muted hover:text-fg"><X size={16} /></button>
         </div>
         <div className="p-4 space-y-3 text-sm">
           <div className="grid grid-cols-2 gap-x-4 gap-y-2">
             <span className="text-muted">유저명</span>
-            <span className="text-white font-medium">{verif.user_name}</span>
+            <span className="text-fg font-medium">{verif.user_name}</span>
             <span className="text-muted">유저 ID</span>
             <span className="font-mono text-xs text-fg select-all">{verif.user_id}</span>
             <span className="text-muted">서버</span>
@@ -712,7 +712,7 @@ export default function AdminPage() {
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <GuildIcon guild={g} />
-                        <span className="font-medium text-white">{g.name}</span>
+                        <span className="font-medium text-fg">{g.name}</span>
                       </div>
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-muted select-all">{g.id}</td>
@@ -762,7 +762,7 @@ export default function AdminPage() {
                         onClick={() => setSelectedVerif(v)}
                         className="hover:bg-bg-hover/40 transition-colors cursor-pointer"
                       >
-                        <td className="px-4 py-3 text-white font-medium">{v.user_name}</td>
+                        <td className="px-4 py-3 text-fg font-medium">{v.user_name}</td>
                         <td className="px-4 py-3 font-mono text-xs text-muted select-all hidden md:table-cell">{v.user_id}</td>
                         <td className="px-4 py-3 text-sm text-muted">{v.guild_name}</td>
                         <td className="px-4 py-3 text-xs text-muted hidden lg:table-cell">

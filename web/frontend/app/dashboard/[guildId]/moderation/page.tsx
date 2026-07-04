@@ -41,10 +41,10 @@ function ManagerModal({
       <div className="bg-bg-card border border-border rounded-xl w-full max-w-md shadow-xl flex flex-col"
            style={{ maxHeight: "80vh" }}>
         <div className="flex items-center justify-between p-4 border-b border-border shrink-0">
-          <p className="font-semibold text-white flex items-center gap-2">
+          <p className="font-semibold text-fg flex items-center gap-2">
             <UserPlus size={16} className="text-accent" /> 개별 매니저 등록
           </p>
-          <button onClick={onClose} className="text-muted hover:text-white transition-colors">
+          <button onClick={onClose} className="text-muted hover:text-fg transition-colors">
             <X size={18} />
           </button>
         </div>
@@ -72,7 +72,7 @@ function ManagerModal({
                   key={m.user_id}
                   className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-bg border border-border"
                 >
-                  <p className="text-sm font-medium text-white">{m.display_name}</p>
+                  <p className="text-sm font-medium text-fg">{m.display_name}</p>
                   <button
                     onClick={() => onRemove(m.user_id)}
                     className="text-muted hover:text-red-400 transition-colors p-1"
@@ -163,16 +163,16 @@ function WarnModal({
           {selected ? (
             <button
               onClick={() => setSelected(null)}
-              className="flex items-center gap-1 text-muted hover:text-white transition-colors"
+              className="flex items-center gap-1 text-muted hover:text-fg transition-colors"
             >
               <ChevronLeft size={16} /> 목록으로
             </button>
           ) : (
-            <p className="font-semibold text-white flex items-center gap-2">
+            <p className="font-semibold text-fg flex items-center gap-2">
               <AlertTriangle size={16} className="text-yellow-400" /> 경고 현황
             </p>
           )}
-          <button onClick={onClose} className="text-muted hover:text-white transition-colors">
+          <button onClick={onClose} className="text-muted hover:text-fg transition-colors">
             <X size={18} />
           </button>
         </div>
@@ -197,7 +197,7 @@ function WarnModal({
                                  transition-colors text-left"
                     >
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-white truncate">{u.display_name}</p>
+                        <p className="text-sm font-medium text-fg truncate">{u.display_name}</p>
                         <p className="text-xs text-muted mt-0.5">
                           마지막 경고: {new Date(u.latest_at * 1000).toLocaleDateString("ko-KR")}
                         </p>
@@ -219,7 +219,7 @@ function WarnModal({
           {selected && (
             <>
               <div className="mb-3">
-                <p className="font-semibold text-white">{selected.display_name}</p>
+                <p className="font-semibold text-fg">{selected.display_name}</p>
                 <p className="text-sm text-muted">총 경고 {selected.count}회</p>
               </div>
               {loadingDetail ? (
@@ -234,7 +234,7 @@ function WarnModal({
                       className="flex items-start justify-between gap-3 p-3 rounded-lg bg-bg border border-border"
                     >
                       <div className="min-w-0">
-                        <p className="text-sm text-white break-words">{w.reason || "(사유 없음)"}</p>
+                        <p className="text-sm text-fg break-words">{w.reason || "(사유 없음)"}</p>
                         <p className="text-xs text-muted mt-0.5">
                           {new Date(w.created_at * 1000).toLocaleString("ko-KR")}
                         </p>
@@ -339,7 +339,7 @@ export default function ModerationPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-white flex items-center gap-2">
+          <h1 className="text-xl font-bold text-fg flex items-center gap-2">
             <Shield size={20} className="text-accent" /> 관리 설정
           </h1>
           <p className="text-muted text-sm mt-1">매니저 역할, 로그 채널, 자동 관리를 설정합니다.</p>
@@ -357,7 +357,7 @@ export default function ModerationPage() {
       {/* ── 기본 설정 ── */}
       <div className="card space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-white">기본 설정</h2>
+          <h2 className="font-semibold text-fg">기본 설정</h2>
           <button
             onClick={() => setMgrOpen(true)}
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-accent/40
@@ -391,7 +391,7 @@ export default function ModerationPage() {
 
       {/* ── 경고 자동 처리 ── */}
       <div className="card space-y-4">
-        <h2 className="font-semibold text-white">경고 자동 처리</h2>
+        <h2 className="font-semibold text-fg">경고 자동 처리</h2>
         <p className="text-sm text-muted">0으로 설정하면 비활성화됩니다.</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
@@ -419,7 +419,7 @@ export default function ModerationPage() {
 
       {/* ── Auto-Mod ── */}
       <div className="card space-y-4">
-        <h2 className="font-semibold text-white">자동 관리 (Auto-Mod)</h2>
+        <h2 className="font-semibold text-fg">자동 관리 (Auto-Mod)</h2>
         <label className="flex items-center justify-between cursor-pointer p-3 rounded-lg bg-bg border border-border">
           <div>
             <p className="text-sm font-medium">자동 관리 활성화</p>

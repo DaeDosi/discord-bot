@@ -67,13 +67,13 @@ export default function GeneralSettingsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-bold text-white">일반 설정</h1>
+        <h1 className="text-xl font-bold text-fg">일반 설정</h1>
         <p className="text-muted text-sm mt-1">서버의 기본 봇 설정을 관리합니다.</p>
       </div>
 
       {/* 채널 설정 */}
       <div className="card space-y-4">
-        <h2 className="font-semibold text-white">채널 설정</h2>
+        <h2 className="font-semibold text-fg">채널 설정</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <SelectField label="환영 메시지 채널" value={cfg.welcome_channel || ""} onChange={set("welcome_channel")}
             options={textChannels} placeholder="채널 선택..." />
@@ -88,7 +88,7 @@ export default function GeneralSettingsPage() {
 
       {/* 환영/퇴장 메시지 내용 */}
       <div className="card space-y-4">
-        <h2 className="font-semibold text-white">메시지 내용</h2>
+        <h2 className="font-semibold text-fg">메시지 내용</h2>
         <p className="text-muted text-sm">
           사용 가능한 변수: <code className="bg-bg px-1 rounded">{"{mention}"}</code> 유저 멘션,{" "}
           <code className="bg-bg px-1 rounded">{"{username}"}</code> 유저 이름,{" "}
@@ -116,7 +116,7 @@ export default function GeneralSettingsPage() {
 
       {/* 레벨업 DM */}
       <div className="card space-y-4">
-        <h2 className="font-semibold text-white">레벨업 알림</h2>
+        <h2 className="font-semibold text-fg">레벨업 알림</h2>
         <label className="flex items-center gap-3 cursor-pointer">
           <input
             type="checkbox"

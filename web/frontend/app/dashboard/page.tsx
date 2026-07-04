@@ -90,11 +90,11 @@ export default function DashboardPage() {
   return (
     <div className="max-w-3xl mx-auto px-4 py-10">
       <div className="flex items-center justify-between mb-1">
-        <h1 className="text-2xl font-bold text-white">내 서버</h1>
+        <h1 className="text-2xl font-bold text-fg">내 서버</h1>
         <button
           onClick={() => { setRefreshing(true); loadGuilds(); }}
           disabled={refreshing}
-          className="p-2 text-muted hover:text-white transition-colors rounded-lg hover:bg-bg-hover"
+          className="p-2 text-muted hover:text-fg transition-colors rounded-lg hover:bg-bg-hover"
           title="새로고침"
         >
           <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />

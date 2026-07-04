@@ -2,14 +2,38 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Image from "next/image";
+import { clsx } from "clsx";
 import {
   Radio, Trash2, Bell, BellOff,
   ExternalLink, Plus, Users, X, ChevronLeft, ChevronRight,
+  Youtube, Tv, Clock,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier, ChzzkVerification } from "@/lib/types";
 
 const BACKEND = process.env.NEXT_PUBLIC_API_URL || "";
+
+type Platform = "chzzk" | "youtube" | "soop";
+
+const PLATFORM_TABS: { key: Platform; label: string; icon: LucideIcon }[] = [
+  { key: "chzzk",   label: "치지직 (Chzzk)",   icon: Radio   },
+  { key: "youtube", label: "유튜브 (YouTube)", icon: Youtube },
+  { key: "soop",    label: "숲 (SOOP)",        icon: Tv      },
+];
+
+// ── 플랫폼 준비중 안내 ────────────────────────────────────────────────────────
+function ComingSoonPanel({ label, Icon }: { label: string; Icon: LucideIcon }) {
+  return (
+    <div className="card text-center py-16 text-muted">
+      <Icon size={40} className="mx-auto mb-3 opacity-30" />
+      <p className="font-medium text-fg">{label} 알림 연동을 준비 중입니다.</p>
+      <p className="text-sm mt-1 flex items-center justify-center gap-1.5">
+        <Clock size={13} /> 곧 만나보실 수 있어요!
+      </p>
+    </div>
+  );
+}
 
 // ── 팔로우 인증 현황 모달 ──────────────────────────────────────────────────────
 function VerifModal({
@@ -39,12 +63,12 @@ function VerifModal({
           {selected ? (
             <button
               onClick={() => setSelected(null)}
-              className="flex items-center gap-1 text-muted hover:text-white transition-colors"
+              className="flex items-center gap-1 text-muted hover:text-fg transition-colors"
             >
               <ChevronLeft size={16} /> 목록으로
             </button>
           ) : (
-            <p className="font-semibold text-white flex items-center gap-2">
+            <p className="font-semibold text-fg flex items-center gap-2">
               <Users size={16} className="text-accent" />
               팔로우 인원
               {!loading && (
@@ -52,7 +76,7 @@ function VerifModal({
               )}
             </p>
           )}
-          <button onClick={onClose} className="text-muted hover:text-white transition-colors">
+          <button onClick={onClose} className="text-muted hover:text-fg transition-colors">
             <X size={18} />
           </button>
         </div>
@@ -80,7 +104,7 @@ function VerifModal({
                                transition-colors text-left"
                   >
                     <div className="min-w-0">
-                      <p className="text-sm font-medium text-white truncate">{v.user_name}</p>
+                      <p className="text-sm font-medium text-fg truncate">{v.user_name}</p>
                       <p className="text-xs text-muted mt-0.5">
                         {v.is_following
                           ? `팔로우 ${v.follow_days}일 (${v.tier_months}개월)`
@@ -104,13 +128,13 @@ function VerifModal({
             /* 상세 */
             <div className="space-y-4">
               <div>
-                <p className="font-semibold text-white text-lg">{selected.user_name}</p>
+                <p className="font-semibold text-fg text-lg">{selected.user_name}</p>
                 <p className="font-mono text-xs text-muted select-all mt-0.5">{selected.user_id}</p>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="bg-bg rounded-lg p-3 border border-border">
                   <p className="text-xs text-muted mb-1">팔로우 시작일</p>
-                  <p className="text-sm font-medium text-white">
+                  <p className="text-sm font-medium text-fg">
                     {selected.follow_date
                       ? new Date(selected.follow_date).toLocaleDateString("ko-KR")
                       : "—"}
@@ -118,7 +142,7 @@ function VerifModal({
                 </div>
                 <div className="bg-bg rounded-lg p-3 border border-border">
                   <p className="text-xs text-muted mb-1">팔로우 기간</p>
-                  <p className="text-sm font-medium text-white">
+                  <p className="text-sm font-medium text-fg">
                     {selected.is_following
                       ? `${selected.follow_days}일 (${selected.tier_months}개월)`
                       : "—"}
@@ -190,7 +214,7 @@ function AddStreamerForm({ channels, guildId }: { channels: Channel[]; guildId: 
   return (
     <div className="card border-accent/30 space-y-4">
       <div>
-        <p className="font-medium text-white mb-1">치지직 스트리머 연동</p>
+        <p className="font-medium text-fg mb-1">치지직 스트리머 연동</p>
         <p className="text-sm text-muted">
           치지직 계정으로 로그인하면 해당 채널이 자동으로 등록됩니다.
         </p>
@@ -230,6 +254,7 @@ function AddStreamerForm({ channels, guildId }: { channels: Channel[]; guildId: 
 // ── 메인 페이지 ───────────────────────────────────────────────────────────────
 export default function ChzzkPage() {
   const { guildId } = useParams<{ guildId: string }>();
+  const [platform, setPlatform] = useState<Platform>("chzzk");
 
   const [subs, setSubs]         = useState<ChzzkSubscription[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -314,17 +339,36 @@ export default function ChzzkPage() {
         />
       )}
 
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-white flex items-center gap-2">
-            <Radio size={20} className="text-chzzk" /> 치지직 알림
-          </h1>
-          <p className="text-muted text-sm mt-1">
-            스트리머 방송 시작 시 Discord 채널에 알림을 보냅니다.
-          </p>
-        </div>
+      <div>
+        <h1 className="text-xl font-bold text-fg flex items-center gap-2">
+          <Radio size={20} className="text-chzzk" /> 방송설정
+        </h1>
+        <p className="text-muted text-sm mt-1">
+          스트리머 방송 시작 시 Discord 채널에 알림을 보냅니다.
+        </p>
       </div>
 
+      {/* 플랫폼 탭 */}
+      <div className="flex items-center gap-1 p-1 rounded-xl bg-bg-hover w-fit max-w-full overflow-x-auto">
+        {PLATFORM_TABS.map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            onClick={() => setPlatform(key)}
+            className={clsx(
+              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors",
+              platform === key ? "bg-bg-card text-fg shadow-sm" : "text-muted hover:text-fg"
+            )}
+          >
+            <Icon size={15} /> {label}
+          </button>
+        ))}
+      </div>
+
+      {platform === "youtube" && <ComingSoonPanel label="유튜브" Icon={Youtube} />}
+      {platform === "soop" && <ComingSoonPanel label="숲(SOOP)" Icon={Tv} />}
+
+      {platform === "chzzk" && (
+      <>
       {/* 등록된 스트리머 */}
       <div className="space-y-3">
         {subs.map((sub) => {
@@ -356,7 +400,7 @@ export default function ChzzkPage() {
                 )}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <p className="font-semibold text-white">{sub.chzzk_name}</p>
+                    <p className="font-semibold text-fg">{sub.chzzk_name}</p>
                     {sub.is_live
                       ? <span className="badge-live"><span className="w-1.5 h-1.5 rounded-full bg-chzzk animate-pulse" />LIVE</span>
                       : <span className="badge-offline">오프라인</span>}
@@ -408,7 +452,7 @@ export default function ChzzkPage() {
         <div className="card space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="font-semibold text-white">팔로워 역할 지급</h2>
+              <h2 className="font-semibold text-fg">팔로워 역할 지급</h2>
               <p className="text-muted text-sm mt-1">
                 치지직 OAuth 인증 시 팔로우 기간에 따라 역할을 자동으로 부여합니다.
                 티어를 여러 개 추가할 수 있으며, 조건을 만족하는 티어 중 가장 높은 역할이 지급됩니다.
@@ -490,6 +534,8 @@ export default function ChzzkPage() {
             </div>
           )}
         </div>
+      )}
+      </>
       )}
     </div>
   );

@@ -98,7 +98,7 @@ export default function CommandsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-bold text-white flex items-center gap-2">
+        <h1 className="text-xl font-bold text-fg flex items-center gap-2">
           <Terminal size={20} className="text-accent" /> 명령어 목록
         </h1>
         <p className="text-muted text-sm mt-1">
@@ -113,7 +113,7 @@ export default function CommandsPage() {
       <div className="grid grid-cols-1 gap-4">
         {CATEGORIES.map(({ label, color, cmds }) => (
           <div key={label} className="card space-y-3">
-            <h2 className="font-semibold text-white flex items-center gap-2">
+            <h2 className="font-semibold text-fg flex items-center gap-2">
               <span
                 className="w-2.5 h-2.5 rounded-full inline-block shrink-0"
                 style={{ background: color }}

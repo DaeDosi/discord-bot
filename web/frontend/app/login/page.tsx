@@ -38,7 +38,7 @@ export default function LoginPage() {
       <div className="min-h-screen flex items-center justify-center px-4">
         <div className="card max-w-sm w-full text-center space-y-4">
           <AlertCircle size={40} className="text-danger mx-auto" />
-          <h2 className="text-white font-semibold">설정 필요</h2>
+          <h2 className="text-fg font-semibold">설정 필요</h2>
           <p className="text-muted text-sm">
             <code className="bg-bg px-1.5 py-0.5 rounded text-accent text-xs">
               NEXT_PUBLIC_DISCORD_CLIENT_ID
@@ -66,7 +66,7 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center">
       <div className="text-center space-y-3">
         <Bot size={48} className="text-accent mx-auto animate-pulse" />
-        <p className="text-white font-medium">Discord로 이동 중...</p>
+        <p className="text-fg font-medium">Discord로 이동 중...</p>
         <p className="text-muted text-sm">잠시만 기다려주세요.</p>
       </div>
     </div>

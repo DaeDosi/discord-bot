@@ -67,13 +67,13 @@ export default function LevelingPage() {
       )}
 
       <div>
-        <h1 className="text-xl font-bold text-white">레벨업 시스템</h1>
+        <h1 className="text-xl font-bold text-fg">레벨업 시스템</h1>
         <p className="text-muted text-sm mt-1">레벨 보상 역할 및 리더보드를 관리합니다.</p>
       </div>
 
       {/* 레벨 보상 */}
       <div className="card space-y-4">
-        <h2 className="font-semibold text-white flex items-center gap-2">
+        <h2 className="font-semibold text-fg flex items-center gap-2">
           <Zap size={16} className="text-warning" /> 레벨 보상 역할
         </h2>
         <div className="space-y-2">
@@ -123,7 +123,7 @@ export default function LevelingPage() {
 
       {/* 리더보드 */}
       <div className="card space-y-3">
-        <h2 className="font-semibold text-white flex items-center gap-2">
+        <h2 className="font-semibold text-fg flex items-center gap-2">
           <Trophy size={16} className="text-warning" /> 서버 리더보드 (상위 20)
         </h2>
         <div className="space-y-2">
@@ -134,7 +134,7 @@ export default function LevelingPage() {
               <span className={`text-sm font-bold w-8 ${i < 3 ? "text-warning" : "text-muted"}`}>
                 #{i + 1}
               </span>
-              <span className="text-sm text-white flex-1 truncate">{entry.display_name || entry.user_id}</span>
+              <span className="text-sm text-fg flex-1 truncate">{entry.display_name || entry.user_id}</span>
               <span className="text-xs text-muted">Lv.{entry.level}</span>
               <span className="text-xs text-accent font-medium">{entry.xp.toLocaleString()} XP</span>
               <button

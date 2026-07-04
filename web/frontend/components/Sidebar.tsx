@@ -11,7 +11,7 @@ const ITEMS: { href: string; label: string; shortLabel: string; icon: LucideIcon
   { href: "/leveling",      label: "레벨업",       shortLabel: "레벨업",   icon: Zap         },
   { href: "/moderation",    label: "관리",         shortLabel: "관리",     icon: Shield      },
   { href: "/points",        label: "포인트",       shortLabel: "포인트",   icon: Gem         },
-  { href: "/chzzk",         label: "치지직",       shortLabel: "치지직",   icon: Radio       },
+  { href: "/chzzk",         label: "방송설정",     shortLabel: "방송설정", icon: Radio       },
   { href: "/commands",      label: "명령어",       shortLabel: "명령어",   icon: Terminal    },
   { href: "/help",          label: "문제 해결",    shortLabel: "도움말",   icon: HelpCircle  },
 ];
@@ -26,7 +26,7 @@ export default function Sidebar({ guildId, guildName }: { guildId: string; guild
       <aside className="hidden md:flex w-56 shrink-0 flex-col gap-1 pt-2">
         <Link
           href="/dashboard"
-          className="flex items-center gap-2 text-muted hover:text-white text-sm px-3 py-2 rounded-lg
+          className="flex items-center gap-2 text-muted hover:text-fg text-sm px-3 py-2 rounded-lg
                      hover:bg-bg-hover transition-colors mb-2"
         >
           <ChevronLeft size={14} /> 서버 목록
@@ -48,7 +48,7 @@ export default function Sidebar({ guildId, guildName }: { guildId: string; guild
                 "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
                 active
                   ? "bg-accent/15 text-accent"
-                  : "text-muted hover:text-white hover:bg-bg-hover"
+                  : "text-muted hover:text-fg hover:bg-bg-hover"
               )}
             >
               <Icon size={16} />

@@ -72,11 +72,11 @@ function CallbackInner() {
       <div className="min-h-screen flex items-center justify-center px-4">
         <div className="card max-w-sm w-full text-center space-y-4">
           <AlertCircle size={40} className="text-danger mx-auto" />
-          <h2 className="text-white font-semibold">로그인 실패</h2>
+          <h2 className="text-fg font-semibold">로그인 실패</h2>
           <p className="text-muted text-sm whitespace-pre-line">{errMsg}</p>
 
           <div className="bg-bg rounded-lg p-3 text-left text-xs text-muted space-y-1">
-            <p className="text-white font-medium mb-2">체크리스트</p>
+            <p className="text-fg font-medium mb-2">체크리스트</p>
             <p>① 백엔드 실행 여부 확인</p>
             <code className="block bg-black/30 rounded px-2 py-1 text-accent">
               cd web/backend && uvicorn main:app --reload --port 8000
@@ -103,7 +103,7 @@ function CallbackInner() {
     <div className="min-h-screen flex items-center justify-center">
       <div className="text-center space-y-3">
         <Bot size={48} className="text-accent mx-auto animate-pulse" />
-        <p className="text-white font-medium">로그인 중...</p>
+        <p className="text-fg font-medium">로그인 중...</p>
         <p className="text-muted text-sm">잠시만 기다려주세요.</p>
       </div>
     </div>

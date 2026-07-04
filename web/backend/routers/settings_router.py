@@ -10,6 +10,10 @@ from database import get_db
 _BOT_TOKEN   = os.getenv("DISCORD_TOKEN", "")
 _DISCORD_API = "https://discord.com/api/v10"
 
+
+def _log(msg: str):
+    print(f"[settings_router] {msg}", flush=True)
+
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
@@ -227,12 +231,17 @@ async def update_verification_config(
 
 # ── 리더보드 ─────────────────────────────────────────────────────────────────
 async def _fetch_display_name(client: httpx.AsyncClient, guild_id: str, user_id: int) -> str:
-    try:
-        resp = await client.get(
-            f"{_DISCORD_API}/guilds/{guild_id}/members/{user_id}",
-            headers={"Authorization": f"Bot {_BOT_TOKEN}"},
-            timeout=5,
-        )
+    url = f"{_DISCORD_API}/guilds/{guild_id}/members/{user_id}"
+    headers = {"Authorization": f"Bot {_BOT_TOKEN}"}
+
+    for attempt in range(3):
+        try:
+            resp = await client.get(url, headers=headers, timeout=5)
+        except Exception as e:
+            _log(f"멤버 조회 예외 (user={user_id}, attempt={attempt}): {e}")
+            await asyncio.sleep(0.5 * (attempt + 1))
+            continue
+
         if resp.status_code == 200:
             data = resp.json()
             return (
@@ -241,8 +250,17 @@ async def _fetch_display_name(client: httpx.AsyncClient, guild_id: str, user_id:
                 or data.get("user", {}).get("username")
                 or str(user_id)
             )
-    except Exception:
-        pass
+
+        if resp.status_code == 429:
+            retry_after = float(resp.headers.get("Retry-After", 1))
+            _log(f"멤버 조회 429 (user={user_id}), {retry_after}초 후 재시도")
+            await asyncio.sleep(retry_after)
+            continue
+
+        # 404 등 재시도해도 의미 없는 응답은 즉시 포기
+        _log(f"멤버 조회 실패 (user={user_id}): HTTP {resp.status_code} {resp.text[:150]}")
+        break
+
     return str(user_id)
 
 

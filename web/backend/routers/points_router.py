@@ -14,31 +14,42 @@ _BOT_TOKEN   = os.getenv("DISCORD_TOKEN", "")
 _DISCORD_API = "https://discord.com/api/v10"
 
 
-async def _fetch_name(client: httpx.AsyncClient, guild_id: str, user_id: int) -> str:
-    try:
-        r = await client.get(
-            f"{_DISCORD_API}/guilds/{guild_id}/members/{user_id}",
-            headers={"Authorization": f"Bot {_BOT_TOKEN}"}, timeout=5
-        )
-        if r.status_code == 200:
-            d = r.json()
-            return d.get("nick") or d.get("user", {}).get("global_name") or d.get("user", {}).get("username") or str(user_id)
-    except Exception:
-        pass
-    return str(user_id)
+def _log(msg: str):
+    print(f"[points_router] {msg}", flush=True)
 
 
 async def _fetch_member(client: httpx.AsyncClient, guild_id: str, user_id: int) -> Optional[dict]:
-    try:
-        r = await client.get(
-            f"{_DISCORD_API}/guilds/{guild_id}/members/{user_id}",
-            headers={"Authorization": f"Bot {_BOT_TOKEN}"}, timeout=5
-        )
+    url = f"{_DISCORD_API}/guilds/{guild_id}/members/{user_id}"
+    headers = {"Authorization": f"Bot {_BOT_TOKEN}"}
+
+    for attempt in range(3):
+        try:
+            r = await client.get(url, headers=headers, timeout=5)
+        except Exception as e:
+            _log(f"멤버 조회 예외 (user={user_id}, attempt={attempt}): {e}")
+            await asyncio.sleep(0.5 * (attempt + 1))
+            continue
+
         if r.status_code == 200:
             return r.json()
-    except Exception:
-        pass
+
+        if r.status_code == 429:
+            retry_after = float(r.headers.get("Retry-After", 1))
+            _log(f"멤버 조회 429 (user={user_id}), {retry_after}초 후 재시도")
+            await asyncio.sleep(retry_after)
+            continue
+
+        _log(f"멤버 조회 실패 (user={user_id}): HTTP {r.status_code} {r.text[:150]}")
+        break
+
     return None
+
+
+async def _fetch_name(client: httpx.AsyncClient, guild_id: str, user_id: int) -> str:
+    d = await _fetch_member(client, guild_id, user_id)
+    if d:
+        return d.get("nick") or d.get("user", {}).get("global_name") or d.get("user", {}).get("username") or str(user_id)
+    return str(user_id)
 
 
 # ── 리더보드 ──────────────────────────────────────────────────────────────────
