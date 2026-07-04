@@ -45,10 +45,10 @@ export default function Sidebar({ guildId, guildName }: { guildId: string; guild
       <aside className="hidden md:flex w-56 shrink-0 flex-col gap-1 pt-2">
         <Link
           href="/dashboard"
-          className="flex items-center gap-2 text-muted hover:text-fg text-sm px-3 py-2 rounded-lg
+          className="flex items-center gap-2 text-muted hover:text-fg text-base font-medium px-3 py-2.5 rounded-lg
                      hover:bg-bg-hover transition-colors mb-2"
         >
-          <ChevronLeft size={14} /> 서버 목록
+          <ChevronLeft size={18} /> 서버 목록
         </Link>
         {guildName && (
           <p className="text-xs font-semibold text-muted uppercase tracking-wider px-3 mb-1 truncate">
@@ -60,7 +60,7 @@ export default function Sidebar({ guildId, guildName }: { guildId: string; guild
             key={group.label}
             className={clsx("flex flex-col gap-1", gi > 0 && "mt-3 pt-3 border-t border-border")}
           >
-            <p className="text-xs font-semibold text-muted/70 uppercase tracking-wider px-3 mb-0.5">
+            <p className="text-sm font-semibold text-muted/70 uppercase tracking-wider px-3 mb-1">
               {group.label}
             </p>
             {group.items.map((item) => {
