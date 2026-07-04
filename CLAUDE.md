@@ -1,0 +1,34 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Architecture
+
+This is a monorepo for **NexBot**, a Discord bot with a web dashboard, split into independently-run services:
+
+- **Root (`main.py`, `cogs/`, `database/`, `utils/`)** — the Discord bot itself (discord.py). Cogs are loaded from the `COGS` list in `main.py`; each new cog must be added there to load.
+- **`web/backend/`** — FastAPI dashboard API (separate process, separate `requirements.txt`, its own `Dockerfile`). Routers live in `web/backend/routers/`. Discord OAuth login issues a JWT (`web/backend/auth.py`); CORS allows `*` because auth uses the `Authorization` header, not cookies.
+- **`web/frontend/`** — Next.js dashboard (`app/dashboard/[guildId]/...` per-feature settings pages).
+- **`relay/relay.py`** — standalone long-running process meant to run on a Korea-IP host (e.g. Oracle Cloud VM), separate from Railway. It polls Chzzk's unofficial community API (which geo-blocks non-Korean IPs) and forwards new posts to the Railway backend via a webhook secured with `RELAY_SECRET`.
+- **`chzzk-repo/`** — separate Expo/React Native app (`chzzk-noti-app`), early-stage, unrelated to the web dashboard's build.
+
+**Critical shared-state detail:** the Discord bot and `web/backend` are two separate Python processes that read/write the **same SQLite file** (`bot.db`, WAL mode via `aiosqlite`). In production (Railway) both run in one container via `start.sh` — bot in the background, backend in the foreground serving `$PORT`. Any schema or data change made by one is immediately visible to the other; don't assume isolated state between bot and backend code.
+
+Slash commands sync **globally only** (`main.py`'s `setup_hook`) — there is deliberately no per-guild copy in normal operation (the owner-only `sync guild` prefix command exists only for fast local testing, and `clearguild` exists to purge accidental per-guild duplicates).
+
+## Database
+
+`database/db.py` owns schema for the entire project (both bot and backend import from here). There is no migration framework:
+- Base schema is one `executescript` call in `init_db()`.
+- Every schema change made *after* that baseline is appended as a new entry in the trailing list of raw SQL strings (`ALTER TABLE ...` / `CREATE TABLE IF NOT EXISTS ...`), each run individually and wrapped so failures (e.g. column already exists) are silently ignored.
+- When adding a column or table, follow this same append-only pattern — don't rewrite the base `executescript` block, and don't introduce a new migration tool.
+
+## Environment variables
+
+No `.env.example` exists; required variables (see `.gitignore` — `.env` is never committed) are: `DISCORD_TOKEN`, `OWNER_ID`, `DATABASE_URL`, `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `DISCORD_REDIRECT_URI`, `JWT_SECRET`, `CHZZK_POLL_INTERVAL`, `FRONTEND_URL`, `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`, `NAVER_REDIRECT_URI`.
+
+## Conventions
+
+- Slash command names and cog user-facing strings are in Korean; keep new commands consistent with that.
+- No test suite, linter, or CI currently exists in this repo — there's nothing to run before considering a change complete beyond manual verification.
+- No branch/commit convention is enforced; this repo is committed to directly on `main`.
