@@ -399,7 +399,7 @@ type ChatLogEntry = { direction: "in" | "out"; nickname: string; content: string
 function ChzzkChatFeed({ guildId }: { guildId: string }) {
   const [open, setOpen] = useState(false);
   const [log, setLog] = useState<ChatLogEntry[]>([]);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -410,7 +410,11 @@ function ChzzkChatFeed({ guildId }: { guildId: string }) {
   }, [guildId, open]);
 
   useEffect(() => {
-    if (open) bottomRef.current?.scrollIntoView({ block: "end" });
+    // 페이지 전체가 아니라 이 채팅창 내부만 스크롤 — scrollIntoView는 상위(페이지) 스크롤까지
+    // 건드려서 화면이 아래로 튀었다가 올라오는 문제가 있었음.
+    if (open && containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    }
   }, [log, open]);
 
   return (
@@ -436,6 +440,7 @@ function ChzzkChatFeed({ guildId }: { guildId: string }) {
         치지직 채팅에서 실제로 수신된 메시지와 봇이 보낸 응답을 그대로 보여줍니다. 3초마다 자동 갱신됩니다.
       </p>
       <div
+        ref={containerRef}
         className="rounded-lg p-3 h-72 overflow-y-auto flex flex-col gap-1.5 font-mono text-[13px]"
         style={{ background: "#0b0d14" }}
       >
@@ -459,7 +464,6 @@ function ChzzkChatFeed({ guildId }: { guildId: string }) {
             </div>
           ))
         )}
-        <div ref={bottomRef} />
       </div>
       </>
       )}
@@ -550,7 +554,7 @@ function ChatCommandsPanel({ guildId }: { guildId: string }) {
           <div className="flex items-center gap-3 bg-bg rounded-lg px-4 py-3 border border-border">
             <span className="text-sm font-mono text-fg">!{checkinCmd.trigger_text}</span>
             <span className="text-sm text-accent font-semibold">+{checkinCmd.reward_points.toLocaleString()} P</span>
-            <span className="text-sm text-warning font-semibold">+{checkinCmd.reward_xp.toLocaleString()} 애정도</span>
+            <span className="text-sm font-semibold" style={{ color: "#EB459E" }}>+{checkinCmd.reward_xp.toLocaleString()} 애정도</span>
           </div>
         ) : (
           <p className="text-muted text-sm text-center py-4">아직 설정되지 않았습니다. 위 버튼으로 설정해주세요.</p>
@@ -781,7 +785,7 @@ export default function ChzzkPage() {
 
       {subs.length === 0 && <AddStreamerForm channels={channels} guildId={guildId} />}
       {subs.length >= 1 && (
-        <p className="text-sm text-muted text-center">
+        <p className="text-sm text-center" style={{ color: "#f0565080" }}>
           서버당 1명만 등록 가능합니다. 기존 구독을 삭제 후 다시 연동하세요.
         </p>
       )}
