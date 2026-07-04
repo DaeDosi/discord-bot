@@ -14,6 +14,9 @@ export default function LevelingPage() {
   const [newRole, setNewRole]   = useState("");
   const [adding, setAdding]     = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [toast, setToast]           = useState("");
+
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(""), 2500); };
 
   const loadLb = () =>
     api.settings.leaderboard(guildId).then(setLb).catch(() => {});
@@ -43,13 +46,26 @@ export default function LevelingPage() {
 
   const deleteLbEntry = async (userId: string) => {
     setDeletingId(userId);
-    await api.settings.deleteLeaderboard(guildId, userId).catch(() => {});
-    setLb((p) => p.filter((e) => String(e.user_id) !== String(userId)));
-    setDeletingId(null);
+    try {
+      await api.settings.deleteLeaderboard(guildId, userId);
+      setLb((p) => p.filter((e) => String(e.user_id) !== String(userId)));
+      showToast("삭제되었습니다.");
+    } catch {
+      showToast("삭제 실패");
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   return (
     <div className="space-y-6">
+      {/* Toast */}
+      {toast && (
+        <div className="fixed top-4 right-4 z-50 px-4 py-2 rounded-lg bg-green-600 text-white text-sm shadow-lg">
+          {toast}
+        </div>
+      )}
+
       <div>
         <h1 className="text-xl font-bold text-white">레벨업 시스템</h1>
         <p className="text-muted text-sm mt-1">레벨 보상 역할 및 리더보드를 관리합니다.</p>

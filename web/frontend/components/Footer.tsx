@@ -32,8 +32,9 @@ const COLUMNS: {
   {
     heading: "지원",
     links: [
-      { label: "FAQ",     href: "/faq"    },
-      { label: "서버 상태", href: "/status" },
+      { label: "FAQ",       href: "/faq"    },
+      { label: "서버 상태",  href: "/status" },
+      { label: "서포트 서버", href: "https://discord.gg/DaZxywE4Ka", external: true },
     ],
   },
 ];
@@ -68,7 +69,9 @@ export default function Footer() {
                 <Github size={14} />
               </a>
               <a
-                href="#"
+                href="https://discord.gg/DaZxywE4Ka"
+                target="_blank"
+                rel="noreferrer"
                 aria-label="Discord 서포트 서버"
                 className="w-8 h-8 rounded-lg border border-border flex items-center justify-center
                            text-muted hover:text-fg hover:border-accent/40 transition-colors"

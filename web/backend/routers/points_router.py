@@ -28,6 +28,19 @@ async def _fetch_name(client: httpx.AsyncClient, guild_id: str, user_id: int) ->
     return str(user_id)
 
 
+async def _fetch_member(client: httpx.AsyncClient, guild_id: str, user_id: int) -> Optional[dict]:
+    try:
+        r = await client.get(
+            f"{_DISCORD_API}/guilds/{guild_id}/members/{user_id}",
+            headers={"Authorization": f"Bot {_BOT_TOKEN}"}, timeout=5
+        )
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return None
+
+
 # ── 리더보드 ──────────────────────────────────────────────────────────────────
 
 @router.get("/{guild_id}/leaderboard")
@@ -42,9 +55,17 @@ async def get_points_leaderboard(
         (int(guild_id),)
     )).fetchall()
     async with httpx.AsyncClient() as client:
-        names = await asyncio.gather(*[_fetch_name(client, guild_id, r["user_id"]) for r in rows])
-    return [{"user_id": str(r["user_id"]), "display_name": n, "points": r["points"]}
-            for r, n in zip(rows, names)]
+        members = await asyncio.gather(*[_fetch_member(client, guild_id, r["user_id"]) for r in rows])
+
+    result = []
+    for r, m in zip(rows, members):
+        if m and m.get("user", {}).get("bot"):
+            continue  # 봇 계정(NexBot 등)은 리더보드에서 제외
+        name = None
+        if m:
+            name = m.get("nick") or m.get("user", {}).get("global_name") or m.get("user", {}).get("username")
+        result.append({"user_id": str(r["user_id"]), "display_name": name or str(r["user_id"]), "points": r["points"]})
+    return result
 
 
 # ── 포인트 수동 조정 ─────────────────────────────────────────────────────────

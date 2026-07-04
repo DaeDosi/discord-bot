@@ -64,8 +64,8 @@ const CATEGORIES: Category[] = [
       { name: "/포인트지급",      desc: "멤버에게 포인트를 지급하거나 차감합니다",                    admin: true },
       { name: "/미션불러오기",    desc: "활성화된 미션 목록을 현재 채널에 게시합니다",               admin: true },
       { name: "/포인트상점",      desc: "포인트 상점 아이템 목록과 구매 버튼을 표시합니다" },
-      { name: "/포인트도박",      desc: "대시보드에 저장된 설정으로 포인트 도박을 시작합니다",       admin: true },
-      { name: "/포인트도박종료",  desc: "진행 중인 도박을 종료하고 당첨자에게 포인트를 지급합니다",  admin: true },
+      { name: "/포인트도박",      desc: "대시보드에 저장된 설정으로 포인트 도박 투표를 시작합니다",  admin: true },
+      { name: "/포인트도박종료",  desc: "진행 중인 도박을 조기 종료합니다 (당첨은 최다 득표 옵션 기준 자동 정산)", admin: true },
     ],
   },
   {
@@ -103,9 +103,9 @@ export default function CommandsPage() {
         </h1>
         <p className="text-muted text-sm mt-1">
           NexBot의 모든 슬래시 명령어를 확인합니다. Discord에서{" "}
-          <code className="text-accent bg-black/20 px-1 rounded">/도움말</code>
+          <code className="font-sans text-accent bg-black/20 px-1 rounded">/도움말</code>
           {" "}(일반) 또는{" "}
-          <code className="text-accent bg-black/20 px-1 rounded">/도움말관리</code>
+          <code className="font-sans text-accent bg-black/20 px-1 rounded">/도움말관리</code>
           {" "}(관리자)를 입력해도 볼 수 있습니다.
         </p>
       </div>
@@ -123,7 +123,7 @@ export default function CommandsPage() {
             <div className="divide-y divide-border/50">
               {cmds.map(({ name, desc, admin }) => (
                 <div key={name} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
-                  <code className="text-base font-mono font-semibold px-2 py-0.5 rounded shrink-0
+                  <code className="text-base font-sans font-semibold px-2 py-0.5 rounded shrink-0
                                    text-fg bg-bg-hover">
                     {name}
                   </code>
