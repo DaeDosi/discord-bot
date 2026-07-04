@@ -280,6 +280,10 @@ class ChzzkChatCog(commands.Cog):
 
         cmd = entry["commands"].get(trigger)
         if not cmd:
+            log.info(
+                f"치지직 채팅 명령어 매칭 실패: guild={entry['guild_id']} "
+                f"입력=\"!{trigger}\" 등록된 명령어={list(entry['commands'].keys())}"
+            )
             return
 
         if cmd["command_type"] == "reply":
@@ -305,6 +309,10 @@ class ChzzkChatCog(commands.Cog):
             (guild_id, chzzk_user_id)
         )).fetchone()
         if not verif:
+            log.info(
+                f"치지직 출석체크 무시(미인증 유저): guild={guild_id} chzzk_user={chzzk_user_id} "
+                f"— 대시보드 입장 인증에서 치지직 계정을 연동한 유저가 아님"
+            )
             return
         discord_user_id = verif["user_id"]
 
@@ -318,6 +326,7 @@ class ChzzkChatCog(commands.Cog):
             )
             await db.commit()
         except Exception:
+            log.info(f"치지직 출석체크 무시(오늘 이미 출석함): guild={guild_id} chzzk_user={chzzk_user_id}")
             return  # 오늘 이미 출석함
 
         if cmd["reward_points"]:

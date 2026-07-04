@@ -395,27 +395,43 @@ function ChatStatusCard({ guildId }: { guildId: string }) {
 
 type ChatLogEntry = { direction: "in" | "out"; nickname: string; content: string; created_at: number };
 
-// ── 실시간 채팅 미리보기 (디버그용) ────────────────────────────────────────────
+// ── 실시간 채팅 미리보기 (디버그용, 기본 숨김 — 버튼으로 펼침) ─────────────────
 function ChzzkChatFeed({ guildId }: { guildId: string }) {
+  const [open, setOpen] = useState(false);
   const [log, setLog] = useState<ChatLogEntry[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (!open) return;
     const load = () => api.chzzk.chatLog(guildId).then(setLog).catch(() => {});
     load();
     const timer = setInterval(load, 3000);
     return () => clearInterval(timer);
-  }, [guildId]);
+  }, [guildId, open]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [log]);
+    if (open) bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [log, open]);
 
   return (
     <div className="card space-y-3">
-      <h2 className="section-title flex items-center gap-2">
-        <MessageSquare size={16} className="text-accent" /> 실시간 채팅 미리보기
-      </h2>
+      <div className="flex items-center justify-between">
+        <h2 className="section-title flex items-center gap-2">
+          <MessageSquare size={16} className="text-accent" /> 실시간 채팅 미리보기
+        </h2>
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="flex items-center gap-1.5 text-sm font-medium text-accent hover:text-fg transition-colors"
+        >
+          {open ? "닫기" : "미리보기 열기"}
+        </button>
+      </div>
+      {!open ? (
+        <p className="text-sm text-muted">
+          치지직 채팅에서 실제로 수신된 메시지와 봇의 응답을 확인하려면 위 버튼을 눌러주세요.
+        </p>
+      ) : (
+      <>
       <p className="text-sm text-muted">
         치지직 채팅에서 실제로 수신된 메시지와 봇이 보낸 응답을 그대로 보여줍니다. 3초마다 자동 갱신됩니다.
       </p>
@@ -445,6 +461,8 @@ function ChzzkChatFeed({ guildId }: { guildId: string }) {
         )}
         <div ref={bottomRef} />
       </div>
+      </>
+      )}
     </div>
   );
 }
