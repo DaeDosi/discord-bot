@@ -69,8 +69,38 @@ class LevelingCog(commands.Cog):
         await db.commit()
 
         if new_level > old_level:
-            await self._on_level_up(message, new_level, xp_in_level, xp_needed)
+            await self._on_level_up(message.guild, message.author, new_level, xp_in_level, xp_needed,
+                                     fallback_channel=message.channel)
             await self._award_level_points(message.guild.id, message.author.id, new_level - old_level)
+
+    # ── 외부(치지직 출석체크 등)에서 애정도 XP를 지급할 때 사용 ──────────────────
+    async def add_xp(self, guild: discord.Guild, user_id: int, amount: int):
+        if amount <= 0:
+            return
+        db = await get_db()
+        row = await (await db.execute(
+            "SELECT xp, level FROM user_xp WHERE guild_id=? AND user_id=?",
+            (guild.id, user_id)
+        )).fetchone()
+        old_xp = row["xp"] if row else 0
+        old_level = row["level"] if row else 0
+        new_xp = old_xp + amount
+        new_level, xp_in_level, xp_needed = xp_progress(new_xp)
+
+        await db.execute(
+            """INSERT INTO user_xp(guild_id, user_id, xp, level, last_xp_ts)
+               VALUES(?,?,?,?,0)
+               ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                   xp=excluded.xp, level=excluded.level""",
+            (guild.id, user_id, new_xp, new_level)
+        )
+        await db.commit()
+
+        if new_level > old_level:
+            member = guild.get_member(user_id)
+            if member:
+                await self._on_level_up(guild, member, new_level, xp_in_level, xp_needed)
+            await self._award_level_points(guild.id, user_id, new_level - old_level)
 
     async def _award_level_points(self, guild_id: int, user_id: int, levels_gained: int):
         db = await get_db()
@@ -88,21 +118,20 @@ class LevelingCog(commands.Cog):
         )
         await db.commit()
 
-    async def _on_level_up(self, message: discord.Message, new_level: int,
-                            xp_in_level: int, xp_needed: int):
+    async def _on_level_up(self, guild: discord.Guild, member: discord.Member, new_level: int,
+                            xp_in_level: int, xp_needed: int, fallback_channel=None):
         db = await get_db()
-        guild = message.guild
 
-        # 레벨 보상 역할 부여
+        # 애정도 레벨 보상 역할 부여
         rewards = await (await db.execute(
             "SELECT role_id FROM level_rewards WHERE guild_id=? AND level<=? ORDER BY level DESC",
             (guild.id, new_level)
         )).fetchall()
         for r in rewards:
             role = guild.get_role(r["role_id"])
-            if role and role not in message.author.roles:
+            if role and role not in member.roles:
                 try:
-                    await message.author.add_roles(role, reason=f"레벨 {new_level} 달성 보상")
+                    await member.add_roles(role, reason=f"애정도 레벨 {new_level} 달성 보상")
                 except discord.Forbidden:
                     pass
 
@@ -113,18 +142,18 @@ class LevelingCog(commands.Cog):
         )).fetchone()
 
         embed = discord.Embed(
-            title="🎉 레벨 업!",
+            title="🎉 애정도 상승!",
             description=(
-                f"{message.author.mention}님이 **레벨 {new_level}**에 도달했습니다!\n"
-                f"다음 레벨까지: {xp_in_level}/{xp_needed} XP"
+                f"{member.mention}님의 **애정도 레벨**이 **{new_level}**이 되었습니다!\n"
+                f"다음 레벨까지: {xp_in_level}/{xp_needed} 애정도"
             ),
             color=discord.Color.gold()
         )
-        embed.set_thumbnail(url=message.author.display_avatar.url)
+        embed.set_thumbnail(url=member.display_avatar.url)
 
         if cfg and cfg["levelup_dm"]:
             try:
-                await message.author.send(embed=embed)
+                await member.send(embed=embed)
             except discord.Forbidden:
                 pass
             return
@@ -133,12 +162,14 @@ class LevelingCog(commands.Cog):
         if cfg and cfg["levelup_channel"]:
             target_ch = guild.get_channel(cfg["levelup_channel"])
         if not target_ch:
-            target_ch = message.channel
+            target_ch = fallback_channel
+        if not target_ch:
+            return
 
         await target_ch.send(embed=embed)
 
     # ── /rank ─────────────────────────────────────────────────────────────────
-    @app_commands.command(name="랭크", description="자신(또는 다른 멤버)의 레벨과 XP를 확인합니다.")
+    @app_commands.command(name="랭크", description="자신(또는 다른 멤버)의 애정도 레벨과 경험치를 확인합니다.")
     @app_commands.describe(member="확인할 멤버 (기본: 자신)")
     async def rank(self, interaction: discord.Interaction, member: discord.Member | None = None):
         target = member or interaction.user
@@ -163,22 +194,22 @@ class LevelingCog(commands.Cog):
         bar = "█" * bar_filled + "░" * (20 - bar_filled)
 
         embed = discord.Embed(
-            title=f"📊 {target.display_name}의 랭크",
+            title=f"📊 {target.display_name}의 애정도",
             color=discord.Color.blurple()
         )
         embed.set_thumbnail(url=target.display_avatar.url)
-        embed.add_field(name="레벨", value=str(level), inline=True)
+        embed.add_field(name="애정도 레벨", value=str(level), inline=True)
         embed.add_field(name="서버 순위", value=f"#{rank_num}", inline=True)
-        embed.add_field(name="총 XP", value=str(total_xp), inline=True)
+        embed.add_field(name="총 애정도(XP)", value=str(total_xp), inline=True)
         embed.add_field(
-            name=f"XP 진행도 ({xp_in_level}/{xp_needed})",
+            name=f"다음 레벨까지 ({xp_in_level}/{xp_needed})",
             value=f"`{bar}` {xp_in_level}/{xp_needed}",
             inline=False
         )
         await interaction.response.send_message(embed=embed)
 
     # ── /leaderboard ──────────────────────────────────────────────────────────
-    @app_commands.command(name="리더보드", description="서버 레벨 랭킹 상위 10명을 확인합니다.")
+    @app_commands.command(name="리더보드", description="서버 애정도 랭킹 상위 10명을 확인합니다.")
     async def leaderboard(self, interaction: discord.Interaction):
         db = await get_db()
         rows = await (await db.execute(
@@ -186,7 +217,7 @@ class LevelingCog(commands.Cog):
             (interaction.guild_id,)
         )).fetchall()
 
-        embed = discord.Embed(title="🏆 레벨 리더보드", color=discord.Color.gold())
+        embed = discord.Embed(title="🏆 애정도 리더보드", color=discord.Color.gold())
         medals = ["🥇", "🥈", "🥉"]
         lines = []
         for i, row in enumerate(rows):
@@ -194,14 +225,14 @@ class LevelingCog(commands.Cog):
             name = member.display_name if member else f"<@{row['user_id']}>"
             level, xp_in, xp_need = xp_progress(row["xp"])
             medal = medals[i] if i < 3 else f"`{i+1}.`"
-            lines.append(f"{medal} **{name}** — 레벨 {level} ({row['xp']:,} XP)")
+            lines.append(f"{medal} **{name}** — 애정도 레벨 {level} ({row['xp']:,})")
 
         embed.description = "\n".join(lines) if lines else "아직 데이터가 없습니다."
         await interaction.response.send_message(embed=embed)
 
     # ── /set-xp ───────────────────────────────────────────────────────────────
-    @app_commands.command(name="xp설정", description="[관리자] 특정 멤버의 XP를 설정합니다.")
-    @app_commands.describe(member="대상 멤버", xp="설정할 XP")
+    @app_commands.command(name="xp설정", description="[관리자] 특정 멤버의 애정도 경험치를 설정합니다.")
+    @app_commands.describe(member="대상 멤버", xp="설정할 애정도 경험치")
     @app_commands.default_permissions(administrator=True)
     async def set_xp(self, interaction: discord.Interaction,
                      member: discord.Member, xp: app_commands.Range[int, 0]):
@@ -216,7 +247,7 @@ class LevelingCog(commands.Cog):
         )
         await db.commit()
         embed = discord.Embed(
-            description=f"{member.mention}의 XP가 **{xp:,}** (레벨 {level})으로 설정되었습니다.",
+            description=f"{member.mention}의 애정도가 **{xp:,}** (레벨 {level})으로 설정되었습니다.",
             color=discord.Color.green()
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)

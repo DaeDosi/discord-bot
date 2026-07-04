@@ -200,6 +200,22 @@ export const api = {
       remove: (gid: string, tierId: number) =>
         request(`/api/chzzk/${gid}/follow-tiers/${tierId}`, { method: "DELETE" }),
     },
+    chatCommands: {
+      list:   (gid: string) =>
+        request<import("./types").ChatCommand[]>(`/api/chzzk/${gid}/chat-commands`),
+      create: (gid: string, data: {
+        command_type: "checkin" | "reply"; trigger_text: string;
+        reward_points?: number; reward_xp?: number; reply_text?: string; is_active?: boolean;
+      }) =>
+        request<{ ok: boolean; id: number }>(`/api/chzzk/${gid}/chat-commands`, { method: "POST", body: JSON.stringify(data) }),
+      update: (gid: string, id: number, data: {
+        trigger_text: string; reward_points?: number; reward_xp?: number;
+        reply_text?: string; is_active?: boolean;
+      }) =>
+        request(`/api/chzzk/${gid}/chat-commands/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+      remove: (gid: string, id: number) =>
+        request(`/api/chzzk/${gid}/chat-commands/${id}`, { method: "DELETE" }),
+    },
     contentNotify: {
       get:  (gid: string) =>
         request<{

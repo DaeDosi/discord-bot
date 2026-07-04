@@ -6,32 +6,17 @@ import { clsx } from "clsx";
 import {
   Radio, Trash2, Bell, BellOff,
   ExternalLink, Plus, Users, X, ChevronLeft, ChevronRight,
-  Youtube, Tv, Clock,
+  MessageSquare, Edit2, Sparkles,
 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier, ChzzkVerification } from "@/lib/types";
+import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier, ChzzkVerification, ChatCommand } from "@/lib/types";
 
-type Platform = "chzzk" | "youtube" | "soop";
+type DetailTab = "streamer" | "chat-commands";
 
-const PLATFORM_TABS: { key: Platform; label: string; icon: LucideIcon }[] = [
-  { key: "chzzk",   label: "치지직 (Chzzk)",   icon: Radio   },
-  { key: "youtube", label: "유튜브 (YouTube)", icon: Youtube },
-  { key: "soop",    label: "숲 (SOOP)",        icon: Tv      },
+const DETAIL_TABS: { key: DetailTab; label: string }[] = [
+  { key: "streamer",      label: "스트리머 설정" },
+  { key: "chat-commands", label: "실시간 채팅 명령어" },
 ];
-
-// ── 플랫폼 준비중 안내 ────────────────────────────────────────────────────────
-function ComingSoonPanel({ label, Icon }: { label: string; Icon: LucideIcon }) {
-  return (
-    <div className="card text-center py-16 text-muted">
-      <Icon size={40} className="mx-auto mb-3 opacity-30" />
-      <p className="font-medium text-fg">{label} 알림 연동을 준비 중입니다.</p>
-      <p className="text-sm mt-1 flex items-center justify-center gap-1.5">
-        <Clock size={13} /> 곧 만나보실 수 있어요!
-      </p>
-    </div>
-  );
-}
 
 // ── 팔로우 인증 현황 모달 ──────────────────────────────────────────────────────
 function VerifModal({
@@ -241,10 +226,241 @@ function AddStreamerForm({ channels, guildId }: { channels: Channel[]; guildId: 
   );
 }
 
+// ── 채팅 명령어 편집 모달 ─────────────────────────────────────────────────────
+function ChatCommandModal({
+  commandType, initial, onSave, onClose,
+}: {
+  commandType: "checkin" | "reply";
+  initial?: ChatCommand;
+  onSave: (data: { trigger_text: string; reward_points: number; reward_xp: number; reply_text: string }) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [trigger, setTrigger]     = useState(initial?.trigger_text ?? (commandType === "checkin" ? "출석체크" : ""));
+  const [points, setPoints]       = useState(String(initial?.reward_points ?? (commandType === "checkin" ? 500 : 0)));
+  const [xp, setXp]               = useState(String(initial?.reward_xp ?? (commandType === "checkin" ? 50 : 0)));
+  const [replyText, setReplyText] = useState(initial?.reply_text ?? "");
+  const [saving, setSaving]       = useState(false);
+
+  const submit = async () => {
+    if (!trigger.trim()) return;
+    if (commandType === "reply" && !replyText.trim()) return;
+    setSaving(true);
+    await onSave({
+      trigger_text:  trigger.trim(),
+      reward_points: Number(points) || 0,
+      reward_xp:     Number(xp) || 0,
+      reply_text:    replyText.trim(),
+    });
+    setSaving(false);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="bg-bg-card border border-border rounded-xl w-full max-w-md shadow-xl">
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <p className="font-semibold text-fg">
+            {commandType === "checkin" ? "출석체크 설정" : (initial ? "명령어 수정" : "명령어 추가")}
+          </p>
+          <button onClick={onClose} className="text-muted hover:text-fg transition-colors"><X size={18} /></button>
+        </div>
+        <div className="p-4 space-y-3">
+          <div>
+            <label className="label">! 뒤에 올 명령어</label>
+            <div className="flex items-center gap-2">
+              <span className="text-muted">!</span>
+              <input
+                className="input"
+                placeholder={commandType === "checkin" ? "출석체크" : "핑"}
+                value={trigger}
+                onChange={(e) => setTrigger(e.target.value)}
+              />
+            </div>
+            <p className="text-xs text-muted mt-1">
+              {commandType === "checkin"
+                ? "치지직 채팅에서 이 단어를 입력하면 1일 1회 포인트+애정도가 지급됩니다. (예: 출첵, 출석체크, 피하 등 자유롭게 변경 가능)"
+                : "치지직 채팅에서 이 단어를 입력하면 아래 응답 문구를 자동으로 채팅에 전송합니다."}
+            </p>
+          </div>
+          {commandType === "checkin" ? (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label">지급 포인트</label>
+                <input className="input" inputMode="numeric" value={points}
+                       onChange={(e) => setPoints(e.target.value.replace(/[^0-9]/g, ""))} />
+              </div>
+              <div>
+                <label className="label">지급 애정도(XP)</label>
+                <input className="input" inputMode="numeric" value={xp}
+                       onChange={(e) => setXp(e.target.value.replace(/[^0-9]/g, ""))} />
+              </div>
+            </div>
+          ) : (
+            <div>
+              <label className="label">자동 응답 문구 (최대 100자)</label>
+              <input
+                className="input" placeholder="예: 퐁!" maxLength={100}
+                value={replyText} onChange={(e) => setReplyText(e.target.value)}
+              />
+            </div>
+          )}
+        </div>
+        <div className="p-4 border-t border-border flex justify-end gap-2">
+          <button onClick={onClose} className="btn-secondary text-sm">취소</button>
+          <button
+            onClick={submit}
+            disabled={saving || !trigger.trim() || (commandType === "reply" && !replyText.trim())}
+            className="btn-primary text-sm"
+          >
+            {saving ? "저장 중..." : "저장"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 실시간 채팅 명령어 패널 ───────────────────────────────────────────────────
+function ChatCommandsPanel({ guildId }: { guildId: string }) {
+  const [commands, setCommands] = useState<ChatCommand[]>([]);
+  const [loading, setLoading]   = useState(true);
+  const [modal, setModal]       = useState<{ type: "checkin" | "reply"; initial?: ChatCommand } | null>(null);
+  const [toast, setToast]       = useState("");
+
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(""), 2500); };
+
+  const load = () =>
+    api.chzzk.chatCommands.list(guildId).then(setCommands).catch(() => {}).finally(() => setLoading(false));
+
+  useEffect(() => { load(); }, [guildId]);
+
+  const checkinCmd = commands.find((c) => c.command_type === "checkin");
+  const replyCmds  = commands.filter((c) => c.command_type === "reply");
+
+  const save = async (data: { trigger_text: string; reward_points: number; reward_xp: number; reply_text: string }) => {
+    if (!modal) return;
+    try {
+      if (modal.initial) {
+        await api.chzzk.chatCommands.update(guildId, modal.initial.id, { ...data, is_active: true });
+      } else {
+        await api.chzzk.chatCommands.create(guildId, { command_type: modal.type, ...data, is_active: true });
+      }
+      setModal(null);
+      load();
+      showToast("저장되었습니다.");
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : "저장 실패");
+    }
+  };
+
+  const remove = async (id: number) => {
+    if (!confirm("이 명령어를 삭제하시겠습니까?")) return;
+    await api.chzzk.chatCommands.remove(guildId, id).catch(() => {});
+    load();
+  };
+
+  if (loading) {
+    return <div className="card text-center py-10 text-muted">불러오는 중...</div>;
+  }
+
+  return (
+    <div className="space-y-6">
+      {toast && (
+        <div className="fixed top-4 right-4 z-50 px-4 py-2 rounded-lg bg-green-600 text-white text-sm shadow-lg">
+          {toast}
+        </div>
+      )}
+      {modal && (
+        <ChatCommandModal
+          commandType={modal.type}
+          initial={modal.initial}
+          onSave={save}
+          onClose={() => setModal(null)}
+        />
+      )}
+
+      {/* 출석체크 */}
+      <div className="card space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="section-title flex items-center gap-2">
+            <Sparkles size={16} className="text-accent" /> 출석체크
+          </h2>
+          <button
+            onClick={() => setModal({ type: "checkin", initial: checkinCmd })}
+            className="btn-primary text-sm flex items-center gap-1.5"
+          >
+            <Edit2 size={14} /> {checkinCmd ? "설정 수정" : "설정하기"}
+          </button>
+        </div>
+        <p className="text-sm text-muted">
+          치지직 생방송 채팅에서 시청자가{" "}
+          <code className="bg-bg px-1.5 py-0.5 rounded text-accent text-xs">!{checkinCmd?.trigger_text || "출석체크"}</code>
+          을 입력하면 (하루 1회) 포인트와 애정도를 지급합니다. 대시보드에서 치지직 계정을 연동한 시청자만 지급 대상입니다.
+        </p>
+        {checkinCmd ? (
+          <div className="flex items-center gap-3 bg-bg rounded-lg px-4 py-3 border border-border">
+            <span className="text-sm font-mono text-fg">!{checkinCmd.trigger_text}</span>
+            <span className="text-sm text-accent font-semibold">+{checkinCmd.reward_points.toLocaleString()} P</span>
+            <span className="text-sm text-warning font-semibold">+{checkinCmd.reward_xp.toLocaleString()} 애정도</span>
+          </div>
+        ) : (
+          <p className="text-muted text-sm text-center py-4">아직 설정되지 않았습니다. 위 버튼으로 설정해주세요.</p>
+        )}
+      </div>
+
+      {/* 추가 명령어 (자동 응답) */}
+      <div className="card space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="section-title flex items-center gap-2">
+            <MessageSquare size={16} className="text-accent" /> 추가 명령어 (자동 응답)
+          </h2>
+          {replyCmds.length < 5 && (
+            <button
+              onClick={() => setModal({ type: "reply" })}
+              className="btn-primary text-sm flex items-center gap-1.5"
+            >
+              <Plus size={14} /> 명령어 추가
+            </button>
+          )}
+        </div>
+        <p className="text-sm text-muted">
+          출석체크 외에 원하는 명령어를 등록하면, 치지직 채팅에 해당 단어가 입력됐을 때 지정한 문구로 자동 응답합니다. (최대 5개)
+        </p>
+        {replyCmds.length === 0 ? (
+          <p className="text-muted text-sm text-center py-4">등록된 명령어가 없습니다.</p>
+        ) : (
+          <div className="space-y-2">
+            {replyCmds.map((c) => (
+              <div key={c.id} className="flex items-center justify-between gap-3 p-3 rounded-lg bg-bg border border-border">
+                <div className="min-w-0">
+                  <p className="text-sm font-mono text-fg">!{c.trigger_text}</p>
+                  <p className="text-sm text-muted mt-0.5 truncate">→ {c.reply_text}</p>
+                </div>
+                <div className="flex gap-1 shrink-0">
+                  <button onClick={() => setModal({ type: "reply", initial: c })}
+                    className="p-1.5 rounded-lg text-muted hover:text-fg hover:bg-bg-hover transition-colors">
+                    <Edit2 size={14} />
+                  </button>
+                  <button onClick={() => remove(c.id)}
+                    className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors">
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── 메인 페이지 ───────────────────────────────────────────────────────────────
 export default function ChzzkPage() {
   const { guildId } = useParams<{ guildId: string }>();
-  const [platform, setPlatform] = useState<Platform>("chzzk");
+  const [detailTab, setDetailTab] = useState<DetailTab>("streamer");
 
   const [subs, setSubs]         = useState<ChzzkSubscription[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -324,33 +540,32 @@ export default function ChzzkPage() {
 
       <div>
         <h1 className="page-title flex items-center gap-2">
-          <Radio size={20} className="text-chzzk" /> 방송설정
+          <Radio size={20} className="text-chzzk" /> 치지직
         </h1>
         <p className="page-subtitle">
-          스트리머 방송 시작 시 Discord 채널에 알림을 보냅니다.
+          스트리머 방송 시작 시 Discord 채널에 알림을 보내고, 실시간 채팅 명령어를 설정합니다.
         </p>
       </div>
 
-      {/* 플랫폼 탭 */}
+      {/* 세부 설정 탭 */}
       <div className="flex items-center gap-1 p-1 rounded-xl bg-bg-hover w-fit max-w-full overflow-x-auto">
-        {PLATFORM_TABS.map(({ key, label, icon: Icon }) => (
+        {DETAIL_TABS.map(({ key, label }) => (
           <button
             key={key}
-            onClick={() => setPlatform(key)}
+            onClick={() => setDetailTab(key)}
             className={clsx(
               "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors",
-              platform === key ? "bg-bg-card text-fg shadow-sm" : "text-muted hover:text-fg"
+              detailTab === key ? "bg-bg-card text-fg shadow-sm" : "text-muted hover:text-fg"
             )}
           >
-            <Icon size={15} /> {label}
+            {label}
           </button>
         ))}
       </div>
 
-      {platform === "youtube" && <ComingSoonPanel label="유튜브" Icon={Youtube} />}
-      {platform === "soop" && <ComingSoonPanel label="숲(SOOP)" Icon={Tv} />}
+      {detailTab === "chat-commands" && <ChatCommandsPanel guildId={guildId} />}
 
-      {platform === "chzzk" && (
+      {detailTab === "streamer" && (
       <>
       {/* 등록된 스트리머 */}
       <div className="space-y-3">

@@ -19,6 +19,7 @@ COGS = [
     "cogs.points",
     "cogs.reaction_roles",
     "cogs.chzzk",
+    "cogs.chzzk_chat",
     "cogs.verification",
     "cogs.sichham",
     "cogs.info",

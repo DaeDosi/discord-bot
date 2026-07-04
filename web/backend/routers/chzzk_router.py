@@ -1,5 +1,6 @@
 import os
 import asyncio
+import time as _time
 import httpx
 from datetime import date, datetime, timezone, timedelta
 
@@ -439,6 +440,141 @@ async def update_content_notify(
         )
     )
     await db.commit()
+    return {"ok": True}
+
+
+# ── 실시간 채팅 명령어 ───────────────────────────────────────────────────────
+# command_type: "checkin"(guild당 1개, 포인트+애정도XP 지급, 1일1회) |
+#               "reply"(guild당 최대 5개, 자동 응답 텍스트만 전송)
+
+class ChatCommandCreate(BaseModel):
+    command_type:  str = "checkin"
+    trigger_text:  str
+    reward_points: int = 0
+    reward_xp:     int = 0
+    reply_text:    str = ""
+    is_active:     bool = True
+
+
+class ChatCommandUpdate(BaseModel):
+    trigger_text:  str
+    reward_points: int = 0
+    reward_xp:     int = 0
+    reply_text:    str = ""
+    is_active:     bool = True
+
+
+def _normalize_trigger(raw: str) -> str:
+    return raw.strip().lstrip("!").strip()
+
+
+@router.get("/{guild_id}/chat-commands")
+async def list_chat_commands(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    rows = await (await db.execute(
+        """SELECT id, command_type, trigger_text, reward_points, reward_xp,
+                  reply_text, is_active
+           FROM chzzk_chat_commands WHERE guild_id=?
+           ORDER BY CASE command_type WHEN 'checkin' THEN 0 ELSE 1 END, id""",
+        (int(guild_id),)
+    )).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.post("/{guild_id}/chat-commands")
+async def create_chat_command(
+    guild_id: str,
+    body: ChatCommandCreate,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    trigger = _normalize_trigger(body.trigger_text)
+    if not trigger:
+        raise HTTPException(status_code=400, detail="명령어를 입력해주세요.")
+    if body.command_type not in ("checkin", "reply"):
+        raise HTTPException(status_code=400, detail="잘못된 명령어 종류입니다.")
+
+    db = await get_db()
+    count = (await (await db.execute(
+        "SELECT COUNT(*) FROM chzzk_chat_commands WHERE guild_id=? AND command_type=?",
+        (int(guild_id), body.command_type)
+    )).fetchone())[0]
+    if body.command_type == "checkin" and count >= 1:
+        raise HTTPException(status_code=400, detail="출석체크 명령어는 1개만 등록할 수 있습니다.")
+    if body.command_type == "reply" and count >= 5:
+        raise HTTPException(status_code=400, detail="자동 응답 명령어는 최대 5개까지 등록할 수 있습니다.")
+
+    try:
+        cur = await db.execute(
+            """INSERT INTO chzzk_chat_commands
+               (guild_id, command_type, trigger_text, reward_points, reward_xp,
+                reply_text, is_active, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                int(guild_id), body.command_type, trigger,
+                max(0, body.reward_points), max(0, body.reward_xp),
+                body.reply_text[:100], int(body.is_active), int(_time.time()),
+            )
+        )
+        await db.commit()
+    except Exception:
+        raise HTTPException(status_code=409, detail="이미 등록된 명령어입니다.")
+    return {"ok": True, "id": cur.lastrowid}
+
+
+@router.put("/{guild_id}/chat-commands/{command_id}")
+async def update_chat_command(
+    guild_id: str,
+    command_id: int,
+    body: ChatCommandUpdate,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    trigger = _normalize_trigger(body.trigger_text)
+    if not trigger:
+        raise HTTPException(status_code=400, detail="명령어를 입력해주세요.")
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT id FROM chzzk_chat_commands WHERE id=? AND guild_id=?",
+        (command_id, int(guild_id))
+    )).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="명령어를 찾을 수 없습니다.")
+    try:
+        await db.execute(
+            """UPDATE chzzk_chat_commands
+               SET trigger_text=?, reward_points=?, reward_xp=?, reply_text=?, is_active=?
+               WHERE id=?""",
+            (
+                trigger, max(0, body.reward_points), max(0, body.reward_xp),
+                body.reply_text[:100], int(body.is_active), command_id,
+            )
+        )
+        await db.commit()
+    except Exception:
+        raise HTTPException(status_code=409, detail="이미 등록된 명령어입니다.")
+    return {"ok": True}
+
+
+@router.delete("/{guild_id}/chat-commands/{command_id}")
+async def delete_chat_command(
+    guild_id: str,
+    command_id: int,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    result = await db.execute(
+        "DELETE FROM chzzk_chat_commands WHERE id=? AND guild_id=?",
+        (command_id, int(guild_id))
+    )
+    await db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="명령어를 찾을 수 없습니다.")
     return {"ok": True}
 
 

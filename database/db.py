@@ -276,6 +276,29 @@ async def init_db():
                message    TEXT    NOT NULL DEFAULT '',
                updated_at INTEGER NOT NULL DEFAULT 0
            )""",
+        # 치지직 실시간 채팅 명령어: command_type='checkin'은 guild당 1개(포인트+애정도XP 지급,
+        # 1일1회), command_type='reply'는 guild당 최대 5개(자동 응답 텍스트만 전송)로 제한됨(백엔드에서 검사).
+        """CREATE TABLE IF NOT EXISTS chzzk_chat_commands (
+               id            INTEGER PRIMARY KEY AUTOINCREMENT,
+               guild_id      INTEGER NOT NULL,
+               command_type  TEXT    NOT NULL DEFAULT 'checkin',
+               trigger_text  TEXT    NOT NULL,
+               reward_points INTEGER NOT NULL DEFAULT 0,
+               reward_xp     INTEGER NOT NULL DEFAULT 0,
+               reply_text    TEXT    NOT NULL DEFAULT '',
+               is_active     INTEGER NOT NULL DEFAULT 1,
+               created_at    INTEGER NOT NULL,
+               UNIQUE(guild_id, trigger_text)
+           )""",
+        # 출석체크 중복 지급 방지 — (guild, 치지직 유저, 날짜, 명령어) 조합당 1회만 허용
+        """CREATE TABLE IF NOT EXISTS chzzk_checkin_log (
+               guild_id         INTEGER NOT NULL,
+               chzzk_channel_id TEXT    NOT NULL,
+               command_id       INTEGER NOT NULL,
+               check_date       TEXT    NOT NULL,
+               checked_at       INTEGER NOT NULL,
+               PRIMARY KEY (guild_id, chzzk_channel_id, command_id, check_date)
+           )""",
     ]:
         try:
             await db.execute(sql)

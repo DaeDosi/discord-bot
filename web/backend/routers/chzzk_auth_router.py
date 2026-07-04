@@ -472,7 +472,9 @@ async def chzzk_streamer_login_url(
         "clientId":    CHZZK_CLIENT_ID,
         "redirectUri": CHZZK_REDIRECT_URI,
         "state":       state,
-        "scope":       "채널 팔로워 조회",
+        # 실시간 채팅 명령어(출석체크/자동응답) 기능을 위해 채팅 조회/쓰기 권한 추가.
+        # 기존에 연동된 스트리머는 이 권한이 없으므로 재연동해야 채팅 기능이 활성화된다.
+        "scope":       "채널 팔로워 조회 채팅 메시지 조회 채팅 메시지 쓰기",
     }
     return {"url": f"{CHZZK_AUTH_URL}?{urlencode(params)}"}
 

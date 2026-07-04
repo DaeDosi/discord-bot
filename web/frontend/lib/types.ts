@@ -171,3 +171,13 @@ export interface ChzzkSearchResult {
   followerCount:   number;
   openLive:        boolean;
 }
+
+export interface ChatCommand {
+  id:            number;
+  command_type:  "checkin" | "reply";
+  trigger_text:  string;
+  reward_points: number;
+  reward_xp:     number;
+  reply_text:    string;
+  is_active:     boolean;
+}
