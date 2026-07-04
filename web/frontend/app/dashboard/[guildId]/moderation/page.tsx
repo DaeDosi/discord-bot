@@ -8,6 +8,24 @@ import { api } from "@/lib/api";
 import type { GuildConfig, Channel, Role, WarnUser, WarnDetail, GuildMember } from "@/lib/types";
 import MemberSearch from "@/components/MemberSearch";
 
+// ── 요약 통계 타일 ────────────────────────────────────────────────────────────
+function StatTile({
+  icon, label, value, color,
+}: { icon: React.ReactNode; label: string; value: number; color: string }) {
+  return (
+    <div className="rounded-2xl border border-border bg-bg-card p-4 flex items-center gap-3">
+      <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+           style={{ background: `${color}18`, color }}>
+        {icon}
+      </div>
+      <div>
+        <p className="text-xl font-bold text-fg">{value.toLocaleString()}</p>
+        <p className="text-xs text-muted">{label}</p>
+      </div>
+    </div>
+  );
+}
+
 // ── Manager modal ─────────────────────────────────────────────────────────────
 function ManagerModal({
   guildId,
@@ -284,6 +302,7 @@ export default function ModerationPage() {
 
   const [managers, setManagers] = useState<{ user_id: string; display_name: string }[]>([]);
   const [mgrOpen, setMgrOpen]   = useState(false);
+  const [warnUsers, setWarnUsers] = useState<WarnUser[]>([]);
 
   useEffect(() => {
     Promise.all([
@@ -300,7 +319,10 @@ export default function ModerationPage() {
       setRoles(r);
     });
     api.settings.managers.list(guildId).then(setManagers).catch(() => {});
+    api.moderation.warnings(guildId).then(setWarnUsers).catch(() => {});
   }, [guildId]);
+
+  const totalWarnings = warnUsers.reduce((s, u) => s + u.count, 0);
 
   const addManager = async (member: GuildMember) => {
     await api.settings.managers.add(guildId, member.id);
@@ -325,7 +347,15 @@ export default function ModerationPage() {
 
   return (
     <div className="space-y-6">
-      {warnOpen && <WarnModal guildId={guildId} onClose={() => setWarnOpen(false)} />}
+      {warnOpen && (
+        <WarnModal
+          guildId={guildId}
+          onClose={() => {
+            setWarnOpen(false);
+            api.moderation.warnings(guildId).then(setWarnUsers).catch(() => {});
+          }}
+        />
+      )}
       {mgrOpen && (
         <ManagerModal
           guildId={guildId}
@@ -352,6 +382,13 @@ export default function ModerationPage() {
         >
           <AlertTriangle size={15} /> 경고 현황
         </button>
+      </div>
+
+      {/* 요약 통계 */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <StatTile icon={<UserPlus size={18} />}      label="등록된 매니저"   value={managers.length}     color="#5865F2" />
+        <StatTile icon={<AlertTriangle size={18} />} label="경고 받은 유저"  value={warnUsers.length}    color="#FEE75C" />
+        <StatTile icon={<Shield size={18} />}        label="누적 경고 횟수"  value={totalWarnings}       color="#ED4245" />
       </div>
 
       {/* ── 기본 설정 ── */}

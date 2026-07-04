@@ -257,32 +257,25 @@ export default function ChzzkPage() {
 
   const [verifications, setVerifications] = useState<ChzzkVerification[]>([]);
   const [verifOpen, setVerifOpen]         = useState(false);
-  const [loadingVerif, setLoadingVerif]   = useState(false);
 
   const textChannels = channels.filter((c) => c.type === 0);
 
   const load = async () => {
-    const [s, ch, r, ft] = await Promise.all([
+    const [s, ch, r, ft, v] = await Promise.all([
       api.chzzk.list(guildId),
       api.guilds.channels(guildId),
       api.guilds.roles(guildId),
       api.chzzk.followTiers.list(guildId).catch(() => [] as FollowRoleTier[]),
+      api.chzzk.verifications(guildId).catch(() => [] as ChzzkVerification[]),
     ]);
     setSubs(s);
     setChannels(ch);
     setRoles(r);
     setFollowTiers(ft);
+    setVerifications(v);
   };
 
-  const openVerif = async () => {
-    setVerifOpen(true);
-    if (verifications.length === 0) {
-      setLoadingVerif(true);
-      const v = await api.chzzk.verifications(guildId).catch(() => [] as ChzzkVerification[]);
-      setVerifications(v);
-      setLoadingVerif(false);
-    }
-  };
+  const openVerif = () => setVerifOpen(true);
 
   useEffect(() => {
     load();
@@ -322,7 +315,7 @@ export default function ChzzkPage() {
       {verifOpen && (
         <VerifModal
           verifications={verifications}
-          loading={loadingVerif}
+          loading={false}
           followTiers={followTiers}
           roles={roles}
           onClose={() => setVerifOpen(false)}

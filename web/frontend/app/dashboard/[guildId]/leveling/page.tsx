@@ -1,9 +1,27 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { Plus, Trash2, Zap, Trophy, X } from "lucide-react";
+import { Plus, Trash2, Zap, Trophy, Award, X } from "lucide-react";
 import { api } from "@/lib/api";
 import type { LevelReward, Role } from "@/lib/types";
+
+// ── 요약 통계 타일 ────────────────────────────────────────────────────────────
+function StatTile({
+  icon, label, value, color,
+}: { icon: React.ReactNode; label: string; value: number; color: string }) {
+  return (
+    <div className="rounded-2xl border border-border bg-bg-card p-4 flex items-center gap-3">
+      <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+           style={{ background: `${color}18`, color }}>
+        {icon}
+      </div>
+      <div>
+        <p className="text-xl font-bold text-fg">{value.toLocaleString()}</p>
+        <p className="text-xs text-muted">{label}</p>
+      </div>
+    </div>
+  );
+}
 
 export default function LevelingPage() {
   const { guildId } = useParams<{ guildId: string }>();
@@ -69,6 +87,13 @@ export default function LevelingPage() {
       <div>
         <h1 className="page-title">레벨업 시스템</h1>
         <p className="page-subtitle">레벨 보상 역할 및 리더보드를 관리합니다.</p>
+      </div>
+
+      {/* 요약 통계 */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <StatTile icon={<Zap size={18} />}    label="등록된 레벨 보상" value={rewards.length}   color="#FEE75C" />
+        <StatTile icon={<Trophy size={18} />} label="리더보드 참여자"  value={lb.length}         color="#5865F2" />
+        <StatTile icon={<Award size={18} />}  label="최고 레벨"        value={lb[0]?.level ?? 0} color="#57F287" />
       </div>
 
       {/* 레벨 보상 */}
