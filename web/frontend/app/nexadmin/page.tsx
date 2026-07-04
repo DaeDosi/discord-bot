@@ -662,6 +662,19 @@ export default function AdminPage() {
     loadAll();
   }, []);
 
+  // 서버별로 그룹핑 — 여러 서버 유저가 한 줄로 뒤섞여 스캔하기 어려운 문제를 해소.
+  // verifUsers는 verified_at DESC로 오므로, Map 삽입 순서상 가장 최근 활동이 있던 서버가 먼저 나온다.
+  // 훅은 항상 최상단에서, 조건부 return보다 먼저 호출되어야 하므로 로딩/권한 분기 이전에 둔다.
+  const verifByGuild = useMemo(() => {
+    if (!verifUsers) return [];
+    const map = new Map<string, { guildName: string; users: VerifUser[] }>();
+    for (const v of verifUsers) {
+      if (!map.has(v.guild_id)) map.set(v.guild_id, { guildName: v.guild_name, users: [] });
+      map.get(v.guild_id)!.users.push(v);
+    }
+    return Array.from(map.values());
+  }, [verifUsers]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-bg flex items-center justify-center">
@@ -685,18 +698,6 @@ export default function AdminPage() {
 
   const followCount = followStats?.reduce((s, f) => s + f.users.length, 0) ?? null;
   const verifCount  = verifUsers?.length ?? null;
-
-  // 서버별로 그룹핑 — 여러 서버 유저가 한 줄로 뒤섞여 스캔하기 어려운 문제를 해소.
-  // verifUsers는 verified_at DESC로 오므로, Map 삽입 순서상 가장 최근 활동이 있던 서버가 먼저 나온다.
-  const verifByGuild = useMemo(() => {
-    if (!verifUsers) return [];
-    const map = new Map<string, { guildName: string; users: VerifUser[] }>();
-    for (const v of verifUsers) {
-      if (!map.has(v.guild_id)) map.set(v.guild_id, { guildName: v.guild_name, users: [] });
-      map.get(v.guild_id)!.users.push(v);
-    }
-    return Array.from(map.values());
-  }, [verifUsers]);
 
   const tabs = [
     { key: "guilds", label: `서버 목록 (${guilds.length})` },
