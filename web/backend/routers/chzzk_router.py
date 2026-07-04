@@ -643,6 +643,22 @@ async def get_chat_status(
     }
 
 
+@router.get("/{guild_id}/chat-log")
+async def get_chat_log(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    """실제 치지직 채팅 수신/봇 응답을 실시간으로 확인하기 위한 디버그용 로그."""
+    db = await get_db()
+    rows = await (await db.execute(
+        """SELECT direction, nickname, content, created_at
+           FROM chzzk_chat_log WHERE guild_id=? ORDER BY id ASC""",
+        (int(guild_id),)
+    )).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ── 디버그: 현재 라이브 상태 체크 ────────────────────────────────────────────
 @router.get("/debug/status")
 async def debug_status(user: dict = Depends(get_current_user)):

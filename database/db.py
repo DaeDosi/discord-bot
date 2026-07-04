@@ -304,6 +304,17 @@ async def init_db():
         # chat_last_event_at: 실제 채팅 이벤트를 마지막으로 수신한 시각 (진짜 연결 여부의 근거).
         "ALTER TABLE chzzk_subscriptions ADD COLUMN chat_last_sync_at  INTEGER DEFAULT 0",
         "ALTER TABLE chzzk_subscriptions ADD COLUMN chat_last_event_at INTEGER DEFAULT 0",
+        # 대시보드에서 실제 치지직 채팅 수신/봇 응답을 실시간으로 확인할 수 있는 디버그용
+        # 채팅 로그 (guild당 최근 N개만 유지, 봇이 삽입할 때마다 오래된 것을 정리함).
+        """CREATE TABLE IF NOT EXISTS chzzk_chat_log (
+               id         INTEGER PRIMARY KEY AUTOINCREMENT,
+               guild_id   INTEGER NOT NULL,
+               direction  TEXT    NOT NULL DEFAULT 'in',
+               nickname   TEXT    NOT NULL DEFAULT '',
+               content    TEXT    NOT NULL DEFAULT '',
+               created_at INTEGER NOT NULL
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_chzzk_chat_log_guild ON chzzk_chat_log(guild_id, id)",
     ]:
         try:
             await db.execute(sql)

@@ -223,6 +223,10 @@ export const api = {
         today_checkins: number;
         recent_checkins: { user_name: string; checked_at: number }[];
       }>(`/api/chzzk/${gid}/chat-status`),
+    chatLog: (gid: string) =>
+      request<{ direction: "in" | "out"; nickname: string; content: string; created_at: number }[]>(
+        `/api/chzzk/${gid}/chat-log`
+      ),
     contentNotify: {
       get:  (gid: string) =>
         request<{

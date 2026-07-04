@@ -25,7 +25,8 @@ _KST = timezone(timedelta(hours=9))
 _CHZZK_CLIENT_ID     = os.getenv("CHZZK_CLIENT_ID", "")
 _CHZZK_CLIENT_SECRET = os.getenv("CHZZK_CLIENT_SECRET", "")
 
-SYNC_INTERVAL_SECONDS = 1800  # 30분마다 구독 대상/토큰/명령어 설정 재동기화
+SYNC_INTERVAL_SECONDS = 300  # 5분마다 구독 대상/토큰/명령어 설정 재동기화 + 연결 생존 확인
+CHAT_LOG_KEEP = 50  # guild당 디버그 채팅 로그 보관 개수
 
 try:
     from chzzkpy import Client as ChzzkSessionClient
@@ -46,7 +47,8 @@ class ChzzkChatCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.client = None
-        self.session_id: str | None = None
+        self.session_id: str | None = None       # 치지직 sessionKey (subscribe API용)
+        self._transport_sid: str | None = None   # Engine.IO transport id (생존 확인용, client._gateway 조회 키)
         self._session_ready = asyncio.Event()
         # chzzk_channel_id -> {"guild_id": int, "user_client": UserClient, "commands": {trigger_text: row}}
         self._channels: dict[str, dict] = {}
@@ -77,10 +79,32 @@ class ChzzkChatCog(commands.Cog):
     async def before_sync_loop(self):
         await self.bot.wait_until_ready()
 
+    def _gateway_alive(self) -> bool:
+        """실제 소켓 연결이 살아있는지 확인. chzzkpy가 연결 끊김을 알려주는 콜백을
+        제공하지 않아서(하트비트 실패가 조용히 백그라운드 태스크만 죽임), 내부
+        _gateway 딕셔너리를 직접 조회해서 확인한다 — 라이브러리 내부 구현에 의존하는
+        부분이라 향후 chzzkpy 버전이 바뀌면 깨질 수 있음."""
+        if self.client is None or self._transport_sid is None:
+            return False
+        gateway = self.client._gateway.get(self._transport_sid)
+        return bool(gateway is not None and gateway.is_connected)
+
     async def _ensure_client(self) -> bool:
         if self.client is not None:
-            return self.session_id is not None
+            if self._gateway_alive():
+                return self.session_id is not None
+            log.warning("치지직 채팅 게이트웨이 연결이 끊긴 것으로 확인되어 재연결합니다.")
+            try:
+                await self.client.disconnect()
+            except Exception:
+                pass
+            self.client = None
+            self.session_id = None
+            self._transport_sid = None
+            self._channels.clear()  # 재구독이 필요하므로 로컬 구독 상태 초기화
+
         self.client = ChzzkSessionClient(_CHZZK_CLIENT_ID, _CHZZK_CLIENT_SECRET)
+        self._session_ready = asyncio.Event()
 
         @self.client.event
         async def on_chat(message):
@@ -97,12 +121,13 @@ class ChzzkChatCog(commands.Cog):
 
         try:
             # addition_connect=True 로 호출해야 연결 후 즉시 반환됨(그렇지 않으면 연결이 끊길 때까지 블로킹됨)
-            await self.client.connect(addition_connect=True)
+            self._transport_sid = await self.client.connect(addition_connect=True)
             await asyncio.wait_for(self._session_ready.wait(), timeout=10)
         except Exception:
             log.exception("치지직 채팅 세션 연결 실패")
             self.client = None
             self.session_id = None
+            self._transport_sid = None
             return False
         return True
 
@@ -216,6 +241,21 @@ class ChzzkChatCog(commands.Cog):
         )
         await db.commit()
 
+    async def _log_chat(self, guild_id: int, direction: str, nickname: str, content: str):
+        """대시보드 디버그용 채팅 로그. guild당 최근 CHAT_LOG_KEEP개만 유지."""
+        db = await get_db()
+        await db.execute(
+            "INSERT INTO chzzk_chat_log(guild_id, direction, nickname, content, created_at) VALUES(?,?,?,?,?)",
+            (guild_id, direction, nickname[:100], content[:200], int(time.time()))
+        )
+        await db.execute(
+            """DELETE FROM chzzk_chat_log WHERE guild_id=? AND id NOT IN (
+                   SELECT id FROM chzzk_chat_log WHERE guild_id=? ORDER BY id DESC LIMIT ?
+               )""",
+            (guild_id, guild_id, CHAT_LOG_KEEP)
+        )
+        await db.commit()
+
     # ── 채팅 이벤트 처리 ──────────────────────────────────────────────────────
     async def _on_chat(self, message: "Message"):
         entry = self._channels.get(message.channel)
@@ -225,6 +265,8 @@ class ChzzkChatCog(commands.Cog):
         # 명령어 매칭 여부와 무관하게, 채팅이 실제로 들어오고 있다는 사실 자체를 기록
         # (대시보드 "실시간 채팅 명령어" 탭의 연결 상태 표시용)
         await self._mark_event_received(entry["guild_id"])
+        nickname = message.profile.nickname if message.profile else "익명"
+        await self._log_chat(entry["guild_id"], "in", nickname, message.content or "")
 
         if not entry["commands"]:
             return
@@ -243,6 +285,7 @@ class ChzzkChatCog(commands.Cog):
         if cmd["command_type"] == "reply":
             try:
                 await entry["user_client"].send_message(cmd["reply_text"])
+                await self._log_chat(entry["guild_id"], "out", "NexBot", cmd["reply_text"])
             except Exception:
                 log.exception(f"치지직 채팅 자동응답 전송 실패 guild={entry['guild_id']}")
             return
@@ -298,8 +341,10 @@ class ChzzkChatCog(commands.Cog):
         )).fetchone()
         today_count = today_count_row[0] if today_count_row else 1
         nickname = message.profile.nickname if message.profile else "익명"
+        announce_text = f"{nickname}님이 오늘 {today_count}번째 출석 하셨습니다!"
         try:
-            await entry["user_client"].send_message(f"{nickname}님이 오늘 {today_count}번째 출석 하셨습니다!")
+            await entry["user_client"].send_message(announce_text)
+            await self._log_chat(guild_id, "out", "NexBot", announce_text)
         except Exception:
             log.exception(f"출석체크 안내 메시지 전송 실패 guild={guild_id}")
 

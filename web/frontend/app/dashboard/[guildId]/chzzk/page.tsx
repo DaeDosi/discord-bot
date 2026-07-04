@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Image from "next/image";
 import { clsx } from "clsx";
@@ -393,6 +393,62 @@ function ChatStatusCard({ guildId }: { guildId: string }) {
   );
 }
 
+type ChatLogEntry = { direction: "in" | "out"; nickname: string; content: string; created_at: number };
+
+// ── 실시간 채팅 미리보기 (디버그용) ────────────────────────────────────────────
+function ChzzkChatFeed({ guildId }: { guildId: string }) {
+  const [log, setLog] = useState<ChatLogEntry[]>([]);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const load = () => api.chzzk.chatLog(guildId).then(setLog).catch(() => {});
+    load();
+    const timer = setInterval(load, 3000);
+    return () => clearInterval(timer);
+  }, [guildId]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [log]);
+
+  return (
+    <div className="card space-y-3">
+      <h2 className="section-title flex items-center gap-2">
+        <MessageSquare size={16} className="text-accent" /> 실시간 채팅 미리보기
+      </h2>
+      <p className="text-sm text-muted">
+        치지직 채팅에서 실제로 수신된 메시지와 봇이 보낸 응답을 그대로 보여줍니다. 3초마다 자동 갱신됩니다.
+      </p>
+      <div
+        className="rounded-lg p-3 h-72 overflow-y-auto flex flex-col gap-1.5 font-mono text-[13px]"
+        style={{ background: "#0b0d14" }}
+      >
+        {log.length === 0 ? (
+          <p className="text-muted text-sm m-auto">
+            아직 수신된 채팅이 없습니다. 방송 채팅창에 메시지를 입력해보세요.
+          </p>
+        ) : (
+          log.map((l, i) => (
+            <div key={i} className="flex items-baseline gap-2 leading-snug">
+              <span className="text-white/20 shrink-0 text-[11px]">
+                {new Date(l.created_at * 1000).toLocaleTimeString("ko-KR", { hour12: false })}
+              </span>
+              <span
+                className="shrink-0 font-semibold"
+                style={{ color: l.direction === "out" ? "#5865F2" : "#818CF8" }}
+              >
+                {l.nickname}
+              </span>
+              <span className="text-white/80 break-all">{l.content}</span>
+            </div>
+          ))
+        )}
+        <div ref={bottomRef} />
+      </div>
+    </div>
+  );
+}
+
 function ChatCommandsPanel({ guildId }: { guildId: string }) {
   const [commands, setCommands] = useState<ChatCommand[]>([]);
   const [loading, setLoading]   = useState(true);
@@ -452,6 +508,7 @@ function ChatCommandsPanel({ guildId }: { guildId: string }) {
       )}
 
       <ChatStatusCard guildId={guildId} />
+      <ChzzkChatFeed guildId={guildId} />
 
       {/* 출석체크 */}
       <div className="card space-y-4">
