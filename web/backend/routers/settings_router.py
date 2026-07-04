@@ -119,7 +119,7 @@ async def get_level_rewards(
         "SELECT level, role_id FROM level_rewards WHERE guild_id=? ORDER BY level",
         (int(guild_id),)
     )).fetchall()
-    return [dict(r) for r in rows]
+    return [{"level": r["level"], "role_id": str(r["role_id"])} for r in rows]
 
 
 @router.post("/{guild_id}/level-rewards")
@@ -282,7 +282,7 @@ async def get_leaderboard(
         ])
 
     return [
-        {**dict(r), "display_name": name}
+        {**dict(r), "user_id": str(r["user_id"]), "display_name": name}
         for r, name in zip(rows, names)
     ]
 
