@@ -127,6 +127,12 @@ async def init_db():
             chzzk_subs INTEGER DEFAULT 0,
             updated_at REAL    DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS daily_visitors (
+            date     TEXT NOT NULL,
+            ip_hash  TEXT NOT NULL,
+            PRIMARY KEY (date, ip_hash)
+        );
     """)
     await db.commit()
 
@@ -143,6 +149,8 @@ async def init_db():
         "ALTER TABLE guild_config ADD COLUMN warn_kick_threshold INTEGER DEFAULT 0",
         "ALTER TABLE guild_config ADD COLUMN warn_ban_threshold  INTEGER DEFAULT 0",
         "ALTER TABLE guild_config ADD COLUMN points_per_level    INTEGER DEFAULT 0",
+        "ALTER TABLE guild_config ADD COLUMN welcome_message TEXT DEFAULT ''",
+        "ALTER TABLE guild_config ADD COLUMN goodbye_message TEXT DEFAULT ''",
         """CREATE TABLE IF NOT EXISTS user_points (
                guild_id INTEGER NOT NULL,
                user_id  INTEGER NOT NULL,
@@ -205,6 +213,26 @@ async def init_db():
         "ALTER TABLE chzzk_subscriptions ADD COLUMN vod_channel       INTEGER",
         "ALTER TABLE chzzk_subscriptions ADD COLUMN clip_channel      INTEGER",
         "ALTER TABLE chzzk_subscriptions ADD COLUMN community_channel  INTEGER",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN mention_everyone   INTEGER DEFAULT 0",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN follow_role_1month INTEGER",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN follow_role_3month INTEGER",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN follow_months_tier1 INTEGER DEFAULT 1",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN follow_months_tier2 INTEGER DEFAULT 3",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN streamer_access_token TEXT",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN streamer_refresh_token TEXT",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN streamer_token_expires_at INTEGER DEFAULT 0",
+        "ALTER TABLE chzzk_verifications ADD COLUMN tier_months INTEGER DEFAULT 0",
+        "ALTER TABLE chzzk_verifications ADD COLUMN follow_months INTEGER DEFAULT 0",
+        "ALTER TABLE chzzk_verifications ADD COLUMN follow_date TEXT",
+        "ALTER TABLE chzzk_verifications ADD COLUMN follow_days INTEGER DEFAULT -1",
+        "ALTER TABLE chzzk_verifications ADD COLUMN chzzk_channel_id TEXT",
+        """CREATE TABLE IF NOT EXISTS chzzk_follow_roles (
+               id       INTEGER PRIMARY KEY AUTOINCREMENT,
+               guild_id INTEGER NOT NULL,
+               months   INTEGER NOT NULL,
+               role_id  INTEGER NOT NULL,
+               UNIQUE(guild_id, months)
+           )""",
         """CREATE TABLE IF NOT EXISTS points_gambling_config (
                guild_id    INTEGER PRIMARY KEY,
                title       TEXT    NOT NULL DEFAULT '포인트 도박',

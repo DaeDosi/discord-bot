@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -7,6 +8,9 @@ from fastapi.responses import RedirectResponse
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# 프로젝트 루트를 sys.path에 추가 — 봇과 스키마를 공유하는 루트의 database 모듈을 사용
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from urllib.parse import quote
 from database import init_db
