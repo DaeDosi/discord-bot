@@ -157,6 +157,7 @@ class ChzzkChatCog(commands.Cog):
                         self._channels[chzzk_id]["user_client"].access_token = AccessToken(
                             access_token=at, refresh_token=rt, expires_in=3600, token_type="Bearer"
                         )
+                await self._mark_synced(row["guild_id"])
                 continue
 
             at, rt, exp = await self._ensure_fresh_token(row)
@@ -179,6 +180,7 @@ class ChzzkChatCog(commands.Cog):
                 "user_client": user_client,
                 "commands":    commands_map,
             }
+            await self._mark_synced(row["guild_id"])
             log.info(f"치지직 채팅 구독 시작: guild={row['guild_id']} channel={chzzk_id}")
 
         # 더 이상 등록되어 있지 않은(연동 해제된) 채널은 로컬 목록에서만 정리 (명령어 매칭 대상에서 제외)
@@ -186,10 +188,33 @@ class ChzzkChatCog(commands.Cog):
             if stale_id not in active_chzzk_ids:
                 self._channels.pop(stale_id, None)
 
+    async def _mark_synced(self, guild_id: int):
+        db = await get_db()
+        await db.execute(
+            "UPDATE chzzk_subscriptions SET chat_last_sync_at=? WHERE guild_id=?",
+            (int(time.time()), guild_id)
+        )
+        await db.commit()
+
+    async def _mark_event_received(self, guild_id: int):
+        db = await get_db()
+        await db.execute(
+            "UPDATE chzzk_subscriptions SET chat_last_event_at=? WHERE guild_id=?",
+            (int(time.time()), guild_id)
+        )
+        await db.commit()
+
     # ── 채팅 이벤트 처리 ──────────────────────────────────────────────────────
     async def _on_chat(self, message: "Message"):
         entry = self._channels.get(message.channel)
-        if not entry or not entry["commands"]:
+        if not entry:
+            return
+
+        # 명령어 매칭 여부와 무관하게, 채팅이 실제로 들어오고 있다는 사실 자체를 기록
+        # (대시보드 "실시간 채팅 명령어" 탭의 연결 상태 표시용)
+        await self._mark_event_received(entry["guild_id"])
+
+        if not entry["commands"]:
             return
 
         content = (message.content or "").strip()
@@ -211,9 +236,12 @@ class ChzzkChatCog(commands.Cog):
             return
 
         if cmd["command_type"] == "checkin":
-            await self._handle_checkin(entry["guild_id"], message.user_id, cmd)
+            await self._handle_checkin(entry, message, cmd)
 
-    async def _handle_checkin(self, guild_id: int, chzzk_user_id: str, cmd: dict):
+    async def _handle_checkin(self, entry: dict, message: "Message", cmd: dict):
+        guild_id = entry["guild_id"]
+        chzzk_user_id = message.user_id
+
         db = await get_db()
 
         # 대시보드에서 치지직 계정을 연동(인증)한 유저만 지급 대상
@@ -251,9 +279,22 @@ class ChzzkChatCog(commands.Cog):
             if guild and leveling_cog:
                 await leveling_cog.add_xp(guild, discord_user_id, cmd["reward_xp"])
 
+        # 오늘 몇 번째 출석인지 세어서 채팅으로 안내 (본인 포함)
+        today_count_row = await (await db.execute(
+            "SELECT COUNT(*) FROM chzzk_checkin_log WHERE guild_id=? AND command_id=? AND check_date=?",
+            (guild_id, cmd["id"], _today_kst())
+        )).fetchone()
+        today_count = today_count_row[0] if today_count_row else 1
+        nickname = message.profile.nickname if message.profile else "익명"
+        try:
+            await entry["user_client"].send_message(f"{nickname}님이 오늘 {today_count}번째 출석 하셨습니다!")
+        except Exception:
+            log.exception(f"출석체크 안내 메시지 전송 실패 guild={guild_id}")
+
         log.info(
             f"치지직 출석체크 지급: guild={guild_id} chzzk_user={chzzk_user_id} "
-            f"discord_user={discord_user_id} points={cmd['reward_points']} xp={cmd['reward_xp']}"
+            f"discord_user={discord_user_id} points={cmd['reward_points']} xp={cmd['reward_xp']} "
+            f"today_count={today_count}"
         )
 
 

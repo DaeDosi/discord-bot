@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { Save, CheckCircle, ToggleLeft, ToggleRight } from "lucide-react";
+import { Save, CheckCircle, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck } from "lucide-react";
 import { api } from "@/lib/api";
 import type { VerificationConfig, Channel, Role } from "@/lib/types";
 
@@ -32,6 +32,48 @@ function SelectField({
   );
 }
 
+// ── Discord 임베드 미리보기 (실제 렌더링을 근사한 모형) ──────────────────────
+function DiscordEmbedPreview({
+  title, color, message,
+}: { title: string; color: string; message: string }) {
+  const safeColor = /^#[0-9A-Fa-f]{6}$/.test(color) ? color : DEFAULT_COLOR;
+  return (
+    <div className="rounded-2xl overflow-hidden border border-white/8 shadow-xl w-full max-w-md"
+         style={{ background: "#313338" }}>
+      <div className="flex items-center gap-2 px-4 py-2.5" style={{ background: "#2b2d31" }}>
+        <span className="text-[11px]" style={{ color: "#80848e" }}>#입장-인증</span>
+      </div>
+      <div className="p-4">
+        <div className="flex gap-3">
+          <div className="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center"
+               style={{ background: `${safeColor}25` }}>
+            <ShieldCheck size={16} style={{ color: safeColor }} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-white mb-2">NexBot</p>
+            <div className="rounded-lg border-l-[4px] p-3" style={{ background: "#2b2d31", borderLeftColor: safeColor }}>
+              <p className="text-white text-[15px] font-bold mb-1.5 leading-snug break-words">
+                {title || DEFAULT_TITLE}
+              </p>
+              <p className="text-[13px] leading-relaxed break-words whitespace-pre-wrap" style={{ color: "#dbdee1" }}>
+                {message || "아래 버튼을 눌러 입장을 확인해 주세요."}
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled
+              className="mt-3 px-4 py-1.5 rounded text-sm font-medium text-white cursor-default"
+              style={{ background: safeColor }}
+            >
+              입장 확인
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function VerificationPage() {
   const { guildId } = useParams<{ guildId: string }>();
 
@@ -44,6 +86,7 @@ export default function VerificationPage() {
   const [saving, setSaving]     = useState(false);
   const [saved, setSaved]       = useState(false);
   const [error, setError]       = useState("");
+  const [showPreview, setShowPreview] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -160,7 +203,17 @@ export default function VerificationPage() {
 
       {/* 임베드 디자인 */}
       <div className="card space-y-4">
-        <h2 className="section-title">임베드 디자인</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="section-title">임베드 디자인</h2>
+          <button
+            type="button"
+            onClick={() => setShowPreview((v) => !v)}
+            className="flex items-center gap-1.5 text-sm font-medium text-accent hover:text-fg transition-colors"
+          >
+            {showPreview ? <EyeOff size={15} /> : <Eye size={15} />}
+            {showPreview ? "미리보기 닫기" : "미리보기"}
+          </button>
+        </div>
 
         <div>
           <label className="label">임베드 제목</label>
@@ -198,6 +251,19 @@ export default function VerificationPage() {
           </div>
           <p className="text-sm text-muted mt-1.5">예: #5865F2 (Discord 파란색), #FF0000 (빨간색)</p>
         </div>
+
+        {showPreview && (
+          <div className="pt-2 border-t border-border">
+            <p className="text-xs font-semibold text-muted uppercase tracking-wider mb-3">
+              디스코드 미리보기 (실제 렌더링과 약간 다를 수 있음)
+            </p>
+            <DiscordEmbedPreview
+              title={cfg.embed_title || ""}
+              color={cfg.embed_color || DEFAULT_COLOR}
+              message={cfg.verification_message || ""}
+            />
+          </div>
+        )}
       </div>
 
       {/* 입장 메시지 */}

@@ -299,6 +299,11 @@ async def init_db():
                checked_at       INTEGER NOT NULL,
                PRIMARY KEY (guild_id, chzzk_channel_id, command_id, check_date)
            )""",
+        # 대시보드 "실시간 채팅 명령어" 탭에서 연결 상태를 보여주기 위한 필드.
+        # chat_last_sync_at: 봇의 동기화 루프가 이 채널 구독을 마지막으로 확인한 시각.
+        # chat_last_event_at: 실제 채팅 이벤트를 마지막으로 수신한 시각 (진짜 연결 여부의 근거).
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN chat_last_sync_at  INTEGER DEFAULT 0",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN chat_last_event_at INTEGER DEFAULT 0",
     ]:
         try:
             await db.execute(sql)

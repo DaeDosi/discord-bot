@@ -216,6 +216,13 @@ export const api = {
       remove: (gid: string, id: number) =>
         request(`/api/chzzk/${gid}/chat-commands/${id}`, { method: "DELETE" }),
     },
+    chatStatus: (gid: string) =>
+      request<{
+        registered: boolean; connected: boolean;
+        last_sync_at: number | null; last_event_at: number | null;
+        today_checkins: number;
+        recent_checkins: { user_name: string; checked_at: number }[];
+      }>(`/api/chzzk/${gid}/chat-status`),
     contentNotify: {
       get:  (gid: string) =>
         request<{

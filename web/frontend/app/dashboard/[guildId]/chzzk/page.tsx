@@ -6,7 +6,7 @@ import { clsx } from "clsx";
 import {
   Radio, Trash2, Bell, BellOff,
   ExternalLink, Plus, Users, X, ChevronLeft, ChevronRight,
-  MessageSquare, Edit2, Sparkles,
+  MessageSquare, Edit2, Sparkles, RefreshCw,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier, ChzzkVerification, ChatCommand } from "@/lib/types";
@@ -323,6 +323,76 @@ function ChatCommandModal({
 }
 
 // ── 실시간 채팅 명령어 패널 ───────────────────────────────────────────────────
+type ChatStatus = {
+  registered: boolean; connected: boolean;
+  last_sync_at: number | null; last_event_at: number | null;
+  today_checkins: number;
+  recent_checkins: { user_name: string; checked_at: number }[];
+};
+
+function timeAgo(unixSeconds: number | null): string {
+  if (!unixSeconds) return "아직 없음";
+  const diff = Date.now() / 1000 - unixSeconds;
+  if (diff < 60) return "방금 전";
+  if (diff < 3600) return `${Math.floor(diff / 60)}분 전`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`;
+  return `${Math.floor(diff / 86400)}일 전`;
+}
+
+// ── 연결 상태 카드 ────────────────────────────────────────────────────────────
+function ChatStatusCard({ guildId }: { guildId: string }) {
+  const [status, setStatus] = useState<ChatStatus | null>(null);
+
+  const load = () => api.chzzk.chatStatus(guildId).then(setStatus).catch(() => {});
+
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 15000);
+    return () => clearInterval(timer);
+  }, [guildId]);
+
+  if (!status) {
+    return <div className="card text-center py-6 text-muted text-sm">연결 상태 확인 중...</div>;
+  }
+
+  return (
+    <div className="card space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <span className={`w-2.5 h-2.5 rounded-full ${status.connected ? "bg-success animate-pulse" : "bg-danger"}`} />
+          <p className="text-sm font-semibold text-fg">
+            {status.connected ? "치지직 채팅 연결됨" : "연결 안 됨"}
+          </p>
+          <button onClick={load} className="text-muted hover:text-fg transition-colors" title="새로고침">
+            <RefreshCw size={13} />
+          </button>
+        </div>
+        <div className="flex items-center gap-4 text-xs text-muted">
+          <span>마지막 채팅 감지: {timeAgo(status.last_event_at)}</span>
+          <span>오늘 출석: <span className="text-accent font-semibold">{status.today_checkins}</span>명</span>
+        </div>
+      </div>
+      {!status.connected && (
+        <p className="text-xs text-warning">
+          봇이 아직 이 채널의 채팅 세션을 확인하지 못했습니다. 스트리머 계정이 채팅 조회/쓰기 권한으로 연동돼 있는지,
+          봇이 켜져 있는지 확인해주세요. (연동 화면에서 "치지직 계정으로 연동하기"를 다시 눌러야 새 권한이 적용됩니다)
+        </p>
+      )}
+      {status.recent_checkins.length > 0 && (
+        <div className="pt-2 border-t border-border space-y-1">
+          <p className="text-xs font-semibold text-muted uppercase tracking-wider mb-1">오늘 출석 기록</p>
+          {status.recent_checkins.map((c, i) => (
+            <div key={i} className="flex items-center justify-between text-sm">
+              <span className="text-fg">{c.user_name}</span>
+              <span className="text-muted text-xs">{timeAgo(c.checked_at)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ChatCommandsPanel({ guildId }: { guildId: string }) {
   const [commands, setCommands] = useState<ChatCommand[]>([]);
   const [loading, setLoading]   = useState(true);
@@ -380,6 +450,8 @@ function ChatCommandsPanel({ guildId }: { guildId: string }) {
           onClose={() => setModal(null)}
         />
       )}
+
+      <ChatStatusCard guildId={guildId} />
 
       {/* 출석체크 */}
       <div className="card space-y-4">

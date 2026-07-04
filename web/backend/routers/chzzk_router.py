@@ -578,6 +578,71 @@ async def delete_chat_command(
     return {"ok": True}
 
 
+# 봇의 동기화 주기(30분)보다 넉넉하게 잡아, 정상 동작 중인데도 "끊김"으로 잘못 표시되지 않게 함
+_CHAT_SYNC_STALE_AFTER = 45 * 60
+
+
+@router.get("/{guild_id}/chat-status")
+async def get_chat_status(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    sub = await (await db.execute(
+        "SELECT chzzk_channel_id, chat_last_sync_at, chat_last_event_at FROM chzzk_subscriptions WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone()
+    if not sub:
+        return {
+            "registered": False, "connected": False,
+            "last_sync_at": None, "last_event_at": None,
+            "today_checkins": 0, "recent_checkins": [],
+        }
+
+    now = _time.time()
+    last_sync = sub["chat_last_sync_at"] or 0
+    connected = last_sync > 0 and (now - last_sync) < _CHAT_SYNC_STALE_AFTER
+
+    checkin_cmd = await (await db.execute(
+        "SELECT id FROM chzzk_chat_commands WHERE guild_id=? AND command_type='checkin'",
+        (int(guild_id),)
+    )).fetchone()
+
+    today_checkins = 0
+    recent_checkins: list = []
+    if checkin_cmd:
+        today = _today_kst().isoformat()
+        count_row = await (await db.execute(
+            "SELECT COUNT(*) FROM chzzk_checkin_log WHERE guild_id=? AND command_id=? AND check_date=?",
+            (int(guild_id), checkin_cmd["id"], today)
+        )).fetchone()
+        today_checkins = count_row[0] if count_row else 0
+
+        rows = await (await db.execute(
+            """SELECT l.chzzk_channel_id, l.checked_at, v.user_id
+               FROM chzzk_checkin_log l
+               LEFT JOIN chzzk_verifications v
+                 ON v.guild_id = l.guild_id AND v.chzzk_channel_id = l.chzzk_channel_id
+               WHERE l.guild_id=? AND l.command_id=? AND l.check_date=?
+               ORDER BY l.checked_at DESC LIMIT 10""",
+            (int(guild_id), checkin_cmd["id"], today)
+        )).fetchall()
+        async with httpx.AsyncClient() as client:
+            for r in rows:
+                name = await _fetch_member_name(client, guild_id, str(r["user_id"])) if r["user_id"] else "알 수 없음"
+                recent_checkins.append({"user_name": name, "checked_at": r["checked_at"]})
+
+    return {
+        "registered":      True,
+        "connected":        connected,
+        "last_sync_at":     int(last_sync) or None,
+        "last_event_at":    int(sub["chat_last_event_at"] or 0) or None,
+        "today_checkins":   today_checkins,
+        "recent_checkins":  recent_checkins,
+    }
+
+
 # ── 디버그: 현재 라이브 상태 체크 ────────────────────────────────────────────
 @router.get("/debug/status")
 async def debug_status(user: dict = Depends(get_current_user)):
