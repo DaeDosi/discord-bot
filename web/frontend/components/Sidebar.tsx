@@ -5,15 +5,34 @@ import { clsx } from "clsx";
 import { Settings, Zap, Shield, Radio, UserCheck, HelpCircle, ChevronLeft, Terminal, Gem } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
-const ITEMS: { href: string; label: string; shortLabel: string; icon: LucideIcon }[] = [
-  { href: "",               label: "일반 설정",    shortLabel: "일반설정", icon: Settings    },
-  { href: "/verification",  label: "입장 인증",    shortLabel: "인증",     icon: UserCheck   },
-  { href: "/leveling",      label: "레벨업",       shortLabel: "레벨업",   icon: Zap         },
-  { href: "/moderation",    label: "관리",         shortLabel: "관리",     icon: Shield      },
-  { href: "/points",        label: "포인트",       shortLabel: "포인트",   icon: Gem         },
-  { href: "/chzzk",         label: "방송설정",     shortLabel: "방송설정", icon: Radio       },
-  { href: "/commands",      label: "명령어",       shortLabel: "명령어",   icon: Terminal    },
-  { href: "/help",          label: "문제 해결",    shortLabel: "도움말",   icon: HelpCircle  },
+interface NavItem { href: string; label: string; shortLabel: string; icon: LucideIcon }
+interface NavGroup { label: string; items: NavItem[] }
+
+// 디스코드 서버 관리 / 방송 설정 / 지원 세 그룹으로 분리 — 카테고리 라벨 + 구분선으로 시각적으로 나눔
+const GROUPS: NavGroup[] = [
+  {
+    label: "서버 관리",
+    items: [
+      { href: "",               label: "일반 설정", shortLabel: "일반설정", icon: Settings  },
+      { href: "/verification",  label: "입장 인증", shortLabel: "인증",     icon: UserCheck },
+      { href: "/leveling",      label: "레벨업",    shortLabel: "레벨업",   icon: Zap       },
+      { href: "/moderation",    label: "관리",      shortLabel: "관리",     icon: Shield    },
+      { href: "/points",        label: "포인트",    shortLabel: "포인트",   icon: Gem       },
+    ],
+  },
+  {
+    label: "방송",
+    items: [
+      { href: "/chzzk", label: "방송설정", shortLabel: "방송설정", icon: Radio },
+    ],
+  },
+  {
+    label: "지원",
+    items: [
+      { href: "/commands", label: "명령어",   shortLabel: "명령어", icon: Terminal   },
+      { href: "/help",     label: "문제 해결", shortLabel: "도움말", icon: HelpCircle },
+    ],
+  },
 ];
 
 export default function Sidebar({ guildId, guildName }: { guildId: string; guildName?: string }) {
@@ -36,26 +55,36 @@ export default function Sidebar({ guildId, guildName }: { guildId: string; guild
             {guildName}
           </p>
         )}
-        {ITEMS.map((item) => {
-          const href   = base + item.href;
-          const active = pathname === href;
-          const Icon   = item.icon;
-          return (
-            <Link
-              key={item.href}
-              href={href}
-              className={clsx(
-                "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
-                active
-                  ? "bg-accent/15 text-accent"
-                  : "text-muted hover:text-fg hover:bg-bg-hover"
-              )}
-            >
-              <Icon size={16} />
-              {item.label}
-            </Link>
-          );
-        })}
+        {GROUPS.map((group, gi) => (
+          <div
+            key={group.label}
+            className={clsx("flex flex-col gap-1", gi > 0 && "mt-3 pt-3 border-t border-border")}
+          >
+            <p className="text-xs font-semibold text-muted/70 uppercase tracking-wider px-3 mb-0.5">
+              {group.label}
+            </p>
+            {group.items.map((item) => {
+              const href   = base + item.href;
+              const active = pathname === href;
+              const Icon   = item.icon;
+              return (
+                <Link
+                  key={item.href}
+                  href={href}
+                  className={clsx(
+                    "flex items-center gap-3 px-3 py-2 rounded-lg text-base font-medium transition-colors",
+                    active
+                      ? "bg-accent/15 text-accent"
+                      : "text-muted hover:text-fg hover:bg-bg-hover"
+                  )}
+                >
+                  <Icon size={17} />
+                  {item.label}
+                </Link>
+              );
+            })}
+          </div>
+        ))}
       </aside>
 
       {/* ── Mobile bottom nav (< md) ── */}
@@ -72,25 +101,33 @@ export default function Sidebar({ guildId, guildName }: { guildId: string; guild
             <span className="text-[10px]">서버 목록</span>
           </Link>
 
-          {/* Nav items */}
-          {ITEMS.map((item) => {
-            const href   = base + item.href;
-            const active = pathname === href;
-            const Icon   = item.icon;
-            return (
-              <Link
-                key={item.href}
-                href={href}
-                className={clsx(
-                  "flex-1 flex flex-col items-center justify-center gap-0.5 transition-colors",
-                  active ? "text-accent" : "text-muted hover:text-fg"
-                )}
-              >
-                <Icon size={20} />
-                <span className="text-[10px] font-medium">{item.shortLabel}</span>
-              </Link>
-            );
-          })}
+          {/* Nav groups — 그룹 사이에 세로 구분선 */}
+          {GROUPS.map((group, gi) => (
+            <div
+              key={group.label}
+              className={clsx("flex items-stretch", gi > 0 && "border-l border-border")}
+              style={{ flex: group.items.length }}
+            >
+              {group.items.map((item) => {
+                const href   = base + item.href;
+                const active = pathname === href;
+                const Icon   = item.icon;
+                return (
+                  <Link
+                    key={item.href}
+                    href={href}
+                    className={clsx(
+                      "flex-1 flex flex-col items-center justify-center gap-0.5 transition-colors",
+                      active ? "text-accent" : "text-muted hover:text-fg"
+                    )}
+                  >
+                    <Icon size={20} />
+                    <span className="text-[10px] font-medium">{item.shortLabel}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          ))}
         </div>
       </nav>
     </>
