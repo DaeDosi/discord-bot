@@ -52,6 +52,19 @@ async def get_stats():
         return {"guilds": 0, "chzzk_subscriptions": 0, "today_visitors": 0}
 
 
+@router.get("/announcement")
+async def get_announcement():
+    """메인 페이지 상단 공지 배너용 공개 엔드포인트. 인증 불필요."""
+    try:
+        db = await get_db()
+        row = await (await db.execute(
+            "SELECT message FROM site_announcement WHERE id=1"
+        )).fetchone()
+        return {"message": row["message"] if row else ""}
+    except Exception:
+        return {"message": ""}
+
+
 @router.post("/visit")
 async def record_visit(request: Request):
     """홈페이지 방문을 기록하고 오늘 고유 방문자 수를 반환합니다."""

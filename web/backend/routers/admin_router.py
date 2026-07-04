@@ -422,6 +422,32 @@ async def guild_detail(guild_id: str, user: dict = Depends(_require_owner)):
     }
 
 
+@router.get("/announcement")
+async def get_announcement(user: dict = Depends(_require_owner)):
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT message FROM site_announcement WHERE id=1"
+    )).fetchone()
+    return {"message": row["message"] if row else ""}
+
+
+class AnnouncementSave(BaseModel):
+    message: str = ""
+
+
+@router.put("/announcement")
+async def save_announcement(body: AnnouncementSave, user: dict = Depends(_require_owner)):
+    message = body.message.strip()[:200]
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO site_announcement(id, message, updated_at) VALUES(1,?,?)
+           ON CONFLICT(id) DO UPDATE SET message=excluded.message, updated_at=excluded.updated_at""",
+        (message, int(_time.time()))
+    )
+    await db.commit()
+    return {"ok": True, "message": message}
+
+
 @router.delete("/guilds/{guild_id}/leave")
 async def leave_guild(guild_id: str, user: dict = Depends(_require_owner)):
     global _guilds_cache, _guilds_cache_ts

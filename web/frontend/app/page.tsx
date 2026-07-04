@@ -4,7 +4,7 @@ import Link from "next/link";
 import Image from "next/image";
 import {
   Bot, Shield, Gem, Radio, BadgeCheck,
-  LogOut, ChevronRight, ArrowRight, Hash,
+  LogOut, ChevronRight, ArrowRight, Hash, Megaphone, X,
 } from "lucide-react";
 
 const BOT_CLIENT_ID = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID || "YOUR_CLIENT_ID";
@@ -282,6 +282,52 @@ function ChzzkFollowVerifyMockup({ color = "#03C75A" }: { color?: string }) {
   );
 }
 
+// ── 공지 배너 ────────────────────────────────────────────────────────────────
+const DISMISSED_KEY = "dismissed_announcement";
+
+function AnnouncementBanner() {
+  const [message, setMessage] = useState("");
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    api.stats.announcement()
+      .then((d) => {
+        const msg = d.message?.trim();
+        if (!msg) return;
+        const dismissed = localStorage.getItem(DISMISSED_KEY);
+        if (dismissed === msg) return;
+        setMessage(msg);
+        setVisible(true);
+      })
+      .catch(() => {});
+  }, []);
+
+  const dismiss = () => {
+    localStorage.setItem(DISMISSED_KEY, message);
+    setVisible(false);
+  };
+
+  if (!visible) return null;
+
+  return (
+    <div className="bg-accent text-white">
+      <div className="max-w-6xl mx-auto px-5 py-2.5 flex items-center gap-3 text-sm">
+        <Megaphone size={15} className="shrink-0" />
+        <p className="flex-1 min-w-0 truncate">
+          <span className="font-semibold">공지:</span> {message}
+        </p>
+        <button
+          onClick={dismiss}
+          aria-label="공지 닫기"
+          className="shrink-0 p-1 rounded hover:bg-white/15 transition-colors"
+        >
+          <X size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 export default function HomePage() {
@@ -374,6 +420,8 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen bg-bg text-fg">
+      <AnnouncementBanner />
+
       {/* ── Navbar ── */}
       <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
         <div className="max-w-6xl mx-auto px-5 flex items-center justify-between" style={{ height: 60 }}>

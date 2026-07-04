@@ -271,6 +271,11 @@ async def init_db():
         "ALTER TABLE points_gambling_config ADD COLUMN duration_unit_migrated INTEGER DEFAULT 0",
         """UPDATE points_gambling_config SET duration = 1, duration_unit_migrated = 1
            WHERE duration_unit_migrated = 0""",
+        """CREATE TABLE IF NOT EXISTS site_announcement (
+               id         INTEGER PRIMARY KEY,
+               message    TEXT    NOT NULL DEFAULT '',
+               updated_at INTEGER NOT NULL DEFAULT 0
+           )""",
     ]:
         try:
             await db.execute(sql)

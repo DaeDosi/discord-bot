@@ -90,6 +90,16 @@ export const api = {
     }>,
     visit: () => fetch(`${BASE}/api/stats/visit`, { method: "POST" })
       .then(r => r.json()) as Promise<{ today_visitors: number }>,
+    announcement: () => fetch(`${BASE}/api/stats/announcement`).then(r => r.json()) as Promise<{ message: string }>,
+  },
+
+  admin: {
+    getAnnouncement: () => request<{ message: string }>("/api/admin/announcement"),
+    saveAnnouncement: (message: string) =>
+      request<{ ok: boolean; message: string }>("/api/admin/announcement", {
+        method: "PUT",
+        body: JSON.stringify({ message }),
+      }),
   },
 
   moderation: {

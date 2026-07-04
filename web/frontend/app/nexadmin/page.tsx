@@ -4,6 +4,7 @@ import Image from "next/image";
 import {
   Bot, Server, Radio, ShieldCheck, Search,
   Plus, X, RefreshCw, LogIn, ChevronDown, ChevronUp, LogOut,
+  Megaphone, Save, CheckCircle,
 } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
@@ -524,6 +525,74 @@ function VerifDetailModal({
   );
 }
 
+// ── 공지 관리 패널 ────────────────────────────────────────────────────────────
+function AnnouncementPanel() {
+  const [message, setMessage]   = useState("");
+  const [loading, setLoading]   = useState(true);
+  const [saving, setSaving]     = useState(false);
+  const [saved, setSaved]       = useState(false);
+  const [error, setError]       = useState("");
+
+  useEffect(() => {
+    adminFetch<{ message: string }>("/api/admin/announcement")
+      .then((d) => setMessage(d.message))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const save = async (nextMessage: string) => {
+    setSaving(true); setError("");
+    try {
+      await adminFetch("/api/admin/announcement", {
+        method: "PUT",
+        body: JSON.stringify({ message: nextMessage }),
+      });
+      setMessage(nextMessage);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "저장 실패");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return <p className="text-muted text-sm animate-pulse">불러오는 중...</p>;
+  }
+
+  return (
+    <div className="max-w-xl space-y-4">
+      <p className="text-sm text-muted">
+        메인 페이지 상단에 <span className="text-fg font-medium">&quot;공지: 내용&quot;</span> 형태로 표시됩니다.
+        비워두고 저장하면 배너가 사라집니다. 방문자는 X 버튼으로 각자 닫을 수 있습니다.
+      </p>
+      <div>
+        <label className="label">공지 내용 (한 문장, 최대 200자)</label>
+        <textarea
+          className="input min-h-[80px] resize-y"
+          placeholder="예: 7/10 새벽 2시~3시 서버 점검이 있습니다."
+          value={message}
+          maxLength={200}
+          onChange={(e) => setMessage(e.target.value)}
+        />
+        <p className="text-xs text-muted mt-1">{message.length}/200자</p>
+      </div>
+      {error && <p className="text-sm text-danger">{error}</p>}
+      <div className="flex items-center gap-2">
+        <button onClick={() => save(message)} disabled={saving} className="btn-primary">
+          {saved ? <><CheckCircle size={16} /> 저장됨</> : <><Save size={16} /> {saving ? "저장 중..." : "공지 저장"}</>}
+        </button>
+        {message && (
+          <button onClick={() => save("")} disabled={saving} className="btn-secondary">
+            <X size={16} /> 공지 지우기
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── 메인 페이지 ───────────────────────────────────────────────────────────────
 
 export default function AdminPage() {
@@ -535,7 +604,7 @@ export default function AdminPage() {
   const [verifUsers, setVerifUsers]   = useState<VerifUser[] | null>(null);
   const [loading, setLoading]         = useState(true);
   const [showAdd, setShowAdd]         = useState(false);
-  const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow">("guilds");
+  const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow" | "announcement">("guilds");
   const [refreshing, setRefreshing]   = useState(false);
   const [selectedVerif, setSelectedVerif] = useState<VerifUser | null>(null);
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null);
@@ -621,6 +690,7 @@ export default function AdminPage() {
     { key: "guilds", label: `서버 목록 (${guilds.length})` },
     { key: "verif",  label: verifUsers === null ? "인증 현황 (로딩 중...)" : `인증 현황 (${verifCount}명)` },
     { key: "follow", label: followStats === null ? "팔로우 관리 (로딩 중...)" : `팔로우 관리 (${followCount}명)` },
+    { key: "announcement", label: "공지 관리" },
   ] as const;
 
   return (
@@ -804,6 +874,16 @@ export default function AdminPage() {
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {/* ── 공지 관리 ── */}
+        {activeTab === "announcement" && (
+          <div className="space-y-4">
+            <p className="text-sm text-muted flex items-center gap-2">
+              <Megaphone size={15} className="text-accent" /> 메인 홈페이지 상단 공지 배너를 설정합니다.
+            </p>
+            <AnnouncementPanel />
           </div>
         )}
 
