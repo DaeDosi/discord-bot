@@ -30,10 +30,6 @@ _CHZZK_CLIENT_SECRET = os.getenv("CHZZK_CLIENT_SECRET", "")
 SYNC_INTERVAL_SECONDS = 300  # 5분마다 구독 대상/토큰/명령어 설정 재동기화 + 연결 생존 확인
 CHAT_LOG_KEEP = 50  # guild당 디버그 채팅 로그 보관 개수
 
-# 마크 콜라보 이벤트 전용 고정 트리거 (guild별 커스텀 명령어인 chzzk_chat_commands와는
-# 별개 — nexadmin에서 참가 등록된 서버에서만 활성화되고, 트리거 문구는 이벤트 전체가 공유한다)
-_MC_TRIGGERS = {"디버프지급": "debuff", "버프지급": "buff", "랜덤아이템": "random"}
-
 try:
     from chzzkpy import Client as ChzzkSessionClient
     from chzzkpy.authorization import AccessToken
@@ -239,10 +235,11 @@ class ChzzkChatCog(commands.Cog):
                 self._channels.pop(stale_id, None)
 
     async def _load_mc_event(self, guild_id: int) -> dict | None:
-        """이 guild가 참가 등록된 활성 MC 이벤트가 있으면 서버 접속 정보 + 인게임 이름을 합쳐서 반환."""
+        """이 guild가 참가 등록된 활성 MC 이벤트가 있으면 서버 접속 정보 + 인게임 이름 +
+        (트리거 문구 → kind) 명령어 매핑을 합쳐서 반환."""
         db = await get_db()
         row = await (await db.execute(
-            """SELECT eg.event_id, eg.team_name, eg.mc_player_name,
+            """SELECT eg.event_id, eg.mc_player_name,
                       e.mc_host, e.mc_port, e.mc_rcon_password
                FROM mc_event_guilds eg
                JOIN mc_events e ON e.id = eg.event_id
@@ -250,7 +247,16 @@ class ChzzkChatCog(commands.Cog):
                LIMIT 1""",
             (guild_id,)
         )).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        event = dict(row)
+
+        cmd_rows = await (await db.execute(
+            "SELECT kind, trigger_text FROM mc_event_commands WHERE event_id=? AND is_active=1",
+            (event["event_id"],)
+        )).fetchall()
+        event["triggers"] = {c["trigger_text"]: c["kind"] for c in cmd_rows}
+        return event
 
     async def _mark_synced(self, guild_id: int):
         db = await get_db()
@@ -305,8 +311,9 @@ class ChzzkChatCog(commands.Cog):
         if not trigger:
             return
 
-        if entry.get("mc_event") and trigger in _MC_TRIGGERS:
-            await self._handle_mc_event(entry, message, _MC_TRIGGERS[trigger])
+        mc_event = entry.get("mc_event")
+        if mc_event and trigger in mc_event["triggers"]:
+            await self._handle_mc_event(entry, message, trigger, mc_event["triggers"][trigger])
             return
 
         cmd = entry["commands"].get(trigger)
@@ -414,14 +421,22 @@ class ChzzkChatCog(commands.Cog):
     async def _pick_random_other_guild(self, event_id: int, exclude_guild_id: int) -> dict | None:
         db = await get_db()
         rows = await (await db.execute(
-            "SELECT guild_id, team_name, mc_player_name FROM mc_event_guilds WHERE event_id=? AND guild_id != ?",
+            "SELECT guild_id, mc_player_name FROM mc_event_guilds WHERE event_id=? AND guild_id != ?",
             (event_id, exclude_guild_id)
         )).fetchall()
         if not rows:
             return None
         return dict(random.choice(rows))
 
-    async def _handle_mc_event(self, entry: dict, message: "Message", kind: str):
+    @staticmethod
+    def _render(template: str, *, user: str, item: str, player: str) -> str:
+        return (
+            template.replace("{user}", user)
+                    .replace("{item}", item)
+                    .replace("{player}", player)
+        )
+
+    async def _handle_mc_event(self, entry: dict, message: "Message", trigger_text: str, kind: str):
         guild_id = entry["guild_id"]
         mc_event = entry["mc_event"]
         chzzk_user_id = message.user_id
@@ -468,14 +483,9 @@ class ChzzkChatCog(commands.Cog):
         if target:
             target_guild_id = target["guild_id"]
             target_player   = target["mc_player_name"]
-            target_label    = target["team_name"]
         else:
             target_guild_id = None
             target_player   = mc_event["mc_player_name"]
-            target_label    = (
-                mc_event["team_name"] if item["item_type"] == "buff"
-                else f"{mc_event['team_name']} (다른 참가 서버가 없어 자기 자신에게 적용됨)"
-            )
 
         await db.execute(
             "UPDATE user_points SET points = points - ? WHERE guild_id=? AND user_id=?",
@@ -483,7 +493,7 @@ class ChzzkChatCog(commands.Cog):
         )
         await db.commit()
 
-        command = item["command_template"].replace("{player}", target_player)
+        command = self._render(item["command_template"], user=nickname, item=item["name"], player=target_player)
         applied = False
         rcon_response = ""
         try:
@@ -495,18 +505,32 @@ class ChzzkChatCog(commands.Cog):
             rcon_response = str(e)[:200]
             log.exception(f"MC 이벤트 RCON 실행 실패 guild={guild_id} item={item['id']} command={command!r}")
 
+        # 대상 플레이어에게 마크 내에서 별도로 알려주는 명령(예: 귓속말) — 효과가 실제로
+        # 적용됐을 때만, 그리고 문구가 설정돼 있을 때만 추가로 실행한다.
+        if applied and item["mc_notify_command"].strip():
+            notify_command = self._render(
+                item["mc_notify_command"], user=nickname, item=item["name"], player=target_player
+            )
+            try:
+                await rcon_command(
+                    mc_event["mc_host"], mc_event["mc_port"], mc_event["mc_rcon_password"], notify_command
+                )
+            except Exception:
+                log.exception(f"MC 이벤트 대상 알림 명령 실패 guild={guild_id} item={item['id']}")
+
         await db.execute(
             """INSERT INTO mc_event_purchases
                    (event_id, guild_id, user_id, item_id, trigger_text, target_guild_id,
                     points_spent, applied, rcon_response, created_at)
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (mc_event["event_id"], guild_id, discord_user_id, item["id"], kind, target_guild_id,
+            (mc_event["event_id"], guild_id, discord_user_id, item["id"], trigger_text, target_guild_id,
              item["points_cost"], int(applied), rcon_response, int(time.time()))
         )
         await db.commit()
 
+        chat_template = item["chat_message_template"].strip() or "{user}님이 [{item}]을(를) 사용했습니다!"
         reply = (
-            f"{nickname}님이 [{item['name']}] 을(를) 사용했습니다! → {target_label}"
+            self._render(chat_template, user=nickname, item=item["name"], player=target_player)
             if applied else
             f"{nickname}님의 [{item['name']}] 적용에 실패했습니다. (마크 서버 연결 확인 필요)"
         )
@@ -517,8 +541,8 @@ class ChzzkChatCog(commands.Cog):
             log.exception(f"MC 이벤트 결과 메시지 전송 실패 guild={guild_id}")
 
         log.info(
-            f"MC 이벤트 처리: guild={guild_id} kind={kind} item={item['name']} "
-            f"target={target_label} applied={applied}"
+            f"MC 이벤트 처리: guild={guild_id} trigger=!{trigger_text} item={item['name']} "
+            f"target_guild={target_guild_id or guild_id} applied={applied}"
         )
 
 

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Plus, Trash2, Save, CheckCircle, Zap, Swords, Shield, Dices, Play } from "lucide-react";
+import { Plus, Trash2, Save, CheckCircle, Zap, Swords, Shield, Dices, Play, Terminal } from "lucide-react";
 import { adminFetch, type Guild } from "./page";
 
 interface McEvent {
@@ -8,22 +8,33 @@ interface McEvent {
   mc_host: string; mc_port: number; mc_rcon_password: string; created_at: number;
 }
 interface McEventGuild {
-  guild_id: number; team_name: string; mc_player_name: string; guild_name: string;
+  guild_id: string; mc_player_name: string; guild_name: string;
+}
+interface McEventCommand {
+  id: number; kind: "debuff" | "buff" | "random"; trigger_text: string; is_active: number;
 }
 interface McEventItem {
   id: number; event_id: number; item_type: "buff" | "debuff"; name: string;
-  points_cost: number; command_template: string; in_random_pool: number; is_active: number;
+  points_cost: number; command_template: string; chat_message_template: string;
+  mc_notify_command: string; in_random_pool: number; is_active: number;
 }
 interface McEventPurchase {
-  id: number; guild_id: number; user_id: number; trigger_text: string;
-  target_guild_id: number | null; points_spent: number; applied: number;
+  id: number; guild_id: string; user_id: string; trigger_text: string;
+  target_guild_id: string | null; points_spent: number; applied: number;
   rcon_response: string; created_at: number;
   item_name: string; guild_name: string; target_name: string | null;
 }
 
-const TRIGGER_LABEL: Record<string, string> = {
-  debuff: "디버프지급", buff: "버프지급", random: "랜덤아이템",
-};
+const KIND_LABEL: Record<string, string> = { debuff: "디버프지급", buff: "버프지급", random: "랜덤아이템" };
+
+function Toast({ message }: { message: string }) {
+  if (!message) return null;
+  return (
+    <div className="fixed top-4 right-4 z-50 px-4 py-2 rounded-lg bg-bg-card border border-border shadow-lg text-sm text-fg">
+      {message}
+    </div>
+  );
+}
 
 // ── 이벤트 생성 ──────────────────────────────────────────────────────────────
 function CreateEventForm({ onCreated }: { onCreated: () => void }) {
@@ -154,36 +165,91 @@ function ConnectionCard({ event, onChanged }: { event: McEvent; onChanged: () =>
   );
 }
 
+// ── 임의 명령어 테스트 ────────────────────────────────────────────────────────
+function TestCommandCard({ eventId }: { eventId: number }) {
+  const [command, setCommand]   = useState("");
+  const [running, setRunning]   = useState(false);
+  const [result, setResult]     = useState<{ ok: boolean; text: string } | null>(null);
+
+  const run = async () => {
+    if (!command.trim()) return;
+    setRunning(true); setResult(null);
+    try {
+      const r = await adminFetch<{ response: string }>(`/api/admin/mc-events/${eventId}/run`, {
+        method: "POST", body: JSON.stringify({ command: command.trim() }),
+      });
+      setResult({ ok: true, text: r.response || "(빈 응답)" });
+    } catch (e: unknown) {
+      setResult({ ok: false, text: e instanceof Error ? e.message : "실행 실패" });
+    } finally { setRunning(false); }
+  };
+
+  return (
+    <div className="rounded-2xl border border-border p-4 space-y-3">
+      <p className="font-semibold text-fg text-sm flex items-center gap-2">
+        <Terminal size={14} className="text-accent" /> 테스트 명령어 (임의 RCON 실행)
+      </p>
+      <p className="text-xs text-muted">
+        아이템/명령어 등록 없이 마크 서버에 바로 명령어를 보내 결과를 확인할 수 있습니다.
+      </p>
+      <div className="flex gap-2">
+        <input
+          className="input flex-1 font-mono"
+          placeholder="say hello"
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") run(); }}
+        />
+        <button onClick={run} disabled={running || !command.trim()} className="btn-secondary text-sm shrink-0">
+          <Play size={14} /> {running ? "실행 중..." : "실행"}
+        </button>
+      </div>
+      {result && (
+        <p className={`text-xs font-mono whitespace-pre-wrap ${result.ok ? "text-success" : "text-danger"}`}>
+          {result.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ── 참가 서버 ────────────────────────────────────────────────────────────────
 function GuildsCard({
-  eventId, guilds, participants, onChanged,
-}: { eventId: number; guilds: Guild[]; participants: McEventGuild[]; onChanged: () => void }) {
-  const [guildId, setGuildId]     = useState("");
-  const [teamName, setTeamName]   = useState("");
+  eventId, guilds, participants, onChanged, showToast,
+}: {
+  eventId: number; guilds: Guild[]; participants: McEventGuild[];
+  onChanged: () => void; showToast: (msg: string) => void;
+}) {
+  const [guildId, setGuildId]       = useState("");
   const [playerName, setPlayerName] = useState("");
-  const [adding, setAdding]       = useState(false);
+  const [adding, setAdding]         = useState(false);
 
-  const availableGuilds = guilds.filter((g) => !participants.some((p) => String(p.guild_id) === g.id));
+  const availableGuilds = guilds.filter((g) => !participants.some((p) => p.guild_id === g.id));
 
   const add = async () => {
-    if (!guildId || !teamName.trim() || !playerName.trim()) return;
+    if (!guildId || !playerName.trim()) return;
     setAdding(true);
     try {
       await adminFetch(`/api/admin/mc-events/${eventId}/guilds`, {
         method: "POST",
-        body: JSON.stringify({ guild_id: guildId, team_name: teamName.trim(), mc_player_name: playerName.trim() }),
+        body: JSON.stringify({ guild_id: guildId, mc_player_name: playerName.trim() }),
       });
-      setGuildId(""); setTeamName(""); setPlayerName("");
+      setGuildId(""); setPlayerName("");
       onChanged();
     } catch (e: unknown) {
       alert(e instanceof Error ? e.message : "추가 실패");
     } finally { setAdding(false); }
   };
 
-  const remove = async (gid: number) => {
+  const remove = async (gid: string) => {
     if (!confirm("이 서버를 이벤트 참가 목록에서 제거하시겠습니까?")) return;
-    await adminFetch(`/api/admin/mc-events/${eventId}/guilds/${gid}`, { method: "DELETE" }).catch(() => {});
-    onChanged();
+    try {
+      await adminFetch(`/api/admin/mc-events/${eventId}/guilds/${gid}`, { method: "DELETE" });
+      showToast("삭제되었습니다.");
+      onChanged();
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : "삭제 실패");
+    }
   };
 
   return (
@@ -195,7 +261,6 @@ function GuildsCard({
           <div key={p.guild_id} className="flex items-center justify-between bg-bg rounded-lg px-3 py-2 border border-border text-sm">
             <div className="flex items-center gap-3">
               <span className="font-medium text-fg">{p.guild_name}</span>
-              <span className="text-xs text-muted">팀명: {p.team_name}</span>
               <span className="text-xs text-muted font-mono">MC: {p.mc_player_name}</span>
             </div>
             <button onClick={() => remove(p.guild_id)} className="text-muted hover:text-danger transition-colors p-1">
@@ -213,10 +278,98 @@ function GuildsCard({
           <option value="">참가시킬 서버 선택...</option>
           {availableGuilds.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
         </select>
-        <input className="input w-32" placeholder="팀명" value={teamName} onChange={(e) => setTeamName(e.target.value)} />
         <input className="input w-40 font-mono" placeholder="마크 플레이어 이름" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
-        <button onClick={add} disabled={adding || !guildId || !teamName.trim() || !playerName.trim()} className="btn-primary shrink-0">
+        <button onClick={add} disabled={adding || !guildId || !playerName.trim()} className="btn-primary shrink-0">
           <Plus size={15} /> 추가
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── 채팅 명령어 ──────────────────────────────────────────────────────────────
+function CommandsCard({
+  eventId, commands, onChanged, showToast,
+}: { eventId: number; commands: McEventCommand[]; onChanged: () => void; showToast: (msg: string) => void }) {
+  const [kind, setKind]     = useState<"debuff" | "buff" | "random">("debuff");
+  const [trigger, setTrigger] = useState("");
+  const [adding, setAdding]  = useState(false);
+
+  const add = async () => {
+    setAdding(true);
+    try {
+      await adminFetch(`/api/admin/mc-events/${eventId}/commands`, {
+        method: "POST",
+        body: JSON.stringify({ kind, trigger_text: trigger.trim() || KIND_LABEL[kind] }),
+      });
+      setTrigger("");
+      onChanged();
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : "추가 실패");
+    } finally { setAdding(false); }
+  };
+
+  const remove = async (id: number) => {
+    if (!confirm("이 명령어를 삭제하시겠습니까?")) return;
+    try {
+      await adminFetch(`/api/admin/mc-events/${eventId}/commands/${id}`, { method: "DELETE" });
+      showToast("삭제되었습니다.");
+      onChanged();
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : "삭제 실패");
+    }
+  };
+
+  const toggleActive = async (cmd: McEventCommand) => {
+    await adminFetch(`/api/admin/mc-events/${eventId}/commands/${cmd.id}`, {
+      method: "PATCH", body: JSON.stringify({ is_active: !cmd.is_active }),
+    }).catch(() => {});
+    onChanged();
+  };
+
+  return (
+    <div className="rounded-2xl border border-border p-4 space-y-4">
+      <p className="font-semibold text-fg text-sm">채팅 명령어</p>
+      <p className="text-xs text-muted">
+        치지직 채팅에서 <code className="bg-bg px-1 rounded">!</code> 뒤에 입력할 문구입니다. 종류(디버프지급/버프지급/랜덤아이템)당
+        여러 개 등록할 수 있고, 문구는 자유롭게 바꿀 수 있습니다.
+      </p>
+
+      <div className="space-y-2">
+        {commands.map((cmd) => (
+          <div key={cmd.id} className="flex items-center justify-between bg-bg rounded-lg px-3 py-2 border border-border text-sm">
+            <div className="flex items-center gap-3">
+              <span className="text-xs px-2 py-0.5 rounded-full border border-border text-muted">{KIND_LABEL[cmd.kind]}</span>
+              <span className="font-mono text-fg">!{cmd.trigger_text}</span>
+              {!cmd.is_active && <span className="text-[10px] text-muted">(비활성)</span>}
+            </div>
+            <div className="flex items-center gap-1">
+              <button onClick={() => toggleActive(cmd)} className="text-xs text-muted hover:text-fg px-2 py-1 rounded transition-colors">
+                {cmd.is_active ? "끄기" : "켜기"}
+              </button>
+              <button onClick={() => remove(cmd.id)} className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors">
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </div>
+        ))}
+        {commands.length === 0 && <p className="text-sm text-muted text-center py-3">등록된 명령어가 없습니다.</p>}
+      </div>
+
+      <div className="flex gap-2 flex-wrap pt-2 border-t border-border">
+        <select className="select w-32" value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
+          <option value="debuff">디버프지급</option>
+          <option value="buff">버프지급</option>
+          <option value="random">랜덤아이템</option>
+        </select>
+        <input
+          className="input flex-1 min-w-32 font-mono"
+          placeholder={KIND_LABEL[kind]}
+          value={trigger}
+          onChange={(e) => setTrigger(e.target.value)}
+        />
+        <button onClick={add} disabled={adding} className="btn-primary shrink-0">
+          <Plus size={15} /> 명령어 추가
         </button>
       </div>
     </div>
@@ -225,12 +378,14 @@ function GuildsCard({
 
 // ── 아이템 카탈로그 ──────────────────────────────────────────────────────────
 function ItemsCard({ eventId, items, onChanged }: { eventId: number; items: McEventItem[]; onChanged: () => void }) {
-  const [itemType, setItemType]   = useState<"debuff" | "buff">("debuff");
-  const [name, setName]           = useState("");
-  const [cost, setCost]           = useState("");
-  const [template, setTemplate]   = useState("");
-  const [inPool, setInPool]       = useState(true);
-  const [adding, setAdding]       = useState(false);
+  const [itemType, setItemType]     = useState<"debuff" | "buff">("debuff");
+  const [name, setName]             = useState("");
+  const [cost, setCost]             = useState("");
+  const [template, setTemplate]     = useState("");
+  const [chatTemplate, setChatTemplate] = useState("{user}님이 [{item}]을(를) 사용했습니다!");
+  const [notifyCommand, setNotifyCommand] = useState("");
+  const [inPool, setInPool]         = useState(true);
+  const [adding, setAdding]         = useState(false);
 
   const add = async () => {
     if (!name.trim() || !template.trim() || !cost) return;
@@ -240,10 +395,12 @@ function ItemsCard({ eventId, items, onChanged }: { eventId: number; items: McEv
         method: "POST",
         body: JSON.stringify({
           item_type: itemType, name: name.trim(), points_cost: parseInt(cost) || 0,
-          command_template: template.trim(), in_random_pool: inPool,
+          command_template: template.trim(), chat_message_template: chatTemplate.trim(),
+          mc_notify_command: notifyCommand.trim(), in_random_pool: inPool,
         }),
       });
-      setName(""); setCost(""); setTemplate("");
+      setName(""); setCost(""); setTemplate(""); setNotifyCommand("");
+      setChatTemplate("{user}님이 [{item}]을(를) 사용했습니다!");
       onChanged();
     } catch (e: unknown) {
       alert(e instanceof Error ? e.message : "추가 실패");
@@ -269,7 +426,9 @@ function ItemsCard({ eventId, items, onChanged }: { eventId: number; items: McEv
       <p className="text-xs text-muted">
         디버프지급은 자기 자신을 제외한 참가 서버 중 무작위 1명에게, 버프지급은 자기 자신에게 적용됩니다.
         랜덤아이템은 &quot;랜덤풀 포함&quot;으로 표시된 아이템 중에서만 무작위로 뽑힙니다.
-        명령어의 <code className="bg-bg px-1 rounded">{"{player}"}</code> 자리에 대상의 마크 플레이어 이름이 자동으로 들어갑니다.
+        세 명령어 모두 <code className="bg-bg px-1 rounded">{"{player}"}</code>(대상 마크 닉네임),{" "}
+        <code className="bg-bg px-1 rounded">{"{user}"}</code>(구매한 치지직 닉네임),{" "}
+        <code className="bg-bg px-1 rounded">{"{item}"}</code>(아이템 이름)를 사용할 수 있습니다.
       </p>
 
       <div className="space-y-2">
@@ -287,7 +446,13 @@ function ItemsCard({ eventId, items, onChanged }: { eventId: number; items: McEv
                 )}
                 {!item.is_active && <span className="text-[10px] text-muted">(비활성)</span>}
               </div>
-              <p className="text-xs text-muted font-mono mt-1 truncate">{item.command_template}</p>
+              <p className="text-xs text-muted font-mono mt-1 truncate">효과: {item.command_template}</p>
+              {item.mc_notify_command && (
+                <p className="text-xs text-muted font-mono truncate">귓속말: {item.mc_notify_command}</p>
+              )}
+              {item.chat_message_template && (
+                <p className="text-xs text-muted truncate">채팅 문구: {item.chat_message_template}</p>
+              )}
             </div>
             <div className="flex items-center gap-1 shrink-0">
               <button onClick={() => toggleActive(item)} className="text-xs text-muted hover:text-fg px-2 py-1 rounded transition-colors">
@@ -311,12 +476,32 @@ function ItemsCard({ eventId, items, onChanged }: { eventId: number; items: McEv
           <input className="input flex-1 min-w-32" placeholder="아이템 이름 (예: 실명 60초)" value={name} onChange={(e) => setName(e.target.value)} />
           <input className="input w-24" placeholder="가격" value={cost} onChange={(e) => setCost(e.target.value.replace(/[^0-9]/g, ""))} />
         </div>
-        <input
-          className="input w-full font-mono"
-          placeholder="effect give {player} minecraft:blindness 60 1"
-          value={template}
-          onChange={(e) => setTemplate(e.target.value)}
-        />
+        <div>
+          <label className="label">효과 명령어 (마크에 실행)</label>
+          <input
+            className="input w-full font-mono"
+            placeholder="effect give {player} minecraft:blindness 60 1"
+            value={template}
+            onChange={(e) => setTemplate(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="label">대상 알림 명령어 (선택, 귓속말 등)</label>
+          <input
+            className="input w-full font-mono"
+            placeholder="tell {player} {item}이(가) 적용되었습니다"
+            value={notifyCommand}
+            onChange={(e) => setNotifyCommand(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="label">치지직 채팅 안내 문구</label>
+          <input
+            className="input w-full"
+            value={chatTemplate}
+            onChange={(e) => setChatTemplate(e.target.value)}
+          />
+        </div>
         <div className="flex items-center justify-between">
           <label className="flex items-center gap-2 text-sm text-muted cursor-pointer select-none">
             <input type="checkbox" checked={inPool} onChange={(e) => setInPool(e.target.checked)} className="w-4 h-4 rounded accent-accent" />
@@ -355,7 +540,7 @@ function PurchasesCard({ purchases }: { purchases: McEventPurchase[] }) {
               <tr key={p.id}>
                 <td className="px-4 py-2 text-xs text-muted whitespace-nowrap">{new Date(p.created_at * 1000).toLocaleString("ko-KR")}</td>
                 <td className="px-4 py-2 text-fg">{p.guild_name}</td>
-                <td className="px-4 py-2 text-xs text-muted">!{TRIGGER_LABEL[p.trigger_text] ?? p.trigger_text}</td>
+                <td className="px-4 py-2 text-xs text-muted font-mono">!{p.trigger_text}</td>
                 <td className="px-4 py-2 text-fg">{p.item_name} <span className="text-xs text-accent">({p.points_spent}P)</span></td>
                 <td className="px-4 py-2 text-muted">{p.target_name ?? "자기 자신"}</td>
                 <td className="px-4 py-2">
@@ -380,9 +565,13 @@ export default function McEventPanel({ guilds }: { guilds: Guild[] }) {
   const [events, setEvents]           = useState<McEvent[]>([]);
   const [selectedId, setSelectedId]   = useState<number | null>(null);
   const [participants, setParticipants] = useState<McEventGuild[]>([]);
+  const [commands, setCommands]       = useState<McEventCommand[]>([]);
   const [items, setItems]             = useState<McEventItem[]>([]);
   const [purchases, setPurchases]     = useState<McEventPurchase[]>([]);
   const [loading, setLoading]         = useState(true);
+  const [toast, setToast]             = useState("");
+
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(""), 2500); };
 
   const loadEvents = async () => {
     const list = await adminFetch<McEvent[]>("/api/admin/mc-events").catch(() => []);
@@ -394,12 +583,13 @@ export default function McEventPanel({ guilds }: { guilds: Guild[] }) {
   };
 
   const loadDetail = async (eventId: number) => {
-    const [p, i, pu] = await Promise.all([
+    const [p, c, i, pu] = await Promise.all([
       adminFetch<McEventGuild[]>(`/api/admin/mc-events/${eventId}/guilds`).catch(() => []),
+      adminFetch<McEventCommand[]>(`/api/admin/mc-events/${eventId}/commands`).catch(() => []),
       adminFetch<McEventItem[]>(`/api/admin/mc-events/${eventId}/items`).catch(() => []),
       adminFetch<McEventPurchase[]>(`/api/admin/mc-events/${eventId}/purchases`).catch(() => []),
     ]);
-    setParticipants(p); setItems(i); setPurchases(pu);
+    setParticipants(p); setCommands(c); setItems(i); setPurchases(pu);
   };
 
   useEffect(() => { loadEvents(); }, []);
@@ -409,7 +599,7 @@ export default function McEventPanel({ guilds }: { guilds: Guild[] }) {
 
   const deleteEvent = async () => {
     if (!selected) return;
-    if (!confirm(`"${selected.name}" 이벤트를 삭제하시겠습니까? (참가 서버/아이템도 함께 삭제됩니다)`)) return;
+    if (!confirm(`"${selected.name}" 이벤트를 삭제하시겠습니까? (참가 서버/아이템/명령어도 함께 삭제됩니다)`)) return;
     await adminFetch(`/api/admin/mc-events/${selected.id}`, { method: "DELETE" }).catch(() => {});
     setSelectedId(null);
     loadEvents();
@@ -421,10 +611,11 @@ export default function McEventPanel({ guilds }: { guilds: Guild[] }) {
 
   return (
     <div className="space-y-6">
+      <Toast message={toast} />
       <p className="text-sm text-muted">
-        스트리머 콜라보용 마인크래프트 연동 이벤트를 관리합니다. 참가 서버 목록/아이템 카탈로그는 이벤트 전체가 공유하고,
-        각 서버의 치지직 채팅에서 <code className="bg-bg px-1 rounded">!디버프지급</code> / <code className="bg-bg px-1 rounded">!버프지급</code> / <code className="bg-bg px-1 rounded">!랜덤아이템</code> 입력 시
-        해당 서버의 포인트를 차감하고 마크 서버에 명령을 실행합니다. (치지직 계정을 연동한 유저만 대상)
+        스트리머 콜라보용 마인크래프트 연동 이벤트를 관리합니다. 참가 서버 목록/채팅 명령어/아이템 카탈로그는 이벤트 전체가 공유하고,
+        각 서버의 치지직 채팅에서 등록된 명령어를 입력하면 해당 서버의 포인트를 차감하고 마크 서버에 명령을 실행합니다.
+        (치지직 계정을 연동한 유저만 대상)
       </p>
 
       <div className="rounded-2xl border border-border p-4 space-y-3">
@@ -452,7 +643,9 @@ export default function McEventPanel({ guilds }: { guilds: Guild[] }) {
             <button onClick={deleteEvent} className="text-xs text-danger hover:underline">이벤트 삭제</button>
           </div>
           <ConnectionCard event={selected} onChanged={() => { loadEvents(); }} />
-          <GuildsCard eventId={selected.id} guilds={guilds} participants={participants} onChanged={() => loadDetail(selected.id)} />
+          <TestCommandCard eventId={selected.id} />
+          <GuildsCard eventId={selected.id} guilds={guilds} participants={participants} onChanged={() => loadDetail(selected.id)} showToast={showToast} />
+          <CommandsCard eventId={selected.id} commands={commands} onChanged={() => loadDetail(selected.id)} showToast={showToast} />
           <ItemsCard eventId={selected.id} items={items} onChanged={() => loadDetail(selected.id)} />
           <PurchasesCard purchases={purchases} />
         </>

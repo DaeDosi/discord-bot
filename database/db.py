@@ -331,22 +331,40 @@ async def init_db():
         """CREATE TABLE IF NOT EXISTS mc_event_guilds (
                event_id       INTEGER NOT NULL,
                guild_id       INTEGER NOT NULL,
-               team_name      TEXT    NOT NULL,
                mc_player_name TEXT    NOT NULL,
                PRIMARY KEY (event_id, guild_id)
            )""",
+        # 이미 team_name으로 테이블이 생성돼 있던 배포본을 위한 정리 — 컬럼이 없으면(신규 설치)
+        # 그냥 실패하고 무시된다.
+        "ALTER TABLE mc_event_guilds DROP COLUMN team_name",
         # item_type: 'debuff'(디버프지급 → 무작위 다른 참가자에게 적용) | 'buff'(버프지급 → 자기 자신)
         # command_template의 {player} 자리에 실행 시점에 정해진 대상의 mc_player_name이 들어간다.
-        # in_random_pool=1인 항목만 !랜덤아이템 추첨 대상이 된다.
+        # in_random_pool=1인 항목만 !랜덤아이템 추첨 대상이 된다. chat_message_template은 구매 성공 시
+        # 치지직 채팅에 공지할 문구, mc_notify_command는 대상 플레이어에게 마크 내에서 귓속말 등으로
+        # 추가로 실행할 명령(비어있으면 생략).
         """CREATE TABLE IF NOT EXISTS mc_event_items (
-               id               INTEGER PRIMARY KEY AUTOINCREMENT,
-               event_id         INTEGER NOT NULL,
-               item_type        TEXT    NOT NULL,
-               name             TEXT    NOT NULL,
-               points_cost      INTEGER NOT NULL DEFAULT 0,
-               command_template TEXT    NOT NULL,
-               in_random_pool   INTEGER NOT NULL DEFAULT 1,
-               is_active        INTEGER NOT NULL DEFAULT 1
+               id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+               event_id              INTEGER NOT NULL,
+               item_type             TEXT    NOT NULL,
+               name                  TEXT    NOT NULL,
+               points_cost           INTEGER NOT NULL DEFAULT 0,
+               command_template      TEXT    NOT NULL,
+               chat_message_template TEXT    NOT NULL DEFAULT '',
+               mc_notify_command     TEXT    NOT NULL DEFAULT '',
+               in_random_pool        INTEGER NOT NULL DEFAULT 1,
+               is_active             INTEGER NOT NULL DEFAULT 1
+           )""",
+        "ALTER TABLE mc_event_items ADD COLUMN chat_message_template TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE mc_event_items ADD COLUMN mc_notify_command     TEXT NOT NULL DEFAULT ''",
+        # 치지직 채팅 명령어(트리거 문구)는 이벤트별로 하나씩 추가 — kind: 'debuff'|'buff'|'random'.
+        # 트리거 문구 기본값은 각각 디버프지급/버프지급/랜덤아이템이지만 자유롭게 바꿀 수 있다.
+        """CREATE TABLE IF NOT EXISTS mc_event_commands (
+               id           INTEGER PRIMARY KEY AUTOINCREMENT,
+               event_id     INTEGER NOT NULL,
+               kind         TEXT    NOT NULL,
+               trigger_text TEXT    NOT NULL,
+               is_active    INTEGER NOT NULL DEFAULT 1,
+               UNIQUE(event_id, trigger_text)
            )""",
         """CREATE TABLE IF NOT EXISTS mc_event_purchases (
                id              INTEGER PRIMARY KEY AUTOINCREMENT,
