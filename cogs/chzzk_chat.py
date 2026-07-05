@@ -332,6 +332,7 @@ class ChzzkChatCog(commands.Cog):
             try:
                 await entry["user_client"].send_message(cmd["reply_text"])
                 await self._log_chat(entry["guild_id"], "out", "NexBot", cmd["reply_text"])
+                log.info(f"치지직 채팅 자동응답 전송: guild={entry['guild_id']} trigger=!{trigger}")
             except Exception:
                 log.exception(f"치지직 채팅 자동응답 전송 실패 guild={entry['guild_id']}")
             return
