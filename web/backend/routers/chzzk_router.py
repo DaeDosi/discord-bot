@@ -666,14 +666,19 @@ async def get_mc_event_status(
     user: dict = Depends(get_current_user),
     _: None = Depends(require_guild_admin),
 ):
-    """nexadmin에서 이 서버를 초대한 활성 이벤트가 있으면 카탈로그/연동 상태를 반환.
-    초대되지 않았으면 {"invited": false}만 반환 — 대시보드가 이 값으로 탭 자체를 숨긴다."""
+    """nexadmin에서 이 서버를 초대한 이벤트가 있으면 카탈로그/연동 상태를 반환.
+    초대되지 않았으면 {"invited": false}만 반환 — 대시보드가 이 값으로 탭 자체를 숨긴다.
+    이벤트가 아직 활성화 전이어도 초대만 됐으면 미리 준비(마크 이름 입력 등)할 수 있도록
+    is_active 여부와 무관하게 초대 상태를 반환한다 — 실제 채팅 명령어 동작은 chzzk_chat.py가
+    별도로 is_active=1인 이벤트만 골라 처리하므로 여기서 걸러낼 필요는 없다. 여러 이벤트에
+    걸쳐 초대된 적이 있으면 가장 최근 이벤트 하나만 기준으로 삼는다."""
     db = await get_db()
     row = await (await db.execute(
         """SELECT eg.mc_player_name, e.id AS event_id, e.name AS event_name, e.is_active
            FROM mc_event_guilds eg
            JOIN mc_events e ON e.id = eg.event_id
-           WHERE eg.guild_id=? AND e.is_active=1
+           WHERE eg.guild_id=?
+           ORDER BY e.id DESC
            LIMIT 1""",
         (int(guild_id),)
     )).fetchone()
