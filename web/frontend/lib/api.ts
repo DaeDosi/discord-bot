@@ -239,5 +239,19 @@ export const api = {
       }) =>
         request(`/api/chzzk/${gid}/content-notify`, { method: "PUT", body: JSON.stringify(data) }),
     },
+    mcEvent: {
+      status: (gid: string) =>
+        request<{
+          invited: boolean;
+          event_name?: string;
+          is_active?: boolean;
+          mc_player_name?: string;
+          streamer_connected?: boolean;
+          triggers?: { kind: "debuff" | "buff" | "random"; trigger_text: string }[];
+          items?: { item_type: "debuff" | "buff"; name: string; points_cost: number; in_random_pool: number }[];
+        }>(`/api/chzzk/${gid}/mc-event`),
+      savePlayerName: (gid: string, mc_player_name: string) =>
+        request(`/api/chzzk/${gid}/mc-event`, { method: "PUT", body: JSON.stringify({ mc_player_name }) }),
+    },
   },
 };

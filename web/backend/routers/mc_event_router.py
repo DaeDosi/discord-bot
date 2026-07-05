@@ -138,7 +138,7 @@ async def run_command(event_id: int, body: RunCommand, user: dict = Depends(_req
 
 class GuildAdd(BaseModel):
     guild_id:       str
-    mc_player_name: str
+    mc_player_name: str = ""  # 초대 시점엔 몰라도 되고, 스트리머가 자기 대시보드에서 직접 입력한다
 
 
 class GuildUpdate(BaseModel):

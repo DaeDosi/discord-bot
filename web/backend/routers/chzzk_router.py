@@ -659,6 +659,76 @@ async def get_chat_log(
     return [dict(r) for r in rows]
 
 
+# ── 마크 콜라보 이벤트 (참가 초대된 서버만 확인 가능) ─────────────────────────
+@router.get("/{guild_id}/mc-event")
+async def get_mc_event_status(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    """nexadmin에서 이 서버를 초대한 활성 이벤트가 있으면 카탈로그/연동 상태를 반환.
+    초대되지 않았으면 {"invited": false}만 반환 — 대시보드가 이 값으로 탭 자체를 숨긴다."""
+    db = await get_db()
+    row = await (await db.execute(
+        """SELECT eg.mc_player_name, e.id AS event_id, e.name AS event_name, e.is_active
+           FROM mc_event_guilds eg
+           JOIN mc_events e ON e.id = eg.event_id
+           WHERE eg.guild_id=? AND e.is_active=1
+           LIMIT 1""",
+        (int(guild_id),)
+    )).fetchone()
+    if not row:
+        return {"invited": False}
+
+    sub = await (await db.execute(
+        "SELECT streamer_access_token FROM chzzk_subscriptions WHERE guild_id=?", (int(guild_id),)
+    )).fetchone()
+
+    cmd_rows = await (await db.execute(
+        "SELECT kind, trigger_text FROM mc_event_commands WHERE event_id=? AND is_active=1",
+        (row["event_id"],)
+    )).fetchall()
+    item_rows = await (await db.execute(
+        """SELECT item_type, name, points_cost, in_random_pool
+           FROM mc_event_items WHERE event_id=? AND is_active=1 ORDER BY item_type, id""",
+        (row["event_id"],)
+    )).fetchall()
+
+    return {
+        "invited":            True,
+        "event_name":         row["event_name"],
+        "is_active":          bool(row["is_active"]),
+        "mc_player_name":     row["mc_player_name"],
+        "streamer_connected": bool(sub and sub["streamer_access_token"]),
+        "triggers":           [dict(c) for c in cmd_rows],
+        "items":              [dict(i) for i in item_rows],
+    }
+
+
+class McEventPlayerUpdate(BaseModel):
+    mc_player_name: str
+
+
+@router.put("/{guild_id}/mc-event")
+async def update_mc_event_player(
+    guild_id: str,
+    body: McEventPlayerUpdate,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    """초대된 서버의 관리자가 자신의 마크 플레이어 이름만 직접 입력/수정."""
+    db = await get_db()
+    result = await db.execute(
+        """UPDATE mc_event_guilds SET mc_player_name=?
+           WHERE guild_id=? AND event_id=(SELECT id FROM mc_events WHERE is_active=1 LIMIT 1)""",
+        (body.mc_player_name.strip(), int(guild_id))
+    )
+    await db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="참가 초대된 이벤트를 찾을 수 없습니다.")
+    return {"ok": True}
+
+
 # ── 디버그: 현재 라이브 상태 체크 ────────────────────────────────────────────
 @router.get("/debug/status")
 async def debug_status(user: dict = Depends(get_current_user)):

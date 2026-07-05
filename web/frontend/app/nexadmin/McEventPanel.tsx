@@ -254,14 +254,20 @@ function GuildsCard({
 
   return (
     <div className="rounded-2xl border border-border p-4 space-y-4">
-      <p className="font-semibold text-fg text-sm">참가 서버 ({participants.length}명)</p>
+      <p className="font-semibold text-fg text-sm">참가 서버 초대 ({participants.length}명)</p>
+      <p className="text-xs text-muted">
+        초대하면 해당 서버 대시보드에 &quot;이벤트 서버 (합방)&quot; 탭이 새로 나타나고, 마크 플레이어 이름은
+        그 서버 관리자가 직접 입력할 수 있습니다 — 여기서 몰라도 비워두고 초대만 하셔도 됩니다.
+      </p>
 
       <div className="space-y-2">
         {participants.map((p) => (
           <div key={p.guild_id} className="flex items-center justify-between bg-bg rounded-lg px-3 py-2 border border-border text-sm">
             <div className="flex items-center gap-3">
               <span className="font-medium text-fg">{p.guild_name}</span>
-              <span className="text-xs text-muted font-mono">MC: {p.mc_player_name}</span>
+              <span className="text-xs text-muted font-mono">
+                MC: {p.mc_player_name || <span className="text-warning">미설정</span>}
+              </span>
             </div>
             <button onClick={() => remove(p.guild_id)} className="text-muted hover:text-danger transition-colors p-1">
               <Trash2 size={14} />
@@ -269,18 +275,18 @@ function GuildsCard({
           </div>
         ))}
         {participants.length === 0 && (
-          <p className="text-sm text-muted text-center py-3">등록된 참가 서버가 없습니다.</p>
+          <p className="text-sm text-muted text-center py-3">초대된 참가 서버가 없습니다.</p>
         )}
       </div>
 
       <div className="flex gap-2 flex-wrap pt-2 border-t border-border">
         <select className="select flex-1 min-w-36" value={guildId} onChange={(e) => setGuildId(e.target.value)}>
-          <option value="">참가시킬 서버 선택...</option>
+          <option value="">초대할 서버 선택...</option>
           {availableGuilds.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
         </select>
-        <input className="input w-40 font-mono" placeholder="마크 플레이어 이름" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
-        <button onClick={add} disabled={adding || !guildId || !playerName.trim()} className="btn-primary shrink-0">
-          <Plus size={15} /> 추가
+        <input className="input w-40 font-mono" placeholder="마크 플레이어 이름 (선택)" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
+        <button onClick={add} disabled={adding || !guildId} className="btn-primary shrink-0">
+          <Plus size={15} /> 초대
         </button>
       </div>
     </div>

@@ -27,7 +27,10 @@ _KST = timezone(timedelta(hours=9))
 _CHZZK_CLIENT_ID     = os.getenv("CHZZK_CLIENT_ID", "")
 _CHZZK_CLIENT_SECRET = os.getenv("CHZZK_CLIENT_SECRET", "")
 
-SYNC_INTERVAL_SECONDS = 300  # 5분마다 구독 대상/토큰/명령어 설정 재동기화 + 연결 생존 확인
+SYNC_INTERVAL_SECONDS = 60  # 구독 대상/토큰/명령어 설정 재동기화 + 연결 생존 확인 주기.
+# 예전엔 5분이었는데, 스트리머 연동 직후나 명령어/이벤트 설정을 바꾼 직후 봇이 반영할 때까지
+# 최대 5분씩 걸려서 "방금 한 설정이 안 먹히는" 것처럼 보이는 문제가 잦았다. 여기서 하는 일이
+# DB 조회 위주(토큰 만료 임박 시에만 치지직 API 호출)라 1분 주기로도 부담이 크지 않다.
 CHAT_LOG_KEEP = 50  # guild당 디버그 채팅 로그 보관 개수
 
 try:
