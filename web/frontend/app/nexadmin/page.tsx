@@ -6,6 +6,7 @@ import {
   Plus, X, RefreshCw, LogIn, ChevronDown, ChevronUp, LogOut,
   Megaphone, Save, CheckCircle,
 } from "lucide-react";
+import McEventPanel from "./McEventPanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -15,7 +16,7 @@ function authHeader(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-async function adminFetch<T>(path: string, opts?: RequestInit): Promise<T> {
+export async function adminFetch<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, {
     ...opts,
     headers: { "Content-Type": "application/json", ...authHeader(), ...(opts?.headers ?? {}) },
@@ -36,7 +37,7 @@ interface Overview {
   verifications: number;
   today_visitors: number;
 }
-interface Guild { id: string; name: string; icon: string | null; chzzk_name: string | null }
+export interface Guild { id: string; name: string; icon: string | null; chzzk_name: string | null }
 interface ChzzkSub {
   id: number; guild_id: number; guild_name: string;
   chzzk_channel_id: string; chzzk_name: string; chzzk_image_url: string | null;
@@ -604,7 +605,7 @@ export default function AdminPage() {
   const [verifUsers, setVerifUsers]   = useState<VerifUser[] | null>(null);
   const [loading, setLoading]         = useState(true);
   const [showAdd, setShowAdd]         = useState(false);
-  const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow" | "announcement">("guilds");
+  const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow" | "announcement" | "mc-event">("guilds");
   const [refreshing, setRefreshing]   = useState(false);
   const [selectedVerif, setSelectedVerif] = useState<VerifUser | null>(null);
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null);
@@ -704,6 +705,7 @@ export default function AdminPage() {
     { key: "verif",  label: verifUsers === null ? "인증 현황 (로딩 중...)" : `인증 현황 (${verifCount}명)` },
     { key: "follow", label: followStats === null ? "팔로우 관리 (로딩 중...)" : `팔로우 관리 (${followCount}명)` },
     { key: "announcement", label: "공지 관리" },
+    { key: "mc-event", label: "MC 이벤트" },
   ] as const;
 
   return (
@@ -907,6 +909,9 @@ export default function AdminPage() {
             <AnnouncementPanel />
           </div>
         )}
+
+        {/* ── MC 이벤트 ── */}
+        {activeTab === "mc-event" && <McEventPanel guilds={guilds} />}
 
       </main>
     </div>

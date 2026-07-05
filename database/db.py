@@ -315,6 +315,53 @@ async def init_db():
                created_at INTEGER NOT NULL
            )""",
         "CREATE INDEX IF NOT EXISTS idx_chzzk_chat_log_guild ON chzzk_chat_log(guild_id, id)",
+        # 마인크래프트 콜라보 이벤트 (10명 스트리머 합방) — nexadmin 전용 크로스길드 설정.
+        # 이벤트당 하나의 공유 마크 서버(RCON)에 연결하고, 참가 서버(guild)마다 인게임
+        # 플레이어 이름을 등록해둔다. is_active=1인 이벤트가 최대 1개일 때만 chzzk_chat.py가
+        # !디버프지급/!버프지급/!랜덤아이템 채팅 명령어를 처리한다.
+        """CREATE TABLE IF NOT EXISTS mc_events (
+               id               INTEGER PRIMARY KEY AUTOINCREMENT,
+               name             TEXT    NOT NULL,
+               is_active        INTEGER NOT NULL DEFAULT 0,
+               mc_host          TEXT    NOT NULL DEFAULT '',
+               mc_port          INTEGER NOT NULL DEFAULT 25575,
+               mc_rcon_password TEXT    NOT NULL DEFAULT '',
+               created_at       INTEGER NOT NULL
+           )""",
+        """CREATE TABLE IF NOT EXISTS mc_event_guilds (
+               event_id       INTEGER NOT NULL,
+               guild_id       INTEGER NOT NULL,
+               team_name      TEXT    NOT NULL,
+               mc_player_name TEXT    NOT NULL,
+               PRIMARY KEY (event_id, guild_id)
+           )""",
+        # item_type: 'debuff'(디버프지급 → 무작위 다른 참가자에게 적용) | 'buff'(버프지급 → 자기 자신)
+        # command_template의 {player} 자리에 실행 시점에 정해진 대상의 mc_player_name이 들어간다.
+        # in_random_pool=1인 항목만 !랜덤아이템 추첨 대상이 된다.
+        """CREATE TABLE IF NOT EXISTS mc_event_items (
+               id               INTEGER PRIMARY KEY AUTOINCREMENT,
+               event_id         INTEGER NOT NULL,
+               item_type        TEXT    NOT NULL,
+               name             TEXT    NOT NULL,
+               points_cost      INTEGER NOT NULL DEFAULT 0,
+               command_template TEXT    NOT NULL,
+               in_random_pool   INTEGER NOT NULL DEFAULT 1,
+               is_active        INTEGER NOT NULL DEFAULT 1
+           )""",
+        """CREATE TABLE IF NOT EXISTS mc_event_purchases (
+               id              INTEGER PRIMARY KEY AUTOINCREMENT,
+               event_id        INTEGER NOT NULL,
+               guild_id        INTEGER NOT NULL,
+               user_id         INTEGER NOT NULL,
+               item_id         INTEGER NOT NULL,
+               trigger_text    TEXT    NOT NULL,
+               target_guild_id INTEGER,
+               points_spent    INTEGER NOT NULL DEFAULT 0,
+               applied         INTEGER NOT NULL DEFAULT 0,
+               rcon_response   TEXT    NOT NULL DEFAULT '',
+               created_at      INTEGER NOT NULL
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_mc_event_purchases_event ON mc_event_purchases(event_id, created_at)",
     ]:
         try:
             await db.execute(sql)
