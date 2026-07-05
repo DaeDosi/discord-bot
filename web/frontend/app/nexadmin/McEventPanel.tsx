@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Plus, Trash2, Save, CheckCircle, Zap, Swords, Shield, Dices, Play, Terminal } from "lucide-react";
+import { Plus, Trash2, Save, CheckCircle, Zap, Swords, Shield, Dices, Play, Terminal, Pencil, X } from "lucide-react";
 import { adminFetch, type Guild } from "./page";
 
 interface McEvent {
@@ -294,6 +294,28 @@ function CommandsCard({
   const [kind, setKind]     = useState<"debuff" | "buff" | "random">("debuff");
   const [trigger, setTrigger] = useState("");
   const [adding, setAdding]  = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editValue, setEditValue] = useState("");
+
+  const startEdit = (cmd: McEventCommand) => {
+    setEditingId(cmd.id);
+    setEditValue(cmd.trigger_text);
+  };
+
+  const saveEdit = async (id: number) => {
+    const value = editValue.trim();
+    if (!value) { setEditingId(null); return; }
+    try {
+      await adminFetch(`/api/admin/mc-events/${eventId}/commands/${id}`, {
+        method: "PATCH", body: JSON.stringify({ trigger_text: value }),
+      });
+      showToast("수정되었습니다.");
+      setEditingId(null);
+      onChanged();
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : "수정 실패");
+    }
+  };
 
   const add = async () => {
     setAdding(true);
@@ -338,19 +360,43 @@ function CommandsCard({
       <div className="space-y-2">
         {commands.map((cmd) => (
           <div key={cmd.id} className="flex items-center justify-between bg-bg rounded-lg px-3 py-2 border border-border text-sm">
-            <div className="flex items-center gap-3">
-              <span className="text-xs px-2 py-0.5 rounded-full border border-border text-muted">{KIND_LABEL[cmd.kind]}</span>
-              <span className="font-mono text-fg">!{cmd.trigger_text}</span>
-              {!cmd.is_active && <span className="text-[10px] text-muted">(비활성)</span>}
-            </div>
-            <div className="flex items-center gap-1">
-              <button onClick={() => toggleActive(cmd)} className="text-xs text-muted hover:text-fg px-2 py-1 rounded transition-colors">
-                {cmd.is_active ? "끄기" : "켜기"}
-              </button>
-              <button onClick={() => remove(cmd.id)} className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors">
-                <Trash2 size={14} />
-              </button>
-            </div>
+            {editingId === cmd.id ? (
+              <div className="flex items-center gap-2 flex-1">
+                <span className="text-xs px-2 py-0.5 rounded-full border border-border text-muted shrink-0">{KIND_LABEL[cmd.kind]}</span>
+                <input
+                  className="input flex-1 font-mono py-1"
+                  value={editValue}
+                  autoFocus
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") saveEdit(cmd.id); if (e.key === "Escape") setEditingId(null); }}
+                />
+                <button onClick={() => saveEdit(cmd.id)} className="p-1.5 rounded-lg text-accent hover:bg-accent/10 transition-colors shrink-0">
+                  <CheckCircle size={14} />
+                </button>
+                <button onClick={() => setEditingId(null)} className="p-1.5 rounded-lg text-muted hover:text-fg transition-colors shrink-0">
+                  <X size={14} />
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs px-2 py-0.5 rounded-full border border-border text-muted">{KIND_LABEL[cmd.kind]}</span>
+                  <span className="font-mono text-fg">!{cmd.trigger_text}</span>
+                  {!cmd.is_active && <span className="text-[10px] text-muted">(비활성)</span>}
+                </div>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => startEdit(cmd)} className="p-1.5 rounded-lg text-muted hover:text-fg hover:bg-bg-hover transition-colors">
+                    <Pencil size={14} />
+                  </button>
+                  <button onClick={() => toggleActive(cmd)} className="text-xs text-muted hover:text-fg px-2 py-1 rounded transition-colors">
+                    {cmd.is_active ? "끄기" : "켜기"}
+                  </button>
+                  <button onClick={() => remove(cmd.id)} className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors">
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         ))}
         {commands.length === 0 && <p className="text-sm text-muted text-center py-3">등록된 명령어가 없습니다.</p>}
@@ -386,6 +432,35 @@ function ItemsCard({ eventId, items, onChanged }: { eventId: number; items: McEv
   const [notifyCommand, setNotifyCommand] = useState("");
   const [inPool, setInPool]         = useState(true);
   const [adding, setAdding]         = useState(false);
+  const [testPlayer, setTestPlayer] = useState("");
+  const [testResults, setTestResults] = useState<Record<number, { ok: boolean; text: string }>>({});
+  const [testingId, setTestingId]   = useState<number | null>(null);
+
+  const runItem = (raw: string, item: McEventItem, player: string) =>
+    raw.replace(/\{player\}/g, player || "TestPlayer")
+       .replace(/\{item\}/g, item.name)
+       .replace(/\{user\}/g, "테스트유저");
+
+  const testItem = async (item: McEventItem) => {
+    setTestingId(item.id);
+    try {
+      const effect = await adminFetch<{ response: string }>(`/api/admin/mc-events/${eventId}/run`, {
+        method: "POST",
+        body: JSON.stringify({ command: runItem(item.command_template, item, testPlayer) }),
+      });
+      let text = `효과: ${effect.response || "(빈 응답)"}`;
+      if (item.mc_notify_command.trim()) {
+        const notify = await adminFetch<{ response: string }>(`/api/admin/mc-events/${eventId}/run`, {
+          method: "POST",
+          body: JSON.stringify({ command: runItem(item.mc_notify_command, item, testPlayer) }),
+        });
+        text += `\n귓속말: ${notify.response || "(빈 응답)"}`;
+      }
+      setTestResults((p) => ({ ...p, [item.id]: { ok: true, text } }));
+    } catch (e: unknown) {
+      setTestResults((p) => ({ ...p, [item.id]: { ok: false, text: e instanceof Error ? e.message : "실행 실패" } }));
+    } finally { setTestingId(null); }
+  };
 
   const add = async () => {
     if (!name.trim() || !template.trim() || !cost) return;
@@ -431,6 +506,16 @@ function ItemsCard({ eventId, items, onChanged }: { eventId: number; items: McEv
         <code className="bg-bg px-1 rounded">{"{item}"}</code>(아이템 이름)를 사용할 수 있습니다.
       </p>
 
+      <div>
+        <label className="label">테스트 대상 마크 플레이어 이름 (아래 테스트 실행 버튼에 사용)</label>
+        <input
+          className="input w-full max-w-xs font-mono"
+          placeholder="TestPlayer"
+          value={testPlayer}
+          onChange={(e) => setTestPlayer(e.target.value)}
+        />
+      </div>
+
       <div className="space-y-2">
         {items.map((item) => (
           <div key={item.id} className="flex items-center justify-between gap-3 bg-bg rounded-lg px-3 py-2.5 border border-border">
@@ -453,8 +538,17 @@ function ItemsCard({ eventId, items, onChanged }: { eventId: number; items: McEv
               {item.chat_message_template && (
                 <p className="text-xs text-muted truncate">채팅 문구: {item.chat_message_template}</p>
               )}
+              {testResults[item.id] && (
+                <p className={`text-xs font-mono whitespace-pre-wrap mt-1 ${testResults[item.id].ok ? "text-success" : "text-danger"}`}>
+                  {testResults[item.id].text}
+                </p>
+              )}
             </div>
             <div className="flex items-center gap-1 shrink-0">
+              <button onClick={() => testItem(item)} disabled={testingId === item.id}
+                      className="flex items-center gap-1 text-xs text-muted hover:text-accent px-2 py-1 rounded transition-colors">
+                <Play size={12} /> {testingId === item.id ? "실행 중..." : "테스트 실행"}
+              </button>
               <button onClick={() => toggleActive(item)} className="text-xs text-muted hover:text-fg px-2 py-1 rounded transition-colors">
                 {item.is_active ? "끄기" : "켜기"}
               </button>
