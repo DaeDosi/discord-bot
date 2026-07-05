@@ -318,9 +318,13 @@ class ChzzkChatCog(commands.Cog):
 
         cmd = entry["commands"].get(trigger)
         if not cmd:
+            mc_event_desc = (
+                f"있음(등록된 트리거={list(mc_event['triggers'].keys())})" if mc_event
+                else "없음(참가 서버 미등록 또는 이벤트 비활성 상태)"
+            )
             log.info(
                 f"치지직 채팅 명령어 매칭 실패: guild={entry['guild_id']} "
-                f"입력=\"!{trigger}\" 등록된 명령어={list(entry['commands'].keys())}"
+                f"입력=\"!{trigger}\" 등록된 명령어={list(entry['commands'].keys())} mc_event={mc_event_desc}"
             )
             return
 
@@ -450,6 +454,10 @@ class ChzzkChatCog(commands.Cog):
             (guild_id, chzzk_user_id)
         )).fetchone()
         if not verif:
+            log.info(
+                f"MC 이벤트 무시(미인증 유저): guild={guild_id} trigger=!{trigger_text} chzzk_user={chzzk_user_id} "
+                f"— 대시보드 입장 인증에서 치지직 계정을 연동한 유저가 아님"
+            )
             return
         discord_user_id = verif["user_id"]
 
