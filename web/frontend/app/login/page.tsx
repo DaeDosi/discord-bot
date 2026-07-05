@@ -1,36 +1,26 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Bot, AlertCircle } from "lucide-react";
-
-function buildOAuthUrl(): string {
-  const clientId    = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID ?? "";
-  const redirectUri = process.env.NEXT_PUBLIC_DISCORD_REDIRECT_URI ?? "http://localhost:3000/callback";
-  const params = new URLSearchParams({
-    client_id:     clientId,
-    redirect_uri:  redirectUri,
-    response_type: "code",
-    scope:         "identify guilds",
-  });
-  return `https://discord.com/api/oauth2/authorize?${params}`;
-}
+import { api } from "@/lib/api";
 
 export default function LoginPage() {
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    const clientId = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID;
-    if (!clientId) { setError(true); return; }
-
     // 이미 로그인 상태면 대시보드로 바로 이동
     if (localStorage.getItem("token") && localStorage.getItem("discord_user")) {
       window.location.replace("/dashboard");
       return;
     }
 
-    const t = setTimeout(() => {
-      window.location.href = buildOAuthUrl();
-    }, 300);
-    return () => clearTimeout(t);
+    // redirect_uri는 프론트엔드가 자체적으로 만들지 않고 항상 백엔드(/api/auth/login)가
+    // 계산한 값을 그대로 사용한다 — 예전에는 이 페이지가 NEXT_PUBLIC_DISCORD_REDIRECT_URI로
+    // 직접 인증 URL을 만들었는데, 홈페이지 로그인 버튼(api.auth.getLoginUrl 사용)과 서로 다른
+    // redirect_uri를 보내는 바람에 어느 경로로 로그인을 시작했는지에 따라 "잘못된 OAuth
+    // redirect_uri" 에러가 나거나 안 나는 문제가 있었다.
+    api.auth.getLoginUrl()
+      .then((d) => { window.location.href = d.url; })
+      .catch(() => setError(true));
   }, []);
 
   if (error) {
@@ -38,16 +28,12 @@ export default function LoginPage() {
       <div className="min-h-screen flex items-center justify-center px-4">
         <div className="card max-w-sm w-full text-center space-y-4">
           <AlertCircle size={40} className="text-danger mx-auto" />
-          <h2 className="text-fg font-semibold">설정 필요</h2>
+          <h2 className="text-fg font-semibold">로그인을 시작할 수 없습니다</h2>
           <p className="text-muted text-sm">
-            <code className="bg-bg px-1.5 py-0.5 rounded text-accent text-xs">
-              NEXT_PUBLIC_DISCORD_CLIENT_ID
-            </code>
-            가 설정되지 않았습니다.
+            백엔드 서버에 연결하지 못했습니다.
           </p>
           <p className="text-muted text-xs leading-relaxed">
-            <code className="text-xs">web/frontend/.env.local</code> 파일을 생성하고<br />
-            Discord Client ID를 입력해주세요.
+            <code className="text-xs">NEXT_PUBLIC_API_URL</code> 설정과 백엔드 서버 실행 상태를 확인해주세요.
           </p>
           <a
             href="https://discord.com/developers/applications"

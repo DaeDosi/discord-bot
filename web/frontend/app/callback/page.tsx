@@ -87,11 +87,11 @@ function CallbackInner() {
             <code className="block bg-black/30 rounded px-2 py-1 text-accent">
               cd web/backend && uvicorn main:app --reload --port 8000
             </code>
-            <p className="mt-2">② Discord Developer Portal → Redirects</p>
+            <p className="mt-2">② Discord Developer Portal → Redirects (백엔드 콜백 URL)</p>
             <code className="block bg-black/30 rounded px-2 py-1 text-accent">
-              http://localhost:3000/callback
+              http://localhost:8000/api/auth/callback
             </code>
-            <p className="mt-2">③ .env 파일 DISCORD_CLIENT_SECRET 확인</p>
+            <p className="mt-2">③ .env 파일 DISCORD_CLIENT_SECRET / DISCORD_REDIRECT_URI 확인</p>
           </div>
 
           <button
