@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { Save, CheckCircle, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck } from "lucide-react";
+import { Save, CheckCircle, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, ExternalLink } from "lucide-react";
 import { api } from "@/lib/api";
 import type { VerificationConfig, Channel, Role } from "@/lib/types";
 
@@ -34,8 +34,8 @@ function SelectField({
 
 // ── Discord 임베드 미리보기 (실제 렌더링을 근사한 모형) ──────────────────────
 function DiscordEmbedPreview({
-  title, color, message,
-}: { title: string; color: string; message: string }) {
+  title, color, message, useChzzkVerification,
+}: { title: string; color: string; message: string; useChzzkVerification: boolean }) {
   const safeColor = /^#[0-9A-Fa-f]{6}$/.test(color) ? color : DEFAULT_COLOR;
   return (
     <div className="rounded-2xl overflow-hidden border border-white/8 shadow-xl w-full max-w-md"
@@ -59,14 +59,25 @@ function DiscordEmbedPreview({
                 {message || "아래 버튼을 눌러 입장을 확인해 주세요."}
               </p>
             </div>
-            <button
-              type="button"
-              disabled
-              className="mt-3 px-4 py-1.5 rounded text-sm font-medium text-white cursor-default"
-              style={{ background: safeColor }}
-            >
-              입장 확인
-            </button>
+            {useChzzkVerification ? (
+              <button
+                type="button"
+                disabled
+                className="mt-3 flex items-center gap-1.5 px-4 py-1.5 rounded text-sm font-medium text-white cursor-default"
+                style={{ background: "#4e5058" }}
+              >
+                인증하기 <ExternalLink size={13} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled
+                className="mt-3 px-4 py-1.5 rounded text-sm font-medium text-white cursor-default"
+                style={{ background: "#248046" }}
+              >
+                ✅ 입장 확인
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -261,7 +272,11 @@ export default function VerificationPage() {
               title={cfg.embed_title || ""}
               color={cfg.embed_color || DEFAULT_COLOR}
               message={cfg.verification_message || ""}
+              useChzzkVerification={!!cfg.use_chzzk_verification}
             />
+            <p className="text-xs text-muted mt-2">
+              버튼 색상은 임베드 색상과 무관하게 Discord 기본 버튼 스타일로 고정되어 위 미리보기처럼 표시되며, 변경할 수 없습니다.
+            </p>
           </div>
         )}
       </div>

@@ -6,7 +6,7 @@ import { clsx } from "clsx";
 import {
   Radio, Trash2, Bell, BellOff,
   ExternalLink, Plus, Users, X, ChevronLeft, ChevronRight,
-  MessageSquare, Edit2, Sparkles, RefreshCw,
+  MessageSquare, Edit2, Sparkles, RefreshCw, HelpCircle,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier, ChzzkVerification, ChatCommand } from "@/lib/types";
@@ -624,6 +624,7 @@ export default function ChzzkPage() {
 
   const [verifications, setVerifications] = useState<ChzzkVerification[]>([]);
   const [verifOpen, setVerifOpen]         = useState(false);
+  const [showFollowGuide, setShowFollowGuide] = useState(false);
 
   const textChannels = channels.filter((c) => c.type === 0);
 
@@ -677,6 +678,18 @@ export default function ChzzkPage() {
 
   const findChannel = (id: number) => channels.find((c) => String(c.id) === String(id));
 
+  // 서버당 1명만 등록 가능하므로 팔로워 역할 지급 섹션은 유일한 등록 스트리머를 기준으로 동작
+  const mainSub = subs[0];
+  const handleRelinkMain = async () => {
+    if (!mainSub) return;
+    try {
+      const d = await api.chzzkAuth.getStreamerLoginUrl(
+        guildId, String(mainSub.discord_channel), !!mainSub.mention_everyone
+      );
+      window.location.href = d.url;
+    } catch {}
+  };
+
   return (
     <div className="space-y-6">
       {verifOpen && (
@@ -722,14 +735,6 @@ export default function ChzzkPage() {
       <div className="space-y-3">
         {subs.map((sub) => {
           const ch = findChannel(sub.discord_channel);
-          const handleRelink = async () => {
-            try {
-              const d = await api.chzzkAuth.getStreamerLoginUrl(
-                guildId, String(sub.discord_channel), !!sub.mention_everyone
-              );
-              window.location.href = d.url;
-            } catch {}
-          };
           return (
             <div key={sub.id} className="card space-y-3">
               <div className="flex items-center gap-4">
@@ -758,16 +763,6 @@ export default function ChzzkPage() {
                 <button onClick={() => remove(sub.id)}
                   className="p-2 text-muted hover:text-danger transition-colors rounded-lg hover:bg-danger/10 shrink-0">
                   <Trash2 size={16} />
-                </button>
-              </div>
-              <div className="border-t border-border pt-3">
-                <p className="text-sm text-muted mb-2">
-                  팔로우 기간 조회를 위해 스트리머({sub.chzzk_name}) 본인이 아래 버튼으로 치지직 계정을 연동해야 합니다.
-                </p>
-                <button onClick={handleRelink}
-                  className="flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-lg border border-accent/60 text-accent hover:bg-accent/15 hover:border-accent transition-colors">
-                  <ExternalLink size={15} />
-                  스트리머 팔로워 조회 연동
                 </button>
               </div>
             </div>
@@ -805,23 +800,55 @@ export default function ChzzkPage() {
                 로 기존 인증 유저에 재적용할 수 있습니다.
               </p>
             </div>
-            <button
-              onClick={openVerif}
-              className="ml-4 shrink-0 flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-lg
-                         border border-chzzk/60 text-chzzk bg-chzzk/10
-                         hover:bg-chzzk/20 hover:border-chzzk transition-colors"
-            >
-              <Users size={15} /> 팔로우 인원
-              {verifications.length > 0 && (
-                <span className="text-xs bg-chzzk/30 rounded-full px-2 py-0.5 font-bold">
-                  {verifications.length}
-                </span>
-              )}
-            </button>
+            <div className="ml-4 shrink-0 flex items-center gap-2">
+              <button
+                onClick={() => setShowFollowGuide((v) => !v)}
+                className="flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg
+                           border border-border text-muted hover:text-fg hover:border-border/60 transition-colors"
+              >
+                <HelpCircle size={15} /> 사용방법
+              </button>
+              <button
+                onClick={openVerif}
+                className="flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-lg
+                           border border-chzzk/60 text-chzzk bg-chzzk/10
+                           hover:bg-chzzk/20 hover:border-chzzk transition-colors"
+              >
+                <Users size={15} /> 팔로우 인원
+                {verifications.length > 0 && (
+                  <span className="text-xs bg-chzzk/30 rounded-full px-2 py-0.5 font-bold">
+                    {verifications.length}
+                  </span>
+                )}
+              </button>
+            </div>
           </div>
 
+          {showFollowGuide && (
+            <div className="rounded-lg bg-bg border border-border p-4 text-sm text-muted space-y-1.5">
+              <p>1. 아래 &quot;스트리머 팔로워 조회 연동&quot; 버튼으로 스트리머 본인의 치지직 계정을 연동하면 팔로우 기간 조회가 가능해집니다.</p>
+              <p>2. 지급 조건(개월 수)과 역할을 짝지어 티어를 추가하세요. (최대 5개, 조건을 만족하는 가장 높은 티어 하나만 적용)</p>
+              <p>3. 서버 멤버가 대시보드 &quot;입장 인증&quot; 페이지에서 치지직 계정으로 인증하면 팔로우 기간에 맞는 티어 역할이 자동 지급됩니다.</p>
+              <p>4. 티어를 새로 추가/변경한 뒤 기존에 인증했던 멤버에게도 다시 적용하려면 Discord에서{" "}
+                <code className="text-accent bg-bg-card px-1 rounded">/팔로우불러오기</code> 명령어를 실행하세요.</p>
+            </div>
+          )}
+
+          {mainSub && (
+            <div className="pt-1">
+              <p className="text-sm text-muted mb-2">
+                팔로우 기간 조회를 위해 스트리머({mainSub.chzzk_name}) 본인이 아래 버튼으로 치지직 계정을 연동해야 합니다.
+              </p>
+              <button onClick={handleRelinkMain}
+                className="flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-lg border border-accent/60 text-accent hover:bg-accent/15 hover:border-accent transition-colors">
+                <ExternalLink size={15} />
+                스트리머 팔로워 조회 연동
+              </button>
+            </div>
+          )}
+
           {/* 등록된 티어 목록 */}
-          <div className="space-y-2">
+          <div className="space-y-2 border-t border-border pt-4">
             {followTiers.length === 0 && (
               <p className="text-sm text-muted text-center py-3">등록된 티어가 없습니다. 아래에서 추가하세요.</p>
             )}

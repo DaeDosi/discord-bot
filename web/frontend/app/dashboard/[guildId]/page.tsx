@@ -82,7 +82,7 @@ export default function GeneralSettingsPage() {
           <SelectField label="중재 로그 채널"   value={cfg.log_channel || ""}     onChange={set("log_channel")}
             options={textChannels} placeholder="채널 선택..." />
           <SelectField label="애정도 레벨업 알림 채널" value={cfg.levelup_channel || ""} onChange={set("levelup_channel")}
-            options={textChannels} placeholder="현재 채널 (기본)" />
+            options={textChannels} placeholder="채널 선택..." />
         </div>
       </div>
 
