@@ -38,6 +38,7 @@ try:
     from chzzkpy.authorization import AccessToken
     from chzzkpy.flags import UserPermission
     from chzzkpy.message import Message
+    from chzzkpy.error import HTTPException as ChzzkHTTPException
     _CHZZKPY_AVAILABLE = True
 except Exception as e:  # pragma: no cover - 선택적 의존성
     log.warning(f"chzzkpy 라이브러리를 불러올 수 없어 실시간 채팅 기능이 비활성화됩니다: {e}")
@@ -218,7 +219,15 @@ class ChzzkChatCog(commands.Cog):
             )
             try:
                 user_client = await self.client.get_user_client(access_token_obj)
-                await user_client.subscribe(UserPermission(chat=True), session_id=self.session_id)
+                try:
+                    await user_client.subscribe(UserPermission(chat=True), session_id=self.session_id)
+                except ChzzkHTTPException as e:
+                    # 치지직 서버 쪽에는 이전 세션의 구독이 이미 살아있는 경우 발생.
+                    # 실패로 취급해 매번 재시도하면 이 채널은 영원히 로컬 목록에 못 들어가고
+                    # 60초마다 같은 에러만 반복 로깅하게 되므로, 이미 구독된 상태를 정상으로 간주한다.
+                    if "이미 구독 중인 이벤트" not in str(e):
+                        raise
+                    log.info(f"치지직 채팅 이미 구독 중(정상 처리): guild={row['guild_id']}")
             except Exception:
                 log.exception(f"치지직 채팅 구독 실패 guild={row['guild_id']}")
                 continue
@@ -321,6 +330,9 @@ class ChzzkChatCog(commands.Cog):
 
         cmd = entry["commands"].get(trigger)
         if not cmd:
+            if trigger == "포인트":
+                await self._handle_points(entry, message)
+                return
             mc_event_desc = (
                 f"있음(등록된 트리거={list(mc_event['triggers'].keys())})" if mc_event
                 else "없음(참가 서버 미등록 또는 이벤트 비활성 상태)"
@@ -361,6 +373,7 @@ class ChzzkChatCog(commands.Cog):
             )
             return
         discord_user_id = verif["user_id"]
+        nickname = message.profile.nickname if message.profile else "익명"
 
         # 1일 1회 제한 (guild + 치지직 유저 + 명령어 + 오늘 날짜 조합의 PK 충돌로 중복 차단)
         try:
@@ -373,6 +386,12 @@ class ChzzkChatCog(commands.Cog):
             await db.commit()
         except Exception:
             log.info(f"치지직 출석체크 무시(오늘 이미 출석함): guild={guild_id} chzzk_user={chzzk_user_id}")
+            already_text = f"{nickname}님, 이미 출석을 하였습니다."
+            try:
+                await entry["user_client"].send_message(already_text)
+                await self._log_chat(guild_id, "out", "NexBot", already_text)
+            except Exception:
+                log.exception(f"출석체크 중복 안내 메시지 전송 실패 guild={guild_id}")
             return  # 오늘 이미 출석함
 
         if cmd["reward_points"]:
@@ -395,7 +414,6 @@ class ChzzkChatCog(commands.Cog):
             (guild_id, cmd["id"], _today_kst())
         )).fetchone()
         today_count = today_count_row[0] if today_count_row else 1
-        nickname = message.profile.nickname if message.profile else "익명"
         announce_text = f"{nickname}님이 오늘 {today_count}번째 출석 하셨습니다!"
         try:
             await entry["user_client"].send_message(announce_text)
@@ -408,6 +426,35 @@ class ChzzkChatCog(commands.Cog):
             f"discord_user={discord_user_id} points={cmd['reward_points']} xp={cmd['reward_xp']} "
             f"today_count={today_count}"
         )
+
+    async def _handle_points(self, entry: dict, message: "Message"):
+        """!포인트 — 대시보드 설정 없이 항상 동작하는 내장 명령어. 디코 연동이
+        안 된 유저나 포인트 기록이 아직 없는 유저도 채팅으로 안내만 하고 조용히 처리한다."""
+        guild_id = entry["guild_id"]
+        chzzk_user_id = message.user_id
+        nickname = message.profile.nickname if message.profile else "익명"
+
+        db = await get_db()
+        verif = await (await db.execute(
+            "SELECT user_id FROM chzzk_verifications WHERE guild_id=? AND chzzk_channel_id=?",
+            (guild_id, chzzk_user_id)
+        )).fetchone()
+
+        if not verif:
+            reply = f"{nickname}님, 디스코드 계정 연동 후 이용할 수 있습니다. (대시보드 입장 인증에서 치지직 계정을 연동해주세요)"
+        else:
+            pts_row = await (await db.execute(
+                "SELECT points FROM user_points WHERE guild_id=? AND user_id=?",
+                (guild_id, verif["user_id"])
+            )).fetchone()
+            points = pts_row["points"] if pts_row else 0
+            reply = f"{nickname}님의 보유 포인트는 {points:,}P 입니다."
+
+        try:
+            await entry["user_client"].send_message(reply)
+            await self._log_chat(guild_id, "out", "NexBot", reply)
+        except Exception:
+            log.exception(f"치지직 포인트 조회 응답 전송 실패 guild={guild_id}")
 
     # ── 마크 콜라보 이벤트: !디버프지급 / !버프지급 / !랜덤아이템 ──────────────────
     async def _pick_item(self, event_id: int, item_type: str | None) -> dict | None:

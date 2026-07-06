@@ -780,7 +780,7 @@ export default function ChzzkPage() {
 
       {subs.length === 0 && <AddStreamerForm channels={channels} guildId={guildId} />}
       {subs.length >= 1 && (
-        <p className="text-sm text-center" style={{ color: "#f0565080" }}>
+        <p className="text-sm text-center text-danger">
           서버당 1명만 등록 가능합니다. 기존 구독을 삭제 후 다시 연동하세요.
         </p>
       )}
@@ -791,14 +791,14 @@ export default function ChzzkPage() {
           <div className="flex items-center justify-between">
             <div>
               <h2 className="section-title">팔로워 역할 지급</h2>
-              <p className="page-subtitle">
-                치지직 OAuth 인증 시 팔로우 기간에 따라 역할을 자동으로 부여합니다.
-                티어를 여러 개 추가할 수 있으며, 조건을 만족하는 티어 중 가장 높은 역할이 지급됩니다.
-                <br />
-                Discord에서{" "}
-                <code className="text-accent bg-bg px-1 rounded">/팔로우불러오기</code>
-                로 기존 인증 유저에 재적용할 수 있습니다.
-              </p>
+              <div className="page-subtitle space-y-1.5">
+                <p>치지직 OAuth 인증 시 팔로우 기간에 따라 역할을 자동으로 부여합니다. 티어를 여러 개 추가할 수 있으며, 조건을 만족하는 티어 중 가장 높은 역할이 지급됩니다.</p>
+                <p>
+                  Discord에서{" "}
+                  <code className="text-accent bg-bg px-1 rounded">/팔로우불러오기</code>
+                  로 기존 인증 유저에 재적용할 수 있습니다.
+                </p>
+              </div>
             </div>
             <div className="ml-4 shrink-0 flex items-center gap-2">
               <button

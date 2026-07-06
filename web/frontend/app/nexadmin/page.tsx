@@ -67,7 +67,7 @@ interface GuildDetail {
   owner_id: string | null; member_count: number; description: string | null;
   chzzk: {
     chzzk_channel_id: string; chzzk_name: string; chzzk_image_url: string | null;
-    discord_channel: number; notify_vod: number; notify_clip: number; notify_community: number;
+    discord_channel: number;
     is_live: number; streamer_access_token: string | null;
   } | null;
   verif_count: number;
@@ -332,9 +332,6 @@ function GuildDetailModal({ guildId, onClose, onLeft }: { guildId: string; onClo
                   ) : null}
                 </div>
                 <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs mt-1">
-                  <span className="text-muted">VOD 알림</span><span className={detail.chzzk.notify_vod ? "text-accent" : "text-muted"}>{detail.chzzk.notify_vod ? "ON" : "OFF"}</span>
-                  <span className="text-muted">클립 알림</span><span className={detail.chzzk.notify_clip ? "text-accent" : "text-muted"}>{detail.chzzk.notify_clip ? "ON" : "OFF"}</span>
-                  <span className="text-muted">커뮤니티 알림</span><span className={detail.chzzk.notify_community ? "text-accent" : "text-muted"}>{detail.chzzk.notify_community ? "ON" : "OFF"}</span>
                   <span className="text-muted">스트리머 연동</span><span className={detail.chzzk.streamer_access_token ? "text-accent" : "text-muted"}>{detail.chzzk.streamer_access_token ? "연동됨" : "미연동"}</span>
                 </div>
               </div>
