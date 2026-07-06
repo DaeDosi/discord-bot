@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { clsx } from "clsx";
-import { Settings, Heart, Shield, Radio, UserCheck, HelpCircle, ChevronLeft, Terminal, Gem, Youtube, Tv, Swords } from "lucide-react";
+import { Settings, Heart, Shield, Radio, UserCheck, HelpCircle, ChevronLeft, Terminal, Gem, Youtube, Tv, Swords, MonitorPlay } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { api } from "@/lib/api";
 
@@ -33,8 +33,9 @@ const BASE_GROUPS: NavGroup[] = [
   {
     label: "지원",
     items: [
-      { href: "/commands", label: "명령어",   shortLabel: "명령어", icon: Terminal   },
-      { href: "/help",     label: "문제 해결", shortLabel: "도움말", icon: HelpCircle },
+      { href: "/commands", label: "명령어",     shortLabel: "명령어",  icon: Terminal    },
+      { href: "/overlay",  label: "오버레이",   shortLabel: "오버레이", icon: MonitorPlay },
+      { href: "/help",     label: "문제 해결",   shortLabel: "도움말",  icon: HelpCircle  },
     ],
   },
 ];

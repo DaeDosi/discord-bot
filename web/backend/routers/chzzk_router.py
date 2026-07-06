@@ -1,4 +1,6 @@
 import os
+import json
+import secrets
 import asyncio
 import time as _time
 import httpx
@@ -15,6 +17,7 @@ from typing import Optional
 from deps import get_current_user, require_guild_admin
 from database import get_db
 from chzzk_monitor import check_once_debug
+from auth import FRONTEND_URL
 
 router = APIRouter(prefix="/api/chzzk", tags=["chzzk"])
 
@@ -78,7 +81,8 @@ async def list_subscriptions(
         "SELECT id, discord_channel, chzzk_channel_id, chzzk_name, "
         "chzzk_image_url, is_live, mention_role_id, custom_message, "
         "follow_role_1month, follow_role_3month, "
-        "follow_months_tier1, follow_months_tier2 "
+        "follow_months_tier1, follow_months_tier2, "
+        "chat_enabled, manager_role_id "
         "FROM chzzk_subscriptions WHERE guild_id=?",
         (int(guild_id),)
     )).fetchall()
@@ -89,6 +93,9 @@ async def list_subscriptions(
             d["follow_role_1month"] = str(d["follow_role_1month"])
         if d.get("follow_role_3month") is not None:
             d["follow_role_3month"] = str(d["follow_role_3month"])
+        d["chat_enabled"] = bool(d["chat_enabled"]) if d.get("chat_enabled") is not None else True
+        if d.get("manager_role_id") is not None:
+            d["manager_role_id"] = str(d["manager_role_id"])
         result.append(d)
     return result
 
@@ -139,9 +146,11 @@ async def add_subscription(
 
 # ── 구독 수정 ─────────────────────────────────────────────────────────────────
 class SubUpdate(BaseModel):
-    discord_channel: Optional[str] = None
-    mention_role_id: Optional[str] = None
-    custom_message:  Optional[str] = None
+    discord_channel: Optional[str]  = None
+    mention_role_id: Optional[str]  = None
+    custom_message:  Optional[str]  = None
+    chat_enabled:    Optional[bool] = None
+    manager_role_id: Optional[str]  = None
 
 
 @router.patch("/{guild_id}/subscriptions/{sub_id}")
@@ -168,6 +177,10 @@ async def update_subscription(
         updates["mention_role_id"] = int(body.mention_role_id) if body.mention_role_id else None
     if body.custom_message is not None:
         updates["custom_message"] = body.custom_message
+    if body.chat_enabled is not None:
+        updates["chat_enabled"] = int(body.chat_enabled)
+    if body.manager_role_id is not None:
+        updates["manager_role_id"] = int(body.manager_role_id) if body.manager_role_id else None
 
     if updates:
         set_clause = ", ".join(f"{k}=?" for k in updates)
@@ -657,6 +670,113 @@ async def get_chat_log(
         (int(guild_id),)
     )).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── OBS 오버레이 ──────────────────────────────────────────────────────────────
+# 오버레이 페이지는 대시보드 로그인 세션 없이(OBS 브라우저 소스는 커스텀 헤더를 못 보냄)
+# URL에 박아넣은 토큰만으로 guild를 식별한다. 정산 후에도 결과를 잠시 보여주기 위한 유지 시간.
+_GAMBLING_RESULT_DISPLAY_SECONDS = 60
+
+
+@router.get("/{guild_id}/overlay-token")
+async def get_overlay_token(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT overlay_token FROM chzzk_subscriptions WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="먼저 치지직 채널을 등록해주세요.")
+    token = row["overlay_token"]
+    if not token:
+        token = secrets.token_urlsafe(20)
+        await db.execute(
+            "UPDATE chzzk_subscriptions SET overlay_token=? WHERE guild_id=?",
+            (token, int(guild_id))
+        )
+        await db.commit()
+    return {"token": token, "overlay_url": f"{FRONTEND_URL}/overlay/gambling/{token}"}
+
+
+@router.post("/{guild_id}/overlay-token/regenerate")
+async def regenerate_overlay_token(
+    guild_id: str,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT id FROM chzzk_subscriptions WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="먼저 치지직 채널을 등록해주세요.")
+    token = secrets.token_urlsafe(20)
+    await db.execute(
+        "UPDATE chzzk_subscriptions SET overlay_token=? WHERE guild_id=?",
+        (token, int(guild_id))
+    )
+    await db.commit()
+    return {"token": token, "overlay_url": f"{FRONTEND_URL}/overlay/gambling/{token}"}
+
+
+@router.get("/overlay/{token}/gambling-status")
+async def get_overlay_gambling_status(token: str):
+    """공개(비인증) 엔드포인트. OBS 브라우저 소스가 주기적으로 폴링한다."""
+    db = await get_db()
+    sub = await (await db.execute(
+        "SELECT guild_id FROM chzzk_subscriptions WHERE overlay_token=?",
+        (token,)
+    )).fetchone()
+    if not sub:
+        raise HTTPException(status_code=404, detail="유효하지 않은 오버레이 토큰입니다.")
+    guild_id = sub["guild_id"]
+
+    session = await (await db.execute(
+        """SELECT id, title, options, bet_amount, settled, winner_index, created_at, settled_at
+           FROM chzzk_gambling_sessions WHERE guild_id=? ORDER BY id DESC LIMIT 1""",
+        (guild_id,)
+    )).fetchone()
+    if not session:
+        return {"active": False, "result": None}
+
+    options = json.loads(session["options"])
+    vote_rows = await (await db.execute(
+        "SELECT option_index, COUNT(*) AS cnt FROM chzzk_gambling_votes WHERE session_id=? GROUP BY option_index",
+        (session["id"],)
+    )).fetchall()
+    counts = [0] * len(options)
+    for r in vote_rows:
+        if 0 <= r["option_index"] < len(counts):
+            counts[r["option_index"]] = r["cnt"]
+
+    base = {
+        "title": session["title"],
+        "options": options,
+        "bet_amount": session["bet_amount"],
+        "votes": counts,
+        "started_at": session["created_at"],
+    }
+
+    if not session["settled"]:
+        return {"active": True, "result": None, **base}
+
+    now = _time.time()
+    if (session["settled_at"] or 0) + _GAMBLING_RESULT_DISPLAY_SECONDS < now:
+        return {"active": False, "result": None}
+
+    return {
+        "active": False,
+        "result": {
+            **base,
+            "winner_index": session["winner_index"],
+            "settled_at": session["settled_at"],
+        },
+    }
 
 
 # ── 마크 콜라보 이벤트 (참가 초대된 서버만 확인 가능) ─────────────────────────

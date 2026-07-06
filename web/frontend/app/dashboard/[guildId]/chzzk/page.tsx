@@ -7,6 +7,7 @@ import {
   Radio, Trash2, Bell, BellOff,
   ExternalLink, Plus, Users, X, ChevronLeft, ChevronRight,
   MessageSquare, Edit2, Sparkles, RefreshCw, HelpCircle,
+  Power, Crown, ListChecks,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier, ChzzkVerification, ChatCommand } from "@/lib/types";
@@ -471,7 +472,122 @@ function ChzzkChatFeed({ guildId }: { guildId: string }) {
   );
 }
 
-function ChatCommandsPanel({ guildId }: { guildId: string }) {
+// ── 실시간 채팅 연동 ON/OFF ────────────────────────────────────────────────────
+function ChatEnabledCard({
+  guildId, mainSub, onChanged,
+}: { guildId: string; mainSub?: ChzzkSubscription; onChanged: () => void }) {
+  const [saving, setSaving] = useState(false);
+  if (!mainSub) return null;
+
+  const toggle = async (enabled: boolean) => {
+    setSaving(true);
+    try {
+      await api.chzzk.update(guildId, mainSub.id, { chat_enabled: enabled });
+      onChanged();
+    } catch {}
+    setSaving(false);
+  };
+
+  return (
+    <div className="card">
+      <label className="flex items-center justify-between cursor-pointer gap-4">
+        <div>
+          <p className="text-sm font-semibold text-fg flex items-center gap-2">
+            <Power size={15} className="text-accent" /> 실시간 채팅 연동
+          </p>
+          <p className="text-sm text-muted mt-0.5">
+            켜면 치지직 방송 채팅에 봇이 접속해 아래 출석체크·자동응답·포인트·도박 명령어가 동작합니다.
+          </p>
+        </div>
+        <div className="relative shrink-0">
+          <input
+            type="checkbox" className="sr-only peer"
+            checked={mainSub.chat_enabled}
+            disabled={saving}
+            onChange={(e) => toggle(e.target.checked)}
+          />
+          <div className="w-10 h-6 bg-border rounded-full peer peer-checked:bg-accent transition-colors" />
+          <div className="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-4" />
+        </div>
+      </label>
+    </div>
+  );
+}
+
+// ── 도박 관리 권한 (스트리머 본인 + 지정 역할) ─────────────────────────────────
+function GamblingManagerCard({
+  guildId, mainSub, roles, onChanged,
+}: { guildId: string; mainSub?: ChzzkSubscription; roles: Role[]; onChanged: () => void }) {
+  const [saving, setSaving] = useState(false);
+  if (!mainSub) return null;
+
+  const change = async (roleId: string) => {
+    setSaving(true);
+    try {
+      await api.chzzk.update(guildId, mainSub.id, { manager_role_id: roleId });
+      onChanged();
+    } catch {}
+    setSaving(false);
+  };
+
+  return (
+    <div className="card space-y-3">
+      <h2 className="section-title flex items-center gap-2">
+        <Crown size={16} className="text-accent" /> 도박 관리 권한
+      </h2>
+      <p className="text-sm text-muted">
+        <code className="bg-bg px-1.5 py-0.5 rounded text-accent text-xs">!도박</code>,{" "}
+        <code className="bg-bg px-1.5 py-0.5 rounded text-accent text-xs">!도박종료</code>는 스트리머 본인은 항상 사용할 수 있습니다.
+        아래에서 역할을 지정하면, 디스코드 서버에서 해당 역할을 가진 시청자도 (입장 인증으로 치지직 계정을 연동했다면) 함께 사용할 수 있습니다.
+      </p>
+      <select
+        className="select w-full" value={mainSub.manager_role_id || ""} disabled={saving}
+        onChange={(e) => change(e.target.value)}
+      >
+        <option value="">역할 지정 안 함 (스트리머만 가능)</option>
+        {roles.map((r) => <option key={r.id} value={r.id}>@{r.name}</option>)}
+      </select>
+    </div>
+  );
+}
+
+// ── 명령어 안내 ────────────────────────────────────────────────────────────────
+function ChatCommandGuideCard({ commands }: { commands: ChatCommand[] }) {
+  const checkinCmd = commands.find((c) => c.command_type === "checkin");
+  const replyCmds  = commands.filter((c) => c.command_type === "reply" && c.is_active);
+
+  const rows: { trigger: string; desc: string }[] = [
+    ...(checkinCmd
+      ? [{ trigger: checkinCmd.trigger_text, desc: `출석체크 (하루 1회, +${checkinCmd.reward_points.toLocaleString()}P / +${checkinCmd.reward_xp.toLocaleString()} 애정도)` }]
+      : []),
+    ...replyCmds.map((c) => ({ trigger: c.trigger_text, desc: `자동 응답 → ${c.reply_text}` })),
+    { trigger: "포인트", desc: "현재 보유 포인트 확인" },
+    { trigger: "도박 [번호]", desc: "웹 대시보드(포인트 > 포인트 도박)에 설정된 옵션으로 도박 시작 — 스트리머/매니저 전용" },
+    { trigger: "투표 <번호>", desc: "진행 중인 도박에 베팅 (1인 1회, 번복 불가)" },
+    { trigger: "도박종료", desc: "진행 중인 도박을 마감하고 정산 — 스트리머/매니저 전용" },
+  ];
+
+  return (
+    <div className="card space-y-3">
+      <h2 className="section-title flex items-center gap-2">
+        <ListChecks size={16} className="text-accent" /> 명령어 안내
+      </h2>
+      <p className="text-sm text-muted">현재 이 서버의 치지직 채팅에서 사용할 수 있는 명령어 목록입니다.</p>
+      <div className="space-y-1.5">
+        {rows.map((row, i) => (
+          <div key={i} className="flex items-start gap-3 p-2.5 rounded-lg bg-bg border border-border text-sm">
+            <code className="font-mono text-accent shrink-0">!{row.trigger}</code>
+            <span className="text-muted">{row.desc}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ChatCommandsPanel({
+  guildId, mainSub, roles, onSubChanged,
+}: { guildId: string; mainSub?: ChzzkSubscription; roles: Role[]; onSubChanged: () => void }) {
   const [commands, setCommands] = useState<ChatCommand[]>([]);
   const [loading, setLoading]   = useState(true);
   const [modal, setModal]       = useState<{ type: "checkin" | "reply"; initial?: ChatCommand } | null>(null);
@@ -529,8 +645,11 @@ function ChatCommandsPanel({ guildId }: { guildId: string }) {
         />
       )}
 
+      <ChatEnabledCard guildId={guildId} mainSub={mainSub} onChanged={onSubChanged} />
       <ChatStatusCard guildId={guildId} />
       <ChzzkChatFeed guildId={guildId} />
+      <ChatCommandGuideCard commands={commands} />
+      <GamblingManagerCard guildId={guildId} mainSub={mainSub} roles={roles} onChanged={onSubChanged} />
 
       {/* 출석체크 */}
       <div className="card space-y-4">
@@ -727,7 +846,9 @@ export default function ChzzkPage() {
         ))}
       </div>
 
-      {detailTab === "chat-commands" && <ChatCommandsPanel guildId={guildId} />}
+      {detailTab === "chat-commands" && (
+        <ChatCommandsPanel guildId={guildId} mainSub={mainSub} roles={roles} onSubChanged={load} />
+      )}
 
       {detailTab === "streamer" && (
       <>

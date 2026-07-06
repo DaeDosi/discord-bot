@@ -1,4 +1,4 @@
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -252,6 +252,14 @@ export const api = {
         }>(`/api/chzzk/${gid}/mc-event`),
       savePlayerName: (gid: string, mc_player_name: string) =>
         request(`/api/chzzk/${gid}/mc-event`, { method: "PUT", body: JSON.stringify({ mc_player_name }) }),
+    },
+    overlay: {
+      getToken: (gid: string) =>
+        request<{ token: string; overlay_url: string }>(`/api/chzzk/${gid}/overlay-token`),
+      regenerateToken: (gid: string) =>
+        request<{ token: string; overlay_url: string }>(
+          `/api/chzzk/${gid}/overlay-token/regenerate`, { method: "POST" }
+        ),
     },
   },
 };

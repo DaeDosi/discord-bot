@@ -380,6 +380,41 @@ async def init_db():
                created_at      INTEGER NOT NULL
            )""",
         "CREATE INDEX IF NOT EXISTS idx_mc_event_purchases_event ON mc_event_purchases(event_id, created_at)",
+        # 실시간 채팅 명령어 연동 ON/OFF 스위치. 예전에는 checkin/reply 명령어가 하나라도
+        # 설정되면(또는 mc_event 참가 시) 자동으로 채팅 연결이 활성화됐는데, 이제는 이 값이
+        # 유일한 기준이 된다 — 기존 사용자의 연결이 갑자기 끊기지 않도록 기본값은 1(ON).
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN chat_enabled INTEGER DEFAULT 1",
+        # !도박/!도박종료를 스트리머 본인 외에 허용할 디스코드 역할. 치지직 API가 매니저 뱃지를
+        # 안정적으로 제공하지 않아서, 대신 이미 인증된(chzzk_verifications) 유저가 디스코드
+        # 서버에서 이 역할을 가지고 있는지로 매니저 여부를 판단한다.
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN manager_role_id INTEGER",
+        # OBS 브라우저 소스 오버레이 인증용 토큰. 오버레이 페이지는 대시보드 로그인 세션이
+        # 없으므로(OBS는 커스텀 헤더를 못 보냄) URL에 박아넣는 이 토큰으로만 식별한다.
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN overlay_token TEXT",
+        # 치지직 채팅 기반 포인트 도박. 기존 points_gambling_config/options(웹 대시보드 포인트 탭에서
+        # 설정)를 그대로 불러와 채팅에서 !도박으로 시작한다. Discord Poll과 달리 자체적으로 투표를
+        # 받으므로, 베팅은 즉시 차감하고(잔액 부족 시 거절) 라운드당 1인 1표만 허용해 번복을 막는다.
+        """CREATE TABLE IF NOT EXISTS chzzk_gambling_sessions (
+               id           INTEGER PRIMARY KEY AUTOINCREMENT,
+               guild_id     INTEGER NOT NULL,
+               title        TEXT    NOT NULL,
+               options      TEXT    NOT NULL,
+               bet_amount   INTEGER NOT NULL,
+               settled      INTEGER NOT NULL DEFAULT 0,
+               winner_index INTEGER,
+               created_at   INTEGER NOT NULL,
+               settled_at   INTEGER
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_chzzk_gambling_sessions_guild ON chzzk_gambling_sessions(guild_id, id)",
+        # UNIQUE(session_id, chzzk_user_id) — 라운드당 1인 1표, 번복 불가(재투표 INSERT는 그냥 실패).
+        """CREATE TABLE IF NOT EXISTS chzzk_gambling_votes (
+               session_id      INTEGER NOT NULL,
+               chzzk_user_id   TEXT    NOT NULL,
+               discord_user_id INTEGER NOT NULL,
+               option_index    INTEGER NOT NULL,
+               voted_at        INTEGER NOT NULL,
+               PRIMARY KEY (session_id, chzzk_user_id)
+           )""",
     ]:
         try:
             await db.execute(sql)
