@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
+import Link from "next/link";
 import Image from "next/image";
 import { clsx } from "clsx";
 import {
@@ -340,9 +341,12 @@ function timeAgo(unixSeconds: number | null): string {
   return `${Math.floor(diff / 86400)}일 전`;
 }
 
-// ── 연결 상태 카드 ────────────────────────────────────────────────────────────
-function ChatStatusCard({ guildId }: { guildId: string }) {
+// ── 실시간 채팅 연동 ON/OFF + 연결 상태 (하나로 통합) ──────────────────────────
+function ChatConnectionCard({
+  guildId, mainSub, onChanged,
+}: { guildId: string; mainSub?: ChzzkSubscription; onChanged: () => void }) {
   const [status, setStatus] = useState<ChatStatus | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const load = () => api.chzzk.chatStatus(guildId).then(setStatus).catch(() => {});
 
@@ -352,44 +356,89 @@ function ChatStatusCard({ guildId }: { guildId: string }) {
     return () => clearInterval(timer);
   }, [guildId]);
 
-  if (!status) {
-    return <div className="card text-center py-6 text-muted text-sm">연결 상태 확인 중...</div>;
+  if (!mainSub) return null;
+
+  const toggle = async (enabled: boolean) => {
+    setSaving(true);
+    try {
+      await api.chzzk.update(guildId, mainSub.id, { chat_enabled: enabled });
+      onChanged();
+    } catch {}
+    setSaving(false);
+  };
+
+  const enabled = mainSub.chat_enabled;
+  const connected = !!status?.connected;
+
+  let dotClass = "bg-danger";
+  let statusText = "현재 봇이 작동중이지 않습니다.";
+  if (enabled) {
+    if (connected) {
+      dotClass = "bg-success animate-pulse";
+      statusText = "봇이 작동중입니다.";
+    } else {
+      dotClass = "bg-warning";
+      statusText = "봇이 켜져 있지만 아직 채팅 연결을 확인하지 못했습니다.";
+    }
   }
 
   return (
-    <div className="card space-y-3">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div className="flex items-center gap-2">
-          <span className={`w-2.5 h-2.5 rounded-full ${status.connected ? "bg-success animate-pulse" : "bg-danger"}`} />
-          <p className="text-sm font-semibold text-fg">
-            {status.connected ? "치지직 채팅 연결됨" : "연결 안 됨"}
+    <div className="card space-y-4">
+      <label className="flex items-center justify-between cursor-pointer gap-4">
+        <div>
+          <p className="text-sm font-semibold text-fg flex items-center gap-2">
+            <Power size={15} className="text-accent" /> 실시간 채팅 연동
           </p>
-          <button onClick={load} className="text-muted hover:text-fg transition-colors" title="새로고침">
-            <RefreshCw size={13} />
-          </button>
+          <p className="text-sm text-muted mt-0.5">
+            켜면 치지직 방송 채팅에 봇이 접속해 아래 출석체크·자동응답·포인트·도박 명령어가 동작합니다.
+          </p>
         </div>
-        <div className="flex items-center gap-4 text-xs text-muted">
-          <span>마지막 채팅 감지: {timeAgo(status.last_event_at)}</span>
-          <span>오늘 출석: <span className="text-accent font-semibold">{status.today_checkins}</span>명</span>
+        <div className="relative shrink-0">
+          <input
+            type="checkbox" className="sr-only peer"
+            checked={enabled}
+            disabled={saving}
+            onChange={(e) => toggle(e.target.checked)}
+          />
+          <div className="w-10 h-6 bg-border rounded-full peer peer-checked:bg-accent transition-colors" />
+          <div className="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-4" />
         </div>
-      </div>
-      {!status.connected && (
-        <p className="text-xs text-warning">
-          봇이 아직 이 채널의 채팅 세션을 확인하지 못했습니다. 스트리머 계정이 채팅 조회/쓰기 권한으로 연동돼 있는지,
-          봇이 켜져 있는지 확인해주세요. (연동 화면에서 "치지직 계정으로 연동하기"를 다시 눌러야 새 권한이 적용됩니다)
-        </p>
-      )}
-      {status.recent_checkins.length > 0 && (
-        <div className="pt-2 border-t border-border space-y-1">
-          <p className="text-xs font-semibold text-muted uppercase tracking-wider mb-1">오늘 출석 기록</p>
-          {status.recent_checkins.map((c, i) => (
-            <div key={i} className="flex items-center justify-between text-sm">
-              <span className="text-fg">{c.user_name}</span>
-              <span className="text-muted text-xs">{timeAgo(c.checked_at)}</span>
+      </label>
+
+      <div className="pt-3 border-t border-border space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <span className={`w-2.5 h-2.5 rounded-full ${dotClass}`} />
+            <p className="text-sm font-semibold text-fg">{statusText}</p>
+            <button onClick={load} className="text-muted hover:text-fg transition-colors" title="새로고침">
+              <RefreshCw size={13} />
+            </button>
+          </div>
+          {status && (
+            <div className="flex items-center gap-4 text-xs text-muted">
+              <span>마지막 채팅 감지: {timeAgo(status.last_event_at)}</span>
+              <span>오늘 출석: <span className="text-accent font-semibold">{status.today_checkins}</span>명</span>
             </div>
-          ))}
+          )}
         </div>
-      )}
+        {enabled && !connected && (
+          <p className="text-xs text-warning">
+            봇이 아직 이 채널의 채팅 세션을 확인하지 못했습니다. 스트리머 계정이 채팅 조회/쓰기 권한으로 연동돼 있는지,
+            봇이 켜져 있는지 확인해주세요. (연동 화면에서 "치지직 계정으로 연동하기"를 다시 눌러야 새 권한이 적용됩니다)
+          </p>
+        )}
+        {status && status.recent_checkins.length > 0 && (
+          <div className="pt-2 border-t border-border space-y-1">
+            <p className="text-xs font-semibold text-muted uppercase tracking-wider mb-1">오늘 출석 기록</p>
+            {status.recent_checkins.map((c, i) => (
+              <div key={i} className="flex items-center justify-between text-sm">
+                <span className="text-fg">{c.user_name}</span>
+                <span className="text-muted text-xs">{timeAgo(c.checked_at)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -401,6 +450,9 @@ function ChzzkChatFeed({ guildId }: { guildId: string }) {
   const [open, setOpen] = useState(false);
   const [log, setLog] = useState<ChatLogEntry[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [testInput, setTestInput]   = useState("");
+  const [asStreamer, setAsStreamer] = useState(false);
+  const [sending, setSending]       = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -409,6 +461,17 @@ function ChzzkChatFeed({ guildId }: { guildId: string }) {
     const timer = setInterval(load, 3000);
     return () => clearInterval(timer);
   }, [guildId, open]);
+
+  const sendTest = async () => {
+    const content = testInput.trim();
+    if (!content) return;
+    setSending(true);
+    try {
+      await api.chzzk.sendChatTest(guildId, content, asStreamer);
+      setTestInput("");
+    } catch {}
+    setSending(false);
+  };
 
   useEffect(() => {
     // 페이지 전체가 아니라 이 채팅창 내부만 스크롤 — scrollIntoView는 상위(페이지) 스크롤까지
@@ -466,69 +529,45 @@ function ChzzkChatFeed({ guildId }: { guildId: string }) {
           ))
         )}
       </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <input
+            className="input flex-1 text-sm"
+            placeholder="테스트로 보낼 채팅 메시지 (예: !출석체크, !포인트, !도박, !투표 1)"
+            value={testInput}
+            onChange={(e) => setTestInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") sendTest(); }}
+          />
+          <button
+            onClick={sendTest}
+            disabled={sending || !testInput.trim()}
+            className="btn-secondary text-sm shrink-0"
+          >
+            전송
+          </button>
+        </div>
+        <label className="flex items-center gap-1.5 text-xs text-muted cursor-pointer select-none">
+          <input
+            type="checkbox" checked={asStreamer}
+            onChange={(e) => setAsStreamer(e.target.checked)}
+            className="w-3.5 h-3.5 rounded accent-accent"
+          />
+          스트리머 본인으로 전송 (!도박 / !도박종료 권한 테스트용)
+        </label>
+        <p className="text-xs text-muted">
+          실제 치지직 방송 없이도 명령어를 테스트할 수 있습니다. 최대 2초 후 위 로그에 반영됩니다.
+        </p>
+      </div>
       </>
       )}
     </div>
   );
 }
 
-// ── 실시간 채팅 연동 ON/OFF ────────────────────────────────────────────────────
-function ChatEnabledCard({
-  guildId, mainSub, onChanged,
-}: { guildId: string; mainSub?: ChzzkSubscription; onChanged: () => void }) {
-  const [saving, setSaving] = useState(false);
+// ── 도박 관리 권한 (스트리머 본인 + 기존 매니저 체계 재사용) ───────────────────
+function GamblingManagerCard({ guildId, mainSub }: { guildId: string; mainSub?: ChzzkSubscription }) {
   if (!mainSub) return null;
-
-  const toggle = async (enabled: boolean) => {
-    setSaving(true);
-    try {
-      await api.chzzk.update(guildId, mainSub.id, { chat_enabled: enabled });
-      onChanged();
-    } catch {}
-    setSaving(false);
-  };
-
-  return (
-    <div className="card">
-      <label className="flex items-center justify-between cursor-pointer gap-4">
-        <div>
-          <p className="text-sm font-semibold text-fg flex items-center gap-2">
-            <Power size={15} className="text-accent" /> 실시간 채팅 연동
-          </p>
-          <p className="text-sm text-muted mt-0.5">
-            켜면 치지직 방송 채팅에 봇이 접속해 아래 출석체크·자동응답·포인트·도박 명령어가 동작합니다.
-          </p>
-        </div>
-        <div className="relative shrink-0">
-          <input
-            type="checkbox" className="sr-only peer"
-            checked={mainSub.chat_enabled}
-            disabled={saving}
-            onChange={(e) => toggle(e.target.checked)}
-          />
-          <div className="w-10 h-6 bg-border rounded-full peer peer-checked:bg-accent transition-colors" />
-          <div className="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-4" />
-        </div>
-      </label>
-    </div>
-  );
-}
-
-// ── 도박 관리 권한 (스트리머 본인 + 지정 역할) ─────────────────────────────────
-function GamblingManagerCard({
-  guildId, mainSub, roles, onChanged,
-}: { guildId: string; mainSub?: ChzzkSubscription; roles: Role[]; onChanged: () => void }) {
-  const [saving, setSaving] = useState(false);
-  if (!mainSub) return null;
-
-  const change = async (roleId: string) => {
-    setSaving(true);
-    try {
-      await api.chzzk.update(guildId, mainSub.id, { manager_role_id: roleId });
-      onChanged();
-    } catch {}
-    setSaving(false);
-  };
 
   return (
     <div className="card space-y-3">
@@ -537,16 +576,16 @@ function GamblingManagerCard({
       </h2>
       <p className="text-sm text-muted">
         <code className="bg-bg px-1.5 py-0.5 rounded text-accent text-xs">!도박</code>,{" "}
-        <code className="bg-bg px-1.5 py-0.5 rounded text-accent text-xs">!도박종료</code>는 스트리머 본인은 항상 사용할 수 있습니다.
-        아래에서 역할을 지정하면, 디스코드 서버에서 해당 역할을 가진 시청자도 (입장 인증으로 치지직 계정을 연동했다면) 함께 사용할 수 있습니다.
+        <code className="bg-bg px-1.5 py-0.5 rounded text-accent text-xs">!도박종료</code>는 스트리머 본인은 항상 사용할 수 있고,
+        서버 관리 &gt; 관리 탭에 등록된 매니저(매니저 역할 또는 개별 등록된 멤버)도 (입장 인증으로 치지직 계정을 연동했다면) 함께 사용할 수 있습니다.
+        별도로 여기서 설정할 항목은 없습니다.
       </p>
-      <select
-        className="select w-full" value={mainSub.manager_role_id || ""} disabled={saving}
-        onChange={(e) => change(e.target.value)}
+      <Link
+        href={`/dashboard/${guildId}/moderation`}
+        className="text-sm text-accent hover:underline inline-flex items-center gap-1"
       >
-        <option value="">역할 지정 안 함 (스트리머만 가능)</option>
-        {roles.map((r) => <option key={r.id} value={r.id}>@{r.name}</option>)}
-      </select>
+        서버 관리 &gt; 관리 탭에서 매니저 관리하기 →
+      </Link>
     </div>
   );
 }
@@ -586,8 +625,8 @@ function ChatCommandGuideCard({ commands }: { commands: ChatCommand[] }) {
 }
 
 function ChatCommandsPanel({
-  guildId, mainSub, roles, onSubChanged,
-}: { guildId: string; mainSub?: ChzzkSubscription; roles: Role[]; onSubChanged: () => void }) {
+  guildId, mainSub, onSubChanged,
+}: { guildId: string; mainSub?: ChzzkSubscription; onSubChanged: () => void }) {
   const [commands, setCommands] = useState<ChatCommand[]>([]);
   const [loading, setLoading]   = useState(true);
   const [modal, setModal]       = useState<{ type: "checkin" | "reply"; initial?: ChatCommand } | null>(null);
@@ -645,11 +684,10 @@ function ChatCommandsPanel({
         />
       )}
 
-      <ChatEnabledCard guildId={guildId} mainSub={mainSub} onChanged={onSubChanged} />
-      <ChatStatusCard guildId={guildId} />
+      <ChatConnectionCard guildId={guildId} mainSub={mainSub} onChanged={onSubChanged} />
       <ChzzkChatFeed guildId={guildId} />
       <ChatCommandGuideCard commands={commands} />
-      <GamblingManagerCard guildId={guildId} mainSub={mainSub} roles={roles} onChanged={onSubChanged} />
+      <GamblingManagerCard guildId={guildId} mainSub={mainSub} />
 
       {/* 출석체크 */}
       <div className="card space-y-4">
@@ -847,7 +885,7 @@ export default function ChzzkPage() {
       </div>
 
       {detailTab === "chat-commands" && (
-        <ChatCommandsPanel guildId={guildId} mainSub={mainSub} roles={roles} onSubChanged={load} />
+        <ChatCommandsPanel guildId={guildId} mainSub={mainSub} onSubChanged={load} />
       )}
 
       {detailTab === "streamer" && (

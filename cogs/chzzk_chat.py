@@ -20,6 +20,7 @@ from discord.ext import commands, tasks
 from datetime import datetime, timezone, timedelta
 from database import get_db
 from utils.mc_rcon import rcon_command
+from utils.checks import member_is_mod_or_admin
 
 log = logging.getLogger("chzzk_chat")
 
@@ -33,6 +34,7 @@ SYNC_INTERVAL_SECONDS = 60  # 구독 대상/토큰/명령어 설정 재동기화
 # 최대 5분씩 걸려서 "방금 한 설정이 안 먹히는" 것처럼 보이는 문제가 잦았다. 여기서 하는 일이
 # DB 조회 위주(토큰 만료 임박 시에만 치지직 API 호출)라 1분 주기로도 부담이 크지 않다.
 CHAT_LOG_KEEP = 50  # guild당 디버그 채팅 로그 보관 개수
+TEST_QUEUE_INTERVAL_SECONDS = 2  # 대시보드 웹 테스트 메시지 큐 폴링 주기 (로컬 테스트 전용, 저부하)
 
 try:
     from chzzkpy import Client as ChzzkSessionClient
@@ -48,6 +50,13 @@ except Exception as e:  # pragma: no cover - 선택적 의존성
 
 def _today_kst() -> str:
     return datetime.now(_KST).date().isoformat()
+
+
+class _NullChatClient:
+    """대시보드 웹 테스트 메시지용 가짜 user_client. 실제 치지직 API를 호출하지 않고
+    조용히 성공 처리해, _send_chat()이 남기는 "out" 로그만으로 미리보기를 갱신한다."""
+    async def send_message(self, content: str):
+        return None
 
 
 class ChzzkChatCog(commands.Cog):
@@ -69,10 +78,13 @@ class ChzzkChatCog(commands.Cog):
             return
 
         self.sync_loop.start()
+        self.test_queue_loop.start()
 
     def cog_unload(self):
         if self.sync_loop.is_running():
             self.sync_loop.cancel()
+        if self.test_queue_loop.is_running():
+            self.test_queue_loop.cancel()
 
     # ── 주기적 동기화: 어떤 스트리머를 구독할지, 토큰 갱신, 명령어 설정 최신화 ──
     @tasks.loop(seconds=SYNC_INTERVAL_SECONDS)
@@ -84,6 +96,18 @@ class ChzzkChatCog(commands.Cog):
 
     @sync_loop.before_loop
     async def before_sync_loop(self):
+        await self.bot.wait_until_ready()
+
+    # ── 대시보드 웹 테스트 메시지 큐 폴링 (실제 치지직 방송 없이 명령어 테스트용) ──
+    @tasks.loop(seconds=TEST_QUEUE_INTERVAL_SECONDS)
+    async def test_queue_loop(self):
+        try:
+            await self._process_test_queue()
+        except Exception:
+            log.exception("치지직 채팅 테스트 큐 처리 중 오류")
+
+    @test_queue_loop.before_loop
+    async def before_test_queue_loop(self):
         await self.bot.wait_until_ready()
 
     def _gateway_alive(self) -> bool:
@@ -169,7 +193,7 @@ class ChzzkChatCog(commands.Cog):
         db = await get_db()
         rows = await (await db.execute(
             """SELECT guild_id, chzzk_channel_id, streamer_access_token,
-                      streamer_refresh_token, streamer_token_expires_at, manager_role_id
+                      streamer_refresh_token, streamer_token_expires_at
                FROM chzzk_subscriptions
                WHERE streamer_access_token IS NOT NULL AND streamer_refresh_token IS NOT NULL
                  AND chat_enabled=1"""
@@ -193,7 +217,6 @@ class ChzzkChatCog(commands.Cog):
                 self._channels[chzzk_id]["commands"] = commands_map
                 self._channels[chzzk_id]["mc_event"] = mc_event
                 self._channels[chzzk_id]["guild_id"] = row["guild_id"]
-                self._channels[chzzk_id]["manager_role_id"] = row["manager_role_id"]
                 if (row["streamer_token_expires_at"] or 0) <= int(time.time()) + 300:
                     at, rt, _exp = await self._ensure_fresh_token(row)
                     if at:
@@ -227,11 +250,10 @@ class ChzzkChatCog(commands.Cog):
                 continue
 
             self._channels[chzzk_id] = {
-                "guild_id":        row["guild_id"],
-                "user_client":     user_client,
-                "commands":        commands_map,
-                "mc_event":        mc_event,
-                "manager_role_id": row["manager_role_id"],
+                "guild_id":    row["guild_id"],
+                "user_client": user_client,
+                "commands":    commands_map,
+                "mc_event":    mc_event,
             }
             await self._mark_synced(row["guild_id"])
             log.info(f"치지직 채팅 구독 시작: guild={row['guild_id']} channel={chzzk_id}")
@@ -296,12 +318,73 @@ class ChzzkChatCog(commands.Cog):
         )
         await db.commit()
 
+    # ── 대시보드 웹 테스트 메시지 ─────────────────────────────────────────────────
+    async def _process_test_queue(self):
+        db = await get_db()
+        rows = await (await db.execute(
+            """SELECT id, guild_id, nickname, chzzk_user_id, content
+               FROM chzzk_chat_test_queue WHERE processed=0 ORDER BY id ASC LIMIT 20"""
+        )).fetchall()
+        for row in rows:
+            await db.execute("UPDATE chzzk_chat_test_queue SET processed=1 WHERE id=?", (row["id"],))
+            await db.commit()
+            try:
+                await self._handle_test_message(
+                    row["guild_id"], row["nickname"], row["chzzk_user_id"], row["content"]
+                )
+            except Exception:
+                log.exception(f"치지직 채팅 테스트 메시지 처리 실패 guild={row['guild_id']}")
+
+    async def _handle_test_message(self, guild_id: int, nickname: str, chzzk_user_id: str, content: str):
+        db = await get_db()
+        sub = await (await db.execute(
+            "SELECT chzzk_channel_id FROM chzzk_subscriptions WHERE guild_id=?",
+            (guild_id,)
+        )).fetchone()
+        if not sub:
+            return
+        chzzk_channel_id = sub["chzzk_channel_id"]
+
+        cmd_rows = await (await db.execute(
+            """SELECT id, command_type, trigger_text, reward_points, reward_xp, reply_text
+               FROM chzzk_chat_commands WHERE guild_id=? AND is_active=1""",
+            (guild_id,)
+        )).fetchall()
+        commands_map = {c["trigger_text"]: dict(c) for c in cmd_rows}
+        mc_event = await self._load_mc_event(guild_id)
+
+        # 이미 실제로 구독 중인 채널이면 진짜 user_client를 재사용해 실제 치지직 채팅에도
+        # 응답이 나가게 하고, 아직 구독 전(치지직 방송 없이 로직만 검증)이면 가짜 클라이언트를 쓴다.
+        real_entry = self._channels.get(chzzk_channel_id)
+        user_client = real_entry["user_client"] if real_entry else _NullChatClient()
+
+        entry = {
+            "guild_id":    guild_id,
+            "user_client": user_client,
+            "commands":    commands_map,
+            "mc_event":    mc_event,
+        }
+        message = Message(
+            senderChannelId=chzzk_user_id,
+            profile={"nickname": nickname, "badges": [], "verified_mark": False},
+            content=content,
+            channelId=chzzk_channel_id,
+            chatChannelId="test",
+            messageTime=datetime.now(timezone.utc),
+        )
+        await self._process_message(entry, message)
+        log.info(f"치지직 채팅 테스트 메시지 처리: guild={guild_id} content={content!r}")
+
     # ── 채팅 이벤트 처리 ──────────────────────────────────────────────────────
     async def _on_chat(self, message: "Message"):
         entry = self._channels.get(message.channel)
         if not entry:
             return
+        await self._process_message(entry, message)
 
+    async def _process_message(self, entry: dict, message: "Message"):
+        """실제 치지직 채팅과 대시보드 웹 테스트 메시지(_process_test_queue)가
+        공유하는 처리 로직 — 명령어 매칭/디스패치가 두 경로에서 항상 동일하게 동작한다."""
         # 명령어 매칭 여부와 무관하게, 채팅이 실제로 들어오고 있다는 사실 자체를 기록
         # (대시보드 "실시간 채팅 명령어" 탭의 연결 상태 표시용)
         await self._mark_event_received(entry["guild_id"])
@@ -349,12 +432,8 @@ class ChzzkChatCog(commands.Cog):
             return
 
         if cmd["command_type"] == "reply":
-            try:
-                await entry["user_client"].send_message(cmd["reply_text"])
-                await self._log_chat(entry["guild_id"], "out", "NexBot", cmd["reply_text"])
-                log.info(f"치지직 채팅 자동응답 전송: guild={entry['guild_id']} trigger=!{cmd_name}")
-            except Exception:
-                log.exception(f"치지직 채팅 자동응답 전송 실패 guild={entry['guild_id']}")
+            await self._send_chat(entry, cmd["reply_text"])
+            log.info(f"치지직 채팅 자동응답 전송: guild={entry['guild_id']} trigger=!{cmd_name}")
             return
 
         if cmd["command_type"] == "checkin":
@@ -392,11 +471,7 @@ class ChzzkChatCog(commands.Cog):
         except Exception:
             log.info(f"치지직 출석체크 무시(오늘 이미 출석함): guild={guild_id} chzzk_user={chzzk_user_id}")
             already_text = f"{nickname}님, 이미 출석을 하였습니다."
-            try:
-                await entry["user_client"].send_message(already_text)
-                await self._log_chat(guild_id, "out", "NexBot", already_text)
-            except Exception:
-                log.exception(f"출석체크 중복 안내 메시지 전송 실패 guild={guild_id}")
+            await self._send_chat(entry, already_text)
             return  # 오늘 이미 출석함
 
         if cmd["reward_points"]:
@@ -420,11 +495,7 @@ class ChzzkChatCog(commands.Cog):
         )).fetchone()
         today_count = today_count_row[0] if today_count_row else 1
         announce_text = f"{nickname}님이 오늘 {today_count}번째 출석 하셨습니다!"
-        try:
-            await entry["user_client"].send_message(announce_text)
-            await self._log_chat(guild_id, "out", "NexBot", announce_text)
-        except Exception:
-            log.exception(f"출석체크 안내 메시지 전송 실패 guild={guild_id}")
+        await self._send_chat(entry, announce_text)
 
         log.info(
             f"치지직 출석체크 지급: guild={guild_id} chzzk_user={chzzk_user_id} "
@@ -455,11 +526,7 @@ class ChzzkChatCog(commands.Cog):
             points = pts_row["points"] if pts_row else 0
             reply = f"{nickname}님의 보유 포인트는 {points:,}P 입니다."
 
-        try:
-            await entry["user_client"].send_message(reply)
-            await self._log_chat(guild_id, "out", "NexBot", reply)
-        except Exception:
-            log.exception(f"치지직 포인트 조회 응답 전송 실패 guild={guild_id}")
+        await self._send_chat(entry, reply)
 
     # ── 치지직 채팅 도박: !도박 / !투표 <번호> / !도박종료 ─────────────────────────
     # 웹 대시보드 "포인트 > 포인트 도박" 탭에 이미 있는 설정(제목/옵션/베팅액)을 그대로
@@ -467,22 +534,21 @@ class ChzzkChatCog(commands.Cog):
     # 베팅은 투표 즉시 차감(잔액 부족 시 거절)하고, 세션당 1인 1표만 허용해 번복을 막는다.
 
     async def _send_chat(self, entry: dict, text: str):
+        # 실제 전송 성공 여부와 무관하게 "봇이 뭐라고 응답했는지"를 항상 로그에 남긴다.
+        # 예전엔 전송 성공 시에만 로그를 남겨서, 대시보드 웹 테스트 메시지(실제 치지직에
+        # 보낼 수 없는 가짜 user_client)의 응답이 미리보기에 전혀 안 보이는 문제가 있었다.
+        await self._log_chat(entry["guild_id"], "out", "NexBot", text)
         try:
             await entry["user_client"].send_message(text)
-            await self._log_chat(entry["guild_id"], "out", "NexBot", text)
         except Exception:
             log.exception(f"치지직 채팅 메시지 전송 실패 guild={entry['guild_id']}")
 
     async def _is_gambling_manager(self, entry: dict, message: "Message") -> bool:
-        """스트리머 본인이거나, 대시보드에서 지정한 매니저 역할을 디스코드 서버에서
-        가지고 있는 인증된(chzzk_verifications) 유저만 !도박/!도박종료를 사용할 수 있다.
-        chzzkpy가 치지직 매니저 뱃지를 안정적으로 제공하지 않아 이 방식으로 대체한다."""
+        """스트리머 본인이거나, 서버 관리 > 관리 탭에서 이미 등록해둔 매니저(관리자 권한,
+        지정된 매니저 역할, 또는 개별 등록된 mod_managers)여야 !도박/!도박종료를 사용할 수 있다.
+        치지직 전용 권한 체계를 새로 만드는 대신 기존 매니저 시스템을 그대로 재사용한다."""
         if message.user_id == message.channel:
             return True
-
-        role_id = entry.get("manager_role_id")
-        if not role_id:
-            return False
 
         guild_id = entry["guild_id"]
         db = await get_db()
@@ -502,7 +568,7 @@ class ChzzkChatCog(commands.Cog):
                 member = await guild.fetch_member(verif["user_id"])
             except Exception:
                 return False
-        return any(r.id == role_id for r in member.roles)
+        return await member_is_mod_or_admin(guild_id, member)
 
     async def _handle_gambling_start(self, entry: dict, message: "Message"):
         guild_id = entry["guild_id"]
@@ -768,11 +834,7 @@ class ChzzkChatCog(commands.Cog):
         balance = bal_row["points"] if bal_row else 0
         if balance < item["points_cost"]:
             reply = f"{nickname}님, 포인트가 부족합니다. (필요 {item['points_cost']} / 보유 {balance})"
-            try:
-                await entry["user_client"].send_message(reply)
-                await self._log_chat(guild_id, "out", "NexBot", reply)
-            except Exception:
-                pass
+            await self._send_chat(entry, reply)
             return
 
         # 타겟 결정: buff는 자기 자신, debuff(랜덤아이템으로 뽑힌 debuff 포함)는 참가자 중 무작위 1명.
@@ -836,11 +898,7 @@ class ChzzkChatCog(commands.Cog):
             if applied else
             f"{nickname}님의 [{item['name']}] 적용에 실패했습니다. (마크 서버 연결 확인 필요)"
         )
-        try:
-            await entry["user_client"].send_message(reply)
-            await self._log_chat(guild_id, "out", "NexBot", reply)
-        except Exception:
-            log.exception(f"MC 이벤트 결과 메시지 전송 실패 guild={guild_id}")
+        await self._send_chat(entry, reply)
 
         log.info(
             f"MC 이벤트 처리: guild={guild_id} trigger=!{trigger_text} item={item['name']} "

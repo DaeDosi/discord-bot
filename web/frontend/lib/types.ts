@@ -130,7 +130,6 @@ export interface ChzzkSubscription {
   follow_role_1month?: string | null;
   follow_role_3month?: string | null;
   chat_enabled:      boolean;
-  manager_role_id?:  string | null;
 }
 
 export interface FollowerRoles {

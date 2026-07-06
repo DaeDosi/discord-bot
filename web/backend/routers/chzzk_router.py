@@ -82,7 +82,7 @@ async def list_subscriptions(
         "chzzk_image_url, is_live, mention_role_id, custom_message, "
         "follow_role_1month, follow_role_3month, "
         "follow_months_tier1, follow_months_tier2, "
-        "chat_enabled, manager_role_id "
+        "chat_enabled "
         "FROM chzzk_subscriptions WHERE guild_id=?",
         (int(guild_id),)
     )).fetchall()
@@ -94,8 +94,6 @@ async def list_subscriptions(
         if d.get("follow_role_3month") is not None:
             d["follow_role_3month"] = str(d["follow_role_3month"])
         d["chat_enabled"] = bool(d["chat_enabled"]) if d.get("chat_enabled") is not None else True
-        if d.get("manager_role_id") is not None:
-            d["manager_role_id"] = str(d["manager_role_id"])
         result.append(d)
     return result
 
@@ -150,7 +148,6 @@ class SubUpdate(BaseModel):
     mention_role_id: Optional[str]  = None
     custom_message:  Optional[str]  = None
     chat_enabled:    Optional[bool] = None
-    manager_role_id: Optional[str]  = None
 
 
 @router.patch("/{guild_id}/subscriptions/{sub_id}")
@@ -179,8 +176,6 @@ async def update_subscription(
         updates["custom_message"] = body.custom_message
     if body.chat_enabled is not None:
         updates["chat_enabled"] = int(body.chat_enabled)
-    if body.manager_role_id is not None:
-        updates["manager_role_id"] = int(body.manager_role_id) if body.manager_role_id else None
 
     if updates:
         set_clause = ", ".join(f"{k}=?" for k in updates)
@@ -672,6 +667,44 @@ async def get_chat_log(
     return [dict(r) for r in rows]
 
 
+class ChatTestMessage(BaseModel):
+    content:     str
+    as_streamer: bool = False
+
+
+@router.post("/{guild_id}/chat-test")
+async def send_chat_test_message(
+    guild_id: str,
+    body: ChatTestMessage,
+    user: dict = Depends(get_current_user),
+    _: None = Depends(require_guild_admin),
+):
+    """실제 치지직 방송 없이 명령어를 테스트하기 위한 가짜 채팅 메시지 큐잉.
+    봇 프로세스가 별도로 폴링해 실제 채팅과 동일한 처리 로직을 태운다."""
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="내용을 입력해주세요.")
+
+    db = await get_db()
+    sub = await (await db.execute(
+        "SELECT chzzk_channel_id FROM chzzk_subscriptions WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone()
+    if not sub:
+        raise HTTPException(status_code=404, detail="먼저 치지직 채널을 등록해주세요.")
+
+    chzzk_user_id = sub["chzzk_channel_id"] if body.as_streamer else "test_viewer"
+    nickname       = "테스트(스트리머)" if body.as_streamer else "테스트유저"
+
+    await db.execute(
+        """INSERT INTO chzzk_chat_test_queue(guild_id, nickname, chzzk_user_id, content, created_at)
+           VALUES(?,?,?,?,?)""",
+        (int(guild_id), nickname, chzzk_user_id, content[:200], int(_time.time()))
+    )
+    await db.commit()
+    return {"ok": True}
+
+
 # ── OBS 오버레이 ──────────────────────────────────────────────────────────────
 # 오버레이 페이지는 대시보드 로그인 세션 없이(OBS 브라우저 소스는 커스텀 헤더를 못 보냄)
 # URL에 박아넣은 토큰만으로 guild를 식별한다. 정산 후에도 결과를 잠시 보여주기 위한 유지 시간.
@@ -699,7 +732,12 @@ async def get_overlay_token(
             (token, int(guild_id))
         )
         await db.commit()
-    return {"token": token, "overlay_url": f"{FRONTEND_URL}/overlay/gambling/{token}"}
+    return {
+        "token": token,
+        "overlay_url":          f"{FRONTEND_URL}/overlay/gambling/{token}",
+        "gambling_overlay_url": f"{FRONTEND_URL}/overlay/gambling/{token}",
+        "missions_overlay_url": f"{FRONTEND_URL}/overlay/missions/{token}",
+    }
 
 
 @router.post("/{guild_id}/overlay-token/regenerate")
@@ -721,7 +759,12 @@ async def regenerate_overlay_token(
         (token, int(guild_id))
     )
     await db.commit()
-    return {"token": token, "overlay_url": f"{FRONTEND_URL}/overlay/gambling/{token}"}
+    return {
+        "token": token,
+        "overlay_url":          f"{FRONTEND_URL}/overlay/gambling/{token}",
+        "gambling_overlay_url": f"{FRONTEND_URL}/overlay/gambling/{token}",
+        "missions_overlay_url": f"{FRONTEND_URL}/overlay/missions/{token}",
+    }
 
 
 @router.get("/overlay/{token}/gambling-status")
@@ -777,6 +820,39 @@ async def get_overlay_gambling_status(token: str):
             "settled_at": session["settled_at"],
         },
     }
+
+
+@router.get("/overlay/{token}/missions-status")
+async def get_overlay_missions_status(token: str):
+    """공개(비인증) 엔드포인트. 웹 대시보드 포인트 > 미션 관리에 등록된 활성 미션을
+    도네이션 미션 위젯처럼 오버레이에 표시하기 위한 목록 (달성 인원수 포함)."""
+    db = await get_db()
+    sub = await (await db.execute(
+        "SELECT guild_id FROM chzzk_subscriptions WHERE overlay_token=?",
+        (token,)
+    )).fetchone()
+    if not sub:
+        raise HTTPException(status_code=404, detail="유효하지 않은 오버레이 토큰입니다.")
+
+    rows = await (await db.execute(
+        "SELECT id, title, description, points FROM missions WHERE guild_id=? AND is_active=1 ORDER BY id",
+        (sub["guild_id"],)
+    )).fetchall()
+
+    missions = []
+    for r in rows:
+        cnt = await (await db.execute(
+            "SELECT COUNT(*) FROM mission_completions WHERE mission_id=? AND status='approved'",
+            (r["id"],)
+        )).fetchone()
+        missions.append({
+            "id": r["id"],
+            "title": r["title"],
+            "description": r["description"],
+            "points": r["points"],
+            "completed_count": cnt[0] if cnt else 0,
+        })
+    return {"missions": missions}
 
 
 # ── 마크 콜라보 이벤트 (참가 초대된 서버만 확인 가능) ─────────────────────────

@@ -1,9 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { Plus, Trash2, Heart, Trophy, Award, X } from "lucide-react";
+import { Plus, Trash2, Heart, Trophy, Award, X, Save, CheckCircle, Coins } from "lucide-react";
 import { api } from "@/lib/api";
-import type { LevelReward, Role } from "@/lib/types";
+import type { LevelReward, Role, GuildConfig } from "@/lib/types";
 
 // ── 요약 통계 타일 ────────────────────────────────────────────────────────────
 function StatTile({
@@ -34,6 +34,10 @@ export default function LevelingPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [toast, setToast]           = useState("");
 
+  const [cfg, setCfg]             = useState<GuildConfig>({});
+  const [savingCfg, setSavingCfg] = useState(false);
+  const [savedCfg, setSavedCfg]   = useState(false);
+
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(""), 2500); };
 
   const loadLb = () =>
@@ -44,8 +48,22 @@ export default function LevelingPage() {
       api.settings.levelRewards.list(guildId),
       api.guilds.roles(guildId),
       api.settings.leaderboard(guildId),
-    ]).then(([r, roles, lb]) => { setRewards(r); setRoles(roles); setLb(lb); });
+      api.settings.get(guildId),
+    ]).then(([r, roles, lb, c]) => { setRewards(r); setRoles(roles); setLb(lb); setCfg(c); });
   }, [guildId]);
+
+  const saveCfg = async () => {
+    setSavingCfg(true);
+    try {
+      await api.settings.save(guildId, cfg);
+      setSavedCfg(true);
+      setTimeout(() => setSavedCfg(false), 2500);
+    } catch {
+      showToast("저장 실패");
+    } finally {
+      setSavingCfg(false);
+    }
+  };
 
   const addReward = async () => {
     if (!newLevel || !newRole) return;
@@ -94,6 +112,30 @@ export default function LevelingPage() {
         <StatTile icon={<Heart size={18} />}  label="등록된 애정도 보상" value={rewards.length}   color="#EB459E" />
         <StatTile icon={<Trophy size={18} />} label="리더보드 참여자"  value={lb.length}         color="#5865F2" />
         <StatTile icon={<Award size={18} />}  label="최고 애정도 레벨"        value={lb[0]?.level ?? 0} color="#57F287" />
+      </div>
+
+      {/* 레벨업 포인트 지급 */}
+      <div className="card space-y-4">
+        <h2 className="section-title flex items-center gap-2">
+          <Coins size={16} className="text-warning" /> 레벨업 포인트 지급
+        </h2>
+        <p className="text-sm text-muted">
+          레벨이 1 오를 때마다 자동으로 지급할 포인트 양입니다. 여러 레벨을 한 번에 올랐다면(예: 대량 애정도 지급) 오른 레벨 수만큼 곱해서 지급됩니다. 0으로 두면 지급하지 않습니다.
+        </p>
+        <div className="flex items-center gap-3">
+          <input
+            type="number" min={0}
+            className="input w-32"
+            value={cfg.points_per_level ?? 0}
+            onChange={(e) => setCfg((p) => ({ ...p, points_per_level: Math.max(0, Number(e.target.value) || 0) }))}
+          />
+          <span className="text-sm text-muted">P / 레벨당</span>
+          <button onClick={saveCfg} disabled={savingCfg} className="btn-primary text-sm flex items-center gap-1.5 ml-auto">
+            {savedCfg
+              ? <><CheckCircle size={14} /> 저장됨</>
+              : <><Save size={14} /> {savingCfg ? "저장 중..." : "저장"}</>}
+          </button>
+        </div>
       </div>
 
       {/* 레벨 보상 */}

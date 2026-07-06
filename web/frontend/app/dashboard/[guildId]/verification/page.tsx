@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { Save, CheckCircle, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, ExternalLink } from "lucide-react";
+import { Save, CheckCircle, Radio as ChzzkIcon, Eye, EyeOff, ShieldCheck, ExternalLink } from "lucide-react";
 import { api } from "@/lib/api";
 import type { VerificationConfig, Channel, Role } from "@/lib/types";
 
@@ -195,21 +195,31 @@ export default function VerificationPage() {
       {/* 인증 방식 */}
       <div className="card space-y-4">
         <h2 className="section-title">인증 방식</h2>
-        <div
-          className="flex items-center justify-between p-3 rounded-lg border border-border
-                     hover:bg-bg-hover transition-colors cursor-pointer"
-          onClick={() => set("use_chzzk_verification")(!cfg.use_chzzk_verification)}
+        <label
+          className="flex items-center justify-between gap-4 p-4 rounded-xl border border-border
+                     hover:border-accent/40 hover:bg-bg-hover transition-colors cursor-pointer"
         >
-          <div>
-            <p className="text-sm font-medium text-fg">치지직 연동 인증</p>
-            <p className="text-sm text-muted mt-0.5">
-              ON이면 네이버 로그인을 통한 치지직 인증, OFF이면 즉시 확인 버튼
-            </p>
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-chzzk/10">
+              <ChzzkIcon size={18} className="text-chzzk" />
+            </div>
+            <div>
+              <p className="text-base font-semibold text-fg">치지직 연동 인증</p>
+              <p className="text-sm text-muted mt-1">
+                ON이면 네이버 로그인을 통한 치지직 인증, OFF이면 클릭 한 번으로 끝나는 즉시 확인 버튼으로 동작합니다.
+              </p>
+            </div>
           </div>
-          {cfg.use_chzzk_verification
-            ? <ToggleRight size={28} className="text-accent shrink-0" />
-            : <ToggleLeft  size={28} className="text-muted  shrink-0" />}
-        </div>
+          <div className="relative shrink-0">
+            <input
+              type="checkbox" className="sr-only peer"
+              checked={!!cfg.use_chzzk_verification}
+              onChange={(e) => set("use_chzzk_verification")(e.target.checked)}
+            />
+            <div className="w-11 h-6 bg-border rounded-full peer peer-checked:bg-accent transition-colors" />
+            <div className="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-5" />
+          </div>
+        </label>
       </div>
 
       {/* 임베드 디자인 */}
@@ -236,6 +246,22 @@ export default function VerificationPage() {
             onChange={(e) => set("embed_title")(e.target.value)}
             maxLength={100}
           />
+        </div>
+
+        <div>
+          <label className="label">입장 메시지</label>
+          <p className="text-sm text-muted mb-1.5">
+            인증 임베드 본문에 표시될 텍스트입니다. 비워두면 기본 메시지가 사용됩니다.
+          </p>
+          <textarea
+            className="input min-h-[100px] resize-y"
+            placeholder="아래 버튼을 눌러 입장을 확인해 주세요."
+            value={cfg.verification_message || ""}
+            onChange={(e) => set("verification_message")(e.target.value)}
+          />
+          <p className="text-sm text-muted/60 mt-1.5">
+            메시지 수정 후 Discord에서 <code className="text-accent">/입장메시지설정</code> 을 실행하면 기존 임베드가 업데이트됩니다.
+          </p>
         </div>
 
         <div>
@@ -279,23 +305,6 @@ export default function VerificationPage() {
             </p>
           </div>
         )}
-      </div>
-
-      {/* 입장 메시지 */}
-      <div className="card space-y-3">
-        <h2 className="section-title">입장 메시지</h2>
-        <p className="text-sm text-muted">
-          인증 임베드 본문에 표시될 텍스트입니다. 비워두면 기본 메시지가 사용됩니다.
-        </p>
-        <textarea
-          className="input min-h-[100px] resize-y"
-          placeholder="아래 버튼을 눌러 입장을 확인해 주세요."
-          value={cfg.verification_message || ""}
-          onChange={(e) => set("verification_message")(e.target.value)}
-        />
-        <p className="text-sm text-muted/60">
-          메시지 수정 후 Discord에서 <code className="text-accent">/입장메시지설정</code> 을 실행하면 기존 임베드가 업데이트됩니다.
-        </p>
       </div>
 
       <button onClick={save} disabled={saving} className="btn-primary">

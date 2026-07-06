@@ -227,6 +227,8 @@ export const api = {
       request<{ direction: "in" | "out"; nickname: string; content: string; created_at: number }[]>(
         `/api/chzzk/${gid}/chat-log`
       ),
+    sendChatTest: (gid: string, content: string, as_streamer: boolean) =>
+      request(`/api/chzzk/${gid}/chat-test`, { method: "POST", body: JSON.stringify({ content, as_streamer }) }),
     contentNotify: {
       get:  (gid: string) =>
         request<{
@@ -255,9 +257,11 @@ export const api = {
     },
     overlay: {
       getToken: (gid: string) =>
-        request<{ token: string; overlay_url: string }>(`/api/chzzk/${gid}/overlay-token`),
+        request<{ token: string; gambling_overlay_url: string; missions_overlay_url: string }>(
+          `/api/chzzk/${gid}/overlay-token`
+        ),
       regenerateToken: (gid: string) =>
-        request<{ token: string; overlay_url: string }>(
+        request<{ token: string; gambling_overlay_url: string; missions_overlay_url: string }>(
           `/api/chzzk/${gid}/overlay-token/regenerate`, { method: "POST" }
         ),
     },

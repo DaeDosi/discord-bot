@@ -384,10 +384,10 @@ async def init_db():
         # 설정되면(또는 mc_event 참가 시) 자동으로 채팅 연결이 활성화됐는데, 이제는 이 값이
         # 유일한 기준이 된다 — 기존 사용자의 연결이 갑자기 끊기지 않도록 기본값은 1(ON).
         "ALTER TABLE chzzk_subscriptions ADD COLUMN chat_enabled INTEGER DEFAULT 1",
-        # !도박/!도박종료를 스트리머 본인 외에 허용할 디스코드 역할. 치지직 API가 매니저 뱃지를
-        # 안정적으로 제공하지 않아서, 대신 이미 인증된(chzzk_verifications) 유저가 디스코드
-        # 서버에서 이 역할을 가지고 있는지로 매니저 여부를 판단한다.
-        "ALTER TABLE chzzk_subscriptions ADD COLUMN manager_role_id INTEGER",
+        # !도박/!도박종료 권한은 별도 컬럼 없이 서버 관리 > 관리 탭에 이미 있는 매니저 체계
+        # (guild_config.mod_role_id + mod_managers)를 그대로 재사용한다 — 아래 DROP은 그
+        # 전용 컬럼을 짧게 썼다가 정리한 흔적 (배포된 적이 있어 컬럼이 남아있을 수 있음).
+        "ALTER TABLE chzzk_subscriptions DROP COLUMN manager_role_id",
         # OBS 브라우저 소스 오버레이 인증용 토큰. 오버레이 페이지는 대시보드 로그인 세션이
         # 없으므로(OBS는 커스텀 헤더를 못 보냄) URL에 박아넣는 이 토큰으로만 식별한다.
         "ALTER TABLE chzzk_subscriptions ADD COLUMN overlay_token TEXT",
@@ -415,6 +415,19 @@ async def init_db():
                voted_at        INTEGER NOT NULL,
                PRIMARY KEY (session_id, chzzk_user_id)
            )""",
+        # 대시보드 "실시간 채팅 미리보기"에서 실제 치지직 방송 없이도 명령어를 테스트할 수 있는
+        # 큐. 봇(별도 프로세스)이 짧은 주기로 폴링해 실제 채팅 메시지처럼 동일한 처리 로직을
+        # 태운다 — 로컬 개발/테스트 전용이며 실제 치지직 API 호출은 발생하지 않는다.
+        """CREATE TABLE IF NOT EXISTS chzzk_chat_test_queue (
+               id            INTEGER PRIMARY KEY AUTOINCREMENT,
+               guild_id      INTEGER NOT NULL,
+               nickname      TEXT    NOT NULL DEFAULT '테스트유저',
+               chzzk_user_id TEXT    NOT NULL DEFAULT 'test_viewer',
+               content       TEXT    NOT NULL,
+               processed     INTEGER NOT NULL DEFAULT 0,
+               created_at    INTEGER NOT NULL
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_chzzk_chat_test_queue_pending ON chzzk_chat_test_queue(processed, id)",
     ]:
         try:
             await db.execute(sql)

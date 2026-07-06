@@ -14,25 +14,31 @@ def is_admin():
     return app_commands.check(predicate)
 
 
+async def member_is_mod_or_admin(guild_id: int, member: discord.Member) -> bool:
+    """관리자 권한, 지정된 매니저 역할, 또는 개별 등록된(mod_managers) 매니저인지 확인.
+    슬래시 명령어의 interaction 컨텍스트 밖(예: 치지직 채팅 명령어)에서도 재사용할 수 있도록
+    is_mod_or_admin()의 판정 로직을 분리해둔 것."""
+    if member.guild_permissions.administrator:
+        return True
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT mod_role_id FROM guild_config WHERE guild_id=?",
+        (guild_id,)
+    )).fetchone()
+    if row and row["mod_role_id"]:
+        mod_role = member.guild.get_role(row["mod_role_id"])
+        if mod_role and mod_role in member.roles:
+            return True
+    mgr = await (await db.execute(
+        "SELECT 1 FROM mod_managers WHERE guild_id=? AND user_id=?",
+        (guild_id, member.id)
+    )).fetchone()
+    return bool(mgr)
+
+
 def is_mod_or_admin():
     async def predicate(interaction: discord.Interaction) -> bool:
-        if interaction.user.guild_permissions.administrator:
-            return True
-        db = await get_db()
-        row = await db.execute(
-            "SELECT mod_role_id FROM guild_config WHERE guild_id=?",
-            (interaction.guild_id,)
-        )
-        cfg = await row.fetchone()
-        if cfg and cfg["mod_role_id"]:
-            mod_role = interaction.guild.get_role(cfg["mod_role_id"])
-            if mod_role and mod_role in interaction.user.roles:
-                return True
-        mgr = await (await db.execute(
-            "SELECT 1 FROM mod_managers WHERE guild_id=? AND user_id=?",
-            (interaction.guild_id, interaction.user.id)
-        )).fetchone()
-        if mgr:
+        if await member_is_mod_or_admin(interaction.guild_id, interaction.user):
             return True
         raise app_commands.MissingPermissions(["manage_messages"])
     return app_commands.check(predicate)
