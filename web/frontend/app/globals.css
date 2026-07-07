@@ -27,7 +27,9 @@ html.light {
 /* ── Base ─────────────────────────────────────────────────────────────── */
 @layer base {
   * { box-sizing: border-box; }
-  html { font-size: 106.25%; } /* 17px base — slightly larger than Tailwind default 16px */
+  html { font-size: 118.75%; } /* 19px base — 대시보드가 풀와이드로 넓어지면서 기존 17px 기준으로는
+    본문 글자가 상대적으로 더 작아 보이는 문제가 있어 한 단계 더 키움. rem 기반이라 모든
+    text-* 유틸리티가 비례해서 같이 커진다. */
   body {
     background-color: rgb(var(--color-bg-rgb));
     color: rgb(var(--color-fg-rgb));
@@ -66,7 +68,9 @@ html.light {
            focus:outline-none focus:border-accent transition-colors appearance-none cursor-pointer;
   }
   .label {
-    @apply text-sm font-medium text-muted mb-1 block;
+    /* 필드 라벨(예: "입장인증채널")이 바로 아래/옆의 설명 문구(text-sm)와 크기가 같아서
+       "서브타이틀"로 눈에 띄지 않는 문제가 있었음 — text-base + font-semibold로 구분. */
+    @apply text-base font-semibold text-fg mb-1.5 block;
   }
   /* ── 타이포 위계 ────────────────────────────────────────────────────────
      페이지 제목 → 섹션 제목 → 본문 → 보조설명 사이의 크기·굵기 차이를

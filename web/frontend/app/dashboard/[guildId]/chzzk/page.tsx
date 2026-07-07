@@ -8,7 +8,7 @@ import {
   Radio, Trash2, Bell, BellOff,
   ExternalLink, Plus, Users, X, ChevronLeft, ChevronRight,
   MessageSquare, Edit2, Sparkles, RefreshCw, HelpCircle,
-  Power, Crown, ListChecks,
+  Power, Crown,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import Switch from "@/components/Switch";
@@ -610,14 +610,17 @@ function ChatCommandGuideCard({ commands }: { commands: ChatCommand[] }) {
   return (
     <div className="card space-y-3">
       <h2 className="section-title flex items-center gap-2">
-        <ListChecks size={16} className="text-accent" /> 명령어 안내
+        <span className="w-2.5 h-2.5 rounded-full inline-block shrink-0 bg-chzzk" />
+        명령어 안내
       </h2>
-      <p className="text-sm text-muted">현재 이 서버의 치지직 채팅에서 사용할 수 있는 명령어 목록입니다.</p>
-      <div className="space-y-1.5">
+      <p className="text-base text-muted">현재 이 서버의 치지직 채팅에서 사용할 수 있는 명령어 목록입니다.</p>
+      <div className="divide-y divide-border/50">
         {rows.map((row, i) => (
-          <div key={i} className="flex items-start gap-3 p-2.5 rounded-lg bg-bg border border-border text-sm">
-            <code className="font-mono text-accent shrink-0">!{row.trigger}</code>
-            <span className="text-muted">{row.desc}</span>
+          <div key={i} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+            <code className="text-base font-sans font-semibold px-2 py-0.5 rounded shrink-0 text-fg bg-bg-hover">
+              !{row.trigger}
+            </code>
+            <span className="text-base text-muted flex-1">{row.desc}</span>
           </div>
         ))}
       </div>

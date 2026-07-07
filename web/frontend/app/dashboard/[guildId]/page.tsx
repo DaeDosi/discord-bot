@@ -89,7 +89,7 @@ export default function GeneralSettingsPage() {
       {/* 환영/퇴장 메시지 내용 */}
       <div className="card space-y-4">
         <h2 className="section-title">메시지 내용</h2>
-        <p className="text-muted text-sm">
+        <p className="text-muted text-base">
           사용 가능한 변수: <code className="bg-bg px-1 rounded">{"{mention}"}</code> 유저 멘션,{" "}
           <code className="bg-bg px-1 rounded">{"{username}"}</code> 유저 이름,{" "}
           <code className="bg-bg px-1 rounded">{"{server}"}</code> 서버 이름
@@ -97,7 +97,7 @@ export default function GeneralSettingsPage() {
         <div>
           <label className="label">환영 메시지</label>
           <textarea
-            className="select resize-none h-24 font-mono text-sm"
+            className="select resize-none h-24 font-mono"
             value={cfg.welcome_message ?? ""}
             onChange={(e) => set("welcome_message")(e.target.value)}
             placeholder={"{mention}님이 **{server}**에 오셨습니다!\n\n서버의 규칙을 꼭 읽어주세요 😊"}
@@ -106,7 +106,7 @@ export default function GeneralSettingsPage() {
         <div>
           <label className="label">퇴장 메시지</label>
           <textarea
-            className="select resize-none h-20 font-mono text-sm"
+            className="select resize-none h-20 font-mono"
             value={cfg.goodbye_message ?? ""}
             onChange={(e) => set("goodbye_message")(e.target.value)}
             placeholder="**{username}**님이 서버를 떠났습니다."
@@ -124,7 +124,7 @@ export default function GeneralSettingsPage() {
             onChange={(e) => set("levelup_dm")(e.target.checked)}
             className="w-4 h-4 accent-accent"
           />
-          <span className="text-sm">애정도 레벨업 알림을 DM으로 전송</span>
+          <span className="text-base">애정도 레벨업 알림을 DM으로 전송</span>
         </label>
       </div>
 
