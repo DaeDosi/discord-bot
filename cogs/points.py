@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from database import get_db
 from utils import is_mod_or_admin, success, error
+from utils.gambling import resolve_gambling_winner, calc_gambling_payout
 
 # discord.Poll 최대 진행 시간 (32일 = 768시간, Discord API 상한)
 MAX_POLL_HOURS = 768
@@ -380,10 +381,10 @@ class PointsCog(commands.Cog):
                 uids.append(u.id)
             voters_by_answer[answer.id] = uids
 
-        winner_id = poll.victor_answer_id
-        if winner_id is None and poll.total_votes > 0:
-            # 동률 등으로 victor가 결정되지 않은 경우 최다 득표 옵션으로 직접 판정
-            winner_id = max(answers, key=lambda a: a.vote_count).id
+        winner_id = resolve_gambling_winner(
+            {a.id: a.vote_count for a in answers},
+            discord_poll_victor=poll.victor_answer_id if poll.total_votes > 0 else None,
+        )
 
         # 정산 시점 잔액 기준으로 베팅 차감
         charged_by_answer: dict[int, list[int]] = {a.id: [] for a in answers}
@@ -404,8 +405,7 @@ class PointsCog(commands.Cog):
 
         winners       = charged_by_answer.get(winner_id, []) if winner_id is not None else []
         total_charged = sum(len(v) for v in charged_by_answer.values())
-        pool          = total_charged * bet_amount
-        payout        = pool // len(winners) if winners else 0
+        payout        = calc_gambling_payout(winners, total_charged, bet_amount)
 
         if winners:
             for uid in winners:

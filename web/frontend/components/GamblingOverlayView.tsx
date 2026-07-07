@@ -1,5 +1,5 @@
 "use client";
-import type { CSSProperties } from "react";
+import { overlayPillStyle } from "@/components/overlayPillStyle";
 
 export interface GamblingSnapshot {
   title: string;
@@ -43,13 +43,13 @@ export function GamblingOverlayView({
 
   if (connError) {
     return (
-      <div style={idlePillStyle("rgba(237,66,69,0.85)")}>⚠️ {connError}</div>
+      <div style={overlayPillStyle("rgba(237,66,69,0.85)")}>⚠️ {connError}</div>
     );
   }
 
   if (!data) {
     return (
-      <div style={idlePillStyle("rgba(255,255,255,0.5)")}>🎰 도박 대기 중 — 치지직 채팅에 !도박을 입력하면 표시됩니다</div>
+      <div style={overlayPillStyle("rgba(255,255,255,0.5)")}>🎰 도박 대기 중 — 치지직 채팅에 !도박을 입력하면 표시됩니다</div>
     );
   }
 
@@ -114,17 +114,4 @@ export function GamblingOverlayView({
       </div>
     </div>
   );
-}
-
-function idlePillStyle(color: string): CSSProperties {
-  return {
-    fontFamily: "'Pretendard','Inter',sans-serif",
-    fontSize: 12,
-    color,
-    background: "rgba(15,17,23,0.55)",
-    border: "1px solid rgba(255,255,255,0.1)",
-    borderRadius: 999,
-    padding: "6px 14px",
-    display: "inline-block",
-  };
 }

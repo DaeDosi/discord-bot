@@ -7,6 +7,7 @@ import {
 import { api } from "@/lib/api";
 import type { GuildConfig, Channel, Role, WarnUser, WarnDetail, GuildMember } from "@/lib/types";
 import MemberSearch from "@/components/MemberSearch";
+import Switch from "@/components/Switch";
 
 // ── 요약 통계 타일 ────────────────────────────────────────────────────────────
 function StatTile({
@@ -462,13 +463,7 @@ export default function ModerationPage() {
             <p className="text-sm font-medium">자동 관리 활성화</p>
             <p className="text-sm text-muted mt-0.5">금지어·멘션 도배·스팸 자동 감지 및 처리</p>
           </div>
-          <div className="relative">
-            <input type="checkbox" className="sr-only peer"
-              checked={cfg.automod_enabled ?? true}
-              onChange={(e) => set("automod_enabled")(e.target.checked)} />
-            <div className="w-10 h-6 bg-border rounded-full peer peer-checked:bg-accent transition-colors" />
-            <div className="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-4" />
-          </div>
+          <Switch checked={cfg.automod_enabled ?? true} onChange={(v) => set("automod_enabled")(v)} />
         </label>
         <div>
           <label className="label">금지어 목록 (쉼표로 구분)</label>

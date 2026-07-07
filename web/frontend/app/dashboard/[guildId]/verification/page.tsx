@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { Save, CheckCircle, Radio as ChzzkIcon, Eye, EyeOff, ShieldCheck, ExternalLink } from "lucide-react";
 import { api } from "@/lib/api";
+import Switch from "@/components/Switch";
 import type { VerificationConfig, Channel, Role } from "@/lib/types";
 
 const DEFAULT_COLOR = "#5865F2";
@@ -210,15 +211,10 @@ export default function VerificationPage() {
               </p>
             </div>
           </div>
-          <div className="relative shrink-0">
-            <input
-              type="checkbox" className="sr-only peer"
-              checked={!!cfg.use_chzzk_verification}
-              onChange={(e) => set("use_chzzk_verification")(e.target.checked)}
-            />
-            <div className="w-11 h-6 bg-border rounded-full peer peer-checked:bg-accent transition-colors" />
-            <div className="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-5" />
-          </div>
+          <Switch
+            checked={!!cfg.use_chzzk_verification}
+            onChange={(v) => set("use_chzzk_verification")(v)}
+          />
         </label>
       </div>
 

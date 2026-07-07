@@ -1,8 +1,9 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { MonitorPlay, Copy, Check, RefreshCw, Dices, Target } from "lucide-react";
-import { api, BASE } from "@/lib/api";
+import { api } from "@/lib/api";
+import { useOverlayPoll } from "@/lib/useOverlayPoll";
 import { GamblingOverlayView, type OverlayStatus } from "@/components/GamblingOverlayView";
 import { MissionsOverlayView, type MissionsOverlayStatus } from "@/components/MissionsOverlayView";
 
@@ -32,11 +33,12 @@ export default function OverlayPage() {
   const [copiedWhich, setCopiedWhich] = useState<"gambling" | "missions" | null>(null);
   const [regenerating, setRegenerating] = useState(false);
 
-  const [gamblingStatus, setGamblingStatus] = useState<OverlayStatus | null>(null);
-  const [gamblingError, setGamblingError]   = useState<string | null>(null);
-  const [missionsStatus, setMissionsStatus] = useState<MissionsOverlayStatus | null>(null);
-  const [missionsError, setMissionsError]   = useState<string | null>(null);
-  const timers = useRef<ReturnType<typeof setInterval>[]>([]);
+  const { data: gamblingStatus, error: gamblingError } = useOverlayPoll<OverlayStatus>(
+    token ? `/api/chzzk/overlay/${token}/gambling-status` : null, 2000
+  );
+  const { data: missionsStatus, error: missionsError } = useOverlayPoll<MissionsOverlayStatus>(
+    token ? `/api/chzzk/overlay/${token}/missions-status` : null, 5000
+  );
 
   const load = () =>
     api.chzzk.overlay.getToken(guildId)
@@ -45,29 +47,6 @@ export default function OverlayPage() {
       .finally(() => setLoading(false));
 
   useEffect(() => { load(); }, [guildId]);
-
-  useEffect(() => {
-    timers.current.forEach(clearInterval);
-    timers.current = [];
-    if (!token) return;
-
-    const pollGambling = () => {
-      fetch(`${BASE}/api/chzzk/overlay/${token}/gambling-status`)
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error("서버 연결 오류"))))
-        .then((d) => { setGamblingStatus(d); setGamblingError(null); })
-        .catch((e: unknown) => setGamblingError(e instanceof Error ? e.message : "서버 연결 오류"));
-    };
-    const pollMissions = () => {
-      fetch(`${BASE}/api/chzzk/overlay/${token}/missions-status`)
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error("서버 연결 오류"))))
-        .then((d) => { setMissionsStatus(d); setMissionsError(null); })
-        .catch((e: unknown) => setMissionsError(e instanceof Error ? e.message : "서버 연결 오류"));
-    };
-    pollGambling();
-    pollMissions();
-    timers.current = [setInterval(pollGambling, 2000), setInterval(pollMissions, 5000)];
-    return () => timers.current.forEach(clearInterval);
-  }, [token]);
 
   const copy = async (which: "gambling" | "missions", url: string | null) => {
     if (!url) return;

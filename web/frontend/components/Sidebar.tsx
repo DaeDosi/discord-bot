@@ -1,16 +1,21 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { clsx } from "clsx";
-import { Settings, Heart, Shield, Radio, UserCheck, HelpCircle, ChevronLeft, Terminal, Gem, Youtube, Tv, Swords, MonitorPlay } from "lucide-react";
+import {
+  Settings, Heart, Shield, Radio, UserCheck, HelpCircle, ChevronLeft, ChevronDown,
+  Terminal, Gem, Youtube, Tv, Twitter, Swords, MonitorPlay, Server,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { api } from "@/lib/api";
+import type { Guild } from "@/lib/types";
 
 interface NavItem { href: string; label: string; shortLabel: string; icon: LucideIcon }
 interface NavGroup { label: string; items: NavItem[] }
 
-// 디스코드 서버 관리 / 방송 설정 / 지원 세 그룹으로 분리 — 카테고리 라벨 + 구분선으로 시각적으로 나눔
+// 디스코드 서버 관리 / 방송 / SNS / 지원 네 그룹으로 분리 — 카테고리 라벨 + 구분선으로 시각적으로 나눔
 const BASE_GROUPS: NavGroup[] = [
   {
     label: "서버 관리",
@@ -31,6 +36,12 @@ const BASE_GROUPS: NavGroup[] = [
     ],
   },
   {
+    label: "SNS",
+    items: [
+      { href: "/twitter", label: "X (트위터)", shortLabel: "트위터", icon: Twitter },
+    ],
+  },
+  {
     label: "지원",
     items: [
       { href: "/commands", label: "명령어",     shortLabel: "명령어",  icon: Terminal    },
@@ -40,7 +51,89 @@ const BASE_GROUPS: NavGroup[] = [
   },
 ];
 
-export default function Sidebar({ guildId, guildName }: { guildId: string; guildName?: string }) {
+// ── 서버 스위처: 현재 관리 중인 서버 이름/아이콘을 보여주고, 클릭하면 다른 등록 서버로 바로 이동 ──
+function GuildSwitcher({ guildId }: { guildId: string }) {
+  const [guilds, setGuilds] = useState<Guild[]>([]);
+  const [open, setOpen]     = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    api.guilds.list().then(setGuilds).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const onClickOutside = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
+
+  const current  = guilds.find((g) => String(g.id) === String(guildId));
+  const managed  = guilds.filter((g) => g.has_bot);
+
+  return (
+    <div className="relative mb-2" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg hover:bg-bg-hover transition-colors text-left"
+      >
+        {current?.icon ? (
+          <Image src={current.icon} alt={current.name} width={28} height={28} className="rounded-lg shrink-0" />
+        ) : (
+          <div className="w-7 h-7 rounded-lg bg-bg-hover flex items-center justify-center shrink-0">
+            <Server size={14} className="text-muted" />
+          </div>
+        )}
+        <span className="flex-1 min-w-0 text-base font-semibold text-fg truncate">
+          {current?.name || "서버 선택"}
+        </span>
+        <ChevronDown size={16} className={clsx("text-muted shrink-0 transition-transform", open && "rotate-180")} />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-bg-card border border-border rounded-xl shadow-xl py-1.5 max-h-80 overflow-y-auto">
+          {managed.length === 0 ? (
+            <p className="px-4 py-3 text-sm text-muted">불러오는 중...</p>
+          ) : (
+            managed.map((g) => (
+              <Link
+                key={g.id}
+                href={`/dashboard/${g.id}`}
+                onClick={() => setOpen(false)}
+                className={clsx(
+                  "flex items-center gap-2.5 px-3 py-2 mx-1.5 rounded-lg transition-colors",
+                  String(g.id) === String(guildId) ? "bg-accent/15 text-accent" : "text-fg hover:bg-bg-hover"
+                )}
+              >
+                {g.icon ? (
+                  <Image src={g.icon} alt={g.name} width={24} height={24} className="rounded-md shrink-0" />
+                ) : (
+                  <div className="w-6 h-6 rounded-md bg-bg-hover flex items-center justify-center shrink-0">
+                    <Server size={12} className="text-muted" />
+                  </div>
+                )}
+                <span className="text-sm truncate">{g.name}</span>
+              </Link>
+            ))
+          )}
+          <div className="border-t border-border mt-1.5 pt-1.5 mx-1.5">
+            <Link
+              href="/dashboard"
+              onClick={() => setOpen(false)}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-muted hover:text-fg hover:bg-bg-hover transition-colors"
+            >
+              <ChevronLeft size={14} /> 전체 서버 목록
+            </Link>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function Sidebar({ guildId }: { guildId: string }) {
   const pathname = usePathname();
   const base     = `/dashboard/${guildId}`;
 
@@ -63,19 +156,8 @@ export default function Sidebar({ guildId, guildName }: { guildId: string; guild
   return (
     <>
       {/* ── Desktop sidebar (md+) ── */}
-      <aside className="hidden md:flex w-56 shrink-0 flex-col gap-1 pt-2">
-        <Link
-          href="/dashboard"
-          className="flex items-center gap-2 text-muted hover:text-fg text-base font-medium px-3 py-2.5 rounded-lg
-                     hover:bg-bg-hover transition-colors mb-2"
-        >
-          <ChevronLeft size={18} /> 서버 목록
-        </Link>
-        {guildName && (
-          <p className="text-xs font-semibold text-muted uppercase tracking-wider px-3 mb-1 truncate">
-            {guildName}
-          </p>
-        )}
+      <aside className="hidden md:flex w-60 shrink-0 flex-col gap-1 pt-2">
+        <GuildSwitcher guildId={guildId} />
         {GROUPS.map((group, gi) => (
           <div
             key={group.label}

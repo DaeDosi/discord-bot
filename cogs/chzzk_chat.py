@@ -6,12 +6,16 @@
 access_token(채팅 메시지 조회/쓰기 스코프 필요)을 그대로 재사용한다.
 
 프로토콜 구현은 직접 만들지 않고 chzzkpy 라이브러리(Engine.IO v3 기반 세션
-프로토콜을 이미 구현해 둔 공식 API 클라이언트)를 사용한다. chzzkpy 또는
-CHZZK_CLIENT_ID/SECRET이 없으면 이 cog는 조용히 비활성화된다.
+프로토콜을 이미 구현해 둔 공식 API 클라이언트)를 사용한다. chzzkpy가 없으면
+이 cog는 조용히 비활성화된다. CHZZK_CLIENT_ID/SECRET이 없으면 실제 채팅 세션
+연결(sync_loop)만 비활성화되고, 대시보드 웹 테스트 메시지 큐(test_queue_loop)는
+chzzkpy만 설치돼 있으면 별도로 계속 동작한다 — 로컬에서 치지직 앱을 등록하기
+전에도 명령어 로직을 검증할 수 있도록 하기 위함.
 """
 import os
 import json
 import time
+import sqlite3
 import random
 import asyncio
 import logging
@@ -21,6 +25,7 @@ from datetime import datetime, timezone, timedelta
 from database import get_db
 from utils.mc_rcon import rcon_command
 from utils.checks import member_is_mod_or_admin
+from utils.gambling import resolve_gambling_winner, calc_gambling_payout
 
 log = logging.getLogger("chzzk_chat")
 
@@ -35,6 +40,9 @@ SYNC_INTERVAL_SECONDS = 60  # 구독 대상/토큰/명령어 설정 재동기화
 # DB 조회 위주(토큰 만료 임박 시에만 치지직 API 호출)라 1분 주기로도 부담이 크지 않다.
 CHAT_LOG_KEEP = 50  # guild당 디버그 채팅 로그 보관 개수
 TEST_QUEUE_INTERVAL_SECONDS = 2  # 대시보드 웹 테스트 메시지 큐 폴링 주기 (로컬 테스트 전용, 저부하)
+# 오늘 이미 출석한 유저가 !출석체크를 연타해도 매번 채팅으로 응답하면 스팸/치지직 채팅
+# 도배 제재 위험이 있어, 동일 (guild, 유저) 조합에 대해 이 시간(초) 안에는 재안내하지 않는다.
+CHECKIN_DUPLICATE_NOTICE_COOLDOWN_SECONDS = 60
 
 try:
     from chzzkpy import Client as ChzzkSessionClient
@@ -68,17 +76,24 @@ class ChzzkChatCog(commands.Cog):
         self._session_ready = asyncio.Event()
         # chzzk_channel_id -> {"guild_id": int, "user_client": UserClient, "commands": {trigger_text: row}}
         self._channels: dict[str, dict] = {}
+        # (guild_id, chzzk_user_id) -> 마지막으로 "이미 출석했습니다" 안내를 보낸 시각(monotonic)
+        self._checkin_duplicate_notice_at: dict[tuple[int, str], float] = {}
         self._enabled = bool(_CHZZKPY_AVAILABLE and _CHZZK_CLIENT_ID and _CHZZK_CLIENT_SECRET)
+        # 웹 테스트 메시지는 실제 치지직 세션 연결이 필요 없다 — chzzkpy의 Message 모델만
+        # 만들 수 있으면 되므로, CHZZK_CLIENT_ID/SECRET 없이(로컬에서 치지직 앱 등록 전에도)
+        # 명령어 로직만 검증할 수 있도록 _enabled와 별도로 게이팅한다.
+        self._test_queue_available = _CHZZKPY_AVAILABLE
 
         if not self._enabled:
             log.warning(
                 "치지직 실시간 채팅 cog 비활성화 "
                 f"(chzzkpy={_CHZZKPY_AVAILABLE}, client_id={'있음' if _CHZZK_CLIENT_ID else '없음'})"
             )
-            return
+        else:
+            self.sync_loop.start()
 
-        self.sync_loop.start()
-        self.test_queue_loop.start()
+        if self._test_queue_available:
+            self.test_queue_loop.start()
 
     def cog_unload(self):
         if self.sync_loop.is_running():
@@ -338,32 +353,40 @@ class ChzzkChatCog(commands.Cog):
     async def _handle_test_message(self, guild_id: int, nickname: str, chzzk_user_id: str, content: str):
         db = await get_db()
         sub = await (await db.execute(
-            "SELECT chzzk_channel_id FROM chzzk_subscriptions WHERE guild_id=?",
+            "SELECT chzzk_channel_id, chat_enabled FROM chzzk_subscriptions WHERE guild_id=?",
             (guild_id,)
         )).fetchone()
         if not sub:
             return
+        # chat_enabled는 실시간 채팅 기능 전체의 마스터 스위치 — 꺼져 있으면 테스트 메시지도
+        # 실제 채팅과 동일하게 아무 명령어도 처리하지 않는다. 이 체크를 self._channels 조회보다
+        # 먼저 해야, 토글을 막 끈 직후(다음 sync_loop 전까지 로컬 목록이 아직 안 지워진 순간)
+        # 실제 라이브 치지직 채팅으로 테스트 메시지가 새어나가는 것도 함께 막을 수 있다.
+        if not sub["chat_enabled"]:
+            log.info(f"치지직 채팅 테스트 메시지 무시(실시간 채팅 연동 OFF): guild={guild_id}")
+            return
         chzzk_channel_id = sub["chzzk_channel_id"]
 
-        cmd_rows = await (await db.execute(
-            """SELECT id, command_type, trigger_text, reward_points, reward_xp, reply_text
-               FROM chzzk_chat_commands WHERE guild_id=? AND is_active=1""",
-            (guild_id,)
-        )).fetchall()
-        commands_map = {c["trigger_text"]: dict(c) for c in cmd_rows}
-        mc_event = await self._load_mc_event(guild_id)
-
-        # 이미 실제로 구독 중인 채널이면 진짜 user_client를 재사용해 실제 치지직 채팅에도
-        # 응답이 나가게 하고, 아직 구독 전(치지직 방송 없이 로직만 검증)이면 가짜 클라이언트를 쓴다.
+        # 이미 실제로 구독 중인 채널이면 sync_loop가 이미 최신 상태로 유지해주는 entry(명령어
+        # 맵/mc_event/진짜 user_client)를 그대로 재사용한다 — 이러면 실제 채팅에도 응답이
+        # 나가고, _sync_channels와 동일한 조회를 여기서 중복으로 다시 할 필요도 없다. 아직
+        # 구독 전(치지직 방송 없이 로직만 검증하는 경우)에만 DB에서 직접 불러오고 가짜
+        # 클라이언트를 쓴다.
         real_entry = self._channels.get(chzzk_channel_id)
-        user_client = real_entry["user_client"] if real_entry else _NullChatClient()
-
-        entry = {
-            "guild_id":    guild_id,
-            "user_client": user_client,
-            "commands":    commands_map,
-            "mc_event":    mc_event,
-        }
+        if real_entry:
+            entry = real_entry
+        else:
+            cmd_rows = await (await db.execute(
+                """SELECT id, command_type, trigger_text, reward_points, reward_xp, reply_text
+                   FROM chzzk_chat_commands WHERE guild_id=? AND is_active=1""",
+                (guild_id,)
+            )).fetchall()
+            entry = {
+                "guild_id":    guild_id,
+                "user_client": _NullChatClient(),
+                "commands":    {c["trigger_text"]: dict(c) for c in cmd_rows},
+                "mc_event":    await self._load_mc_event(guild_id),
+            }
         message = Message(
             senderChannelId=chzzk_user_id,
             profile={"nickname": nickname, "badges": [], "verified_mark": False},
@@ -470,8 +493,15 @@ class ChzzkChatCog(commands.Cog):
             await db.commit()
         except Exception:
             log.info(f"치지직 출석체크 무시(오늘 이미 출석함): guild={guild_id} chzzk_user={chzzk_user_id}")
-            already_text = f"{nickname}님, 이미 출석을 하였습니다."
-            await self._send_chat(entry, already_text)
+            # 이미 출석한 유저가 !출석체크를 연타하면 매번 응답하지 않고 쿨다운 안에서는 조용히 무시 —
+            # 채팅 도배/치지직 제재 위험 방지.
+            cooldown_key = (guild_id, chzzk_user_id)
+            now = time.monotonic()
+            last_notice = self._checkin_duplicate_notice_at.get(cooldown_key, 0.0)
+            if now - last_notice >= CHECKIN_DUPLICATE_NOTICE_COOLDOWN_SECONDS:
+                self._checkin_duplicate_notice_at[cooldown_key] = now
+                already_text = f"{nickname}님, 이미 출석을 하였습니다."
+                await self._send_chat(entry, already_text)
             return  # 오늘 이미 출석함
 
         if cmd["reward_points"]:
@@ -603,12 +633,18 @@ class ChzzkChatCog(commands.Cog):
         title      = (cfg["title"] if cfg else None) or "포인트 도박"
         bet_amount = (cfg["bet_amount"] if cfg else None) or 100
 
-        cur = await db.execute(
-            """INSERT INTO chzzk_gambling_sessions(guild_id, title, options, bet_amount, created_at)
-               VALUES(?,?,?,?,?)""",
-            (guild_id, title, json.dumps(options, ensure_ascii=False), bet_amount, int(time.time()))
-        )
-        await db.commit()
+        try:
+            cur = await db.execute(
+                """INSERT INTO chzzk_gambling_sessions(guild_id, title, options, bet_amount, created_at)
+                   VALUES(?,?,?,?,?)""",
+                (guild_id, title, json.dumps(options, ensure_ascii=False), bet_amount, int(time.time()))
+            )
+            await db.commit()
+        except sqlite3.IntegrityError:
+            # guild당 진행중 세션 1개 제약(UNIQUE 부분 인덱스)에 걸림 — 위 존재 확인과 이
+            # INSERT 사이에 다른 태스크(실제 채팅 + 웹 테스트 큐 등)가 먼저 세션을 만든 경우.
+            await self._send_chat(entry, "이미 진행 중인 도박이 있습니다. !도박종료로 먼저 종료해주세요.")
+            return
 
         options_text = " ".join(f"{i+1}.{opt}" for i, opt in enumerate(options))
         announce = f"🎰 {title} (베팅 {bet_amount:,}P) {options_text} — !투표 <번호>로 참여! (1인 1회, 번복 불가)"
@@ -719,32 +755,26 @@ class ChzzkChatCog(commands.Cog):
             (session["id"],)
         )).fetchall()
 
-        counts = [0] * len(options)
         voters_by_option: dict[int, list[int]] = {i: [] for i in range(len(options))}
         for r in vote_rows:
             idx = r["option_index"]
             if 0 <= idx < len(options):
-                counts[idx] += 1
                 voters_by_option[idx].append(r["discord_user_id"])
 
         total_voters = len(vote_rows)
-        if total_voters == 0:
-            winner_index = None
-            winners: list[int] = []
-        else:
-            winner_index = max(range(len(options)), key=lambda i: counts[i])
-            winners = voters_by_option[winner_index]
-
-        pool   = total_voters * bet_amount
-        payout = pool // len(winners) if winners else 0
+        vote_counts  = {i: len(voters_by_option[i]) for i in range(len(options))}
+        winner_index = resolve_gambling_winner(vote_counts) if total_voters > 0 else None
+        winners      = voters_by_option[winner_index] if winner_index is not None else []
+        payout       = calc_gambling_payout(winners, total_voters, bet_amount)
 
         if winners:
-            for uid in winners:
-                await db.execute(
-                    """INSERT INTO user_points(guild_id, user_id, points) VALUES(?,?,?)
-                       ON CONFLICT(guild_id, user_id) DO UPDATE SET points=points+?""",
-                    (guild_id, uid, payout, payout)
-                )
+            # 당첨자 수만큼 INSERT를 반복하는 대신 한 번의 executemany로 일괄 처리 — 대규모
+            # 당첨자 수에서도 DB 왕복이 늘어나지 않는다.
+            await db.executemany(
+                """INSERT INTO user_points(guild_id, user_id, points) VALUES(?,?,?)
+                   ON CONFLICT(guild_id, user_id) DO UPDATE SET points=points+?""",
+                [(guild_id, uid, payout, payout) for uid in winners]
+            )
 
         await db.execute(
             "UPDATE chzzk_gambling_sessions SET settled=1, winner_index=?, settled_at=? WHERE id=?",

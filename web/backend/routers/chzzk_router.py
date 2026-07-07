@@ -476,6 +476,25 @@ def _normalize_trigger(raw: str) -> str:
     return raw.strip().lstrip("!").strip()
 
 
+# 봇이 "!" 뒤 첫 단어만 명령어로 보고 나머지는 인자로 취급하므로(예: "!투표 1"), 트리거에
+# 공백이 있으면 절대 매칭될 수 없다. 또한 이 이름들은 항상 내장 명령어로 먼저 처리되므로
+# 같은 이름의 커스텀 명령어를 등록해도 조용히 가려져 절대 실행되지 않는다.
+_RESERVED_TRIGGERS = {"포인트", "도박", "도박종료", "투표"}
+
+
+def _validate_trigger(trigger: str):
+    if " " in trigger or "\t" in trigger:
+        raise HTTPException(
+            status_code=400,
+            detail="명령어에는 공백을 포함할 수 없습니다. (공백 뒤는 인자로 처리되어 매칭되지 않습니다)",
+        )
+    if trigger in _RESERVED_TRIGGERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{trigger}'은(는) 이미 내장 명령어로 사용 중이라 등록할 수 없습니다.",
+        )
+
+
 @router.get("/{guild_id}/chat-commands")
 async def list_chat_commands(
     guild_id: str,
@@ -503,6 +522,7 @@ async def create_chat_command(
     trigger = _normalize_trigger(body.trigger_text)
     if not trigger:
         raise HTTPException(status_code=400, detail="명령어를 입력해주세요.")
+    _validate_trigger(trigger)
     if body.command_type not in ("checkin", "reply"):
         raise HTTPException(status_code=400, detail="잘못된 명령어 종류입니다.")
 
@@ -545,6 +565,7 @@ async def update_chat_command(
     trigger = _normalize_trigger(body.trigger_text)
     if not trigger:
         raise HTTPException(status_code=400, detail="명령어를 입력해주세요.")
+    _validate_trigger(trigger)
     db = await get_db()
     row = await (await db.execute(
         "SELECT id FROM chzzk_chat_commands WHERE id=? AND guild_id=?",
@@ -687,11 +708,13 @@ async def send_chat_test_message(
 
     db = await get_db()
     sub = await (await db.execute(
-        "SELECT chzzk_channel_id FROM chzzk_subscriptions WHERE guild_id=?",
+        "SELECT chzzk_channel_id, chat_enabled FROM chzzk_subscriptions WHERE guild_id=?",
         (int(guild_id),)
     )).fetchone()
     if not sub:
         raise HTTPException(status_code=404, detail="먼저 치지직 채널을 등록해주세요.")
+    if not sub["chat_enabled"]:
+        raise HTTPException(status_code=400, detail="실시간 채팅 연동이 꺼져 있습니다. 먼저 켜주세요.")
 
     chzzk_user_id = sub["chzzk_channel_id"] if body.as_streamer else "test_viewer"
     nickname       = "테스트(스트리머)" if body.as_streamer else "테스트유저"
@@ -709,6 +732,15 @@ async def send_chat_test_message(
 # 오버레이 페이지는 대시보드 로그인 세션 없이(OBS 브라우저 소스는 커스텀 헤더를 못 보냄)
 # URL에 박아넣은 토큰만으로 guild를 식별한다. 정산 후에도 결과를 잠시 보여주기 위한 유지 시간.
 _GAMBLING_RESULT_DISPLAY_SECONDS = 60
+
+
+def _overlay_urls(token: str) -> dict:
+    return {
+        "token": token,
+        "overlay_url":          f"{FRONTEND_URL}/overlay/gambling/{token}",
+        "gambling_overlay_url": f"{FRONTEND_URL}/overlay/gambling/{token}",
+        "missions_overlay_url": f"{FRONTEND_URL}/overlay/missions/{token}",
+    }
 
 
 @router.get("/{guild_id}/overlay-token")
@@ -732,12 +764,7 @@ async def get_overlay_token(
             (token, int(guild_id))
         )
         await db.commit()
-    return {
-        "token": token,
-        "overlay_url":          f"{FRONTEND_URL}/overlay/gambling/{token}",
-        "gambling_overlay_url": f"{FRONTEND_URL}/overlay/gambling/{token}",
-        "missions_overlay_url": f"{FRONTEND_URL}/overlay/missions/{token}",
-    }
+    return _overlay_urls(token)
 
 
 @router.post("/{guild_id}/overlay-token/regenerate")
@@ -759,12 +786,7 @@ async def regenerate_overlay_token(
         (token, int(guild_id))
     )
     await db.commit()
-    return {
-        "token": token,
-        "overlay_url":          f"{FRONTEND_URL}/overlay/gambling/{token}",
-        "gambling_overlay_url": f"{FRONTEND_URL}/overlay/gambling/{token}",
-        "missions_overlay_url": f"{FRONTEND_URL}/overlay/missions/{token}",
-    }
+    return _overlay_urls(token)
 
 
 @router.get("/overlay/{token}/gambling-status")
@@ -835,23 +857,26 @@ async def get_overlay_missions_status(token: str):
         raise HTTPException(status_code=404, detail="유효하지 않은 오버레이 토큰입니다.")
 
     rows = await (await db.execute(
-        "SELECT id, title, description, points FROM missions WHERE guild_id=? AND is_active=1 ORDER BY id",
+        """SELECT m.id, m.title, m.description, m.points,
+                  COUNT(CASE WHEN mc.status='approved' THEN 1 END) AS completed_count
+           FROM missions m
+           LEFT JOIN mission_completions mc ON mc.mission_id = m.id
+           WHERE m.guild_id=? AND m.is_active=1
+           GROUP BY m.id
+           ORDER BY m.id""",
         (sub["guild_id"],)
     )).fetchall()
 
-    missions = []
-    for r in rows:
-        cnt = await (await db.execute(
-            "SELECT COUNT(*) FROM mission_completions WHERE mission_id=? AND status='approved'",
-            (r["id"],)
-        )).fetchone()
-        missions.append({
+    missions = [
+        {
             "id": r["id"],
             "title": r["title"],
             "description": r["description"],
             "points": r["points"],
-            "completed_count": cnt[0] if cnt else 0,
-        })
+            "completed_count": r["completed_count"],
+        }
+        for r in rows
+    ]
     return {"missions": missions}
 
 

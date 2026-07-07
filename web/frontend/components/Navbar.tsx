@@ -18,7 +18,7 @@ export default function Navbar({ user }: Props) {
 
   return (
     <nav className="border-b border-border bg-bg-card/60 backdrop-blur sticky top-0 z-50 h-16">
-      <div className="max-w-6xl mx-auto px-4 h-full flex items-center justify-between">
+      <div className="w-full px-4 md:px-8 h-full flex items-center justify-between">
         <Link href="/" className="flex items-center gap-2 font-bold text-lg text-fg">
           <Bot size={22} className="text-accent" />
           NexBot

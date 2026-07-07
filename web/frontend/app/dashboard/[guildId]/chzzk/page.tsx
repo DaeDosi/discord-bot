@@ -11,6 +11,7 @@ import {
   Power, Crown, ListChecks,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import Switch from "@/components/Switch";
 import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier, ChzzkVerification, ChatCommand } from "@/lib/types";
 
 type DetailTab = "streamer" | "chat-commands";
@@ -351,12 +352,21 @@ function ChatConnectionCard({
   const load = () => api.chzzk.chatStatus(guildId).then(setStatus).catch(() => {});
 
   useEffect(() => {
+    // 등록된 치지직 구독이 없으면 보여줄 상태 자체가 없으므로 폴링하지 않음 — 그래도 훅
+    // 자체는 항상 호출해야 하므로(Rules of Hooks) return null 가드보다 먼저 두면 안 된다.
+    if (!mainSub) return;
     load();
     const timer = setInterval(load, 15000);
     return () => clearInterval(timer);
-  }, [guildId]);
+  }, [guildId, mainSub?.id]);
 
-  if (!mainSub) return null;
+  if (!mainSub) {
+    return (
+      <div className="card text-sm text-muted">
+        먼저 &quot;스트리머 설정&quot; 탭에서 치지직 계정을 연동해야 실시간 채팅 연동을 사용할 수 있습니다.
+      </div>
+    );
+  }
 
   const toggle = async (enabled: boolean) => {
     setSaving(true);
@@ -393,16 +403,7 @@ function ChatConnectionCard({
             켜면 치지직 방송 채팅에 봇이 접속해 아래 출석체크·자동응답·포인트·도박 명령어가 동작합니다.
           </p>
         </div>
-        <div className="relative shrink-0">
-          <input
-            type="checkbox" className="sr-only peer"
-            checked={enabled}
-            disabled={saving}
-            onChange={(e) => toggle(e.target.checked)}
-          />
-          <div className="w-10 h-6 bg-border rounded-full peer peer-checked:bg-accent transition-colors" />
-          <div className="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-4" />
-        </div>
+        <Switch checked={enabled} disabled={saving} onChange={toggle} />
       </label>
 
       <div className="pt-3 border-t border-border space-y-3">

@@ -406,6 +406,11 @@ async def init_db():
                settled_at   INTEGER
            )""",
         "CREATE INDEX IF NOT EXISTS idx_chzzk_gambling_sessions_guild ON chzzk_gambling_sessions(guild_id, id)",
+        # guild당 진행중(settled=0) 도박 세션은 최대 1개만 — !도박이 거의 동시에 두 번 들어와
+        # (실제 채팅 + 웹 테스트 큐 등 서로 다른 asyncio 태스크로) 중복 세션이 생기는 레이스를
+        # 애플리케이션 코드의 SELECT-then-INSERT가 아니라 DB 제약으로 막는다.
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_chzzk_gambling_sessions_one_active
+               ON chzzk_gambling_sessions(guild_id) WHERE settled=0""",
         # UNIQUE(session_id, chzzk_user_id) — 라운드당 1인 1표, 번복 불가(재투표 INSERT는 그냥 실패).
         """CREATE TABLE IF NOT EXISTS chzzk_gambling_votes (
                session_id      INTEGER NOT NULL,

@@ -1,4 +1,5 @@
 "use client";
+import { overlayPillStyle } from "@/components/overlayPillStyle";
 
 export interface OverlayMission {
   id: number;
@@ -19,13 +20,13 @@ export function MissionsOverlayView({
 }: { status: MissionsOverlayStatus | null; connError?: string | null }) {
   if (connError) {
     return (
-      <div style={pillStyle("rgba(237,66,69,0.85)")}>⚠️ {connError}</div>
+      <div style={overlayPillStyle("rgba(237,66,69,0.85)")}>⚠️ {connError}</div>
     );
   }
 
   if (!status || status.missions.length === 0) {
     return (
-      <div style={pillStyle("rgba(255,255,255,0.5)")}>🎯 등록된 미션이 없습니다</div>
+      <div style={overlayPillStyle("rgba(255,255,255,0.5)")}>🎯 등록된 미션이 없습니다</div>
     );
   }
 
@@ -74,17 +75,4 @@ export function MissionsOverlayView({
       ))}
     </div>
   );
-}
-
-function pillStyle(color: string) {
-  return {
-    fontFamily: "'Pretendard','Inter',sans-serif",
-    fontSize: 12,
-    color,
-    background: "rgba(15,17,23,0.55)",
-    border: "1px solid rgba(255,255,255,0.1)",
-    borderRadius: 999,
-    padding: "6px 14px",
-    display: "inline-block",
-  } as const;
 }
