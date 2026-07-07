@@ -433,6 +433,9 @@ async def init_db():
                created_at    INTEGER NOT NULL
            )""",
         "CREATE INDEX IF NOT EXISTS idx_chzzk_chat_test_queue_pending ON chzzk_chat_test_queue(processed, id)",
+        # nexadmin의 수동 새로고침 버튼이 찍는 타임스탬프. 봇(별도 프로세스)이 짧은 주기로
+        # 폴링해서 이 값이 갱신되면 즉시 presence(서버 개수 표시)와 통계를 다시 계산한다.
+        "ALTER TABLE bot_stats ADD COLUMN refresh_requested_at REAL DEFAULT 0",
     ]:
         try:
             await db.execute(sql)

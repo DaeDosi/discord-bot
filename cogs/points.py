@@ -163,6 +163,76 @@ class ShopView(discord.ui.View):
         self.add_item(ShopBuyButton(item_id=item_id, points_cost=points_cost))
 
 
+class ShopSelect(discord.ui.Select):
+    """상품 목록 드롭다운 — 고르면 해당 상품 상세(설명/필요 포인트/재고)를 본인에게만
+    보여주고, 거기 달린 교환하기 버튼(ShopView)으로 실제 구매를 진행한다."""
+
+    def __init__(self, items: list[dict]):
+        options = [
+            discord.SelectOption(
+                label=item["name"][:100],
+                description=self._describe(item),
+                value=str(item["id"]),
+            )
+            for item in items
+        ] or [discord.SelectOption(label="등록된 상품 없음", value="_none")]
+        super().__init__(
+            placeholder="교환할 상품을 선택하세요",
+            options=options[:25],  # Discord 셀렉트 메뉴 최대 옵션 수
+            custom_id="shop_select",
+        )
+
+    @staticmethod
+    def _describe(item: dict) -> str:
+        stock = "무제한 재고" if item["stock"] == -1 else f"재고 {item['stock']}개"
+        desc = f"{item['points_cost']:,}P · {stock}"
+        if item["description"]:
+            desc += f" · {item['description']}"
+        return desc[:100]
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "_none":
+            return await interaction.response.defer()
+
+        item_id = int(self.values[0])
+        db = await get_db()
+        item = await (await db.execute(
+            "SELECT * FROM shop_items WHERE id=? AND guild_id=? AND is_active=1",
+            (item_id, interaction.guild_id)
+        )).fetchone()
+        if not item:
+            return await interaction.response.send_message(
+                "아이템을 찾을 수 없거나 비활성화되었습니다.", ephemeral=True
+            )
+
+        stock_val = "무제한"
+        if item["stock"] != -1:
+            sold = await (await db.execute(
+                "SELECT COUNT(*) AS cnt FROM shop_exchanges WHERE item_id=? AND guild_id=?",
+                (item_id, interaction.guild_id)
+            )).fetchone()
+            remaining = max(0, item["stock"] - (sold["cnt"] if sold else 0))
+            stock_val = f"{remaining}개 남음" if remaining > 0 else "품절"
+
+        embed = discord.Embed(title=f"🛒 {item['name']}", color=discord.Color.gold())
+        if item["description"]:
+            embed.description = item["description"]
+        embed.add_field(name="필요 포인트", value=f"**{item['points_cost']:,}** P", inline=True)
+        embed.add_field(name="재고", value=stock_val, inline=True)
+
+        await interaction.response.send_message(
+            embed=embed,
+            view=ShopView(item_id=item["id"], points_cost=item["points_cost"]),
+            ephemeral=True,
+        )
+
+
+class ShopSelectView(discord.ui.View):
+    def __init__(self, items: list[dict]):
+        super().__init__(timeout=None)
+        self.add_item(ShopSelect(items=items))
+
+
 class PointsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -180,6 +250,7 @@ class PointsCog(commands.Cog):
         items = await (await db.execute("SELECT id, points_cost FROM shop_items")).fetchall()
         for item in items:
             self.bot.add_view(ShopView(item_id=item["id"], points_cost=item["points_cost"]))
+        self.bot.add_view(ShopSelectView(items=[]))
 
     @app_commands.command(name="포인트", description="자신 또는 멤버의 포인트를 확인합니다.")
     @app_commands.describe(member="확인할 멤버 (기본: 자신)")
@@ -289,22 +360,15 @@ class PointsCog(commands.Cog):
             (interaction.guild_id, interaction.user.id)
         )).fetchone()
         current_pts = pts_row["points"] if pts_row else 0
-        await interaction.response.defer()
-        for item in items:
-            embed = discord.Embed(title=f"🛒 {item['name']}", color=discord.Color.gold())
-            if item["description"]:
-                embed.description = item["description"]
-            embed.add_field(name="필요 포인트", value=f"**{item['points_cost']:,}** P", inline=True)
-            stock_val = "무제한" if item["stock"] == -1 else f"**{item['stock']}**개"
-            embed.add_field(name="재고", value=stock_val, inline=True)
-            if item["image_url"]:
-                embed.set_thumbnail(url=item["image_url"])
-            await interaction.channel.send(
-                embed=embed,
-                view=ShopView(item_id=item["id"], points_cost=item["points_cost"])
-            )
-        await interaction.followup.send(
-            f"💎 내 보유 포인트: **{current_pts:,}** P", ephemeral=True
+
+        embed = discord.Embed(
+            title="🛒 포인트 상점",
+            description=f"아래 목록에서 교환할 상품을 선택하세요.\n\n💎 내 보유 포인트: **{current_pts:,}** P",
+            color=discord.Color.gold(),
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=ShopSelectView(items=[dict(i) for i in items]),
         )
 
     # ── 포인트 도박 (discord.Poll 기반) ──────────────────────────────────────

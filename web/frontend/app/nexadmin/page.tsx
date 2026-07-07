@@ -616,6 +616,17 @@ export default function AdminPage() {
     setFollowStats((prev) => prev ? prev.filter((s) => s.sub_id !== subId) : prev);
   }, []);
 
+  const refreshBotStatus = async () => {
+    setRefreshing(true);
+    try {
+      // 서버 목록 캐시(2분 TTL) 무효화 + 봇 프로세스에 presence("N개의 서버") 재계산 요청
+      await adminFetch("/api/admin/refresh", { method: "POST" });
+    } catch {
+      // 캐시 무효화가 실패해도 아래 일반 새로고침은 계속 진행
+    }
+    await loadAll();
+  };
+
   const loadAll = async () => {
     setRefreshing(true);
 
@@ -740,7 +751,7 @@ export default function AdminPage() {
               OWNER ONLY
             </span>
           </div>
-          <button onClick={loadAll} disabled={refreshing}
+          <button onClick={refreshBotStatus} disabled={refreshing}
                   className="flex items-center gap-1.5 text-sm text-muted hover:text-fg transition-colors">
             <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
             새로고침

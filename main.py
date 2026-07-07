@@ -38,6 +38,7 @@ class AllInOneBot(commands.Bot):
             owner_id=OWNER_ID,
             help_command=None,
         )
+        self._last_refresh_request_handled = 0.0
 
     async def setup_hook(self):
         await init_db()
@@ -57,15 +58,11 @@ class AllInOneBot(commands.Bot):
         print(f"슬래시 커맨드 {len(synced)}개 글로벌 동기화 완료")
 
         self.update_stats.start()
+        self.poll_manual_refresh.start()
 
     async def on_ready(self):
         print(f"\n봇 준비 완료: {self.user} (ID: {self.user.id})")
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name=f"{len(self.guilds)}개의 서버"
-            )
-        )
+        await self._refresh_stats_and_presence()
 
     async def on_guild_join(self, guild: discord.Guild):
         print(f"서버 참가: {guild.name} (ID: {guild.id})")
@@ -117,33 +114,64 @@ class AllInOneBot(commands.Bot):
 
     async def close(self):
         self.update_stats.cancel()
+        self.poll_manual_refresh.cancel()
         await close_db()
         await super().close()
 
-    # ── 30분 통계 자동 업데이트 ───────────────────────────────────────────────
+    async def _refresh_stats_and_presence(self):
+        db = await get_db()
+        guilds = len(self.guilds)
+        row = await (await db.execute(
+            "SELECT COUNT(*) FROM chzzk_subscriptions"
+        )).fetchone()
+        chzzk_subs = int(row[0]) if row else 0
+        await db.execute(
+            """INSERT INTO bot_stats(id, guilds, chzzk_subs, updated_at) VALUES(1,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                   guilds     = excluded.guilds,
+                   chzzk_subs = excluded.chzzk_subs,
+                   updated_at = excluded.updated_at""",
+            (guilds, chzzk_subs, time.time())
+        )
+        await db.commit()
+        await self.change_presence(
+            activity=discord.Activity(
+                type=discord.ActivityType.watching,
+                name=f"{guilds}개의 서버"
+            )
+        )
+
+    # ── 30분 통계/presence 자동 업데이트 ──────────────────────────────────────
     @tasks.loop(minutes=30)
     async def update_stats(self):
         try:
-            db = await get_db()
-            guilds = len(self.guilds)
-            row = await (await db.execute(
-                "SELECT COUNT(*) FROM chzzk_subscriptions"
-            )).fetchone()
-            chzzk_subs = int(row[0]) if row else 0
-            await db.execute(
-                """INSERT INTO bot_stats(id, guilds, chzzk_subs, updated_at) VALUES(1,?,?,?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       guilds     = excluded.guilds,
-                       chzzk_subs = excluded.chzzk_subs,
-                       updated_at = excluded.updated_at""",
-                (guilds, chzzk_subs, time.time())
-            )
-            await db.commit()
+            await self._refresh_stats_and_presence()
         except Exception as e:
             print(f"[stats] 업데이트 실패: {e}")
 
     @update_stats.before_loop
     async def before_update_stats(self):
+        await self.wait_until_ready()
+
+    # ── nexadmin "새로고침" 버튼 감지 (10초 주기 폴링) ────────────────────────
+    # 봇과 web/backend는 별도 프로세스라 직접 호출이 불가능 — bot_stats.refresh_requested_at에
+    # 찍힌 타임스탬프를 신호로 삼아, 바뀌었을 때만 즉시 presence/통계를 재계산한다.
+    @tasks.loop(seconds=10)
+    async def poll_manual_refresh(self):
+        try:
+            db = await get_db()
+            row = await (await db.execute(
+                "SELECT refresh_requested_at FROM bot_stats WHERE id=1"
+            )).fetchone()
+            requested_at = row[0] if row else 0
+            if requested_at and requested_at > self._last_refresh_request_handled:
+                self._last_refresh_request_handled = requested_at
+                await self._refresh_stats_and_presence()
+        except Exception as e:
+            print(f"[refresh] 수동 새로고침 처리 실패: {e}")
+
+    @poll_manual_refresh.before_loop
+    async def before_poll_manual_refresh(self):
         await self.wait_until_ready()
 
 

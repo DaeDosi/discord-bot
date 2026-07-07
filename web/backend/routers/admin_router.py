@@ -37,14 +37,14 @@ def _get_lock() -> asyncio.Lock:
     return _guilds_lock
 
 
-async def _bot_guilds() -> list[dict]:
+async def _bot_guilds(force: bool = False) -> list[dict]:
     global _guilds_cache, _guilds_cache_ts
     now = _time.monotonic()
-    if _guilds_cache and now - _guilds_cache_ts < _GUILDS_TTL:
+    if not force and _guilds_cache and now - _guilds_cache_ts < _GUILDS_TTL:
         return _guilds_cache
     async with _get_lock():
         now = _time.monotonic()
-        if _guilds_cache and now - _guilds_cache_ts < _GUILDS_TTL:
+        if not force and _guilds_cache and now - _guilds_cache_ts < _GUILDS_TTL:
             return _guilds_cache
         guilds: list[dict] = []
         after: str | None = None
@@ -153,6 +153,22 @@ async def overview(user: dict = Depends(_require_owner)):
         "verifications":  verify_count,
         "today_visitors": today_visitors,
     }
+
+
+@router.post("/refresh")
+async def force_refresh(user: dict = Depends(_require_owner)):
+    """nexadmin 새로고침 버튼: 서버 목록 캐시(2분 TTL)를 즉시 무효화하고, 봇 프로세스에도
+    presence("N개의 서버") 재계산을 요청한다. 봇은 별도 프로세스라 bot_stats.refresh_requested_at
+    타임스탬프로 신호를 보내고, 봇이 짧은 주기로 이를 폴링해서 반영한다."""
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO bot_stats(id, refresh_requested_at) VALUES(1, ?)
+           ON CONFLICT(id) DO UPDATE SET refresh_requested_at = excluded.refresh_requested_at""",
+        (_time.time(),)
+    )
+    await db.commit()
+    guilds_list = await _bot_guilds(force=True)
+    return {"ok": True, "guild_count": len(guilds_list)}
 
 
 @router.get("/guilds")
