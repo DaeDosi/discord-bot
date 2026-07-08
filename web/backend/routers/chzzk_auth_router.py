@@ -72,6 +72,21 @@ async def _get_chzzk_channel_info(access_token: str) -> dict:
     return {}
 
 
+async def _get_guild_name(guild_id: int) -> str:
+    """봇 토큰으로 길드 이름 조회 (에러 안내 메시지용, 실패 시 guild_id 문자열로 대체)."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(
+                f"{DISCORD_API}/guilds/{guild_id}",
+                headers={"Authorization": f"Bot {_BOT_TOKEN}"},
+            )
+            if resp.status_code == 200:
+                return resp.json().get("name") or str(guild_id)
+    except Exception:
+        pass
+    return str(guild_id)
+
+
 async def _set_discord_nickname(guild_id: str, user_id: str, nickname: str) -> None:
     url = f"{DISCORD_API}/guilds/{guild_id}/members/{user_id}"
     headers = {
@@ -345,6 +360,26 @@ async def _handle_streamer_registration(
 
     try:
         db = await get_db()
+
+        # 같은 치지직 계정이 이미 다른 디스코드 서버에 스트리머로 등록되어 있으면 거부.
+        # chzzk_subscriptions는 guild_id별로 독립된 행이라 DB 제약만으로는 막히지 않는데,
+        # 이 상태에서 두 서버 모두 실시간 채팅을 켜면 cogs/chzzk_chat.py의 self._channels가
+        # chzzk_channel_id 하나로만 키가 잡혀 있어 나중에 동기화된 서버가 이전 서버의 채널
+        # 항목을 덮어써 메시지가 엉뚱한 서버로 처리되며 오류가 발생한다.
+        dup = await (await db.execute(
+            "SELECT guild_id FROM chzzk_subscriptions WHERE chzzk_channel_id=? AND guild_id!=?",
+            (chzzk_id, int(guild_id))
+        )).fetchone()
+        if dup:
+            other_guild_name = await _get_guild_name(dup["guild_id"])
+            print(
+                f"[chzzk-auth] streamer 등록 거부(중복): chzzk={chzzk_id} "
+                f"already_in_guild={dup['guild_id']}({other_guild_name}) attempted_guild={guild_id}"
+            )
+            return RedirectResponse(
+                f"{dashboard_url}?error=chzzk_already_registered&other_guild={quote(other_guild_name)}"
+            )
+
         count = (await (await db.execute(
             "SELECT COUNT(*) FROM chzzk_subscriptions WHERE guild_id=?",
             (int(guild_id),)

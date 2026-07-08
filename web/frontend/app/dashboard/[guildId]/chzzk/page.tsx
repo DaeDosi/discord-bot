@@ -786,6 +786,7 @@ export default function ChzzkPage() {
   const [verifications, setVerifications] = useState<ChzzkVerification[]>([]);
   const [verifOpen, setVerifOpen]         = useState(false);
   const [showFollowGuide, setShowFollowGuide] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
   const textChannels = channels.filter((c) => c.type === 0);
 
@@ -812,6 +813,16 @@ export default function ChzzkPage() {
     if (params.get("success") === "streamer_added" || params.get("success") === "token_refreshed") {
       window.history.replaceState({}, "", window.location.pathname);
       load();
+    }
+    const error = params.get("error");
+    if (error) {
+      const otherGuild = params.get("other_guild") || "";
+      const messages: Record<string, string> = {
+        chzzk_channel_not_found:  "치지직 채널 정보를 가져오지 못했습니다. 다시 시도해주세요.",
+        chzzk_already_registered: `이미 다른 디스코드 서버(${otherGuild})에 등록된 치지직 계정입니다. 한 계정은 하나의 서버에만 등록할 수 있습니다.`,
+      };
+      setErrorMsg(messages[error] || `오류: ${error}`);
+      window.history.replaceState({}, "", window.location.pathname);
     }
   }, [guildId]);
 
@@ -853,6 +864,12 @@ export default function ChzzkPage() {
 
   return (
     <div className="space-y-6">
+      {errorMsg && (
+        <div className="flex items-start justify-between gap-3 rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
+          <span>{errorMsg}</span>
+          <button onClick={() => setErrorMsg("")} className="shrink-0 text-danger/70 hover:text-danger">✕</button>
+        </div>
+      )}
       {verifOpen && (
         <VerifModal
           verifications={verifications}
