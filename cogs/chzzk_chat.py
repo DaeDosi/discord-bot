@@ -467,6 +467,7 @@ class ChzzkChatCog(commands.Cog):
         chzzk_user_id = message.user_id
 
         db = await get_db()
+        nickname = message.profile.nickname if message.profile else "익명"
 
         # 대시보드에서 치지직 계정을 연동(인증)한 유저만 지급 대상
         verif = await (await db.execute(
@@ -475,12 +476,17 @@ class ChzzkChatCog(commands.Cog):
         )).fetchone()
         if not verif:
             log.info(
-                f"치지직 출석체크 무시(미인증 유저): guild={guild_id} chzzk_user={chzzk_user_id} "
+                f"치지직 출석체크 거부(미인증 유저): guild={guild_id} chzzk_user={chzzk_user_id} "
                 f"— 대시보드 입장 인증에서 치지직 계정을 연동한 유저가 아님"
+            )
+            # !포인트/!도박 등 다른 내장 명령어와 달리 이전에는 여기서 조용히 무시했는데,
+            # 사용자 입장에서는 !출석체크만 아무 반응이 없어 "명령어가 아예 안 먹는다"로
+            # 오인하기 쉬웠다. 다른 명령어처럼 안내 메시지를 보내 원인을 알 수 있게 한다.
+            await self._send_chat(
+                entry, f"{nickname}님, 디스코드 서버 인증이 필요합니다!"
             )
             return
         discord_user_id = verif["user_id"]
-        nickname = message.profile.nickname if message.profile else "익명"
 
         # 1일 1회 제한 (guild + 치지직 유저 + 명령어 + 오늘 날짜 조합의 PK 충돌로 중복 차단)
         try:

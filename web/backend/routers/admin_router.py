@@ -97,23 +97,34 @@ async def _guild_member_count(client: httpx.AsyncClient, guild_id: str) -> int:
     return 0
 
 
+# 인증자 수가 많은 길드에서 개별 멤버 조회를 동시에 쏘면 Discord의 길드별
+# member-fetch 레이트리밋(429)에 걸려 이름 대신 user_id로 조용히 폴백되던 문제가
+# 있었다. 동시 요청 수를 제한하고 429는 retry_after만큼 기다렸다가 한 번 재시도한다.
+_MEMBER_FETCH_SEMAPHORE = asyncio.Semaphore(5)
+
+
 async def _fetch_member_name(client: httpx.AsyncClient, guild_id: str, user_id: str) -> str:
-    try:
-        resp = await client.get(
-            f"{_DISCORD}/guilds/{guild_id}/members/{user_id}",
-            headers={"Authorization": f"Bot {_BOT_TOKEN}"},
-            timeout=5,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            return (
-                data.get("nick")
-                or data.get("user", {}).get("global_name")
-                or data.get("user", {}).get("username")
-                or user_id
-            )
-    except Exception:
-        pass
+    url = f"{_DISCORD}/guilds/{guild_id}/members/{user_id}"
+    headers = {"Authorization": f"Bot {_BOT_TOKEN}"}
+    async with _MEMBER_FETCH_SEMAPHORE:
+        for attempt in range(2):
+            try:
+                resp = await client.get(url, headers=headers, timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return (
+                        data.get("nick")
+                        or data.get("user", {}).get("global_name")
+                        or data.get("user", {}).get("username")
+                        or user_id
+                    )
+                if resp.status_code == 429 and attempt == 0:
+                    retry_after = resp.json().get("retry_after", 1)
+                    await asyncio.sleep(min(retry_after, 5))
+                    continue
+                break
+            except Exception:
+                break
     return user_id
 
 
