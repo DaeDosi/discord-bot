@@ -59,6 +59,7 @@ class AllInOneBot(commands.Bot):
 
         self.update_stats.start()
         self.poll_manual_refresh.start()
+        self.reconcile_verifications.start()
 
     async def on_ready(self):
         print(f"\n봇 준비 완료: {self.user} (ID: {self.user.id})")
@@ -66,6 +67,12 @@ class AllInOneBot(commands.Bot):
 
     async def on_guild_join(self, guild: discord.Guild):
         print(f"서버 참가: {guild.name} (ID: {guild.id})")
+
+    async def on_guild_remove(self, guild: discord.Guild):
+        print(f"서버 퇴장: {guild.name} (ID: {guild.id})")
+        db = await get_db()
+        await db.execute("DELETE FROM chzzk_verifications WHERE guild_id = ?", (guild.id,))
+        await db.commit()
 
     # 봇 오너 전용: @봇이름 sync        → 글로벌 동기화
     #              @봇이름 sync guild  → 이 서버에 즉시 반영 (테스트용)
@@ -115,6 +122,7 @@ class AllInOneBot(commands.Bot):
     async def close(self):
         self.update_stats.cancel()
         self.poll_manual_refresh.cancel()
+        self.reconcile_verifications.cancel()
         await close_db()
         await super().close()
 
@@ -172,6 +180,43 @@ class AllInOneBot(commands.Bot):
 
     @poll_manual_refresh.before_loop
     async def before_poll_manual_refresh(self):
+        await self.wait_until_ready()
+
+    # ── 6시간마다 치지직 인증 정리 (봇 오프라인 중 놓친 on_member_remove 보정) ────
+    # on_member_remove/on_guild_remove로 대부분 즉시 정리되지만, 봇이 다운된 사이 나간
+    # 유저는 이벤트를 못 받으므로 실제 서버 멤버 목록과 대조해 남은 인증 기록을 정리한다.
+    @tasks.loop(hours=6)
+    async def reconcile_verifications(self):
+        try:
+            db = await get_db()
+            rows = await (await db.execute(
+                "SELECT DISTINCT guild_id FROM chzzk_verifications"
+            )).fetchall()
+            for row in rows:
+                guild_id = row[0]
+                guild = self.get_guild(guild_id)
+                if guild is None:
+                    await db.execute(
+                        "DELETE FROM chzzk_verifications WHERE guild_id=?", (guild_id,)
+                    )
+                    continue
+                member_ids = {m.id for m in guild.members}
+                verif_rows = await (await db.execute(
+                    "SELECT user_id FROM chzzk_verifications WHERE guild_id=?", (guild_id,)
+                )).fetchall()
+                stale_ids = [r[0] for r in verif_rows if r[0] not in member_ids]
+                if stale_ids:
+                    placeholders = ",".join("?" * len(stale_ids))
+                    await db.execute(
+                        f"DELETE FROM chzzk_verifications WHERE guild_id=? AND user_id IN ({placeholders})",
+                        (guild_id, *stale_ids)
+                    )
+            await db.commit()
+        except Exception as e:
+            print(f"[reconcile] 인증 정리 실패: {e}")
+
+    @reconcile_verifications.before_loop
+    async def before_reconcile_verifications(self):
         await self.wait_until_ready()
 
 

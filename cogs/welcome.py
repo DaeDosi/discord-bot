@@ -51,6 +51,12 @@ class WelcomeCog(commands.Cog):
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         db = await get_db()
+        await db.execute(
+            "DELETE FROM chzzk_verifications WHERE guild_id=? AND user_id=?",
+            (member.guild.id, member.id)
+        )
+        await db.commit()
+
         row = await (await db.execute(
             "SELECT goodbye_channel, goodbye_message FROM guild_config WHERE guild_id=?",
             (member.guild.id,)
