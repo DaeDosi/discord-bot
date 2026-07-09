@@ -3,6 +3,28 @@
 세션 단위로 주요 작업을 정리합니다. 커밋 메시지가 더 자세하니, 특정 항목의 정확한 diff가
 필요하면 `git log --oneline`으로 관련 커밋 해시를 찾아 `git show <hash>`로 확인하세요.
 
+## 2026-07-09 세션
+
+### 1. 치지직 인증 자동 정리 (`64ec481`)
+- **문제**: 서버에서 유저가 나가거나 봇이 서버에서 추방/탈퇴해도 `chzzk_verifications`
+  행이 그대로 남아, nexadmin 상단 "치지직 인증 N명" 카드(`GET /api/admin/overview`가
+  단순 `COUNT(*)`)가 실제 유효 인증자 수가 아니라 계속 누적되기만 하는 값처럼 보였음.
+  참고로 하단 인증 목록(`/api/admin/verifications`)은 "봇이 없는 서버"만 화면에서
+  걸러낼 뿐 DB에서 지우지는 않았고, "유저가 서버만 나간" 경우는 걸러내는 로직 자체가
+  없었음.
+- 세 단계로 정리 경로를 갖춤:
+  1. `cogs/welcome.py`의 `on_member_remove`에서 goodbye 메시지 처리보다 먼저
+     `DELETE FROM chzzk_verifications WHERE guild_id=? AND user_id=?` 실행 — 유저가
+     서버를 나가면 즉시 그 서버의 인증 행만 삭제.
+  2. `main.py`에 `on_guild_remove` 핸들러 추가 — 봇이 서버에서 나가면(추방 포함)
+     해당 `guild_id`의 인증 행 전체를 즉시 삭제.
+  3. `main.py`에 6시간 주기 `reconcile_verifications` 태스크 추가 — 봇이 오프라인이던
+     동안 놓친 `on_member_remove` 이벤트를 보정하기 위해, `chzzk_verifications`에 남은
+     모든 guild_id를 순회하며 봇이 이제 없는 서버는 통째로, 봇이 있는 서버는 실제
+     `guild.members` 캐시와 대조해 더 이상 멤버가 아닌 유저의 인증 행만 골라 삭제.
+- 결과: nexadmin의 인증 카운트/목록이 "누적치"가 아니라 "현재 유효 인증자 수"에
+  수렴하도록 동작 방식이 바뀜.
+
 ## 2026-07-08 세션
 
 ### 1. 포인트상점 셀렉트 메뉴 전환 (`160fdfb`)
