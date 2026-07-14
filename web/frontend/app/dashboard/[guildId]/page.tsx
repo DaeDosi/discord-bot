@@ -13,29 +13,46 @@ function CommunityListingCard({ guildId }: { guildId: string }) {
   const [isPublic, setIsPublic]   = useState(false);
   const [description, setDescription] = useState("");
   const [loaded, setLoaded]       = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving]       = useState(false);
   const [saved, setSaved]         = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
+    setLoadError(null);
     api.community.getSettings(guildId).then((d) => {
       setIsPublic(d.is_public);
       setDescription(d.description);
       setLoaded(true);
-    }).catch(() => setLoaded(true));
+    }).catch((e: unknown) => {
+      setLoadError(e instanceof Error ? e.message : "설정을 불러오지 못했습니다.");
+      setLoaded(true);
+    });
   }, [guildId]);
 
   const save = async () => {
     setSaving(true);
-    await api.community.saveSettings(guildId, { is_public: isPublic, description }).catch(() => {});
-    setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+    setSaveError(null);
+    try {
+      await api.community.saveSettings(guildId, { is_public: isPublic, description });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (e: unknown) {
+      setSaveError(e instanceof Error ? e.message : "저장에 실패했습니다.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   if (!loaded) return null;
 
   return (
     <div className="card space-y-4">
+      {loadError && (
+        <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
+          설정을 불러오지 못했습니다: {loadError}
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="section-title">커뮤니티 홍보 페이지</h2>
@@ -57,6 +74,11 @@ function CommunityListingCard({ guildId }: { guildId: string }) {
         />
         <p className="text-muted text-sm mt-1 text-right">{description.length}/{COMMUNITY_DESC_MAX}</p>
       </div>
+      {saveError && (
+        <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
+          저장 실패: {saveError}
+        </div>
+      )}
       <div className="flex items-center gap-3">
         <button onClick={save} disabled={saving} className="btn-primary">
           {saved ? <><CheckCircle size={16} /> 저장됨</> : <><Save size={16} /> {saving ? "저장 중..." : "저장"}</>}
