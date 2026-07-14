@@ -11,6 +11,7 @@ interface CommunityEntry {
   name: string;
   icon: string | null;
   description: string;
+  invite_url: string | null;
   chzzk_channel_id: string | null;
   chzzk_name: string | null;
   chzzk_image_url: string | null;
@@ -21,6 +22,7 @@ function CommunityCard({ entry }: { entry: CommunityEntry }) {
   const chzzkUrl = entry.chzzk_channel_id
     ? `https://chzzk.naver.com/${entry.chzzk_channel_id}`
     : null;
+  const inviteUrl = entry.invite_url || null;
 
   return (
     <div className="card flex flex-col gap-4">
@@ -53,17 +55,36 @@ function CommunityCard({ entry }: { entry: CommunityEntry }) {
         <p className="text-sm text-muted leading-relaxed line-clamp-4">{entry.description}</p>
       )}
 
-      {chzzkUrl && (
-        <a
-          href={chzzkUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-auto inline-flex items-center justify-center gap-1.5 text-sm font-medium
-                     px-4 py-2 rounded-lg border border-border hover:border-accent/40 hover:bg-bg-hover
-                     text-fg transition-colors"
-        >
-          치지직 바로가기 <ExternalLink size={13} />
-        </a>
+      {(chzzkUrl || inviteUrl) ? (
+        <div className="mt-auto flex flex-col gap-2">
+          {inviteUrl && (
+            <a
+              href={inviteUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center justify-center gap-1.5 text-sm font-medium
+                         px-4 py-2 rounded-lg bg-[#5865F2] hover:bg-[#4752C4] text-white transition-colors"
+            >
+              디스코드 참여하기 <ExternalLink size={13} />
+            </a>
+          )}
+          {chzzkUrl && (
+            <a
+              href={chzzkUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center justify-center gap-1.5 text-sm font-medium
+                         px-4 py-2 rounded-lg border border-border hover:border-accent/40 hover:bg-bg-hover
+                         text-fg transition-colors"
+            >
+              치지직 바로가기 <ExternalLink size={13} />
+            </a>
+          )}
+        </div>
+      ) : (
+        <p className="mt-auto text-xs text-muted/60 italic">
+          아직 이동 링크가 등록되지 않았습니다.
+        </p>
       )}
     </div>
   );

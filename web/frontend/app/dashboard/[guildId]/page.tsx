@@ -9,9 +9,12 @@ import Switch from "@/components/Switch";
 
 const COMMUNITY_DESC_MAX = 300;
 
+const DISCORD_INVITE_PATTERN = /^https:\/\/(discord\.gg|discord\.com\/invite)\/.+/;
+
 function CommunityListingCard({ guildId }: { guildId: string }) {
   const [isPublic, setIsPublic]   = useState(false);
   const [description, setDescription] = useState("");
+  const [inviteUrl, setInviteUrl] = useState("");
   const [loaded, setLoaded]       = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving]       = useState(false);
@@ -23,6 +26,7 @@ function CommunityListingCard({ guildId }: { guildId: string }) {
     api.community.getSettings(guildId).then((d) => {
       setIsPublic(d.is_public);
       setDescription(d.description);
+      setInviteUrl(d.invite_url);
       setLoaded(true);
     }).catch((e: unknown) => {
       setLoadError(e instanceof Error ? e.message : "설정을 불러오지 못했습니다.");
@@ -30,11 +34,17 @@ function CommunityListingCard({ guildId }: { guildId: string }) {
     });
   }, [guildId]);
 
+  const inviteUrlInvalid = inviteUrl.trim() !== "" && !DISCORD_INVITE_PATTERN.test(inviteUrl.trim());
+
   const save = async () => {
+    if (inviteUrlInvalid) {
+      setSaveError("초대 링크는 https://discord.gg/... 형식이어야 합니다.");
+      return;
+    }
     setSaving(true);
     setSaveError(null);
     try {
-      await api.community.saveSettings(guildId, { is_public: isPublic, description });
+      await api.community.saveSettings(guildId, { is_public: isPublic, description, invite_url: inviteUrl.trim() });
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (e: unknown) {
@@ -73,6 +83,24 @@ function CommunityListingCard({ guildId }: { guildId: string }) {
           placeholder="어떤 서버인지, 어떤 방송을 하는지 짧게 소개해주세요."
         />
         <p className="text-muted text-sm mt-1 text-right">{description.length}/{COMMUNITY_DESC_MAX}</p>
+      </div>
+      <div>
+        <label className="label">디스코드 초대 링크</label>
+        <input
+          type="text"
+          className="select"
+          value={inviteUrl}
+          onChange={(e) => setInviteUrl(e.target.value)}
+          placeholder="https://discord.gg/xxxxxxx"
+        />
+        <p className="text-muted text-sm mt-1">
+          커뮤니티 페이지 카드의 이동 버튼에 쓰입니다. 치지직 연동이 없는 서버는 이 링크가
+          없으면 방문자가 아무 곳으로도 이동할 수 없으니 꼭 입력해주세요. Discord 서버 설정 →
+          초대하기에서 <b>만료되지 않는</b> 링크를 생성해 붙여넣으세요.
+        </p>
+        {inviteUrlInvalid && (
+          <p className="text-danger text-sm mt-1">https://discord.gg/... 형식의 링크를 입력해주세요.</p>
+        )}
       </div>
       {saveError && (
         <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">

@@ -166,8 +166,8 @@ export const api = {
 
   community: {
     getSettings: (gid: string) =>
-      request<{ is_public: boolean; description: string }>(`/api/community/${gid}/settings`),
-    saveSettings: (gid: string, data: { is_public: boolean; description: string }) =>
+      request<{ is_public: boolean; description: string; invite_url: string }>(`/api/community/${gid}/settings`),
+    saveSettings: (gid: string, data: { is_public: boolean; description: string; invite_url: string }) =>
       request(`/api/community/${gid}/settings`, { method: "PUT", body: JSON.stringify(data) }),
     list: () =>
       fetch(`${BASE}/api/community/list`).then(r => r.json()) as Promise<{
@@ -175,6 +175,7 @@ export const api = {
         name: string;
         icon: string | null;
         description: string;
+        invite_url: string | null;
         chzzk_channel_id: string | null;
         chzzk_name: string | null;
         chzzk_image_url: string | null;

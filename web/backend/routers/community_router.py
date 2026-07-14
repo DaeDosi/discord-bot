@@ -44,6 +44,7 @@ async def _bot_guilds() -> list[dict]:
 class CommunitySettings(BaseModel):
     is_public:   bool
     description: str = Field(default="", max_length=_DESCRIPTION_MAX_LEN)
+    invite_url:  str = Field(default="", max_length=300)
 
 
 @router.get("/{guild_id}/settings")
@@ -54,12 +55,16 @@ async def get_settings(
 ):
     db  = await get_db()
     row = await (await db.execute(
-        "SELECT is_public, description FROM community_listing WHERE guild_id=?",
+        "SELECT is_public, description, invite_url FROM community_listing WHERE guild_id=?",
         (int(guild_id),)
     )).fetchone()
     if not row:
-        return {"is_public": False, "description": ""}
-    return {"is_public": bool(row["is_public"]), "description": row["description"] or ""}
+        return {"is_public": False, "description": "", "invite_url": ""}
+    return {
+        "is_public":   bool(row["is_public"]),
+        "description": row["description"] or "",
+        "invite_url":  row["invite_url"] or "",
+    }
 
 
 @router.put("/{guild_id}/settings")
@@ -71,13 +76,17 @@ async def save_settings(
 ):
     db = await get_db()
     await db.execute(
-        """INSERT INTO community_listing(guild_id, is_public, description, updated_at)
-           VALUES(?,?,?,?)
+        """INSERT INTO community_listing(guild_id, is_public, description, invite_url, updated_at)
+           VALUES(?,?,?,?,?)
            ON CONFLICT(guild_id) DO UPDATE SET
                is_public=excluded.is_public,
                description=excluded.description,
+               invite_url=excluded.invite_url,
                updated_at=excluded.updated_at""",
-        (int(guild_id), int(body.is_public), body.description.strip(), datetime.now(timezone.utc).isoformat()),
+        (
+            int(guild_id), int(body.is_public), body.description.strip(), body.invite_url.strip(),
+            datetime.now(timezone.utc).isoformat(),
+        ),
     )
     await db.commit()
     return {"ok": True}
@@ -88,7 +97,7 @@ async def public_list():
     """로그인 불필요 — /community 공개 페이지가 그대로 노출하는 목록."""
     db   = await get_db()
     rows = await (await db.execute(
-        """SELECT guild_id, description FROM community_listing
+        """SELECT guild_id, description, invite_url FROM community_listing
            WHERE is_public=1 ORDER BY updated_at DESC"""
     )).fetchall()
     if not rows:
@@ -117,6 +126,7 @@ async def public_list():
                 if g.get("icon") else None
             ),
             "description": r["description"] or "",
+            "invite_url":  r["invite_url"] or None,
             "chzzk_channel_id": chzzk["chzzk_channel_id"] if chzzk else None,
             "chzzk_name":       chzzk["chzzk_name"] if chzzk else None,
             "chzzk_image_url":  chzzk["chzzk_image_url"] if chzzk else None,

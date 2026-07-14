@@ -444,6 +444,9 @@ async def init_db():
                description  TEXT,
                updated_at   TEXT
            )""",
+        # 치지직 연동이 안 된 서버는 커뮤니티 카드에 이동할 곳이 전혀 없었다 —
+        # 관리자가 직접 붙여넣는 디스코드 초대 링크로 항상 이동 버튼을 보장한다.
+        "ALTER TABLE community_listing ADD COLUMN invite_url TEXT",
     ]:
         try:
             await db.execute(sql)
