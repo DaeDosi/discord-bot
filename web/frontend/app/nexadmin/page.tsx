@@ -16,6 +16,16 @@ function authHeader(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// 401(로그인 필요/토큰 만료)과 403(오너 아님)을 한국어 에러 메시지 문자열 매칭으로 구분하던
+// 방식이 취약해서(메시지 문구가 바뀌면 조용히 깨짐), 상태 코드를 직접 들고 다니는 에러 타입을 쓴다.
+export class AdminApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export async function adminFetch<T>(path: string, opts?: RequestInit): Promise<T> {
   // 백엔드가 멈추거나 비정상적으로 느려질 때(예: 인증자 많은 길드의 멤버 조회 지연)
   // fetch가 끝없이 대기하며 "집계 중..." 상태에 갇히는 걸 막기 위한 타임아웃.
@@ -38,7 +48,7 @@ export async function adminFetch<T>(path: string, opts?: RequestInit): Promise<T
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail ?? "요청 실패");
+    throw new AdminApiError(res.status, err.detail ?? "요청 실패");
   }
   return res.json();
 }
@@ -622,6 +632,7 @@ export default function AdminPage() {
   const [selectedVerif, setSelectedVerif] = useState<VerifUser | null>(null);
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null);
   const [statsError, setStatsError]   = useState<string | null>(null);
+  const [phase1Error, setPhase1Error] = useState<string | null>(null);
 
   const leaveGuild = useCallback((guildId: string) => {
     setGuilds((prev) => prev.filter((g) => g.id !== guildId));
@@ -647,6 +658,7 @@ export default function AdminPage() {
     setRefreshing(true);
 
     // ── Phase 1: 빠른 데이터 (캐시된 봇 서버 목록 기반) ──
+    setPhase1Error(null);
     try {
       const [gl, ch] = await Promise.all([
         adminFetch<Guild[]>("/api/admin/guilds"),
@@ -656,7 +668,14 @@ export default function AdminPage() {
       setChzzk(ch);
       setAuthed(true);
     } catch (e: unknown) {
-      if (e instanceof Error && e.message.includes("접근")) setAuthed(false);
+      // 401(토큰 없음/만료) · 403(오너 아님)은 로그인 안내 화면으로 보낸다.
+      // 그 외(네트워크 오류, 타임아웃, 5xx)는 authed를 건드리지 않고 별도 에러 화면 + 재시도로 안내한다 —
+      // 이전엔 여기서 아무 상태도 안 남겨서 authed=null인 채로 빈 대시보드가 그대로 렌더링됐었다.
+      if (e instanceof AdminApiError && (e.status === 401 || e.status === 403)) {
+        setAuthed(false);
+      } else {
+        setPhase1Error(e instanceof Error ? e.message : "서버 목록을 불러오지 못했습니다.");
+      }
       setLoading(false);
       setRefreshing(false);
       return;
@@ -719,6 +738,19 @@ export default function AdminPage() {
         <a href="/" className="text-accent text-sm hover:underline flex items-center gap-1">
           <LogIn size={14} /> 홈으로
         </a>
+      </div>
+    );
+  }
+
+  if (authed === null && phase1Error) {
+    return (
+      <div className="min-h-screen bg-bg flex flex-col items-center justify-center gap-4">
+        <ShieldCheck size={48} className="text-danger" />
+        <p className="text-fg font-semibold text-lg">서버 목록을 불러오지 못했습니다.</p>
+        <p className="text-muted text-sm">{phase1Error}</p>
+        <button onClick={loadAll} className="text-accent text-sm hover:underline flex items-center gap-1">
+          <RefreshCw size={14} /> 다시 시도
+        </button>
       </div>
     );
   }
