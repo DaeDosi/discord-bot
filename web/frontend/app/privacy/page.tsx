@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   description: "NexBot 서비스의 개인정보 수집·이용·보호에 관한 방침입니다.",
 };
 
-const EFFECTIVE_DATE = "2026년 6월 14일";
+const EFFECTIVE_DATE = "2026년 7월 14일";
 
 const sections = [
   {
@@ -34,6 +34,8 @@ const sections = [
               ["Discord 서버 채널·역할 ID", "알림 채널, 역할 부여 기능 설정"],
               ["치지직 팔로우 기간(개월)", "OAuth 인증 시 팔로우 날짜 기준으로 산출하여 역할 부여에 사용, DB에 저장"],
               ["치지직 OAuth 액세스 토큰", "팔로우 날짜 조회 시 일회성 사용, 서버에 영구 저장하지 않음"],
+              ["포인트 적립 내역", "채팅·애정도·미션 활동에 따른 서버별 포인트 잔액 저장 및 상점 교환에 사용"],
+              ["커뮤니티 홍보 소개 문구", "관리자가 직접 작성하며, 공개 설정 시 로그인 없이 누구나 볼 수 있는 커뮤니티 페이지에 노출"],
             ].map(([item, desc]) => (
               <tr key={item}>
                 <td className="py-2.5 pr-4 text-fg">{item}</td>
@@ -56,8 +58,8 @@ const sections = [
         {[
           "Discord OAuth2 로그인을 통한 자동 수집",
           "치지직 OAuth2 인증 시 팔로우 날짜 자동 조회 및 저장",
-          "봇 슬래시 명령어 실행 시 서버·채널·역할 ID 자동 저장",
-          "웹 대시보드에서 사용자가 직접 설정·입력",
+          "봇 슬래시 명령어 및 치지직 채팅 명령어 실행 시 서버·채널·역할 ID, 포인트 잔액 자동 저장",
+          "웹 대시보드에서 사용자가 직접 설정·입력 (커뮤니티 홍보 소개 문구 포함)",
         ].map((item) => (
           <li key={item} className="flex items-start gap-2">
             <ChevronRight size={14} className="text-accent mt-0.5 flex-shrink-0" />
@@ -74,8 +76,10 @@ const sections = [
       <ul className="space-y-2 text-muted leading-relaxed list-none">
         {[
           "Discord 봇 서비스 제공 (서버 관리, 레벨링, 환영/퇴장 메시지 등)",
-          "치지직 방송 시작 알림 발송",
+          "치지직 방송 시작 알림 발송 및 실시간 채팅 명령어(포인트 조회, 채팅 도박 등) 처리",
           "치지직 팔로우 인증 — 팔로우 기간 확인 후 Discord 역할 자동 부여",
+          "포인트 & 상점 시스템 운영 — 포인트 적립·차감 및 상점 아이템 교환 처리",
+          "관리자가 공개로 설정한 서버를 커뮤니티 홍보 페이지에 노출",
           "서버별 설정 저장 및 웹 대시보드 표시",
           "로그인 인증 및 세션 유지",
         ].map((item) => (

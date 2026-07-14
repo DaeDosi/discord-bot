@@ -164,6 +164,24 @@ export const api = {
     },
   },
 
+  community: {
+    getSettings: (gid: string) =>
+      request<{ is_public: boolean; description: string }>(`/api/community/${gid}/settings`),
+    saveSettings: (gid: string, data: { is_public: boolean; description: string }) =>
+      request(`/api/community/${gid}/settings`, { method: "PUT", body: JSON.stringify(data) }),
+    list: () =>
+      fetch(`${BASE}/api/community/list`).then(r => r.json()) as Promise<{
+        guild_id: string;
+        name: string;
+        icon: string | null;
+        description: string;
+        chzzk_channel_id: string | null;
+        chzzk_name: string | null;
+        chzzk_image_url: string | null;
+        chzzk_is_live: boolean;
+      }[]>,
+  },
+
   chzzkAuth: {
     getLoginUrl: (gid: string) =>
       request<{ url: string }>(`/api/chzzk-auth/login-url?guild_id=${encodeURIComponent(gid)}`),

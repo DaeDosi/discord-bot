@@ -436,6 +436,14 @@ async def init_db():
         # nexadmin의 수동 새로고침 버튼이 찍는 타임스탬프. 봇(별도 프로세스)이 짧은 주기로
         # 폴링해서 이 값이 갱신되면 즉시 presence(서버 개수 표시)와 통계를 다시 계산한다.
         "ALTER TABLE bot_stats ADD COLUMN refresh_requested_at REAL DEFAULT 0",
+        # 공개 커뮤니티 홍보 페이지(/community)에 노출할 서버를 관리자가 opt-in으로 등록.
+        # 기본값 비공개 — 명시적으로 켜야 로그인 없이 누구나 보는 페이지에 노출된다.
+        """CREATE TABLE IF NOT EXISTS community_listing (
+               guild_id     INTEGER PRIMARY KEY,
+               is_public    INTEGER NOT NULL DEFAULT 0,
+               description  TEXT,
+               updated_at   TEXT
+           )""",
     ]:
         try:
             await db.execute(sql)

@@ -26,6 +26,7 @@ from routers.chzzk_auth_router import router as chzzk_auth_router
 from routers.admin_router      import router as admin_router
 from routers.points_router     import router as points_router
 from routers.mc_event_router   import router as mc_event_router
+from routers.community_router  import router as community_router
 
 
 @asynccontextmanager
@@ -56,6 +57,7 @@ app.include_router(chzzk_auth_router)
 app.include_router(admin_router)
 app.include_router(points_router)
 app.include_router(mc_event_router)
+app.include_router(community_router)
 
 
 @app.get("/auth/callback")
