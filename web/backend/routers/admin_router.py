@@ -97,35 +97,54 @@ async def _guild_member_count(client: httpx.AsyncClient, guild_id: str) -> int:
     return 0
 
 
-# 인증자 수가 많은 길드에서 개별 멤버 조회를 동시에 쏘면 Discord의 길드별
-# member-fetch 레이트리밋(429)에 걸려 이름 대신 user_id로 조용히 폴백되던 문제가
-# 있었다. 동시 요청 수를 제한하고 429는 retry_after만큼 기다렸다가 한 번 재시도한다.
-_MEMBER_FETCH_SEMAPHORE = asyncio.Semaphore(5)
+# follow-stats/verifications는 인증자 수만큼 개별 멤버 조회(1 req/user)를 했었는데,
+# 인증자가 많은 길드에서는 이게 N번의 순차 REST 호출(+429 재시도)로 쌓여 응답이 수십 초~
+# 수 분까지 걸렸고, nexadmin 프론트가 그 실패를 조용히 삼켜서 "집계 중..."에 멈춘 것처럼
+# 보이는 원인이었다. 길드당 1회 멤버 목록 조회(최대 1000명씩 페이지네이션)로 바꿔
+# N req -> (길드 수) req로 줄인다. 길드별로 짧게 캐시해 같은 요청 내 여러 엔드포인트가
+# 같은 길드를 반복 조회해도 한 번만 호출한다.
+_member_map_cache: dict[str, tuple[float, dict[str, str]]] = {}
+_MEMBER_MAP_TTL = 120  # seconds
 
 
-async def _fetch_member_name(client: httpx.AsyncClient, guild_id: str, user_id: str) -> str:
-    url = f"{_DISCORD}/guilds/{guild_id}/members/{user_id}"
+async def _guild_member_map(client: httpx.AsyncClient, guild_id: str) -> dict[str, str]:
+    now = _time.monotonic()
+    cached = _member_map_cache.get(guild_id)
+    if cached and now - cached[0] < _MEMBER_MAP_TTL:
+        return cached[1]
+
+    name_map: dict[str, str] = {}
     headers = {"Authorization": f"Bot {_BOT_TOKEN}"}
-    async with _MEMBER_FETCH_SEMAPHORE:
-        for attempt in range(2):
-            try:
-                resp = await client.get(url, headers=headers, timeout=5)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return (
-                        data.get("nick")
-                        or data.get("user", {}).get("global_name")
-                        or data.get("user", {}).get("username")
-                        or user_id
-                    )
-                if resp.status_code == 429 and attempt == 0:
-                    retry_after = resp.json().get("retry_after", 1)
-                    await asyncio.sleep(min(retry_after, 5))
-                    continue
+    after = "0"
+    try:
+        while True:
+            resp = await client.get(
+                f"{_DISCORD}/guilds/{guild_id}/members",
+                headers=headers,
+                params={"limit": 1000, "after": after},
+                timeout=10,
+            )
+            if resp.status_code != 200:
                 break
-            except Exception:
+            batch = resp.json()
+            if not batch:
                 break
-    return user_id
+            for m in batch:
+                uid = str(m["user"]["id"])
+                name_map[uid] = (
+                    m.get("nick")
+                    or m.get("user", {}).get("global_name")
+                    or m.get("user", {}).get("username")
+                    or uid
+                )
+            if len(batch) < 1000:
+                break
+            after = str(batch[-1]["user"]["id"])
+    except Exception:
+        pass
+
+    _member_map_cache[guild_id] = (now, name_map)
+    return name_map
 
 
 # ── 엔드포인트 ────────────────────────────────────────────────────────────────
@@ -243,14 +262,17 @@ async def verifications(
     # 봇이 더 이상 없는 서버의 인증 기록은 제외
     rows = [r for r in rows if str(r["guild_id"]) in guild_id_set]
 
+    unique_guild_ids = {str(r["guild_id"]) for r in rows}
     async with httpx.AsyncClient() as client:
-        user_names = await asyncio.gather(*[
-            _fetch_member_name(client, str(r["guild_id"]), str(r["user_id"]))
-            for r in rows
+        member_maps = await asyncio.gather(*[
+            _guild_member_map(client, gid) for gid in unique_guild_ids
         ])
+    member_map_by_guild = dict(zip(unique_guild_ids, member_maps))
 
     result = []
-    for r, name in zip(rows, user_names):
+    for r in rows:
+        uid = str(r["user_id"])
+        name = member_map_by_guild.get(str(r["guild_id"]), {}).get(uid, uid)
         if r["follow_date"]:
             try:
                 fd = (_today_kst() - date.fromisoformat(str(r["follow_date"])[:10])).days
@@ -317,14 +339,17 @@ async def follow_stats(user: dict = Depends(_require_owner)):
     guilds_list    = await _bot_guilds()
     guild_name_map = {g["id"]: g["name"] for g in guilds_list}
 
+    unique_guild_ids = {str(v["guild_id"]) for v in verif_rows}
     async with httpx.AsyncClient() as client:
-        user_names = await asyncio.gather(*[
-            _fetch_member_name(client, str(v["guild_id"]), str(v["user_id"]))
-            for v in verif_rows
+        member_maps = await asyncio.gather(*[
+            _guild_member_map(client, gid) for gid in unique_guild_ids
         ])
+    member_map_by_guild = dict(zip(unique_guild_ids, member_maps))
 
     verif_by_guild: dict[int, list] = {}
-    for v, name in zip(verif_rows, user_names):
+    for v in verif_rows:
+        uid = str(v["user_id"])
+        name = member_map_by_guild.get(str(v["guild_id"]), {}).get(uid, uid)
         verif_by_guild.setdefault(v["guild_id"], []).append({
             "user_id":     v["user_id"],
             "user_name":   name,

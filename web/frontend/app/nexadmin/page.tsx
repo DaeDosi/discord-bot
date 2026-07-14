@@ -17,10 +17,25 @@ function authHeader(): Record<string, string> {
 }
 
 export async function adminFetch<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    ...opts,
-    headers: { "Content-Type": "application/json", ...authHeader(), ...(opts?.headers ?? {}) },
-  });
+  // 백엔드가 멈추거나 비정상적으로 느려질 때(예: 인증자 많은 길드의 멤버 조회 지연)
+  // fetch가 끝없이 대기하며 "집계 중..." 상태에 갇히는 걸 막기 위한 타임아웃.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  let res: Response;
+  try {
+    res = await fetch(`${API}${path}`, {
+      ...opts,
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", ...authHeader(), ...(opts?.headers ?? {}) },
+    });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error("요청 시간 초과");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "요청 실패");
@@ -606,6 +621,7 @@ export default function AdminPage() {
   const [refreshing, setRefreshing]   = useState(false);
   const [selectedVerif, setSelectedVerif] = useState<VerifUser | null>(null);
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null);
+  const [statsError, setStatsError]   = useState<string | null>(null);
 
   const leaveGuild = useCallback((guildId: string) => {
     setGuilds((prev) => prev.filter((g) => g.id !== guildId));
@@ -649,6 +665,7 @@ export default function AdminPage() {
     }
 
     // ── Phase 2: 느린 데이터 (Discord API 멤버 조회 포함) ──
+    setStatsError(null);
     try {
       const [ov, fs, vu] = await Promise.all([
         adminFetch<Overview>("/api/admin/overview"),
@@ -658,8 +675,9 @@ export default function AdminPage() {
       setOverview(ov);
       setFollowStats(fs);
       setVerifUsers(vu);
-    } catch {
-      // 통계/팔로우 로드 실패해도 서버 목록은 이미 표시됨
+    } catch (e: unknown) {
+      // 통계/팔로우 로드가 실패해도 서버 목록은 이미 표시됨 — 다만 원인은 화면에 알려준다.
+      setStatsError(e instanceof Error ? e.message : "통계를 불러오지 못했습니다.");
     } finally {
       setRefreshing(false);
     }
@@ -768,6 +786,12 @@ export default function AdminPage() {
           <StatCard icon={<ShieldCheck size={22} />} label="치지직 인증" value={overview?.verifications ?? null} color="#EB459E" />
           <StatCard icon={<Bot size={22} />}         label="오늘 방문자" value={overview?.today_visitors ?? null} color="#FEE75C" />
         </div>
+        {statsError && !overview && (
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
+            <span>통계 로드 실패: {statsError}</span>
+            <button onClick={loadAll} className="underline hover:opacity-80 flex-shrink-0">다시 시도</button>
+          </div>
+        )}
 
         {/* 탭 */}
         <div className="flex gap-1 border-b border-border">
