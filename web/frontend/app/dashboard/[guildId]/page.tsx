@@ -53,7 +53,7 @@ function CommunityListingCard({ guildId }: { guildId: string }) {
           설정을 불러오지 못했습니다: {loadError}
         </div>
       )}
-      <div className="flex items-center justify-between">
+      <label className="flex items-center justify-between cursor-pointer">
         <div>
           <h2 className="section-title">커뮤니티 홍보 페이지</h2>
           <p className="text-muted text-base mt-1">
@@ -62,7 +62,7 @@ function CommunityListingCard({ guildId }: { guildId: string }) {
           </p>
         </div>
         <Switch checked={isPublic} onChange={setIsPublic} />
-      </div>
+      </label>
       <div>
         <label className="label">소개 문구</label>
         <textarea
