@@ -249,38 +249,63 @@ async def live_ranking(limit: int = 200):
     return {"collected_at": ts, "streamers": streamers}
 
 
-@router.get("/categories")
-async def categories(limit: int = 60):
-    """최신 사이클의 카테고리(게임)별 집계 — 시청자 내림차순 전체 목록.
+# 카테고리 집계 시간창: live(현재 스냅샷) / 1h(1시간 평균) / 24h(24시간 평균)
+_CAT_WINDOWS = {"live": 0, "1h": 3600, "24h": 86400}
 
-    카테고리 탭용. 방송 수 필터 없이 전 카테고리를 내려주되, 블루오션 지수도 함께.
+
+@router.get("/categories")
+async def categories(range: str = "1h", limit: int = 60):
+    """카테고리(게임)별 집계 — 시간창(range) 평균 + 점유율 + 1시간 전 대비 증감 + 순위.
+
+    range=live(현재 스냅샷)/1h(최근 1시간 평균)/24h(최근 24시간 평균). 각 창의 카테고리
+    동시 시청자(창 내 스냅샷 평균)를 기준으로 점유율/순위를 매기고, 1시간 앞선 창과 비교해 증감.
     """
     ts = await _latest_run_ts()
     if ts is None:
-        return {"collected_at": None, "categories": []}
+        return {"collected_at": None, "range": range, "categories": []}
+    win = _CAT_WINDOWS.get(range, 3600)
     db = await get_db()
-    rows = await (await db.execute(
-        """SELECT category_name,
-                  COUNT(*)                            AS lives,
-                  COALESCE(SUM(concurrent_viewers),0) AS viewers
-           FROM rising_live_snapshots
-           WHERE collected_at=? AND category_name != ''
-           GROUP BY category_name
-           ORDER BY viewers DESC
-           LIMIT ?""",
-        (ts, limit)
-    )).fetchall()
-    cats = [
-        {
-            "category": r["category_name"],
-            "lives": r["lives"],
-            "viewers": r["viewers"],
-            "avg_viewers": round(r["viewers"] / r["lives"], 1) if r["lives"] else 0.0,
-            "blue_ocean_index": round(r["viewers"] / r["lives"], 1) if r["lives"] else 0.0,
-        }
-        for r in rows
-    ]
-    return {"collected_at": ts, "categories": cats}
+
+    async def agg(a: int, b: int) -> dict:
+        rows = await (await db.execute(
+            """SELECT category_name, COALESCE(SUM(concurrent_viewers),0) AS sv, COUNT(*) AS cnt
+               FROM rising_live_snapshots
+               WHERE collected_at BETWEEN ? AND ? AND category_name != ''
+               GROUP BY category_name""",
+            (a, b)
+        )).fetchall()
+        nrow = await (await db.execute(
+            "SELECT COUNT(*) AS n FROM rising_collect_runs WHERE ok=1 AND collected_at BETWEEN ? AND ?",
+            (a, b)
+        )).fetchone()
+        n = max(1, nrow["n"] if nrow and nrow["n"] else 1)
+        # viewers=창 내 평균 동시시청자, lives=평균 방송 수, sv/cnt=방송당 평균
+        return {r["category_name"]: {"viewers": r["sv"] / n, "lives": r["cnt"] / n, "sv": r["sv"], "cnt": r["cnt"]}
+                for r in rows}
+
+    cur  = await agg(ts - win, ts)
+    prev = await agg(ts - win - 3600, ts - 3600)  # 1시간 앞선 동일 창
+
+    total_cur = sum(c["viewers"] for c in cur.values()) or 1
+    items = []
+    for name, c in cur.items():
+        viewers = c["viewers"]
+        avg = (c["sv"] / c["cnt"]) if c["cnt"] else 0.0
+        p = prev.get(name)
+        change = round((viewers - p["viewers"]) / p["viewers"] * 100, 1) if p and p["viewers"] > 0 else None
+        items.append({
+            "category": name,
+            "viewers": round(viewers),
+            "lives": round(c["lives"]),
+            "avg_viewers": round(avg, 1),
+            "blue_ocean_index": round(avg, 1),
+            "share": round(viewers / total_cur * 100, 1),
+            "change": change,
+        })
+    items.sort(key=lambda x: x["viewers"], reverse=True)
+    for i, it in enumerate(items):
+        it["rank"] = i + 1
+    return {"collected_at": ts, "range": range if range in _CAT_WINDOWS else "1h", "categories": items[:limit]}
 
 
 @router.get("/rising-stars")

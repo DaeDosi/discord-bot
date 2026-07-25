@@ -269,14 +269,19 @@ export interface RisingLiveRanking {
   streamers:    RisingStreamer[];
 }
 
+export type CatRange = "live" | "1h" | "24h";
 export interface RisingCategory {
   category:         string;
   lives:            number;
   viewers:          number;
   avg_viewers:      number;
   blue_ocean_index: number;
+  share?:           number;
+  change?:          number | null;
+  rank?:            number;
 }
 export interface RisingCategories {
   collected_at: number | null;
+  range?:       string;
   categories:   RisingCategory[];
 }

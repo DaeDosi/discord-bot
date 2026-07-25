@@ -172,8 +172,8 @@ export const api = {
       fetch(`${BASE}/api/rising/timeseries?range=${range}`).then(r => r.json()) as Promise<import("./types").RisingTimeseries>,
     liveRanking: (limit = 200) =>
       fetch(`${BASE}/api/rising/live-ranking?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingLiveRanking>,
-    categories: (limit = 60) =>
-      fetch(`${BASE}/api/rising/categories?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingCategories>,
+    categories: (range: import("./types").CatRange = "1h", limit = 60) =>
+      fetch(`${BASE}/api/rising/categories?range=${range}&limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingCategories>,
     risingStars: (limit = 20) =>
       fetch(`${BASE}/api/rising/rising-stars?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingStars>,
     status: () =>
