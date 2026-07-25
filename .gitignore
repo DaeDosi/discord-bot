@@ -17,10 +17,11 @@ venv/
 *.db-shm
 *.db-wal
 
-# ── Next.js ──────────────────────────────────────────────
+# ── Next.js / TypeScript ─────────────────────────────────
 web/frontend/.next/
 web/frontend/node_modules/
 web/frontend/out/
+*.tsbuildinfo
 
 # ── OS ───────────────────────────────────────────────────
 .DS_Store
@@ -29,3 +30,12 @@ Thumbs.db
 # ── IDE ──────────────────────────────────────────────────
 .vscode/settings.json
 .idea/
+
+# ── Claude Code (로컬 전용 설정) ─────────────────────────
+.claude/settings.local.json
+
+# ── Serena (툴 캐시/인덱스) ──────────────────────────────
+.serena/
+
+# ── 별도 앱 (Expo/React Native, 이 모노레포와 무관) ──────
+chzzk-repo/
