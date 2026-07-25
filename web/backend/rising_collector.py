@@ -58,6 +58,7 @@ def _parse_live(item: dict) -> dict | None:
     channel_id = ch.get("channelId") or item.get("channelId")
     if not channel_id:
         return None
+    tags = item.get("tags") or []
     return {
         "chzzk_channel_id":   str(channel_id),
         "channel_name":       ch.get("channelName") or "",
@@ -69,6 +70,7 @@ def _parse_live(item: dict) -> dict | None:
         "live_title":         item.get("liveTitle") or "",
         "open_date":          item.get("openDate") or "",
         "adult":              1 if item.get("adult") else 0,
+        "tags":               ",".join(str(t) for t in tags if t) if isinstance(tags, list) else "",
     }
 
 
@@ -184,12 +186,12 @@ async def collect_once() -> tuple[int, str]:
     await db.executemany(
         """INSERT INTO rising_live_snapshots
                (collected_at, chzzk_channel_id, channel_name, follower_count,
-                concurrent_viewers, category_id, category_name, live_title, open_date, adult)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                concurrent_viewers, category_id, category_name, live_title, open_date, adult, tags)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (now, l["chzzk_channel_id"], l["channel_name"], l["follower_count"],
              l["concurrent_viewers"], l["category_id"], l["category_name"],
-             l["live_title"], l["open_date"], l["adult"])
+             l["live_title"], l["open_date"], l["adult"], l.get("tags", ""))
             for l in lives
         ],
     )

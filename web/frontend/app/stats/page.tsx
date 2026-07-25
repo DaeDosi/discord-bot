@@ -3,12 +3,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Bot, BarChart3, LineChart as LineIcon, ListOrdered, Gamepad2, Radio,
-  TrendingUp, Loader2, Search, Circle,
+  TrendingUp, Loader2, Search, Circle, Sprout, Lock,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
   RisingOverview, RisingTimeseries, RisingLiveRanking, RisingCategories, RisingCategory,
-  RisingStars, TimeRange, CatRange, RisingSearchResult,
+  RisingStars, TimeRange, CatRange, RisingSearchResult, RisingNewcomers,
 } from "@/lib/types";
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
@@ -44,11 +44,12 @@ function Delta({ pct }: { pct: number | null | undefined }) {
   );
 }
 
-type Tab = "overview" | "ranking" | "category";
+type Tab = "overview" | "ranking" | "category" | "newcomers";
 const TABS: { key: Tab; label: string; desc: string; icon: React.ReactNode }[] = [
-  { key: "overview", label: "실시간 분석", desc: "추이·요약",   icon: <LineIcon size={17} /> },
-  { key: "ranking",  label: "랭킹",     desc: "실시간 방송",  icon: <ListOrdered size={17} /> },
-  { key: "category", label: "카테고리", desc: "게임별 현황",  icon: <Gamepad2 size={17} /> },
+  { key: "overview",  label: "실시간 분석", desc: "추이·요약",    icon: <LineIcon size={17} /> },
+  { key: "newcomers", label: "신규/라이징", desc: "하꼬·신입 발굴", icon: <Sprout size={17} /> },
+  { key: "ranking",   label: "랭킹",       desc: "실시간 방송",   icon: <ListOrdered size={17} /> },
+  { key: "category",  label: "카테고리",   desc: "게임별 현황",   icon: <Gamepad2 size={17} /> },
 ];
 
 // 방송시간(KST 문자열 → 경과) 계산
@@ -663,6 +664,103 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
   );
 }
 
+// ── 신규/라이징 탭 ────────────────────────────────────────────────────────────
+type NcSort = "growth" | "duration" | "debut";
+function NewcomersTab({ data }: { data: RisingNewcomers }) {
+  const [sort, setSort] = useState<NcSort>("growth");
+  const [limit, setLimit] = useState(50);
+  const enriched = useMemo(() =>
+    data.streamers.map((s) => ({ ...s, dur: liveDuration(s.open_date) })), [data]);
+  const sorted = useMemo(() => {
+    const a = [...enriched];
+    if (sort === "duration") a.sort((x, y) => y.dur.ms - x.dur.ms);
+    else if (sort === "debut") a.sort((x, y) => x.first_seen_days - y.first_seen_days);
+    else a.sort((x, y) => (y.growth_rate ?? -1e9) - (x.growth_rate ?? -1e9));
+    return a;
+  }, [enriched, sort]);
+
+  const SortBtn = ({ k, label, locked }: { k?: NcSort; label: string; locked?: boolean }) => {
+    const active = !locked && sort === k;
+    return (
+      <button disabled={locked} onClick={() => k && setSort(k)}
+        className="text-xs px-2.5 py-1 rounded-md border transition-colors flex items-center gap-1"
+        style={{ background: active ? "rgba(0,255,163,0.1)" : "transparent",
+                 borderColor: active ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
+                 color: active ? GREEN : "rgb(var(--color-muted-rgb))", opacity: locked ? 0.5 : 1,
+                 cursor: locked ? "not-allowed" : "pointer" }}>
+        {label}{locked && <Lock size={10} />}
+      </button>
+    );
+  };
+
+  return (
+    <div className="card !p-4 md:!p-5">
+      <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+        <span className="text-xs text-muted mr-1">정렬</span>
+        <SortBtn label="🔥 소통 화력순" locked />
+        <SortBtn k="growth" label="📈 급성장순" />
+        <SortBtn k="duration" label="⏱️ 열정 방송순" />
+        <SortBtn k="debut" label="🆕 최신 데뷔순" />
+      </div>
+      <p className="text-[11px] text-muted/70 mb-4">
+        평균 시청자 50명 미만 · 신규(30일 내) · 신입 태그 채널 · 최소 3명 이상 · 🔒 소통 화력은 채팅 미수집으로 잠금
+      </p>
+
+      {sorted.length === 0 ? (
+        <p className="text-sm text-muted text-center py-8">조건에 맞는 신규/라이징 방송이 아직 없습니다.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[600px]">
+            <thead>
+              <tr className="text-muted text-xs border-b border-border">
+                <th className="text-left font-medium py-2 pl-2 w-8">#</th>
+                <th className="text-left font-medium py-2">스트리머</th>
+                <th className="text-right font-medium py-2">시청자</th>
+                <th className="text-right font-medium py-2">성장률</th>
+                <th className="text-right font-medium py-2 pl-4 hidden md:table-cell">방송시간</th>
+                <th className="text-right font-medium py-2 hidden sm:table-cell">데뷔</th>
+                <th className="text-right font-medium py-2 pr-2">팔로워</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.slice(0, limit).map((s, i) => (
+                <tr key={s.chzzk_channel_id} className="border-b border-border/50 hover:bg-bg-hover transition-colors">
+                  <td className="py-2.5 pl-2 tabular-nums text-muted text-sm align-middle">{i + 1}</td>
+                  <td className="py-2.5">
+                    <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="flex items-center gap-2 group">
+                      <Sprout size={14} className="shrink-0" style={{ color: GREEN }} />
+                      <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
+                        {s.channel_image_url && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
+                        )}
+                      </span>
+                      <span className="font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[140px] md:max-w-none">{s.channel_name}</span>
+                      {(s.is_new || s.tag_new) && (
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0" style={{ color: GREEN, background: "rgba(0,255,163,0.12)" }}>🆕 신입</span>
+                      )}
+                    </Link>
+                  </td>
+                  <td className="py-2.5 text-right tabular-nums font-bold text-fg">{nf(s.concurrent_viewers)}</td>
+                  <td className="py-2.5 text-right text-[11px]"><Delta pct={s.growth_rate} /></td>
+                  <td className="py-2.5 pl-4 text-right tabular-nums text-muted text-sm hidden md:table-cell">{s.dur.label}</td>
+                  <td className="py-2.5 text-right tabular-nums text-muted text-sm hidden sm:table-cell">{s.first_seen_days}일 전</td>
+                  <td className="py-2.5 pr-2 text-right tabular-nums text-muted text-sm">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {sorted.length > limit && (
+        <div className="text-center pt-4">
+          <button onClick={() => setLimit((l) => l + 50)} className="btn-secondary text-sm">더 보기 ({nf(sorted.length - limit)}개 남음)</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── 카테고리 탭 ───────────────────────────────────────────────────────────────
 function CategoryTab({ cats }: { cats: RisingCategories }) {
   const maxV = Math.max(1, ...cats.categories.map((c) => c.viewers));
@@ -713,6 +811,7 @@ export default function StatsPage() {
   const [rank, setRank]   = useState<RisingLiveRanking | null>(null);
   const [cats, setCats]   = useState<RisingCategories | null>(null);
   const [stars, setStars] = useState<RisingStars | null>(null);
+  const [news, setNews]   = useState<RisingNewcomers | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(false);
   const [tab, setTab]         = useState<Tab>("overview");
@@ -720,9 +819,9 @@ export default function StatsPage() {
   useEffect(() => {
     Promise.all([
       api.rising.overview(), api.rising.liveRanking(200),
-      api.rising.categories(), api.rising.risingStars(20),
+      api.rising.categories(), api.rising.risingStars(20), api.rising.newcomers(80),
     ])
-      .then(([o, r, c, s]) => { setOv(o); setRank(r); setCats(c); setStars(s); })
+      .then(([o, r, c, s, nc]) => { setOv(o); setRank(r); setCats(c); setStars(s); setNews(nc); })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
   }, []);
@@ -814,9 +913,10 @@ export default function StatsPage() {
 
             {/* 우측 뷰 */}
             <div className="min-w-0">
-              {tab === "overview" && ov && <OverviewTab ov={ov} stars={stars} />}
-              {tab === "ranking"  && rank && <RankingTab rank={rank} />}
-              {tab === "category" && cats && <CategoryTab cats={cats} />}
+              {tab === "overview"  && ov && <OverviewTab ov={ov} stars={stars} />}
+              {tab === "newcomers" && news && <NewcomersTab data={news} />}
+              {tab === "ranking"   && rank && <RankingTab rank={rank} />}
+              {tab === "category"  && cats && <CategoryTab cats={cats} />}
             </div>
           </div>
         )}

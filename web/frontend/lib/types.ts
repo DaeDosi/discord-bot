@@ -321,3 +321,20 @@ export interface RisingSearchResult {
   follower_count:    number;
   open_live:         boolean;
 }
+
+export interface RisingNewcomer {
+  chzzk_channel_id:   string;
+  channel_name:       string;
+  channel_image_url:  string;
+  concurrent_viewers: number;
+  category_name:      string;
+  open_date:          string;
+  follower_count:     number;
+  avg_viewers:        number;
+  growth_rate:        number | null;
+  first_seen_days:    number;
+  is_new:             boolean;
+  tag_new:            boolean;
+  tags:               string[];
+}
+export interface RisingNewcomers { collected_at: number | null; streamers: RisingNewcomer[]; }

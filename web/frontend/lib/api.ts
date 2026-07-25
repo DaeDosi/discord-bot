@@ -180,6 +180,8 @@ export const api = {
       fetch(`${BASE}/api/rising/streamer/${encodeURIComponent(cid)}?days=${days}`).then(r => r.json()) as Promise<import("./types").StreamerDashboard>,
     search: (keyword: string) =>
       fetch(`${BASE}/api/rising/search?keyword=${encodeURIComponent(keyword)}`).then(r => r.json()) as Promise<{ results: import("./types").RisingSearchResult[] }>,
+    newcomers: (limit = 80) =>
+      fetch(`${BASE}/api/rising/newcomers?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingNewcomers>,
     status: () =>
       fetch(`${BASE}/api/rising/status`).then(r => r.json()) as Promise<import("./types").RisingStatus>,
   },

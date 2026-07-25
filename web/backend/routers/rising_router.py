@@ -325,6 +325,79 @@ async def categories(range: str = "1h", limit: int = 60):
     return {"collected_at": ts, "range": range if range in _CAT_WINDOWS else "1h", "categories": items[:limit]}
 
 
+_NEW_TAGS = ("신입", "신규", "첫방송", "하꼬", "뉴비", "초보")
+_newcomers_cache: dict = {"ts": 0, "data": None}
+
+
+@router.get("/newcomers")
+async def newcomers(limit: int = 80):
+    """신규/라이징(하꼬) 스트리머 — 현재 라이브 중 소형/신규 채널만.
+
+    포함 조건(하나 이상): 태그에 신입/하꼬 등 포함 / 최근 평균 시청자 50명 미만 /
+    첫 수집(대략 데뷔) 30일 이내. 최소 3명 이상 컷오프. 채팅(소통 화력)은 미수집이라 잠금.
+    """
+    now = int(time.time())
+    if _newcomers_cache["data"] is not None and now - _newcomers_cache["ts"] < 30:
+        return _newcomers_cache["data"]
+
+    ts = await _latest_run_ts()
+    if ts is None:
+        return {"collected_at": None, "streamers": []}
+    db = await get_db()
+
+    cur = await (await db.execute(
+        """SELECT chzzk_channel_id, channel_name, concurrent_viewers, category_name,
+                  open_date, follower_count, live_title, tags
+           FROM rising_live_snapshots
+           WHERE collected_at=? AND concurrent_viewers >= 3""",
+        (ts,)
+    )).fetchall()
+
+    # 채널별 전체 보관창 평균/첫 관측 + 최근 7일 평균
+    agg = {r["chzzk_channel_id"]: (r["avg_all"], r["first_seen"]) for r in await (await db.execute(
+        "SELECT chzzk_channel_id, AVG(concurrent_viewers) AS avg_all, MIN(collected_at) AS first_seen "
+        "FROM rising_live_snapshots GROUP BY chzzk_channel_id"
+    )).fetchall()}
+    agg7 = {r["chzzk_channel_id"]: r["avg7"] for r in await (await db.execute(
+        "SELECT chzzk_channel_id, AVG(concurrent_viewers) AS avg7 FROM rising_live_snapshots "
+        "WHERE collected_at >= ? GROUP BY chzzk_channel_id", (ts - 7 * 86400,)
+    )).fetchall()}
+
+    out = []
+    for r in cur:
+        cid = r["chzzk_channel_id"]
+        avg_all, first_seen = agg.get(cid, (r["concurrent_viewers"], ts))
+        first_days = round((ts - int(first_seen)) / 86400, 1)
+        tags = r["tags"] or ""
+        tag_new = any(t in tags for t in _NEW_TAGS)
+        if not (tag_new or (avg_all is not None and avg_all < 50) or first_days <= 30):
+            continue
+        avg7 = agg7.get(cid, avg_all) or avg_all or r["concurrent_viewers"]
+        growth = round((r["concurrent_viewers"] - avg7) / avg7 * 100, 1) if avg7 and avg7 > 0 else None
+        out.append({
+            "chzzk_channel_id":   cid,
+            "channel_name":       r["channel_name"],
+            "channel_image_url":  latest_image(cid),
+            "concurrent_viewers": r["concurrent_viewers"],
+            "category_name":      r["category_name"],
+            "open_date":          r["open_date"],
+            "follower_count":     r["follower_count"],
+            "avg_viewers":        round(avg_all) if avg_all is not None else r["concurrent_viewers"],
+            "growth_rate":        growth,
+            "first_seen_days":    first_days,
+            "is_new":             first_days <= 7,
+            "tag_new":            tag_new,
+            "tags":               [t for t in tags.split(",") if t][:4],
+        })
+
+    # 기본 정렬: 급성장순(소통 화력은 채팅 미수집이라 프론트에서 잠금)
+    out.sort(key=lambda x: (x["growth_rate"] if x["growth_rate"] is not None else -1e9), reverse=True)
+    result = {"collected_at": ts, "streamers": out[:limit]}
+    _newcomers_cache["ts"] = now
+    _newcomers_cache["data"] = result
+    return result
+
+
 @router.get("/search")
 async def search(keyword: str, size: int = 8):
     """치지직 채널 검색(공개, 무인증) — 개인 분석 대시보드로 이동할 스트리머를 찾는다."""
