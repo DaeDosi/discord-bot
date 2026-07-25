@@ -398,8 +398,8 @@ async def newcomers(limit: int = 80):
     out.sort(key=lambda x: (x["growth_rate"] if x["growth_rate"] is not None else -1e9), reverse=True)
 
     # 소형 채널은 팔로워가 0(상위 100만 보강)이라, 상위 후보를 온디맨드로 팔로워 보강 후
-    # '팔로워 500명 이하'만 남긴다. (보강 실패=0은 배제하지 않음)
-    enrich = out[:120]
+    # '팔로워 100명 이하'만 남긴다. (보강 실패=0은 배제하지 않음)
+    enrich = out[:150]
     sem = asyncio.Semaphore(12)
     async with httpx.AsyncClient() as client:
         async def _fill(item):
@@ -408,7 +408,7 @@ async def newcomers(limit: int = 80):
                 if fc is not None:
                     item["follower_count"] = fc
         await asyncio.gather(*[_fill(x) for x in enrich])
-    out = [x for x in enrich if x["follower_count"] <= 500]
+    out = [x for x in enrich if x["follower_count"] <= 100]
 
     result = {"collected_at": ts, "streamers": out[:limit]}
     _newcomers_cache["ts"] = now
