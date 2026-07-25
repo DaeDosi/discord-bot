@@ -6,12 +6,25 @@ export interface LineSeries { key: string; name: string; color: string; gradient
 
 const PAD  = { l: 46, r: 14, t: 14, b: 26 };
 
-function niceCeil(v: number): number {
-  if (v <= 0) return 1;
-  const pow = Math.pow(10, Math.floor(Math.log10(v)));
-  const n = v / pow;
-  const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
-  return step * pow;
+// "예쁜" 눈금 알고리즘 — 일정 간격(1/2/2.5/5 ×10ⁿ)의 둥근 눈금으로 정렬한다.
+function niceNum(x: number, round: boolean): number {
+  if (x <= 0) return 1;
+  const exp = Math.floor(Math.log10(x));
+  const f = x / Math.pow(10, exp);
+  let nf: number;
+  if (round) nf = f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10;
+  else       nf = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
+  return nf * Math.pow(10, exp);
+}
+
+function niceScale(min: number, max: number, maxTicks = 5): { nMin: number; nMax: number; ticks: number[] } {
+  if (max <= min) max = min + 1;
+  const step = niceNum((max - min) / Math.max(1, maxTicks - 1), true) || 1;
+  const nMin = Math.floor(min / step) * step;
+  const nMax = Math.ceil(max / step) * step;
+  const ticks: number[] = [];
+  for (let v = nMin; v <= nMax + step * 0.5; v += step) ticks.push(Math.round(v));
+  return { nMin, nMax, ticks };
 }
 
 const fmtCompact = (n: number) =>
@@ -27,8 +40,11 @@ const fmtFull = (t: number) =>
 
 export default function LineChart({
   points, series, height = 220, area = false, unit = "", dynamicY = false,
+  tooltipItems, showPeak = false,
 }: {
   points: LinePoint[]; series: LineSeries[]; height?: number; area?: boolean; unit?: string; dynamicY?: boolean;
+  tooltipItems?: (p: LinePoint) => { label: string; value: string; color?: string }[];
+  showPeak?: boolean;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -67,22 +83,16 @@ export default function LineChart({
   const dataMax = Math.max(1, ...allVals);
   const dataMin = Math.min(...allVals);
 
-  // 가변 Y축: 데이터 범위에 여백(하 0.9 / 상 1.1)을 줘 10분 단위 변동을 다이나믹하게.
-  // 고정(zero-based)은 dynamicY=false.
-  let yMin: number, yMax: number;
-  if (dynamicY && dataMax > dataMin) {
-    yMin = Math.max(0, Math.floor(dataMin * 0.9));
-    yMax = Math.ceil(dataMax * 1.1);
-  } else {
-    yMin = 0;
-    yMax = niceCeil(dataMax);
-  }
+  // 가변 Y축(dynamicY): 데이터 범위를 예쁜 눈금 단위로 스냅해 일정 간격으로 정렬.
+  // 고정은 0부터.
+  const { nMin, nMax, ticks: yTicks } = dynamicY && dataMax > dataMin
+    ? niceScale(dataMin, dataMax)
+    : niceScale(0, dataMax);
+  const yMin = nMin, yMax = nMax;
   const yRange = Math.max(1, yMax - yMin);
 
   const X = (t: number) => PAD.l + ((t - xMin) / xRange) * plotW;
   const Y = (v: number) => PAD.t + (1 - (v - yMin) / yRange) * plotH;
-
-  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(yMin + yRange * f));
   const xTickCount = Math.min(5, points.length);
   const xTicks = Array.from({ length: xTickCount }, (_, i) =>
     points[Math.round((i / (xTickCount - 1)) * (points.length - 1))].t);
@@ -159,6 +169,20 @@ export default function LineChart({
           );
         })}
 
+        {/* 피크(최고치) 마커 — 핑크 쌍동그라미 */}
+        {showPeak && (() => {
+          const s0 = series[0];
+          let mi = 0, mv = -Infinity;
+          points.forEach((p, i) => { const v = p[s0.key] ?? 0; if (v > mv) { mv = v; mi = i; } });
+          const px = X(points[mi].t), py = Y(mv);
+          return (
+            <g style={{ pointerEvents: "none" }}>
+              <circle cx={px} cy={py} r={7} fill="none" stroke="#FF4FA3" strokeWidth={2} />
+              <circle cx={px} cy={py} r={3} fill="#FF4FA3" />
+            </g>
+          );
+        })()}
+
         {/* 크로스헤어 */}
         {hp && (
           <g>
@@ -184,8 +208,14 @@ export default function LineChart({
             transform: X(hp.t) > VB_W / 2 ? "translate(-108%, 0)" : "translate(8px, 0)",
           }}
         >
-          <p className="text-muted mb-1 whitespace-nowrap">{fmtFull(hp.t)}</p>
-          {series.map((s) => (
+          <p className="text-muted mb-1 whitespace-nowrap">{fmtFull(hp.t)} 기준</p>
+          {tooltipItems ? tooltipItems(hp).map((it, i) => (
+            <p key={i} className="flex items-center gap-1.5 tabular-nums whitespace-nowrap">
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ background: it.color ?? "transparent" }} />
+              <span className="text-fg font-medium">{it.label}</span>
+              <span className="text-fg ml-auto pl-4">{it.value}</span>
+            </p>
+          )) : series.map((s) => (
             <p key={s.key} className="flex items-center gap-1.5 tabular-nums whitespace-nowrap">
               <span className="w-2 h-2 rounded-full shrink-0" style={{ background: s.color }} />
               <span className="text-fg font-medium">{s.name}</span>

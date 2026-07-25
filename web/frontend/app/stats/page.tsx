@@ -91,7 +91,7 @@ const RANGE_OPTS: { k: TimeRange; label: string; desc: string }[] = [
 ];
 const METRIC_OPTS: { k: Metric; label: string }[] = [
   { k: "viewers", label: "시청자" },
-  { k: "lives",   label: "채널" },
+  { k: "lives",   label: "라이브" },
 ];
 
 // 범용 세그먼트 버튼 그룹 (지표 필터 / 기간 선택 공용)
@@ -241,9 +241,31 @@ function OverviewTab({ ov, cats, stars }: { ov: RisingOverview; cats: RisingCate
 
   const chartSeries: LineSeries = metric === "viewers"
     ? { key: "total_viewers", name: "시청자", color: GREEN, gradient: [GREEN, CYAN] }
-    : { key: "live_count",    name: "채널",   color: CYAN,  gradient: [CYAN, GREEN] };
-  const chartTitle = metric === "viewers" ? "전체 동시 시청자 추이" : "동시 방송 채널 추이";
+    : { key: "live_count",    name: "라이브", color: CYAN,  gradient: [CYAN, GREEN] };
+  const chartTitle = metric === "viewers" ? "전체 동시 시청자 추이" : "동시 라이브 추이";
   const chartUnit  = metric === "viewers" ? "명" : "개";
+
+  // 리치 툴팁: 지표와 무관하게 시청자/라이브/평균을 함께 표기
+  const tooltipItems = (p: LinePoint) => [
+    { label: "시청자", value: `${nf(p.total_viewers)}명`, color: GREEN },
+    { label: "라이브", value: `${nf(p.live_count)}개`, color: CYAN },
+    { label: "평균",   value: `${nf(Math.round(p.total_viewers / Math.max(1, p.live_count)))}명` },
+  ];
+
+  // 인사이트: 피크(최고 시청자) 시각 + 골든타임(방송당 평균 최고) + 전체 평균 기준
+  const insights = (() => {
+    const ps = ts?.points ?? [];
+    if (ps.length < 2) return null;
+    const withAvg = ps.map((p) => ({ ...p, avg: p.total_viewers / Math.max(1, p.live_count) }));
+    const peak   = withAvg.reduce((a, b) => (b.total_viewers > a.total_viewers ? b : a));
+    const golden = withAvg.reduce((a, b) => (b.avg > a.avg ? b : a));
+    const hm = (t: number) => new Date(t * 1000).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
+    const hour = (t: number) => new Date(t * 1000).toLocaleTimeString("ko-KR", { hour: "2-digit", hour12: false });
+    return {
+      peakTime: hm(peak.t), peakViewers: peak.total_viewers,
+      goldenHour: hour(golden.t), goldenAvg: Math.round(golden.avg),
+    };
+  })();
 
   return (
     <div className="space-y-5">
@@ -264,12 +286,50 @@ function OverviewTab({ ov, cats, stars }: { ov: RisingOverview; cats: RisingCate
         </div>
         <p className="text-xs text-muted mb-4">{rangeDesc}</p>
         {tsLoading ? <ChartSkeleton /> : (
-          <LineChart points={points} series={[chartSeries]} area dynamicY unit={chartUnit} />
+          <LineChart points={points} series={[chartSeries]} area dynamicY unit={chartUnit}
+            tooltipItems={tooltipItems} showPeak />
         )}
         {/* 기간 선택 — 그래프 좌측 아래 */}
-        <div className="mt-3">
+        <div className="mt-3 flex items-center justify-between gap-2 flex-wrap">
           <Seg options={RANGE_OPTS} value={range} onChange={setRange} />
+          <span className="flex items-center gap-1.5 text-[11px] text-muted">
+            <span className="inline-block w-2.5 h-2.5 rounded-full border-2" style={{ borderColor: "#FF4FA3" }} />
+            피크 타임(최고 시청자)
+          </span>
         </div>
+      </div>
+
+      {/* 스트리머 인사이트 */}
+      <div className="card">
+        <h3 className="section-title mb-1">스트리머 인사이트</h3>
+        <p className="text-xs text-muted mb-4">선택 기간의 트래픽 패턴에서 뽑은 방송 전략 힌트</p>
+        {insights ? (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="rounded-xl border border-border p-4">
+              <p className="text-xs text-muted">유입 골든타임 (빈집)</p>
+              <p className="text-xl font-extrabold mt-1"><GradText>{insights.goldenHour}경</GradText></p>
+              <p className="text-[11px] text-muted mt-1 leading-relaxed">
+                방송당 평균 <b className="text-fg">{nf(insights.goldenAvg)}명</b> — 경쟁 방송이 적어 노출·유입 기회가 큰 구간
+              </p>
+            </div>
+            <div className="rounded-xl border border-border p-4">
+              <p className="text-xs text-muted">피크 타임</p>
+              <p className="text-xl font-extrabold mt-1" style={{ color: "#FF4FA3" }}>{insights.peakTime}</p>
+              <p className="text-[11px] text-muted mt-1 leading-relaxed">
+                최고 동시 시청자 <b className="text-fg">{nf(insights.peakViewers)}명</b> — 플랫폼 트래픽이 가장 몰리는 시간
+              </p>
+            </div>
+            <div className="rounded-xl border border-border p-4">
+              <p className="text-xs text-muted">전체 방송당 평균 (체급 기준선)</p>
+              <p className="text-xl font-extrabold mt-1"><GradText>{nf(avgV)}명</GradText></p>
+              <p className="text-[11px] text-muted mt-1 leading-relaxed">
+                내 평균 시청자가 이보다 높으면 플랫폼 평균 이상 체급
+              </p>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-muted py-4 text-center">인사이트 산출을 위한 데이터가 아직 부족합니다.</p>
+        )}
       </div>
 
       {/* 카테고리 점유율 도넛 */}
