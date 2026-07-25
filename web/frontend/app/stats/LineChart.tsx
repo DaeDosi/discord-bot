@@ -88,9 +88,13 @@ export default function LineChart({
 
   const X = (t: number) => PAD.l + ((t - xMin) / xRange) * plotW;
   const Y = (v: number) => PAD.t + (1 - (v - yMin) / yRange) * plotH;
-  const xTickCount = Math.min(5, points.length);
-  const xTicks = Array.from({ length: xTickCount }, (_, i) =>
-    points[Math.round((i / (xTickCount - 1)) * (points.length - 1))].t);
+
+  // X축 눈금: 정시(1시간) 간격. 창이 넓으면 2/3/6/12/24시간으로 자동 확장(눈금 ~8개 이하 유지).
+  const HOUR = 3600;
+  const xStep = [1, 2, 3, 6, 12, 24, 48].map((h) => h * HOUR).find((s) => xRange / s <= 8) ?? 48 * HOUR;
+  const xTicks: number[] = [];
+  for (let t = Math.ceil(xMin / xStep) * xStep; t <= xMax; t += xStep) xTicks.push(t);
+  if (xTicks.length === 0) xTicks.push(xMin, xMax);
 
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
