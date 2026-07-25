@@ -3,12 +3,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Bot, BarChart3, LineChart as LineIcon, ListOrdered, Gamepad2, Radio,
-  TrendingUp, Loader2, Search, Circle, Sprout,
+  TrendingUp, Loader2, Search, Circle, Sprout, ChevronDown,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
   RisingOverview, RisingTimeseries, RisingLiveRanking, RisingCategories, RisingCategory,
-  RisingStars, TimeRange, CatRange, RisingSearchResult, RisingNewcomers,
+  RisingStars, TimeRange, CatRange, RisingSearchResult, RisingNewcomers, RisingNewcomer,
 } from "@/lib/types";
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
@@ -59,6 +59,8 @@ const NAV_GROUPS: { header: string | null; items: NavItem[] }[] = [
     { key: "category", label: "카테고리", icon: <Gamepad2 size={16} /> },
   ] },
 ];
+const groupHeaderOf = (k: Tab): string | null =>
+  NAV_GROUPS.find((g) => g.items.some((i) => i.key === k))?.header ?? null;
 
 // 방송시간(KST 문자열 → 경과) 계산
 function liveDuration(openDate: string): { ms: number; label: string } {
@@ -521,8 +523,9 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
   const [sort, setSort] = useState<SortKey>("viewers");
   const [limit, setLimit] = useState(50);
 
+  // 전체 스트리머 랭킹은 최대 100명까지만
   const enriched = useMemo(() =>
-    rank.streamers.map((s) => ({ ...s, dur: liveDuration(s.open_date) })), [rank]);
+    rank.streamers.slice(0, 100).map((s) => ({ ...s, dur: liveDuration(s.open_date) })), [rank]);
 
   const filtered = useMemo(() => {
     const kw = q.trim().toLowerCase();
@@ -694,12 +697,85 @@ function InsightCard({ icon, title, children }: { icon: string; title: string; c
   );
 }
 
+// 신입 인라인 프로그레스 바 테이블 (랭킹 탭 + 분석 탭 미리보기 공용)
+function NewcomerTable({ items, maxViewers, maxFollower }:
+  { items: RisingNewcomer[]; maxViewers: number; maxFollower: number }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm min-w-[620px]">
+        <thead>
+          <tr className="text-muted text-sm border-b border-border">
+            <th className="text-left font-semibold py-2.5 pl-2 w-8">#</th>
+            <th className="text-left font-semibold py-2.5">스트리머</th>
+            <th className="text-right font-semibold py-2.5 pr-6">시청자</th>
+            <th className="text-right font-semibold py-2.5">성장률</th>
+            <th className="text-left font-semibold py-2.5 pl-4 hidden sm:table-cell">카테고리</th>
+            <th className="text-right font-semibold py-2.5 pl-6 pr-6 hidden md:table-cell">방송시간</th>
+            <th className="text-right font-semibold py-2.5 pl-6 pr-2">팔로워</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((s, i) => {
+            const dur = liveDuration(s.open_date);
+            const vwPct = (s.concurrent_viewers / maxViewers) * 100;
+            const durPct = dur.ms > 0 ? (dur.ms / NC_DAY_MS) * 100 : 0;
+            const folPct = s.follower_count > 0 ? (s.follower_count / maxFollower) * 100 : 0;
+            return (
+              <tr key={s.chzzk_channel_id} className="border-b border-border/50 hover:bg-bg-hover transition-colors">
+                <td className="py-2.5 pl-2 tabular-nums text-muted text-sm align-top">{i + 1}</td>
+                <td className="py-2.5 align-top">
+                  <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="flex items-center gap-2 group">
+                    <Sprout size={14} className="shrink-0" style={{ color: GREEN }} />
+                    <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
+                      {s.channel_image_url && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
+                      )}
+                    </span>
+                    <span className="font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[130px] md:max-w-none">{s.channel_name}</span>
+                  </Link>
+                </td>
+                <td className="py-2.5 pr-6 align-top">
+                  <div className="text-right tabular-nums font-bold text-fg">{nf(s.concurrent_viewers)}</div>
+                  <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden ml-auto" style={{ maxWidth: 90 }}>
+                    <div className="h-full rounded-full" style={{ width: `${vwPct}%`, background: GREEN }} />
+                  </div>
+                </td>
+                <td className="py-2.5 text-right text-[11px] align-top"><Delta pct={s.growth_rate} /></td>
+                <td className="py-2.5 pl-4 hidden sm:table-cell align-top">
+                  {s.category_name
+                    ? <span className="inline-block bg-bg-hover text-fg px-2 py-0.5 rounded-md text-xs truncate max-w-[120px]">{s.category_name}</span>
+                    : <span className="text-muted text-xs">-</span>}
+                </td>
+                <td className="py-2.5 pl-6 pr-6 align-top hidden md:table-cell">
+                  <div className="text-right tabular-nums text-muted text-sm">{dur.label}</div>
+                  <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden ml-auto" style={{ maxWidth: 84 }}>
+                    <div className="h-full rounded-full" style={{ width: `${durPct}%`, background: "#A855F7" }} />
+                  </div>
+                </td>
+                <td className="py-2.5 pl-6 pr-2 align-top">
+                  <div className="text-right tabular-nums text-muted text-sm">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</div>
+                  <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden ml-auto" style={{ maxWidth: 84 }}>
+                    <div className="h-full rounded-full" style={{ width: `${folPct}%`, background: "#06B6D4" }} />
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // 신규 스트리머 분석 = KPI + 인사이트 + 상위 미리보기(10) → 전체 순위 버튼
 function NewcomersAnalysisTab({ data, onRanking }: { data: RisingNewcomers; onRanking: () => void }) {
   const sm = data.summary;
   const ins = data.insights;
   const hourLabel = (h: number) => `${String(h).padStart(2, "0")}:00 ~ ${String((h + 1) % 24).padStart(2, "0")}:00`;
   const top = data.streamers.slice(0, 10);
+  const maxViewers  = Math.max(1, ...data.streamers.map((s) => s.concurrent_viewers));
+  const maxFollower = Math.max(1, ...data.streamers.map((s) => s.follower_count));
 
   return (
     <div className="space-y-5">
@@ -740,29 +816,10 @@ function NewcomersAnalysisTab({ data, onRanking }: { data: RisingNewcomers; onRa
           <h3 className="section-title flex items-center gap-1.5"><Sprout size={16} style={{ color: GREEN }} /> 신입 급성장 TOP 10</h3>
           <button onClick={onRanking} className="text-xs font-medium hover:underline" style={{ color: GREEN }}>전체 순위 보기 →</button>
         </div>
-        <p className="text-xs text-muted mb-4">24시간 성장률(현재 vs 최근 7일 평균) 상위</p>
-        {top.length > 0 ? (
-          <div className="space-y-1.5">
-            {top.map((s, i) => (
-              <Link key={s.chzzk_channel_id} href={`/stats/streamer/${s.chzzk_channel_id}`}
-                    className="flex items-center gap-3 rounded-lg px-2.5 py-2 hover:bg-bg-hover transition-colors">
-                <span className="text-xs font-bold w-5 text-center tabular-nums" style={{ color: i < 3 ? GREEN : undefined }}>{i + 1}</span>
-                <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
-                  {s.channel_image_url && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
-                  )}
-                </span>
-                <span className="text-sm font-semibold text-fg truncate flex-1">{s.channel_name}</span>
-                <span className="text-[11px] text-muted truncate hidden sm:block max-w-[100px]">{s.category_name || "-"}</span>
-                <span className="text-sm tabular-nums text-fg">{nf(s.concurrent_viewers)}명</span>
-                <span className="text-[11px] w-14 text-right"><Delta pct={s.growth_rate} /></span>
-              </Link>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-muted py-4 text-center">조건에 맞는 신규/라이징 방송이 아직 없습니다.</p>
-        )}
+        <p className="text-xs text-muted mb-4">성장률(현재 vs 최근 7일 평균) 상위</p>
+        {top.length > 0
+          ? <NewcomerTable items={top} maxViewers={maxViewers} maxFollower={maxFollower} />
+          : <p className="text-sm text-muted py-4 text-center">조건에 맞는 신규/라이징 방송이 아직 없습니다.</p>}
       </div>
     </div>
   );
@@ -806,76 +863,9 @@ function NewcomersRankingTab({ data }: { data: RisingNewcomers }) {
           <SortBtn k="duration" label="⏱️ 열정 방송순" />
         </div>
 
-        {sorted.length === 0 ? (
-          <p className="text-sm text-muted text-center py-8">조건에 맞는 신규/라이징 방송이 아직 없습니다.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[620px]">
-              <thead>
-                <tr className="text-muted text-sm border-b border-border">
-                  <th className="text-left font-semibold py-2.5 pl-2 w-8">#</th>
-                  <th className="text-left font-semibold py-2.5">스트리머</th>
-                  <th className="text-right font-semibold py-2.5 pr-6">시청자</th>
-                  <th className="text-right font-semibold py-2.5">성장률</th>
-                  <th className="text-left font-semibold py-2.5 pl-4 hidden sm:table-cell">카테고리</th>
-                  <th className="text-right font-semibold py-2.5 pl-6 pr-6 hidden md:table-cell">방송시간</th>
-                  <th className="text-right font-semibold py-2.5 pl-6 pr-2">팔로워</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sorted.slice(0, limit).map((s, i) => {
-                  const vwPct = (s.concurrent_viewers / maxViewers) * 100;
-                  const durPct = s.dur.ms > 0 ? (s.dur.ms / NC_DAY_MS) * 100 : 0;
-                  const folPct = s.follower_count > 0 ? (s.follower_count / maxFollower) * 100 : 0;
-                  return (
-                    <tr key={s.chzzk_channel_id} className="border-b border-border/50 hover:bg-bg-hover transition-colors">
-                      <td className="py-2.5 pl-2 tabular-nums text-muted text-sm align-top">{i + 1}</td>
-                      <td className="py-2.5 align-top">
-                        <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="flex items-center gap-2 group">
-                          <Sprout size={14} className="shrink-0" style={{ color: GREEN }} />
-                          <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
-                            {s.channel_image_url && (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
-                            )}
-                          </span>
-                          <span className="font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[130px] md:max-w-none">{s.channel_name}</span>
-                        </Link>
-                      </td>
-                      {/* 시청자 — 그린 바 */}
-                      <td className="py-2.5 pr-6 align-top">
-                        <div className="text-right tabular-nums font-bold text-fg">{nf(s.concurrent_viewers)}</div>
-                        <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden ml-auto" style={{ maxWidth: 90 }}>
-                          <div className="h-full rounded-full" style={{ width: `${vwPct}%`, background: GREEN }} />
-                        </div>
-                      </td>
-                      <td className="py-2.5 text-right text-[11px] align-top"><Delta pct={s.growth_rate} /></td>
-                      <td className="py-2.5 pl-4 hidden sm:table-cell align-top">
-                        {s.category_name
-                          ? <span className="inline-block bg-bg-hover text-fg px-2 py-0.5 rounded-md text-xs truncate max-w-[120px]">{s.category_name}</span>
-                          : <span className="text-muted text-xs">-</span>}
-                      </td>
-                      {/* 방송시간 — 보라 바 */}
-                      <td className="py-2.5 pl-6 pr-6 align-top hidden md:table-cell">
-                        <div className="text-right tabular-nums text-muted text-sm">{s.dur.label}</div>
-                        <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden ml-auto" style={{ maxWidth: 84 }}>
-                          <div className="h-full rounded-full" style={{ width: `${durPct}%`, background: "#A855F7" }} />
-                        </div>
-                      </td>
-                      {/* 팔로워 — 시안 바 */}
-                      <td className="py-2.5 pl-6 pr-2 align-top">
-                        <div className="text-right tabular-nums text-muted text-sm">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</div>
-                        <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden ml-auto" style={{ maxWidth: 84 }}>
-                          <div className="h-full rounded-full" style={{ width: `${folPct}%`, background: "#06B6D4" }} />
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {sorted.length === 0
+          ? <p className="text-sm text-muted text-center py-8">조건에 맞는 신규/라이징 방송이 아직 없습니다.</p>
+          : <NewcomerTable items={sorted.slice(0, limit)} maxViewers={maxViewers} maxFollower={maxFollower} />}
         {sorted.length > limit && (
           <div className="text-center pt-4">
             <button onClick={() => setLimit((l) => l + 40)} className="btn-secondary text-sm">더 보기 ({nf(sorted.length - limit)}개 남음)</button>
@@ -940,6 +930,16 @@ export default function StatsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(false);
   const [tab, setTab]         = useState<Tab>("overview");
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
+    const h = groupHeaderOf("overview"); return new Set(h ? [h] : []);
+  });
+  const selectTab = (k: Tab) => {
+    setTab(k);
+    const h = groupHeaderOf(k);
+    if (h) setOpenGroups((p) => new Set(p).add(h));
+  };
+  const toggleGroup = (h: string) =>
+    setOpenGroups((p) => { const n = new Set(p); if (n.has(h)) n.delete(h); else n.add(h); return n; });
 
   useEffect(() => {
     Promise.all([
@@ -1010,31 +1010,39 @@ export default function StatsPage() {
             {/* 좌측 메뉴 */}
             <aside className="md:sticky md:top-[76px] md:self-start">
               <StreamerSearch />
-              <nav className="flex md:flex-col gap-1.5 overflow-x-auto md:overflow-visible pb-1">
-                {NAV_GROUPS.map((g, gi) => (
-                  <div key={gi} className="flex md:flex-col gap-1.5 md:contents">
-                    {g.header && (
-                      <p className={`hidden md:block text-[11px] font-semibold text-muted/60 uppercase tracking-wider px-1 mb-0.5 ${gi > 0 ? "mt-3" : ""}`}>
+              <nav className="flex flex-col gap-1">
+                {NAV_GROUPS.map((g, gi) => {
+                  const renderItem = (t: NavItem) => {
+                    const active = tab === t.key;
+                    return (
+                      <button key={t.key} onClick={() => selectTab(t.key)}
+                        className="relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors w-full border overflow-hidden"
+                        style={{
+                          background: active ? "rgba(0,255,163,0.08)" : "transparent",
+                          borderColor: active ? "rgba(0,194,255,0.35)" : "transparent",
+                        }}>
+                        {active && <span className="absolute left-0 top-0 bottom-0 w-1 rounded-r" style={{ background: GRAD }} />}
+                        <span style={{ color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>{t.icon}</span>
+                        <span className="block text-sm font-semibold whitespace-nowrap" style={{ color: active ? GREEN : undefined }}>{t.label}</span>
+                      </button>
+                    );
+                  };
+                  if (!g.header) {
+                    return <div key={gi} className="mt-1">{g.items.map(renderItem)}</div>;
+                  }
+                  const open = openGroups.has(g.header);
+                  return (
+                    <div key={gi} className={gi > 0 ? "mt-1" : ""}>
+                      <button onClick={() => toggleGroup(g.header!)}
+                        className="w-full flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-sm font-bold text-fg hover:bg-bg-hover transition-colors">
+                        <ChevronDown size={15} className="transition-transform text-muted"
+                                     style={{ transform: open ? "none" : "rotate(-90deg)" }} />
                         {g.header}
-                      </p>
-                    )}
-                    {g.items.map((t) => {
-                      const active = tab === t.key;
-                      return (
-                        <button key={t.key} onClick={() => setTab(t.key)}
-                          className="relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors shrink-0 md:w-full border overflow-hidden md:pl-4"
-                          style={{
-                            background: active ? "rgba(0,255,163,0.08)" : "transparent",
-                            borderColor: active ? "rgba(0,194,255,0.35)" : "transparent",
-                          }}>
-                          {active && <span className="absolute left-0 top-0 bottom-0 w-1 rounded-r" style={{ background: GRAD }} />}
-                          <span style={{ color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>{t.icon}</span>
-                          <span className="block text-sm font-semibold whitespace-nowrap" style={{ color: active ? GREEN : undefined }}>{t.label}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                ))}
+                      </button>
+                      {open && <div className="flex flex-col gap-1 mt-1 pl-2.5">{g.items.map(renderItem)}</div>}
+                    </div>
+                  );
+                })}
               </nav>
               <p className="hidden md:block text-[11px] text-muted/60 mt-4 px-1 leading-relaxed">
                 약 10분 주기로 치지직 공개 라이브 목록을 수집합니다. 비공식 서비스로 실제 수치와 오차가 있을 수 있습니다.
@@ -1044,7 +1052,7 @@ export default function StatsPage() {
             {/* 우측 뷰 */}
             <div className="min-w-0">
               {tab === "overview"           && ov   && <OverviewTab ov={ov} stars={stars} />}
-              {tab === "newcomers_analysis" && news && <NewcomersAnalysisTab data={news} onRanking={() => setTab("newcomers_ranking")} />}
+              {tab === "newcomers_analysis" && news && <NewcomersAnalysisTab data={news} onRanking={() => selectTab("newcomers_ranking")} />}
               {tab === "ranking"            && rank && <RankingTab rank={rank} />}
               {tab === "newcomers_ranking"  && news && <NewcomersRankingTab data={news} />}
               {tab === "category"           && cats && <CategoryTab cats={cats} />}
