@@ -44,12 +44,20 @@ function Delta({ pct }: { pct: number | null | undefined }) {
   );
 }
 
-type Tab = "overview" | "ranking" | "category" | "newcomers";
-const TABS: { key: Tab; label: string; desc: string; icon: React.ReactNode }[] = [
-  { key: "overview",  label: "실시간 분석", desc: "추이·요약",    icon: <LineIcon size={17} /> },
-  { key: "newcomers", label: "신규 스트리머 분석", desc: "하꼬·신입 발굴", icon: <Sprout size={17} /> },
-  { key: "ranking",   label: "랭킹",       desc: "실시간 방송",   icon: <ListOrdered size={17} /> },
-  { key: "category",  label: "카테고리",   desc: "게임별 현황",   icon: <Gamepad2 size={17} /> },
+type Tab = "overview" | "newcomers_analysis" | "ranking" | "newcomers_ranking" | "category";
+interface NavItem { key: Tab; label: string; icon: React.ReactNode }
+const NAV_GROUPS: { header: string | null; items: NavItem[] }[] = [
+  { header: "실시간 분석", items: [
+    { key: "overview",           label: "전체 스트리머 분석", icon: <LineIcon size={16} /> },
+    { key: "newcomers_analysis", label: "신규 스트리머 분석", icon: <Sprout size={16} /> },
+  ] },
+  { header: "랭킹", items: [
+    { key: "ranking",           label: "전체 스트리머 랭킹", icon: <ListOrdered size={16} /> },
+    { key: "newcomers_ranking", label: "신규 스트리머 랭킹", icon: <Sprout size={16} /> },
+  ] },
+  { header: null, items: [
+    { key: "category", label: "카테고리", icon: <Gamepad2 size={16} /> },
+  ] },
 ];
 
 // 방송시간(KST 문자열 → 경과) 계산
@@ -357,8 +365,7 @@ function CategoryDonut() {
 }
 
 // ── 개요 탭 ───────────────────────────────────────────────────────────────────
-function OverviewTab({ ov, stars, news, onMore }:
-  { ov: RisingOverview; stars: RisingStars | null; news: RisingNewcomers | null; onMore: () => void }) {
+function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | null }) {
   const range: TimeRange = "live"; // 기간 옵션 제거 — 실시간(최근 6시간)만 사용
   const [ts, setTs] = useState<RisingTimeseries | null>(null);
   const [tsLoading, setTsLoading] = useState(true);
@@ -501,37 +508,6 @@ function OverviewTab({ ov, stars, news, onMore }:
           </div>
         ) : (
           <RisingSkeleton historyHours={ov.history_hours ?? 0} />
-        )}
-      </div>
-
-      {/* 신입 스트리머 미리보기 (약 10명) → 더보기 시 신규 스트리머 분석 탭 */}
-      <div className="card">
-        <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
-          <h3 className="section-title flex items-center gap-1.5"><Sprout size={16} style={{ color: GREEN }} /> 신입 스트리머</h3>
-          <button onClick={onMore} className="text-xs font-medium hover:underline" style={{ color: GREEN }}>더보기 →</button>
-        </div>
-        <p className="text-xs text-muted mb-4">평균 50명 미만·팔로워 100 이하 소형/신입 채널 급성장 순</p>
-        {news && news.streamers.length > 0 ? (
-          <div className="space-y-1.5">
-            {news.streamers.slice(0, 10).map((s, i) => (
-              <Link key={s.chzzk_channel_id} href={`/stats/streamer/${s.chzzk_channel_id}`}
-                    className="flex items-center gap-3 rounded-lg px-2.5 py-2 hover:bg-bg-hover transition-colors">
-                <span className="text-xs font-bold w-5 text-center tabular-nums" style={{ color: i < 3 ? GREEN : undefined }}>{i + 1}</span>
-                <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
-                  {s.channel_image_url && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
-                  )}
-                </span>
-                <span className="text-sm font-semibold text-fg truncate flex-1">{s.channel_name}</span>
-                <span className="text-[11px] text-muted truncate hidden sm:block max-w-[100px]">{s.category_name || "-"}</span>
-                <span className="text-sm tabular-nums text-fg">{nf(s.concurrent_viewers)}명</span>
-                <span className="text-[11px] w-14 text-right"><Delta pct={s.growth_rate} /></span>
-              </Link>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-muted py-4 text-center">신입 스트리머 데이터를 불러오는 중...</p>
         )}
       </div>
     </div>
@@ -718,38 +694,12 @@ function InsightCard({ icon, title, children }: { icon: string; title: string; c
   );
 }
 
-type NcSort = "growth" | "duration";
-function NewcomersTab({ data }: { data: RisingNewcomers }) {
-  const [sort, setSort] = useState<NcSort>("growth");
-  const [limit, setLimit] = useState(30);
-  const enriched = useMemo(() =>
-    data.streamers.map((s) => ({ ...s, dur: liveDuration(s.open_date) })), [data]);
-  const sorted = useMemo(() => {
-    const a = [...enriched];
-    if (sort === "duration") a.sort((x, y) => y.dur.ms - x.dur.ms);
-    else a.sort((x, y) => (y.growth_rate ?? -1e9) - (x.growth_rate ?? -1e9));
-    return a;
-  }, [enriched, sort]);
-
-  const maxViewers  = useMemo(() => Math.max(1, ...enriched.map((s) => s.concurrent_viewers)), [enriched]);
-  const maxFollower = useMemo(() => Math.max(1, ...enriched.map((s) => s.follower_count)), [enriched]);
-
+// 신규 스트리머 분석 = KPI + 인사이트 + 상위 미리보기(10) → 전체 순위 버튼
+function NewcomersAnalysisTab({ data, onRanking }: { data: RisingNewcomers; onRanking: () => void }) {
   const sm = data.summary;
   const ins = data.insights;
   const hourLabel = (h: number) => `${String(h).padStart(2, "0")}:00 ~ ${String((h + 1) % 24).padStart(2, "0")}:00`;
-
-  const SortBtn = ({ k, label }: { k: NcSort; label: string }) => {
-    const active = sort === k;
-    return (
-      <button onClick={() => setSort(k)}
-        className="text-xs px-2.5 py-1 rounded-md border transition-colors"
-        style={{ background: active ? "rgba(0,255,163,0.1)" : "transparent",
-                 borderColor: active ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
-                 color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
-        {label}
-      </button>
-    );
-  };
+  const top = data.streamers.slice(0, 10);
 
   return (
     <div className="space-y-5">
@@ -784,7 +734,72 @@ function NewcomersTab({ data }: { data: RisingNewcomers }) {
         </div>
       </div>
 
-      {/* 리스트 */}
+      {/* 상위 미리보기(10) → 전체 순위 */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+          <h3 className="section-title flex items-center gap-1.5"><Sprout size={16} style={{ color: GREEN }} /> 신입 급성장 TOP 10</h3>
+          <button onClick={onRanking} className="text-xs font-medium hover:underline" style={{ color: GREEN }}>전체 순위 보기 →</button>
+        </div>
+        <p className="text-xs text-muted mb-4">24시간 성장률(현재 vs 최근 7일 평균) 상위</p>
+        {top.length > 0 ? (
+          <div className="space-y-1.5">
+            {top.map((s, i) => (
+              <Link key={s.chzzk_channel_id} href={`/stats/streamer/${s.chzzk_channel_id}`}
+                    className="flex items-center gap-3 rounded-lg px-2.5 py-2 hover:bg-bg-hover transition-colors">
+                <span className="text-xs font-bold w-5 text-center tabular-nums" style={{ color: i < 3 ? GREEN : undefined }}>{i + 1}</span>
+                <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
+                  {s.channel_image_url && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
+                  )}
+                </span>
+                <span className="text-sm font-semibold text-fg truncate flex-1">{s.channel_name}</span>
+                <span className="text-[11px] text-muted truncate hidden sm:block max-w-[100px]">{s.category_name || "-"}</span>
+                <span className="text-sm tabular-nums text-fg">{nf(s.concurrent_viewers)}명</span>
+                <span className="text-[11px] w-14 text-right"><Delta pct={s.growth_rate} /></span>
+              </Link>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted py-4 text-center">조건에 맞는 신규/라이징 방송이 아직 없습니다.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// 신규 스트리머 랭킹 = 인라인 프로그레스 바 테이블 (top100)
+type NcSort = "growth" | "duration";
+function NewcomersRankingTab({ data }: { data: RisingNewcomers }) {
+  const [sort, setSort] = useState<NcSort>("growth");
+  const [limit, setLimit] = useState(40);
+  const enriched = useMemo(() =>
+    data.streamers.map((s) => ({ ...s, dur: liveDuration(s.open_date) })), [data]);
+  const sorted = useMemo(() => {
+    const a = [...enriched];
+    if (sort === "duration") a.sort((x, y) => y.dur.ms - x.dur.ms);
+    else a.sort((x, y) => (y.growth_rate ?? -1e9) - (x.growth_rate ?? -1e9));
+    return a;
+  }, [enriched, sort]);
+
+  const maxViewers  = useMemo(() => Math.max(1, ...enriched.map((s) => s.concurrent_viewers)), [enriched]);
+  const maxFollower = useMemo(() => Math.max(1, ...enriched.map((s) => s.follower_count)), [enriched]);
+
+  const SortBtn = ({ k, label }: { k: NcSort; label: string }) => {
+    const active = sort === k;
+    return (
+      <button onClick={() => setSort(k)}
+        className="text-xs px-2.5 py-1 rounded-md border transition-colors"
+        style={{ background: active ? "rgba(0,255,163,0.1)" : "transparent",
+                 borderColor: active ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
+                 color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
+        {label}
+      </button>
+    );
+  };
+
+  return (
+    <div className="space-y-5">
       <div className="card !p-4 md:!p-5">
         <div className="flex items-center gap-1.5 mb-4 flex-wrap">
           <SortBtn k="growth" label="📈 급성장순" />
@@ -995,26 +1010,31 @@ export default function StatsPage() {
             {/* 좌측 메뉴 */}
             <aside className="md:sticky md:top-[76px] md:self-start">
               <StreamerSearch />
-              <p className="text-xs font-semibold text-muted/70 uppercase tracking-wider px-1 mb-2">분석 메뉴</p>
               <nav className="flex md:flex-col gap-1.5 overflow-x-auto md:overflow-visible pb-1">
-                {TABS.map((t) => {
-                  const active = tab === t.key;
-                  return (
-                    <button key={t.key} onClick={() => setTab(t.key)}
-                      className="relative flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors shrink-0 md:w-full border overflow-hidden"
-                      style={{
-                        background: active ? "rgba(0,255,163,0.08)" : "transparent",
-                        borderColor: active ? "rgba(0,194,255,0.35)" : "transparent",
-                      }}>
-                      {active && <span className="absolute left-0 top-0 bottom-0 w-1 rounded-r" style={{ background: GRAD }} />}
-                      <span style={{ color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>{t.icon}</span>
-                      <span className="min-w-0">
-                        <span className="block text-sm font-semibold" style={{ color: active ? GREEN : undefined }}>{t.label}</span>
-                        <span className="block text-[11px] text-muted whitespace-nowrap">{t.desc}</span>
-                      </span>
-                    </button>
-                  );
-                })}
+                {NAV_GROUPS.map((g, gi) => (
+                  <div key={gi} className="flex md:flex-col gap-1.5 md:contents">
+                    {g.header && (
+                      <p className={`hidden md:block text-[11px] font-semibold text-muted/60 uppercase tracking-wider px-1 mb-0.5 ${gi > 0 ? "mt-3" : ""}`}>
+                        {g.header}
+                      </p>
+                    )}
+                    {g.items.map((t) => {
+                      const active = tab === t.key;
+                      return (
+                        <button key={t.key} onClick={() => setTab(t.key)}
+                          className="relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors shrink-0 md:w-full border overflow-hidden md:pl-4"
+                          style={{
+                            background: active ? "rgba(0,255,163,0.08)" : "transparent",
+                            borderColor: active ? "rgba(0,194,255,0.35)" : "transparent",
+                          }}>
+                          {active && <span className="absolute left-0 top-0 bottom-0 w-1 rounded-r" style={{ background: GRAD }} />}
+                          <span style={{ color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>{t.icon}</span>
+                          <span className="block text-sm font-semibold whitespace-nowrap" style={{ color: active ? GREEN : undefined }}>{t.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
               </nav>
               <p className="hidden md:block text-[11px] text-muted/60 mt-4 px-1 leading-relaxed">
                 약 10분 주기로 치지직 공개 라이브 목록을 수집합니다. 비공식 서비스로 실제 수치와 오차가 있을 수 있습니다.
@@ -1023,10 +1043,11 @@ export default function StatsPage() {
 
             {/* 우측 뷰 */}
             <div className="min-w-0">
-              {tab === "overview"  && ov && <OverviewTab ov={ov} stars={stars} news={news} onMore={() => setTab("newcomers")} />}
-              {tab === "newcomers" && news && <NewcomersTab data={news} />}
-              {tab === "ranking"   && rank && <RankingTab rank={rank} />}
-              {tab === "category"  && cats && <CategoryTab cats={cats} />}
+              {tab === "overview"           && ov   && <OverviewTab ov={ov} stars={stars} />}
+              {tab === "newcomers_analysis" && news && <NewcomersAnalysisTab data={news} onRanking={() => setTab("newcomers_ranking")} />}
+              {tab === "ranking"            && rank && <RankingTab rank={rank} />}
+              {tab === "newcomers_ranking"  && news && <NewcomersRankingTab data={news} />}
+              {tab === "category"           && cats && <CategoryTab cats={cats} />}
             </div>
           </div>
         )}
