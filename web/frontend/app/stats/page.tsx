@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Bot, BarChart3, LineChart as LineIcon, ListOrdered, Gamepad2, Radio,
-  TrendingUp, Loader2, Search, Circle, Sprout, Lock,
+  TrendingUp, Loader2, Search, Circle, Sprout,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -679,32 +679,26 @@ function NewcomersTab({ data }: { data: RisingNewcomers }) {
     return a;
   }, [enriched, sort]);
 
-  const SortBtn = ({ k, label, locked }: { k?: NcSort; label: string; locked?: boolean }) => {
-    const active = !locked && sort === k;
+  const SortBtn = ({ k, label }: { k: NcSort; label: string }) => {
+    const active = sort === k;
     return (
-      <button disabled={locked} onClick={() => k && setSort(k)}
-        className="text-xs px-2.5 py-1 rounded-md border transition-colors flex items-center gap-1"
+      <button onClick={() => setSort(k)}
+        className="text-xs px-2.5 py-1 rounded-md border transition-colors"
         style={{ background: active ? "rgba(0,255,163,0.1)" : "transparent",
                  borderColor: active ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
-                 color: active ? GREEN : "rgb(var(--color-muted-rgb))", opacity: locked ? 0.5 : 1,
-                 cursor: locked ? "not-allowed" : "pointer" }}>
-        {label}{locked && <Lock size={10} />}
+                 color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
+        {label}
       </button>
     );
   };
 
   return (
     <div className="card !p-4 md:!p-5">
-      <div className="flex items-center gap-1.5 mb-2 flex-wrap">
-        <span className="text-xs text-muted mr-1">정렬</span>
-        <SortBtn label="🔥 소통 화력순" locked />
+      <div className="flex items-center gap-1.5 mb-4 flex-wrap">
         <SortBtn k="growth" label="📈 급성장순" />
         <SortBtn k="duration" label="⏱️ 열정 방송순" />
         <SortBtn k="debut" label="🆕 신규 등장순" />
       </div>
-      <p className="text-[11px] text-muted/70 mb-4">
-        최근 평균 시청자 50명 미만 또는 신입 태그 · 팔로워 500명 이하 · 시청자 3명 이상 · 🔒 소통 화력은 채팅 미수집으로 잠금
-      </p>
 
       {sorted.length === 0 ? (
         <p className="text-sm text-muted text-center py-8">조건에 맞는 신규/라이징 방송이 아직 없습니다.</p>
@@ -712,14 +706,14 @@ function NewcomersTab({ data }: { data: RisingNewcomers }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[600px]">
             <thead>
-              <tr className="text-muted text-xs border-b border-border">
-                <th className="text-left font-medium py-2 pl-2 w-8">#</th>
-                <th className="text-left font-medium py-2">스트리머</th>
-                <th className="text-right font-medium py-2">시청자</th>
-                <th className="text-right font-medium py-2">성장률</th>
-                <th className="text-right font-medium py-2 pl-4 hidden md:table-cell">방송시간</th>
-                <th className="text-right font-medium py-2 hidden sm:table-cell" title="우리 수집기가 이 채널을 처음 관측한 시점(최대 14일). 치지직 개설일/첫방송일은 공개 API로 제공되지 않음">첫 등장</th>
-                <th className="text-right font-medium py-2 pr-2">팔로워</th>
+              <tr className="text-muted text-sm border-b border-border">
+                <th className="text-left font-semibold py-2.5 pl-2 w-8">#</th>
+                <th className="text-left font-semibold py-2.5">스트리머</th>
+                <th className="text-right font-semibold py-2.5">시청자</th>
+                <th className="text-right font-semibold py-2.5">성장률</th>
+                <th className="text-right font-semibold py-2.5 pl-4 hidden md:table-cell">방송시간</th>
+                <th className="text-right font-semibold py-2.5 hidden sm:table-cell" title="우리 수집기가 이 채널을 처음 관측한 시점(최대 14일). 치지직 개설일/첫방송일은 공개 API로 제공되지 않음">첫 등장</th>
+                <th className="text-right font-semibold py-2.5 pr-2">팔로워</th>
               </tr>
             </thead>
             <tbody>
