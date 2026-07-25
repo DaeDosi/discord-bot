@@ -436,6 +436,36 @@ async def search(keyword: str, size: int = 8):
     return {"results": results}
 
 
+async def _fetch_first_broadcast(channel_id: str) -> str | None:
+    """채널 다시보기(VOD) 목록에서 가장 오래된 영상 날짜로 첫 방송을 추정한다(공식 API에
+    개설일/첫방송일 필드가 없어 이 방식이 유일). VOD 삭제 등으로 실제보다 늦을 수 있어 '추정'."""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{_CHZZK_API}/service/v1/channels/{channel_id}/videos",
+                params={"sortType": "LATEST", "pagingType": "PAGE", "page": 0, "size": 30},
+                headers=_CHZZK_HEADERS, timeout=8,
+            )
+            if r.status_code != 200:
+                return None
+            content = (r.json() or {}).get("content") or {}
+            data = content.get("data") or []
+            total_pages = content.get("totalPages")
+            if isinstance(total_pages, int) and total_pages > 1:
+                r2 = await client.get(
+                    f"{_CHZZK_API}/service/v1/channels/{channel_id}/videos",
+                    params={"sortType": "LATEST", "pagingType": "PAGE", "page": total_pages - 1, "size": 30},
+                    headers=_CHZZK_HEADERS, timeout=8,
+                )
+                if r2.status_code == 200:
+                    data = ((r2.json() or {}).get("content") or {}).get("data") or data
+        dates = [str(v.get("publishDate") or v.get("liveOpenDate") or "") for v in data]
+        dates = [d for d in dates if d]
+        return min(dates) if dates else None
+    except Exception:
+        return None
+
+
 @router.get("/streamer/{channel_id}")
 async def streamer(channel_id: str, days: int = 30):
     """스트리머 개인 분석 — 최근 days일(보관 한계 14일) 스냅샷 집계.
@@ -502,6 +532,8 @@ async def streamer(channel_id: str, days: int = 30):
         for wk, e in sorted(week_map.items())
     ]
 
+    first_broadcast = await _fetch_first_broadcast(channel_id)  # 다시보기 최고령 = 첫 방송 추정
+
     return {
         "found": True,
         "channel_id": channel_id,
@@ -510,6 +542,7 @@ async def streamer(channel_id: str, days: int = 30):
         "live_title": last["live_title"],
         "follower_count": last["follower_count"],
         "is_live": bool(latest_ts and last["collected_at"] == latest_ts),
+        "first_broadcast": first_broadcast,   # 추정(다시보기 기반), 없으면 None
         "window_days": days,
         "history_days": len(daily_map),
         "summary": {

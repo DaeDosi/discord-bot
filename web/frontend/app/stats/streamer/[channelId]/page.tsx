@@ -171,6 +171,9 @@ export default function StreamerPage() {
                     )}
                   </h1>
                   <p className="text-xs text-muted truncate max-w-[70vw]">{data.live_title || data.channel_id}</p>
+                  {data.first_broadcast && (
+                    <p className="text-[11px] text-muted/80 mt-0.5">🌱 첫 방송(추정) {data.first_broadcast.slice(0, 10)}</p>
+                  )}
                 </div>
                 <a href={`https://chzzk.naver.com/${data.channel_id}`} target="_blank" rel="noopener noreferrer"
                    className="ml-auto btn-secondary text-xs flex items-center gap-1 shrink-0">

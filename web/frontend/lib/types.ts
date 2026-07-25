@@ -307,6 +307,7 @@ export interface StreamerDashboard {
   live_title?:       string;
   follower_count?:   number;
   is_live?:          boolean;
+  first_broadcast?:  string | null;
   window_days?:      number;
   history_days?:     number;
   summary?:          StreamerSummary;
