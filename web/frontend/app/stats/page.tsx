@@ -12,7 +12,7 @@ import type {
 } from "@/lib/types";
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
-import LineChart, { type LinePoint } from "./LineChart";
+import LineChart, { type LinePoint, type LineSeries } from "./LineChart";
 
 // 2톤 그라데이션(그린 → 시안) — 브랜드 액센트
 const GREEN = "#00FFA3";
@@ -82,17 +82,25 @@ function StatTile({ label, value, sub, accent, deltaPrev, delta24h }:
   );
 }
 
+type Metric = "viewers" | "lives";
+
 const RANGE_OPTS: { k: TimeRange; label: string; desc: string }[] = [
   { k: "live", label: "실시간", desc: "최근 6시간 · 10분 간격" },
   { k: "24h",  label: "24시간", desc: "최근 24시간 · 1시간 평균" },
   { k: "7d",   label: "7일",    desc: "최근 7일 · 1시간 평균" },
 ];
+const METRIC_OPTS: { k: Metric; label: string }[] = [
+  { k: "viewers", label: "시청자 수" },
+  { k: "lives",   label: "라이브 방송 수" },
+];
 
-function RangeSelector({ range, onChange }: { range: TimeRange; onChange: (r: TimeRange) => void }) {
+// 범용 세그먼트 버튼 그룹 (지표 필터 / 기간 선택 공용)
+function Seg<T extends string>({ options, value, onChange }:
+  { options: { k: T; label: string }[]; value: T; onChange: (v: T) => void }) {
   return (
     <div className="flex items-center gap-1">
-      {RANGE_OPTS.map((o) => {
-        const active = range === o.k;
+      {options.map((o) => {
+        const active = value === o.k;
         return (
           <button key={o.k} onClick={() => onChange(o.k)}
             className="text-xs px-2.5 py-1 rounded-md border transition-colors"
@@ -221,12 +229,20 @@ function OverviewTab({ ov, cats, stars }: { ov: RisingOverview; cats: RisingCate
     return () => { alive = false; };
   }, [range]);
 
+  const [metric, setMetric] = useState<Metric>("viewers");
+
   const liveCount = ov.summary?.live_count ?? 0;
   const totalV    = ov.summary?.total_viewers ?? 0;
   const avgV      = liveCount ? Math.round(totalV / liveCount) : 0;
   const dv = ov.deltas;
   const points = (ts?.points ?? []) as unknown as LinePoint[];
   const rangeDesc = RANGE_OPTS.find((o) => o.k === range)?.desc ?? "";
+
+  const chartSeries: LineSeries = metric === "viewers"
+    ? { key: "total_viewers", name: "총 시청자", color: GREEN, gradient: [GREEN, CYAN] }
+    : { key: "live_count",    name: "방송 수",   color: CYAN,  gradient: [CYAN, GREEN] };
+  const chartTitle = metric === "viewers" ? "전체 동시 시청자 추이" : "라이브 방송 수 추이";
+  const chartUnit  = metric === "viewers" ? "명" : "개";
 
   return (
     <div className="space-y-5">
@@ -239,29 +255,20 @@ function OverviewTab({ ov, cats, stars }: { ov: RisingOverview; cats: RisingCate
         <StatTile label="방송당 평균 시청자" value={nf(avgV)} sub="총 시청자 ÷ 방송 수" />
       </div>
 
-      {/* 전체 동시 시청자 추이 + 기간 선택 (가변 Y축) */}
+      {/* 추이 차트 — 지표 필터(시청자/방송수) + 가변 Y축, 기간 선택은 좌측 아래 */}
       <div className="card">
         <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
-          <h3 className="section-title">전체 동시 시청자 추이</h3>
-          <RangeSelector range={range} onChange={setRange} />
+          <h3 className="section-title">{chartTitle}</h3>
+          <Seg options={METRIC_OPTS} value={metric} onChange={setMetric} />
         </div>
         <p className="text-xs text-muted mb-4">{rangeDesc}</p>
         {tsLoading ? <ChartSkeleton /> : (
-          <LineChart points={points}
-            series={[{ key: "total_viewers", name: "총 시청자", color: GREEN, gradient: [GREEN, CYAN] }]}
-            area dynamicY unit="명" />
+          <LineChart points={points} series={[chartSeries]} area dynamicY unit={chartUnit} />
         )}
-      </div>
-
-      {/* 라이브 방송 수 추이 (가변 Y축) */}
-      <div className="card">
-        <h3 className="section-title mb-1">라이브 방송 수 추이</h3>
-        <p className="text-xs text-muted mb-4">선택 기간의 동시 라이브 방송 수 변화</p>
-        {tsLoading ? <ChartSkeleton /> : (
-          <LineChart points={points}
-            series={[{ key: "live_count", name: "방송 수", color: CYAN, gradient: [CYAN, GREEN] }]}
-            area dynamicY unit="개" />
-        )}
+        {/* 기간 선택 — 그래프 좌측 아래 */}
+        <div className="mt-3">
+          <Seg options={RANGE_OPTS} value={range} onChange={setRange} />
+        </div>
       </div>
 
       {/* 카테고리 점유율 도넛 */}
