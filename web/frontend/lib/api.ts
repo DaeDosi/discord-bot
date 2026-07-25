@@ -178,6 +178,8 @@ export const api = {
       fetch(`${BASE}/api/rising/rising-stars?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingStars>,
     streamer: (cid: string, days = 30) =>
       fetch(`${BASE}/api/rising/streamer/${encodeURIComponent(cid)}?days=${days}`).then(r => r.json()) as Promise<import("./types").StreamerDashboard>,
+    search: (keyword: string) =>
+      fetch(`${BASE}/api/rising/search?keyword=${encodeURIComponent(keyword)}`).then(r => r.json()) as Promise<{ results: import("./types").RisingSearchResult[] }>,
     status: () =>
       fetch(`${BASE}/api/rising/status`).then(r => r.json()) as Promise<import("./types").RisingStatus>,
   },

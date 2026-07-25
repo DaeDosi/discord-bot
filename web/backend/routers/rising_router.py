@@ -5,11 +5,15 @@
 데이터가 쌓이기 전(수집 시작 직후)에는 일부 지표(라이징/히트맵)가 비어 있을 수 있다.
 """
 import time
+import httpx
 from datetime import datetime, timezone, timedelta
 from collections import Counter
 from fastapi import APIRouter
 from database import get_db
 from rising_collector import latest_image
+
+_CHZZK_API = "https://api.chzzk.naver.com"
+_CHZZK_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 _KST = timezone(timedelta(hours=9))
 
@@ -319,6 +323,41 @@ async def categories(range: str = "1h", limit: int = 60):
     for i, it in enumerate(items):
         it["rank"] = i + 1
     return {"collected_at": ts, "range": range if range in _CAT_WINDOWS else "1h", "categories": items[:limit]}
+
+
+@router.get("/search")
+async def search(keyword: str, size: int = 8):
+    """치지직 채널 검색(공개, 무인증) — 개인 분석 대시보드로 이동할 스트리머를 찾는다."""
+    kw = (keyword or "").strip()
+    if not kw:
+        return {"results": []}
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{_CHZZK_API}/service/v1/search/channels",
+                params={"keyword": kw, "offset": 0, "size": max(1, min(20, size))},
+                headers=_CHZZK_HEADERS, timeout=8,
+            )
+        if r.status_code != 200:
+            return {"results": []}
+        data = ((r.json() or {}).get("content") or {}).get("data") or []
+    except Exception:
+        return {"results": []}
+
+    results = []
+    for item in data:
+        ch = item.get("channel") or item
+        cid = ch.get("channelId")
+        if not cid:
+            continue
+        results.append({
+            "channel_id":        cid,
+            "channel_name":      ch.get("channelName") or "",
+            "channel_image_url": ch.get("channelImageUrl") or "",
+            "follower_count":    int(ch.get("followerCount") or 0),
+            "open_live":         bool(ch.get("openLive")),
+        })
+    return {"results": results}
 
 
 @router.get("/streamer/{channel_id}")

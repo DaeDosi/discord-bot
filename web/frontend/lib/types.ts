@@ -313,3 +313,11 @@ export interface StreamerDashboard {
   daily?:            StreamerDaily[];
   weekly?:           StreamerWeekly[];
 }
+
+export interface RisingSearchResult {
+  channel_id:        string;
+  channel_name:      string;
+  channel_image_url: string;
+  follower_count:    number;
+  open_live:         boolean;
+}

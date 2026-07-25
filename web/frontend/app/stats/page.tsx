@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Bot, BarChart3, LineChart as LineIcon, ListOrdered, Gamepad2, Radio,
@@ -8,7 +8,7 @@ import {
 import { api } from "@/lib/api";
 import type {
   RisingOverview, RisingTimeseries, RisingLiveRanking, RisingCategories, RisingCategory,
-  RisingStars, TimeRange, CatRange,
+  RisingStars, TimeRange, CatRange, RisingSearchResult,
 } from "@/lib/types";
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
@@ -108,6 +108,71 @@ const METRIC_OPTS: { k: Metric; label: string }[] = [
   { k: "viewers", label: "시청자" },
   { k: "lives",   label: "라이브" },
 ];
+
+// 스트리머 검색 — 랭킹에 없는 스트리머도 검색해 개인 분석으로 이동
+function StreamerSearch() {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<RisingSearchResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const kw = q.trim();
+    if (kw.length < 1) { setResults([]); setOpen(false); return; }
+    const id = setTimeout(() => {
+      setLoading(true);
+      api.rising.search(kw)
+        .then((r) => { setResults(r.results || []); setOpen(true); })
+        .catch(() => setResults([]))
+        .finally(() => setLoading(false));
+    }, 350);
+    return () => clearTimeout(id);
+  }, [q]);
+
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+
+  return (
+    <div className="relative mb-5" ref={ref}>
+      <p className="text-xs font-semibold text-muted/70 uppercase tracking-wider px-1 mb-2">스트리머 검색</p>
+      <div className="relative">
+        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+        <input value={q} onChange={(e) => setQ(e.target.value)} onFocus={() => results.length > 0 && setOpen(true)}
+          placeholder="채널명으로 검색"
+          className="w-full bg-bg border border-border rounded-lg pl-9 pr-8 py-2 text-sm text-fg placeholder-muted focus:outline-none focus:border-accent" />
+        {loading && <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted animate-spin" />}
+      </div>
+      {open && (
+        <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-bg-card border border-border rounded-xl shadow-xl py-1.5 max-h-80 overflow-y-auto">
+          {results.length === 0 ? (
+            <p className="px-4 py-3 text-sm text-muted">{loading ? "검색 중..." : "결과가 없습니다."}</p>
+          ) : results.map((c) => (
+            <Link key={c.channel_id} href={`/stats/streamer/${c.channel_id}`} onClick={() => setOpen(false)}
+              className="flex items-center gap-2.5 px-3 py-2 mx-1.5 rounded-lg hover:bg-bg-hover transition-colors">
+              <span className="w-7 h-7 rounded-full overflow-hidden bg-bg-hover shrink-0">
+                {c.channel_image_url && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={c.channel_image_url} alt="" width={28} height={28} className="w-full h-full object-cover" />
+                )}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="text-sm font-semibold text-fg truncate flex items-center gap-1.5">
+                  {c.channel_name}
+                  {c.open_live && <span className="text-[9px] font-bold px-1 rounded" style={{ color: "#03C75A", background: "rgba(3,199,90,0.15)" }}>LIVE</span>}
+                </span>
+                <span className="block text-[11px] text-muted">팔로워 {nf(c.follower_count)}</span>
+              </span>
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // 범용 세그먼트 버튼 그룹 (지표 필터 / 기간 선택 공용)
 function Seg<T extends string>({ options, value, onChange }:
@@ -720,6 +785,7 @@ export default function StatsPage() {
           <div className="grid grid-cols-1 md:grid-cols-[210px_1fr] gap-5 md:gap-7">
             {/* 좌측 메뉴 */}
             <aside className="md:sticky md:top-[76px] md:self-start">
+              <StreamerSearch />
               <p className="text-xs font-semibold text-muted/70 uppercase tracking-wider px-1 mb-2">분석 메뉴</p>
               <nav className="flex md:flex-col gap-1.5 overflow-x-auto md:overflow-visible pb-1">
                 {TABS.map((t) => {
