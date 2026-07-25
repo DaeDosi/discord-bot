@@ -43,10 +43,10 @@ function Delta({ pct }: { pct: number | null }) {
 }
 
 type Tab = "overview" | "ranking" | "category";
-const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
-  { key: "overview", label: "개요",   icon: <LineIcon size={16} /> },
-  { key: "ranking",  label: "랭킹",   icon: <ListOrdered size={16} /> },
-  { key: "category", label: "카테고리", icon: <Gamepad2 size={16} /> },
+const TABS: { key: Tab; label: string; desc: string; icon: React.ReactNode }[] = [
+  { key: "overview", label: "개요",     desc: "추이·요약",   icon: <LineIcon size={17} /> },
+  { key: "ranking",  label: "랭킹",     desc: "실시간 방송",  icon: <ListOrdered size={17} /> },
+  { key: "category", label: "카테고리", desc: "게임별 현황",  icon: <Gamepad2 size={17} /> },
 ];
 
 // 방송시간(KST 문자열 → 경과) 계산
@@ -394,32 +394,42 @@ export default function StatsPage() {
             <p className="text-sm text-muted mt-1">첫 집계가 완료되면 곧 통계가 표시됩니다.</p>
           </div>
         ) : (
-          <>
-            {/* 탭 */}
-            <div className="flex items-center gap-1 border-b border-border mb-6 overflow-x-auto">
-              {TABS.map((t) => {
-                const active = tab === t.key;
-                return (
-                  <button key={t.key} onClick={() => setTab(t.key)}
-                    className="relative flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold whitespace-nowrap transition-colors"
-                    style={{ color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
-                    {t.icon} {t.label}
-                    {active && (
-                      <span className="absolute left-0 right-0 -bottom-px h-0.5 rounded-full" style={{ background: GRAD }} />
-                    )}
-                  </button>
-                );
-              })}
+          <div className="grid grid-cols-1 md:grid-cols-[210px_1fr] gap-5 md:gap-7">
+            {/* 좌측 메뉴 */}
+            <aside className="md:sticky md:top-[76px] md:self-start">
+              <p className="text-xs font-semibold text-muted/70 uppercase tracking-wider px-1 mb-2">분석 메뉴</p>
+              <nav className="flex md:flex-col gap-1.5 overflow-x-auto md:overflow-visible pb-1">
+                {TABS.map((t) => {
+                  const active = tab === t.key;
+                  return (
+                    <button key={t.key} onClick={() => setTab(t.key)}
+                      className="relative flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors shrink-0 md:w-full border overflow-hidden"
+                      style={{
+                        background: active ? "rgba(0,255,163,0.08)" : "transparent",
+                        borderColor: active ? "rgba(0,194,255,0.35)" : "transparent",
+                      }}>
+                      {active && <span className="absolute left-0 top-0 bottom-0 w-1 rounded-r" style={{ background: GRAD }} />}
+                      <span style={{ color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>{t.icon}</span>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-semibold" style={{ color: active ? GREEN : undefined }}>{t.label}</span>
+                        <span className="block text-[11px] text-muted whitespace-nowrap">{t.desc}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </nav>
+              <p className="hidden md:block text-[11px] text-muted/60 mt-4 px-1 leading-relaxed">
+                약 10분 주기로 치지직 공개 라이브 목록을 수집합니다. 비공식 서비스로 실제 수치와 오차가 있을 수 있습니다.
+              </p>
+            </aside>
+
+            {/* 우측 뷰 */}
+            <div className="min-w-0">
+              {tab === "overview" && ov && ts && <OverviewTab ov={ov} ts={ts} stars={stars} />}
+              {tab === "ranking"  && rank && <RankingTab rank={rank} />}
+              {tab === "category" && cats && <CategoryTab cats={cats} />}
             </div>
-
-            {tab === "overview" && ov && ts && <OverviewTab ov={ov} ts={ts} stars={stars} />}
-            {tab === "ranking"  && rank && <RankingTab rank={rank} />}
-            {tab === "category" && cats && <CategoryTab cats={cats} />}
-
-            <p className="text-xs text-muted/60 text-center pt-8">
-              데이터 출처: 치지직 공개 라이브 목록 · 약 10분 주기 수집 · 비공식 서비스로 실제 수치와 오차가 있을 수 있습니다.
-            </p>
-          </>
+          </div>
         )}
       </main>
 

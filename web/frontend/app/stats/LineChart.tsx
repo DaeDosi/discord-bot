@@ -1,10 +1,9 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export type LinePoint = { t: number } & Record<string, number>;
 export interface LineSeries { key: string; name: string; color: string; gradient?: [string, string] }
 
-const VB_W = 760;      // viewBox 내부 좌표(고정) — CSS로 100% 스케일
 const PAD  = { l: 46, r: 14, t: 14, b: 26 };
 
 function niceCeil(v: number): number {
@@ -32,17 +31,30 @@ export default function LineChart({
   points: LinePoint[]; series: LineSeries[]; height?: number; area?: boolean; unit?: string;
 }) {
   const [hover, setHover] = useState<number | null>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  // 컨테이너 실제 폭을 측정해 viewBox 폭과 일치시킨다 — preserveAspectRatio로 인한
+  // 레터박스/좌표 오프셋(툴팁이 커서와 어긋나던 버그)을 원천 차단.
+  const [w, setW] = useState(760);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const apply = () => setW(Math.max(320, Math.round(el.clientWidth)));
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   if (points.length < 2) {
     return (
-      <div className="flex items-center justify-center text-sm text-muted rounded-lg bg-bg-hover/40"
+      <div ref={wrapRef} className="flex items-center justify-center text-sm text-muted rounded-lg bg-bg-hover/40"
            style={{ height }}>
         시계열 데이터가 아직 부족합니다. 수집이 쌓이면 추이가 그려집니다.
       </div>
     );
   }
 
+  const VB_W = w;
   const VB_H = height;
   const plotW = VB_W - PAD.l - PAD.r;
   const plotH = VB_H - PAD.t - PAD.b;
@@ -62,9 +74,7 @@ export default function LineChart({
     points[Math.round((i / (xTickCount - 1)) * (points.length - 1))].t);
 
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    const svg = svgRef.current;
-    if (!svg) return;
-    const rect = svg.getBoundingClientRect();
+    const rect = e.currentTarget.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * VB_W;
     const tGuess = xMin + ((px - PAD.l) / plotW) * xRange;
     let best = 0, bestD = Infinity;
@@ -78,14 +88,14 @@ export default function LineChart({
   const hp = hover !== null ? points[hover] : null;
 
   return (
-    <div className="relative w-full">
+    <div ref={wrapRef} className="relative w-full">
       <svg
-        ref={svgRef}
         viewBox={`0 0 ${VB_W} ${VB_H}`}
         width="100%" height={height}
+        preserveAspectRatio="none"
         onMouseMove={onMove}
         onMouseLeave={() => setHover(null)}
-        style={{ display: "block", overflow: "visible" }}
+        style={{ display: "block" }}
       >
         <defs>
           {series.map((s) => (
