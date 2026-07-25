@@ -665,7 +665,7 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
 }
 
 // ── 신규/라이징 탭 ────────────────────────────────────────────────────────────
-type NcSort = "growth" | "duration" | "debut";
+type NcSort = "growth" | "duration";
 function NewcomersTab({ data }: { data: RisingNewcomers }) {
   const [sort, setSort] = useState<NcSort>("growth");
   const [limit, setLimit] = useState(50);
@@ -674,7 +674,6 @@ function NewcomersTab({ data }: { data: RisingNewcomers }) {
   const sorted = useMemo(() => {
     const a = [...enriched];
     if (sort === "duration") a.sort((x, y) => y.dur.ms - x.dur.ms);
-    else if (sort === "debut") a.sort((x, y) => x.first_seen_days - y.first_seen_days);
     else a.sort((x, y) => (y.growth_rate ?? -1e9) - (x.growth_rate ?? -1e9));
     return a;
   }, [enriched, sort]);
@@ -697,7 +696,6 @@ function NewcomersTab({ data }: { data: RisingNewcomers }) {
       <div className="flex items-center gap-1.5 mb-4 flex-wrap">
         <SortBtn k="growth" label="📈 급성장순" />
         <SortBtn k="duration" label="⏱️ 열정 방송순" />
-        <SortBtn k="debut" label="🆕 신규 등장순" />
       </div>
 
       {sorted.length === 0 ? (
@@ -712,7 +710,6 @@ function NewcomersTab({ data }: { data: RisingNewcomers }) {
                 <th className="text-right font-semibold py-2.5">시청자</th>
                 <th className="text-right font-semibold py-2.5">성장률</th>
                 <th className="text-right font-semibold py-2.5 pl-4 hidden md:table-cell">방송시간</th>
-                <th className="text-right font-semibold py-2.5 hidden sm:table-cell" title="우리 수집기가 이 채널을 처음 관측한 시점(최대 14일). 치지직 개설일/첫방송일은 공개 API로 제공되지 않음">첫 등장</th>
                 <th className="text-right font-semibold py-2.5 pr-2">팔로워</th>
               </tr>
             </thead>
@@ -735,7 +732,6 @@ function NewcomersTab({ data }: { data: RisingNewcomers }) {
                   <td className="py-2.5 text-right tabular-nums font-bold text-fg">{nf(s.concurrent_viewers)}</td>
                   <td className="py-2.5 text-right text-[11px]"><Delta pct={s.growth_rate} /></td>
                   <td className="py-2.5 pl-4 text-right tabular-nums text-muted text-sm hidden md:table-cell">{s.dur.label}</td>
-                  <td className="py-2.5 text-right tabular-nums text-muted text-sm hidden sm:table-cell">{s.first_seen_days}일 전</td>
                   <td className="py-2.5 pr-2 text-right tabular-nums text-muted text-sm">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</td>
                 </tr>
               ))}
