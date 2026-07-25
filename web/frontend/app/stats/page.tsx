@@ -90,8 +90,8 @@ const RANGE_OPTS: { k: TimeRange; label: string; desc: string }[] = [
   { k: "7d",   label: "7일",    desc: "최근 7일 · 1시간 평균" },
 ];
 const METRIC_OPTS: { k: Metric; label: string }[] = [
-  { k: "viewers", label: "시청자 수" },
-  { k: "lives",   label: "라이브 방송 수" },
+  { k: "viewers", label: "시청자" },
+  { k: "lives",   label: "채널" },
 ];
 
 // 범용 세그먼트 버튼 그룹 (지표 필터 / 기간 선택 공용)
@@ -157,7 +157,8 @@ function CategoryDonut({ categories }: { categories: RisingCategory[] }) {
   ];
   const total = slices.reduce((s, x) => s + x.value, 0) || 1;
 
-  const size = 200, stroke = 28, R = (size - stroke) / 2, C = 2 * Math.PI * R, cx = size / 2, cy = size / 2;
+  // R에 여유(-10)를 둬서 호버 시 stroke가 굵어져도(stroke+5) viewBox를 넘어 잘리지 않게 함
+  const size = 200, stroke = 28, R = (size - stroke - 10) / 2, C = 2 * Math.PI * R, cx = size / 2, cy = size / 2;
   let acc = 0;
   const segs = slices.map((sl, i) => {
     const len = (sl.value / total) * C;
@@ -239,9 +240,9 @@ function OverviewTab({ ov, cats, stars }: { ov: RisingOverview; cats: RisingCate
   const rangeDesc = RANGE_OPTS.find((o) => o.k === range)?.desc ?? "";
 
   const chartSeries: LineSeries = metric === "viewers"
-    ? { key: "total_viewers", name: "총 시청자", color: GREEN, gradient: [GREEN, CYAN] }
-    : { key: "live_count",    name: "방송 수",   color: CYAN,  gradient: [CYAN, GREEN] };
-  const chartTitle = metric === "viewers" ? "전체 동시 시청자 추이" : "라이브 방송 수 추이";
+    ? { key: "total_viewers", name: "시청자", color: GREEN, gradient: [GREEN, CYAN] }
+    : { key: "live_count",    name: "채널",   color: CYAN,  gradient: [CYAN, GREEN] };
+  const chartTitle = metric === "viewers" ? "전체 동시 시청자 추이" : "동시 방송 채널 추이";
   const chartUnit  = metric === "viewers" ? "명" : "개";
 
   return (
