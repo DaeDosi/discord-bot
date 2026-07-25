@@ -473,6 +473,14 @@ async def init_db():
         #  rising_collector._LATEST_IMAGES. 팔로워 수는 상위 채널만 상세 API로 보강해 저장.)
         # 라이브 태그(신입/하꼬 등) — 신규/라이징 탭 필터/뱃지용. 쉼표로 join해 저장.
         "ALTER TABLE rising_live_snapshots ADD COLUMN tags TEXT NOT NULL DEFAULT ''",
+        # 스트리머 프로필 이미지 URL 영구 저장(서버 재시작에도 유지). 수집기가 메모리로
+        # 실시간 유지하되, 매일 00시(자정 이후 첫 수집) 이 테이블로 갱신한다. 30일 이상
+        # 미갱신 행은 정리. (이미지 파일 자체는 저장하지 않음 — 브라우저가 치지직 CDN에서 로드)
+        """CREATE TABLE IF NOT EXISTS channel_profiles (
+               chzzk_channel_id TEXT PRIMARY KEY,
+               image_url        TEXT NOT NULL DEFAULT '',
+               updated_at       INTEGER NOT NULL DEFAULT 0
+           )""",
         # 각 수집 사이클의 메타(관측 총량/성공 여부) — 집계의 '최신 사이클' 앵커이자
         # 수집기 헬스체크(대시보드/디버그에서 마지막 수집 시각·건수 확인)에 쓰인다.
         """CREATE TABLE IF NOT EXISTS rising_collect_runs (

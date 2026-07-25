@@ -14,8 +14,11 @@ import os
 import time
 import asyncio
 import httpx
+from datetime import datetime, timezone, timedelta
 
 from database import get_db
+
+_KST = timezone(timedelta(hours=9))
 
 CHZZK_API = "https://api.chzzk.naver.com"
 LIVES_URL = f"{CHZZK_API}/service/v1/lives"
@@ -43,13 +46,51 @@ def _log(msg: str):
     print(f"[rising_collector] {msg}", flush=True)
 
 
-# 채널 프로필 이미지 URL을 DB에 저장하지 않고 메모리에만 유지한다(수집 사이클마다 갱신).
-# 수집기와 web/backend가 같은 프로세스라 rising_router가 latest_image()로 바로 읽는다.
+# 채널 프로필 이미지 URL. 메모리로 실시간 유지(라이브 목록에서 매 사이클 누적)하되,
+# channel_profiles 테이블에 영구 저장하고 매일 00시(자정 이후 첫 수집)에 DB로 갱신한다.
+# 서버 시작 시 DB에서 로드해 재시작 직후에도 이미지가 바로 보인다.
 _LATEST_IMAGES: dict[str, str] = {}
+_LAST_PERSIST_DATE = None  # 마지막으로 DB에 저장한 KST 날짜
 
 
 def latest_image(channel_id: str) -> str:
     return _LATEST_IMAGES.get(channel_id, "")
+
+
+async def _load_profiles():
+    """서버 시작 시 DB의 프로필 이미지를 메모리로 로드."""
+    try:
+        db = await get_db()
+        rows = await (await db.execute("SELECT chzzk_channel_id, image_url FROM channel_profiles")).fetchall()
+        for r in rows:
+            if r["image_url"]:
+                _LATEST_IMAGES[r["chzzk_channel_id"]] = r["image_url"]
+        _log(f"프로필 이미지 {len(_LATEST_IMAGES)}개 DB에서 로드")
+    except Exception as e:
+        _log(f"프로필 로드 실패: {e}")
+
+
+async def _persist_profiles():
+    """현재 메모리의 프로필 이미지를 DB에 저장하고 30일 이상 미갱신 행을 정리한다(일 1회)."""
+    try:
+        db = await get_db()
+        now = int(time.time())
+        await db.executemany(
+            """INSERT INTO channel_profiles(chzzk_channel_id, image_url, updated_at) VALUES(?,?,?)
+               ON CONFLICT(chzzk_channel_id) DO UPDATE SET image_url=excluded.image_url, updated_at=excluded.updated_at""",
+            [(cid, url, now) for cid, url in _LATEST_IMAGES.items() if url],
+        )
+        await db.execute("DELETE FROM channel_profiles WHERE updated_at < ?", (now - 30 * 86400,))
+        await db.commit()
+        # 메모리도 DB(최근 30일)에 맞춰 재로드 — 무한 증가 방지
+        rows = await (await db.execute("SELECT chzzk_channel_id, image_url FROM channel_profiles")).fetchall()
+        _LATEST_IMAGES.clear()
+        for r in rows:
+            if r["image_url"]:
+                _LATEST_IMAGES[r["chzzk_channel_id"]] = r["image_url"]
+        _log(f"프로필 이미지 {len(_LATEST_IMAGES)}개 DB 저장(일일 갱신)")
+    except Exception as e:
+        _log(f"프로필 저장 실패: {e}")
 
 
 def _parse_live(item: dict) -> dict | None:
@@ -177,9 +218,13 @@ async def collect_once() -> tuple[int, str]:
         await _record_run(now, 0, 0, ok=0, note=note)
         return (0, note)
 
-    # 프로필 이미지는 DB가 아니라 메모리 맵으로만 유지(사이클마다 통째로 갱신)
-    global _LATEST_IMAGES
-    _LATEST_IMAGES = {l["chzzk_channel_id"]: l["channel_image_url"] for l in lives if l.get("channel_image_url")}
+    # 프로필 이미지는 메모리에 누적(사이클마다 갱신)하고, 매일 00시 이후 첫 수집에 DB로 저장.
+    _LATEST_IMAGES.update({l["chzzk_channel_id"]: l["channel_image_url"] for l in lives if l.get("channel_image_url")})
+    global _LAST_PERSIST_DATE
+    today_kst = datetime.now(_KST).date()
+    if _LAST_PERSIST_DATE != today_kst:
+        _LAST_PERSIST_DATE = today_kst
+        await _persist_profiles()
 
     db = await get_db()
     total_viewers = sum(l["concurrent_viewers"] for l in lives)
@@ -206,6 +251,7 @@ async def collect_once() -> tuple[int, str]:
 async def start_collector():
     """백엔드 lifespan에서 백그라운드 태스크로 실행 — COLLECT_INTERVAL마다 수집."""
     _log(f"시작 (interval={COLLECT_INTERVAL}s, page_size={PAGE_SIZE}, max_pages={MAX_PAGES})")
+    await _load_profiles()  # DB에 저장된 프로필 이미지를 메모리로 복원(재시작 대응)
     while True:
         try:
             await collect_once()
