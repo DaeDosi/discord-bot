@@ -469,6 +469,7 @@ class PointsCog(commands.Cog):
 
         winners       = charged_by_answer.get(winner_id, []) if winner_id is not None else []
         total_charged = sum(len(v) for v in charged_by_answer.values())
+        pool          = total_charged * bet_amount
         payout        = calc_gambling_payout(winners, total_charged, bet_amount)
 
         if winners:
