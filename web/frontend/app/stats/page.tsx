@@ -703,7 +703,7 @@ function NewcomersTab({ data }: { data: RisingNewcomers }) {
         <SortBtn k="debut" label="🆕 신규 등장순" />
       </div>
       <p className="text-[11px] text-muted/70 mb-4">
-        최근 평균 시청자 50명 미만 또는 신입 태그 채널 · 최소 3명 이상 · 🔒 소통 화력은 채팅 미수집으로 잠금
+        최근 평균 시청자 50명 미만 또는 신입 태그 · 팔로워 500명 이하 · 시청자 3명 이상 · 🔒 소통 화력은 채팅 미수집으로 잠금
       </p>
 
       {sorted.length === 0 ? (

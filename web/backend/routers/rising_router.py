@@ -5,12 +5,13 @@
 데이터가 쌓이기 전(수집 시작 직후)에는 일부 지표(라이징/히트맵)가 비어 있을 수 있다.
 """
 import time
+import asyncio
 import httpx
 from datetime import datetime, timezone, timedelta
 from collections import Counter
 from fastapi import APIRouter
 from database import get_db
-from rising_collector import latest_image
+from rising_collector import latest_image, _fetch_channel_meta
 
 _CHZZK_API = "https://api.chzzk.naver.com"
 _CHZZK_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
@@ -337,7 +338,7 @@ async def newcomers(limit: int = 80):
     최소 3명 이상 컷오프. 채팅(소통 화력)은 미수집이라 잠금.
     """
     now = int(time.time())
-    if _newcomers_cache["data"] is not None and now - _newcomers_cache["ts"] < 30:
+    if _newcomers_cache["data"] is not None and now - _newcomers_cache["ts"] < 60:
         return _newcomers_cache["data"]
 
     ts = await _latest_run_ts()
@@ -395,6 +396,20 @@ async def newcomers(limit: int = 80):
 
     # 기본 정렬: 급성장순(소통 화력은 채팅 미수집이라 프론트에서 잠금)
     out.sort(key=lambda x: (x["growth_rate"] if x["growth_rate"] is not None else -1e9), reverse=True)
+
+    # 소형 채널은 팔로워가 0(상위 100만 보강)이라, 상위 후보를 온디맨드로 팔로워 보강 후
+    # '팔로워 500명 이하'만 남긴다. (보강 실패=0은 배제하지 않음)
+    enrich = out[:120]
+    sem = asyncio.Semaphore(12)
+    async with httpx.AsyncClient() as client:
+        async def _fill(item):
+            async with sem:
+                fc, _img = await _fetch_channel_meta(client, item["chzzk_channel_id"])
+                if fc is not None:
+                    item["follower_count"] = fc
+        await asyncio.gather(*[_fill(x) for x in enrich])
+    out = [x for x in enrich if x["follower_count"] <= 500]
+
     result = {"collected_at": ts, "streamers": out[:limit]}
     _newcomers_cache["ts"] = now
     _newcomers_cache["data"] = result
@@ -534,13 +549,23 @@ async def streamer(channel_id: str, days: int = 30):
 
     first_broadcast = await _fetch_first_broadcast(channel_id)  # 다시보기 최고령 = 첫 방송 추정
 
+    # 소형 채널은 스냅샷 팔로워가 0(상위 100만 보강)이라, 개인 페이지에선 1회 조회로 보강
+    live_follower = None
+    try:
+        async with httpx.AsyncClient() as _c:
+            live_follower, _ = await _fetch_channel_meta(_c, channel_id)
+    except Exception:
+        live_follower = None
+    follower_now = live_follower if live_follower is not None else last["follower_count"]
+    max_follower = max([follower_now] + [r["follower_count"] for r in rows])
+
     return {
         "found": True,
         "channel_id": channel_id,
         "channel_name": last["channel_name"],
         "channel_image_url": latest_image(channel_id),
         "live_title": last["live_title"],
-        "follower_count": last["follower_count"],
+        "follower_count": follower_now,
         "is_live": bool(latest_ts and last["collected_at"] == latest_ts),
         "first_broadcast": first_broadcast,   # 추정(다시보기 기반), 없으면 None
         "window_days": days,
@@ -548,7 +573,7 @@ async def streamer(channel_id: str, days: int = 30):
         "summary": {
             "peak_viewers": max(viewers),
             "avg_viewers": avg_v,
-            "max_follower": max(r["follower_count"] for r in rows),
+            "max_follower": max_follower,
             "broadcast_hours": broadcast_hours,
             "viewership": viewership,
             "active_days": len(daily_map),
