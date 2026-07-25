@@ -17,7 +17,7 @@ const COLUMNS: {
     heading: "제품",
     links: [
       { label: "기능", href: "/#features" },
-      { label: "라이징 트렌드", href: "/rising" },
+      { label: "치지직 통계", href: "/stats" },
       { label: "통계", href: "/#stats" },
       { label: "사용 방법", href: "/guide" },
     ],
