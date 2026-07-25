@@ -109,49 +109,84 @@ async def overview():
         (ts,)
     )).fetchone()
 
+    # ── KPI 증감(직전 수집 / 24시간 전 동시간) + 수집 이력 범위 ────────────
+    def pct(cur, prev):
+        return round((cur - prev) / prev * 100, 1) if prev else None
+
+    last2 = await (await db.execute(
+        "SELECT total_viewers, live_count FROM rising_collect_runs WHERE ok=1 ORDER BY collected_at DESC LIMIT 2"
+    )).fetchall()
+    cur_tv = last2[0]["total_viewers"] if last2 else 0
+    cur_lc = last2[0]["live_count"]    if last2 else 0
+    prev_tv = last2[1]["total_viewers"] if len(last2) > 1 else None
+    prev_lc = last2[1]["live_count"]    if len(last2) > 1 else None
+
+    target = ts - 86400
+    r24 = await (await db.execute(
+        "SELECT total_viewers, live_count FROM rising_collect_runs "
+        "WHERE ok=1 AND ABS(collected_at - ?) <= 5400 ORDER BY ABS(collected_at - ?) ASC LIMIT 1",
+        (target, target)
+    )).fetchone()
+
+    deltas = {
+        "total_viewers": {"prev": pct(cur_tv, prev_tv), "d24h": pct(cur_tv, r24["total_viewers"]) if r24 else None},
+        "live_count":    {"prev": pct(cur_lc, prev_lc), "d24h": pct(cur_lc, r24["live_count"])    if r24 else None},
+    }
+
+    first = await (await db.execute(
+        "SELECT MIN(collected_at) AS first_at FROM rising_collect_runs WHERE ok=1"
+    )).fetchone()
+    history_hours = round((ts - int(first["first_at"])) / 3600, 1) if first and first["first_at"] else 0.0
+
     return {
         "collected_at": ts,
         "tiers": tiers,
         "blue_ocean": blue_ocean,
         "summary": {"live_count": summ["lives"], "total_viewers": summ["viewers"]} if summ else None,
+        "deltas": deltas,
+        "history_hours": history_hours,
     }
 
 
-@router.get("/timeseries")
-async def timeseries(hours: int = 48):
-    """수집 사이클별 시계열 — 꺾은선 그래프용.
+# 기간 필터: (윈도우 초, 버킷 초 — 0이면 원본 10분 그대로)
+_TS_RANGES = {
+    "live": (6 * 3600, 0),        # 최근 6시간, 원본 10분 간격
+    "24h":  (24 * 3600, 3600),    # 최근 24시간, 1시간 평균
+    "7d":   (7 * 86400, 3600),    # 최근 7일, 1시간 평균
+}
 
-    각 수집 시각(collected_at)마다 체급별 방송 수 + 전체 라이브 수/총 시청자를 반환한다.
-    데이터가 쌓일수록 촘촘해진다(수집 시작 직후엔 점 몇 개뿐).
+
+@router.get("/timeseries")
+async def timeseries(range: str = "24h"):
+    """전체 시청자·라이브 방송 수 시계열 — 꺾은선 그래프용.
+
+    rising_collect_runs(사이클당 1행, 영구 보관)에서 읽으므로 이력이 계속 누적된다.
+    range=live(6h 원본) / 24h(1시간 평균) / 7d(1시간 평균).
     """
-    hours = max(1, min(24 * 30, hours))
-    since = int(time.time()) - hours * 3600
+    window, bucket = _TS_RANGES.get(range, _TS_RANGES["24h"])
+    since = int(time.time()) - window
     db = await get_db()
-    rows = await (await db.execute(
-        """SELECT collected_at,
-                  SUM(CASE WHEN concurrent_viewers >= 1000 THEN 1 ELSE 0 END)              AS large,
-                  SUM(CASE WHEN concurrent_viewers BETWEEN 100 AND 999 THEN 1 ELSE 0 END)  AS mid,
-                  SUM(CASE WHEN concurrent_viewers BETWEEN 1 AND 99 THEN 1 ELSE 0 END)     AS rising,
-                  COUNT(*)                             AS live_count,
-                  COALESCE(SUM(concurrent_viewers),0)  AS total_viewers
-           FROM rising_live_snapshots
-           WHERE collected_at >= ?
-           GROUP BY collected_at
-           ORDER BY collected_at ASC""",
-        (since,)
-    )).fetchall()
-    points = [
-        {
-            "t":             int(r["collected_at"]),
-            "large":         r["large"],
-            "mid":           r["mid"],
-            "rising":        r["rising"],
-            "live_count":    r["live_count"],
-            "total_viewers": r["total_viewers"],
-        }
-        for r in rows
-    ]
-    return {"hours": hours, "points": points}
+    if bucket == 0:
+        rows = await (await db.execute(
+            """SELECT collected_at AS t, live_count, total_viewers
+               FROM rising_collect_runs
+               WHERE ok=1 AND collected_at >= ?
+               ORDER BY collected_at ASC""",
+            (since,)
+        )).fetchall()
+    else:
+        rows = await (await db.execute(
+            """SELECT (collected_at/?)*?                     AS t,
+                      CAST(AVG(live_count) AS INTEGER)       AS live_count,
+                      CAST(AVG(total_viewers) AS INTEGER)    AS total_viewers
+               FROM rising_collect_runs
+               WHERE ok=1 AND collected_at >= ?
+               GROUP BY collected_at/?
+               ORDER BY t ASC""",
+            (bucket, bucket, since, bucket)
+        )).fetchall()
+    points = [{"t": int(r["t"]), "live_count": r["live_count"], "total_viewers": r["total_viewers"]} for r in rows]
+    return {"range": range if range in _TS_RANGES else "24h", "points": points}
 
 
 @router.get("/live-ranking")

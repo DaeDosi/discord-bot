@@ -200,10 +200,12 @@ export interface RisingBlueOcean {
 }
 
 export interface RisingOverview {
-  collected_at: number | null;
-  tiers:        RisingTier[];
-  blue_ocean:   RisingBlueOcean[];
-  summary:      { live_count: number; total_viewers: number } | null;
+  collected_at:   number | null;
+  tiers:          RisingTier[];
+  blue_ocean:     RisingBlueOcean[];
+  summary:        { live_count: number; total_viewers: number } | null;
+  deltas?:        { total_viewers: RisingDelta; live_count: RisingDelta };
+  history_hours?: number;
 }
 
 export interface RisingStar {
@@ -236,18 +238,17 @@ export interface RisingStatus {
   server_time:     number;
 }
 
+export type TimeRange = "live" | "24h" | "7d";
 export interface RisingTimeseriesPoint {
   t:             number; // epoch seconds
-  large:         number;
-  mid:           number;
-  rising:        number;
   live_count:    number;
   total_viewers: number;
 }
 export interface RisingTimeseries {
-  hours:  number;
+  range:  string;
   points: RisingTimeseriesPoint[];
 }
+export interface RisingDelta { prev: number | null; d24h: number | null }
 
 export interface RisingStreamer {
   rank:               number;

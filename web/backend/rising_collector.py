@@ -104,10 +104,12 @@ async def _record_run(collected_at: int, live_count: int, total_viewers: int, ok
 
 
 async def _prune_old(now: int):
+    # 원천 스냅샷(사이클당 수천 행)만 롤링 정리한다. 콤팩트한 사이클 요약
+    # (rising_collect_runs, 사이클당 1행)은 영구 보관 — 시계열 차트의 장기 이력이
+    # 계속 누적되도록 한다. (runs는 하루 ~144행이라 장기 보관해도 부담 없음)
     cutoff = now - RAW_RETENTION_DAYS * 86400
     db = await get_db()
     await db.execute("DELETE FROM rising_live_snapshots WHERE collected_at < ?", (cutoff,))
-    await db.execute("DELETE FROM rising_collect_runs    WHERE collected_at < ?", (cutoff,))
     await db.commit()
 
 

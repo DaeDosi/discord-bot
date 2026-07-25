@@ -7,7 +7,8 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
-  RisingOverview, RisingTimeseries, RisingLiveRanking, RisingCategories, RisingStars,
+  RisingOverview, RisingTimeseries, RisingLiveRanking, RisingCategories, RisingCategory,
+  RisingStars, TimeRange,
 } from "@/lib/types";
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
@@ -30,12 +31,12 @@ function GradText({ children, className }: { children: React.ReactNode; classNam
   );
 }
 
-// 직전 대비 증감 뱃지
-function Delta({ pct }: { pct: number | null }) {
-  if (pct === null || !isFinite(pct)) return null;
+// 증감 뱃지 (null이면 '-')
+function Delta({ pct }: { pct: number | null | undefined }) {
+  if (pct === null || pct === undefined || !isFinite(pct)) return <span className="text-muted">–</span>;
   const up = pct >= 0;
   return (
-    <span className="text-[11px] font-semibold tabular-nums" style={{ color: up ? GREEN : "#F87171" }}>
+    <span className="font-semibold tabular-nums" style={{ color: up ? GREEN : "#F87171" }}>
       {up ? "▲" : "▼"} {Math.abs(pct).toFixed(1)}%
     </span>
   );
@@ -61,75 +62,222 @@ function liveDuration(openDate: string): { ms: number; label: string } {
   return { ms, label: h > 0 ? `${h}시간 ${m}분` : `${m}분` };
 }
 
-function StatTile({ label, value, sub, accent, delta }:
-  { label: string; value: string; sub?: string; accent?: boolean; delta?: number | null }) {
+function StatTile({ label, value, sub, accent, deltaPrev, delta24h }:
+  { label: string; value: string; sub?: string; accent?: boolean;
+    deltaPrev?: number | null; delta24h?: number | null }) {
+  const hasDelta = deltaPrev !== undefined || delta24h !== undefined;
   return (
     <div className="card !p-4">
       <p className="text-xs text-muted">{label}</p>
       <p className="text-xl md:text-2xl font-extrabold mt-1 tracking-tight tabular-nums">
         {accent ? <GradText>{value}</GradText> : value}
       </p>
-      <p className="text-[11px] mt-0.5 flex items-center gap-1.5">
-        {delta !== undefined && <Delta pct={delta} />}
-        {sub && <span className="text-muted">{sub}</span>}
-      </p>
+      {hasDelta ? (
+        <div className="flex items-center gap-2 mt-1.5 text-[11px] flex-wrap">
+          <span className="flex items-center gap-1"><Delta pct={deltaPrev} /><span className="text-muted">직전</span></span>
+          <span className="flex items-center gap-1 border-l border-border pl-2"><Delta pct={delta24h} /><span className="text-muted">24h</span></span>
+        </div>
+      ) : sub ? <p className="text-[11px] text-muted mt-0.5">{sub}</p> : null}
+    </div>
+  );
+}
+
+const RANGE_OPTS: { k: TimeRange; label: string; desc: string }[] = [
+  { k: "live", label: "실시간", desc: "최근 6시간 · 10분 간격" },
+  { k: "24h",  label: "24시간", desc: "최근 24시간 · 1시간 평균" },
+  { k: "7d",   label: "7일",    desc: "최근 7일 · 1시간 평균" },
+];
+
+function RangeSelector({ range, onChange }: { range: TimeRange; onChange: (r: TimeRange) => void }) {
+  return (
+    <div className="flex items-center gap-1">
+      {RANGE_OPTS.map((o) => {
+        const active = range === o.k;
+        return (
+          <button key={o.k} onClick={() => onChange(o.k)}
+            className="text-xs px-2.5 py-1 rounded-md border transition-colors"
+            style={{ background: active ? "rgba(0,255,163,0.1)" : "transparent",
+                     borderColor: active ? "rgba(0,194,255,0.4)" : "rgb(var(--color-border-rgb))",
+                     color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ChartSkeleton({ height = 220 }: { height?: number }) {
+  return <div className="rounded-lg bg-bg-hover/50 animate-pulse" style={{ height }} />;
+}
+
+// 24시간 미만 축적 상태의 급상승 섹션 — 진행률 바 + 스켈레톤
+function RisingSkeleton({ historyHours }: { historyHours: number }) {
+  const pctv = Math.min(100, Math.round((historyHours / 24) * 100));
+  const remain = Math.max(0, 24 - historyHours);
+  return (
+    <div>
+      <div className="flex items-center justify-between text-xs mb-2">
+        <span className="text-muted">데이터 수집 중… 약 {remain.toFixed(1)}시간 후 표시됩니다</span>
+        <span className="tabular-nums font-semibold" style={{ color: GREEN }}>{pctv}%</span>
+      </div>
+      <div className="h-2 rounded-full bg-bg-hover overflow-hidden mb-5">
+        <div className="h-full rounded-full transition-all" style={{ width: `${pctv}%`, background: GRAD }} />
+      </div>
+      <div className="space-y-2.5">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="flex items-center gap-3 animate-pulse">
+            <div className="w-4 h-4 rounded bg-bg-hover shrink-0" />
+            <div className="h-4 rounded bg-bg-hover" style={{ width: `${45 - i * 6}%` }} />
+            <div className="h-4 rounded bg-bg-hover w-16 ml-auto" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// 카테고리 점유율 도넛 (상위 5 + 기타)
+const DONUT_PAL = ["#00FFA3", "#1fe6bd", "#2fccce", "#38b0e0", "#4a90e2", "#6b7688"];
+function CategoryDonut({ categories }: { categories: RisingCategory[] }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const top = categories.slice(0, 5);
+  const restV = categories.slice(5).reduce((s, c) => s + c.viewers, 0);
+  const slices = [
+    ...top.map((c) => ({ label: c.category, value: c.viewers })),
+    ...(restV > 0 ? [{ label: "기타", value: restV }] : []),
+  ];
+  const total = slices.reduce((s, x) => s + x.value, 0) || 1;
+
+  const size = 200, stroke = 28, R = (size - stroke) / 2, C = 2 * Math.PI * R, cx = size / 2, cy = size / 2;
+  let acc = 0;
+  const segs = slices.map((sl, i) => {
+    const len = (sl.value / total) * C;
+    const dash = Math.max(0, len - 3);
+    const seg = (
+      <circle key={i} r={R} cx={cx} cy={cy} fill="none" stroke={DONUT_PAL[i % DONUT_PAL.length]}
+        strokeWidth={hover === i ? stroke + 5 : stroke}
+        strokeDasharray={`${dash} ${C - dash}`} strokeDashoffset={-acc}
+        transform={`rotate(-90 ${cx} ${cy})`} style={{ transition: "stroke-width .15s", cursor: "pointer" }}
+        onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)} />
+    );
+    acc += len;
+    return seg;
+  });
+  const focus = hover !== null ? slices[hover] : null;
+
+  return (
+    <div className="flex flex-col sm:flex-row items-center gap-6">
+      <div className="relative shrink-0" style={{ width: size, height: size }}>
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+          <circle r={R} cx={cx} cy={cy} fill="none" stroke="rgb(var(--color-bg-hover-rgb))" strokeWidth={stroke} />
+          {segs}
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+          {focus ? (
+            <>
+              <span className="text-xl font-extrabold tabular-nums" style={{ color: DONUT_PAL[hover! % DONUT_PAL.length] }}>
+                {((focus.value / total) * 100).toFixed(1)}%
+              </span>
+              <span className="text-[11px] text-muted mt-0.5 max-w-[120px] truncate text-center">{focus.label}</span>
+            </>
+          ) : (
+            <>
+              <span className="text-xl font-extrabold text-fg tabular-nums">{nf(total)}</span>
+              <span className="text-[11px] text-muted mt-0.5">총 시청자</span>
+            </>
+          )}
+        </div>
+      </div>
+      <div className="flex-1 w-full space-y-1.5">
+        {slices.map((sl, i) => (
+          <div key={i} onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}
+            className="flex items-center gap-2.5 rounded-md px-2 py-1 transition-colors"
+            style={{ background: hover === i ? "rgb(var(--color-bg-hover-rgb))" : "transparent" }}>
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: DONUT_PAL[i % DONUT_PAL.length] }} />
+            <span className="text-sm text-fg truncate flex-1">{sl.label}</span>
+            <span className="text-sm font-semibold tabular-nums text-fg">{((sl.value / total) * 100).toFixed(1)}%</span>
+            <span className="text-[11px] text-muted tabular-nums w-20 text-right">{nf(sl.value)}명</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
 // ── 개요 탭 ───────────────────────────────────────────────────────────────────
-function OverviewTab({ ov, ts, stars }: { ov: RisingOverview; ts: RisingTimeseries; stars: RisingStars | null }) {
-  const points = ts.points as unknown as LinePoint[];
+function OverviewTab({ ov, cats, stars }: { ov: RisingOverview; cats: RisingCategories | null; stars: RisingStars | null }) {
+  const [range, setRange] = useState<TimeRange>("24h");
+  const [ts, setTs] = useState<RisingTimeseries | null>(null);
+  const [tsLoading, setTsLoading] = useState(true);
 
-  // 직전 수집 대비 증감(%)
-  const pts = ts.points;
-  const delta = (key: "total_viewers" | "live_count"): number | null => {
-    if (pts.length < 2) return null;
-    const cur = pts[pts.length - 1][key];
-    const prev = pts[pts.length - 2][key];
-    if (!prev) return null;
-    return ((cur - prev) / prev) * 100;
-  };
+  useEffect(() => {
+    let alive = true;
+    setTsLoading(true);
+    api.rising.timeseries(range)
+      .then((d) => { if (alive) setTs(d); })
+      .catch(() => { if (alive) setTs(null); })
+      .finally(() => { if (alive) setTsLoading(false); });
+    return () => { alive = false; };
+  }, [range]);
 
   const liveCount = ov.summary?.live_count ?? 0;
   const totalV    = ov.summary?.total_viewers ?? 0;
   const avgV      = liveCount ? Math.round(totalV / liveCount) : 0;
+  const dv = ov.deltas;
+  const points = (ts?.points ?? []) as unknown as LinePoint[];
+  const rangeDesc = RANGE_OPTS.find((o) => o.k === range)?.desc ?? "";
 
   return (
     <div className="space-y-5">
+      {/* KPI */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        <StatTile label="현재 라이브 방송" value={nf(liveCount)} sub="직전 대비" delta={delta("live_count")} />
-        <StatTile label="전체 동시 시청자" value={nf(totalV)} sub="직전 대비" accent delta={delta("total_viewers")} />
+        <StatTile label="현재 라이브 방송" value={nf(liveCount)}
+          deltaPrev={dv?.live_count.prev} delta24h={dv?.live_count.d24h} />
+        <StatTile label="전체 동시 시청자" value={nf(totalV)} accent
+          deltaPrev={dv?.total_viewers.prev} delta24h={dv?.total_viewers.d24h} />
         <StatTile label="방송당 평균 시청자" value={nf(avgV)} sub="총 시청자 ÷ 방송 수" />
       </div>
 
-      {/* 총 시청자 추이 (단일 시계열, 2톤 그라데이션) */}
+      {/* 전체 동시 시청자 추이 + 기간 선택 (가변 Y축) */}
       <div className="card">
-        <h3 className="section-title mb-1">전체 동시 시청자 추이</h3>
-        <p className="text-xs text-muted mb-4">약 10분 주기 수집 · 치지직 전체 라이브 합계</p>
-        <LineChart points={points}
-          series={[{ key: "total_viewers", name: "총 시청자", color: GREEN, gradient: [GREEN, CYAN] }]}
-          area unit="명" />
+        <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+          <h3 className="section-title">전체 동시 시청자 추이</h3>
+          <RangeSelector range={range} onChange={setRange} />
+        </div>
+        <p className="text-xs text-muted mb-4">{rangeDesc}</p>
+        {tsLoading ? <ChartSkeleton /> : (
+          <LineChart points={points}
+            series={[{ key: "total_viewers", name: "총 시청자", color: GREEN, gradient: [GREEN, CYAN] }]}
+            area dynamicY unit="명" />
+        )}
       </div>
 
-      {/* 라이브 방송 수 추이 (단일 시계열) */}
+      {/* 라이브 방송 수 추이 (가변 Y축) */}
       <div className="card">
         <h3 className="section-title mb-1">라이브 방송 수 추이</h3>
-        <p className="text-xs text-muted mb-4">치지직 전체 동시 라이브 방송 수의 변화</p>
-        <LineChart points={points}
-          series={[{ key: "live_count", name: "방송 수", color: CYAN, gradient: [CYAN, GREEN] }]}
-          area unit="개" />
+        <p className="text-xs text-muted mb-4">선택 기간의 동시 라이브 방송 수 변화</p>
+        {tsLoading ? <ChartSkeleton /> : (
+          <LineChart points={points}
+            series={[{ key: "live_count", name: "방송 수", color: CYAN, gradient: [CYAN, GREEN] }]}
+            area dynamicY unit="개" />
+        )}
       </div>
 
-      {/* 급상승 스트리머 (컴팩트) */}
+      {/* 카테고리 점유율 도넛 */}
+      {cats && cats.categories.length > 0 && (
+        <div className="card">
+          <h3 className="section-title mb-1">카테고리 점유율</h3>
+          <p className="text-xs text-muted mb-5">현재 전체 시청자 중 상위 카테고리(게임/토크 등) 비중</p>
+          <CategoryDonut categories={cats.categories} />
+        </div>
+      )}
+
+      {/* 급상승 스트리머 */}
       <div className="card">
         <h3 className="section-title mb-1">급상승 스트리머</h3>
         <p className="text-xs text-muted mb-4">24시간 전 대비 동시 시청자 성장률 상위</p>
-        {!stars || stars.stars.length === 0 ? (
-          <p className="text-sm text-muted py-4 text-center">
-            {stars?.note || "성장률 집계용 데이터가 아직 부족합니다. 최소 24시간 후부터 표시됩니다."}
-          </p>
-        ) : (
+        {stars && stars.stars.length > 0 ? (
           <div className="space-y-1.5">
             {stars.stars.slice(0, 8).map((s, i) => (
               <a key={s.chzzk_channel_id} href={`https://chzzk.naver.com/${s.chzzk_channel_id}`}
@@ -145,6 +293,8 @@ function OverviewTab({ ov, ts, stars }: { ov: RisingOverview; ts: RisingTimeseri
               </a>
             ))}
           </div>
+        ) : (
+          <RisingSkeleton historyHours={ov.history_hours ?? 0} />
         )}
       </div>
     </div>
@@ -303,7 +453,6 @@ function CategoryTab({ cats }: { cats: RisingCategories }) {
 
 export default function StatsPage() {
   const [ov, setOv]       = useState<RisingOverview | null>(null);
-  const [ts, setTs]       = useState<RisingTimeseries | null>(null);
   const [rank, setRank]   = useState<RisingLiveRanking | null>(null);
   const [cats, setCats]   = useState<RisingCategories | null>(null);
   const [stars, setStars] = useState<RisingStars | null>(null);
@@ -313,10 +462,10 @@ export default function StatsPage() {
 
   useEffect(() => {
     Promise.all([
-      api.rising.overview(), api.rising.timeseries(48),
-      api.rising.liveRanking(200), api.rising.categories(60), api.rising.risingStars(20),
+      api.rising.overview(), api.rising.liveRanking(200),
+      api.rising.categories(60), api.rising.risingStars(20),
     ])
-      .then(([o, t, r, c, s]) => { setOv(o); setTs(t); setRank(r); setCats(c); setStars(s); })
+      .then(([o, r, c, s]) => { setOv(o); setRank(r); setCats(c); setStars(s); })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
   }, []);
@@ -405,7 +554,7 @@ export default function StatsPage() {
 
             {/* 우측 뷰 */}
             <div className="min-w-0">
-              {tab === "overview" && ov && ts && <OverviewTab ov={ov} ts={ts} stars={stars} />}
+              {tab === "overview" && ov && <OverviewTab ov={ov} cats={cats} stars={stars} />}
               {tab === "ranking"  && rank && <RankingTab rank={rank} />}
               {tab === "category" && cats && <CategoryTab cats={cats} />}
             </div>

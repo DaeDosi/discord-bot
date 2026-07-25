@@ -26,9 +26,9 @@ const fmtFull = (t: number) =>
   new Date(t * 1000).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 
 export default function LineChart({
-  points, series, height = 220, area = false, unit = "",
+  points, series, height = 220, area = false, unit = "", dynamicY = false,
 }: {
-  points: LinePoint[]; series: LineSeries[]; height?: number; area?: boolean; unit?: string;
+  points: LinePoint[]; series: LineSeries[]; height?: number; area?: boolean; unit?: string; dynamicY?: boolean;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -62,13 +62,27 @@ export default function LineChart({
   const xMin = points[0].t;
   const xMax = points[points.length - 1].t;
   const xRange = Math.max(1, xMax - xMin);
-  const rawMax = Math.max(1, ...points.flatMap((p) => series.map((s) => p[s.key] ?? 0)));
-  const yMax = niceCeil(rawMax);
+
+  const allVals = points.flatMap((p) => series.map((s) => p[s.key] ?? 0));
+  const dataMax = Math.max(1, ...allVals);
+  const dataMin = Math.min(...allVals);
+
+  // 가변 Y축: 데이터 범위에 여백(하 0.9 / 상 1.1)을 줘 10분 단위 변동을 다이나믹하게.
+  // 고정(zero-based)은 dynamicY=false.
+  let yMin: number, yMax: number;
+  if (dynamicY && dataMax > dataMin) {
+    yMin = Math.max(0, Math.floor(dataMin * 0.9));
+    yMax = Math.ceil(dataMax * 1.1);
+  } else {
+    yMin = 0;
+    yMax = niceCeil(dataMax);
+  }
+  const yRange = Math.max(1, yMax - yMin);
 
   const X = (t: number) => PAD.l + ((t - xMin) / xRange) * plotW;
-  const Y = (v: number) => PAD.t + (1 - v / yMax) * plotH;
+  const Y = (v: number) => PAD.t + (1 - (v - yMin) / yRange) * plotH;
 
-  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(yMax * f));
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(yMin + yRange * f));
   const xTickCount = Math.min(5, points.length);
   const xTicks = Array.from({ length: xTickCount }, (_, i) =>
     points[Math.round((i / (xTickCount - 1)) * (points.length - 1))].t);
@@ -132,7 +146,8 @@ export default function LineChart({
         {/* 시리즈 */}
         {series.map((s) => {
           const pts = points.map((p) => `${X(p.t)},${Y(p[s.key] ?? 0)}`).join(" ");
-          const areaPts = `${X(points[0].t)},${Y(0)} ${pts} ${X(points[points.length - 1].t)},${Y(0)}`;
+          const base = Y(yMin);
+          const areaPts = `${X(points[0].t)},${base} ${pts} ${X(points[points.length - 1].t)},${base}`;
           return (
             <g key={s.key}>
               {area && <polygon points={areaPts} fill={`url(#grad-${s.key})`} />}
