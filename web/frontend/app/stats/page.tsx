@@ -17,7 +17,6 @@ import LineChart, { type LinePoint } from "./LineChart";
 const GREEN = "#00FFA3";
 const CYAN  = "#00C2FF";
 const GRAD  = `linear-gradient(135deg, ${GREEN}, ${CYAN})`;
-const TIER_LINE = { rising: "#00FFA3", mid: "#00C2FF", large: "#8B93A7" };
 
 const nf = (n: number) => n.toLocaleString("ko-KR");
 
@@ -78,17 +77,8 @@ function StatTile({ label, value, sub, accent, delta }:
   );
 }
 
-function LegendDot({ color, label }: { color: string; label: string }) {
-  return (
-    <span className="flex items-center gap-1.5 text-xs text-muted">
-      <span className="w-2.5 h-2.5 rounded-full" style={{ background: color }} /> {label}
-    </span>
-  );
-}
-
 // ── 개요 탭 ───────────────────────────────────────────────────────────────────
 function OverviewTab({ ov, ts, stars }: { ov: RisingOverview; ts: RisingTimeseries; stars: RisingStars | null }) {
-  const rising = ov.tiers.find((t) => t.key === "rising");
   const points = ts.points as unknown as LinePoint[];
 
   // 직전 수집 대비 증감(%)
@@ -101,13 +91,16 @@ function OverviewTab({ ov, ts, stars }: { ov: RisingOverview; ts: RisingTimeseri
     return ((cur - prev) / prev) * 100;
   };
 
+  const liveCount = ov.summary?.live_count ?? 0;
+  const totalV    = ov.summary?.total_viewers ?? 0;
+  const avgV      = liveCount ? Math.round(totalV / liveCount) : 0;
+
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatTile label="현재 라이브" value={nf(ov.summary?.live_count ?? 0)} sub="직전 대비" delta={delta("live_count")} />
-        <StatTile label="전체 동시 시청자" value={nf(ov.summary?.total_viewers ?? 0)} sub="직전 대비" accent delta={delta("total_viewers")} />
-        <StatTile label="라이징 비중" value={`${rising?.channel_share ?? 0}%`} sub="1~99명 방송" />
-        <StatTile label="대기업 방송" value={nf(ov.tiers.find((t) => t.key === "large")?.channels ?? 0)} sub="1,000명+" />
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <StatTile label="현재 라이브 방송" value={nf(liveCount)} sub="직전 대비" delta={delta("live_count")} />
+        <StatTile label="전체 동시 시청자" value={nf(totalV)} sub="직전 대비" accent delta={delta("total_viewers")} />
+        <StatTile label="방송당 평균 시청자" value={nf(avgV)} sub="총 시청자 ÷ 방송 수" />
       </div>
 
       {/* 총 시청자 추이 (단일 시계열, 2톤 그라데이션) */}
@@ -119,32 +112,19 @@ function OverviewTab({ ov, ts, stars }: { ov: RisingOverview; ts: RisingTimeseri
           area unit="명" />
       </div>
 
-      {/* 체급별 방송 수 추이 (다중 시계열) */}
+      {/* 라이브 방송 수 추이 (단일 시계열) */}
       <div className="card">
-        <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
-          <h3 className="section-title">체급별 방송 수 추이</h3>
-          <div className="flex items-center gap-3">
-            <LegendDot color={TIER_LINE.rising} label="라이징(1~99)" />
-            <LegendDot color={TIER_LINE.mid} label="허리층(100~999)" />
-            <LegendDot color={TIER_LINE.large} label="대기업(1000+)" />
-          </div>
-        </div>
-        <p className="text-xs text-muted mb-4">규모별 라이브 방송 수가 시간에 따라 어떻게 변하는지</p>
-        <LineChart
-          points={points}
-          series={[
-            { key: "rising", name: "라이징", color: TIER_LINE.rising },
-            { key: "mid",    name: "허리층", color: TIER_LINE.mid },
-            { key: "large",  name: "대기업", color: TIER_LINE.large },
-          ]}
-          unit="개"
-        />
+        <h3 className="section-title mb-1">라이브 방송 수 추이</h3>
+        <p className="text-xs text-muted mb-4">치지직 전체 동시 라이브 방송 수의 변화</p>
+        <LineChart points={points}
+          series={[{ key: "live_count", name: "방송 수", color: CYAN, gradient: [CYAN, GREEN] }]}
+          area unit="개" />
       </div>
 
       {/* 급상승 스트리머 (컴팩트) */}
       <div className="card">
         <h3 className="section-title mb-1">급상승 스트리머</h3>
-        <p className="text-xs text-muted mb-4">24시간 전 대비 시청자 성장률 상위(현재 1,000명 미만)</p>
+        <p className="text-xs text-muted mb-4">24시간 전 대비 동시 시청자 성장률 상위</p>
         {!stars || stars.stars.length === 0 ? (
           <p className="text-sm text-muted py-4 text-center">
             {stars?.note || "성장률 집계용 데이터가 아직 부족합니다. 최소 24시간 후부터 표시됩니다."}
@@ -372,7 +352,7 @@ export default function StatsPage() {
 치지직 <GradText>방송</GradText> 통계
           </h1>
           <p className="text-muted mt-2 text-sm md:text-base flex items-center gap-2 flex-wrap">
-            대형 방송에 가려진 라이징 생태계를 실시간·시계열로 분석합니다.
+            치지직 라이브 방송의 시청자·카테고리 트렌드를 실시간·시계열로 분석합니다.
             {collectedLabel && (
               <span className="inline-flex items-center gap-1 text-muted/70">
                 <Circle size={7} className="fill-current" style={{ color: GREEN }} /> 마지막 집계 {collectedLabel}
