@@ -446,7 +446,39 @@ async def init_db():
            )""",
         # 치지직 연동이 안 된 서버는 커뮤니티 카드에 이동할 곳이 전혀 없었다 —
         # 관리자가 직접 붙여넣는 디스코드 초대 링크로 항상 이동 버튼을 보장한다.
+        # (커뮤니티 홍보 페이지 기능은 2026-07-25 제거됨 — community_listing 테이블은
+        #  append-only 관례상 drop하지 않고 dormant 상태로 남겨둔다.)
         "ALTER TABLE community_listing ADD COLUMN invite_url TEXT",
+        # ── CHZZK Rising 분석 (라이징/중소형 방송 트렌드) ────────────────────────
+        # web/backend/rising_collector.py가 치지직 전체 라이브 목록을 주기적으로 스냅샷.
+        # 한 수집 사이클에서 관측된 라이브 방송 1건이 1행. 모든 집계(체급분포/틈새게임/
+        # 라이징/히트맵)의 원천 시계열 데이터.
+        """CREATE TABLE IF NOT EXISTS rising_live_snapshots (
+               id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+               collected_at       INTEGER NOT NULL,
+               chzzk_channel_id   TEXT    NOT NULL,
+               channel_name       TEXT    NOT NULL DEFAULT '',
+               follower_count     INTEGER NOT NULL DEFAULT 0,
+               concurrent_viewers INTEGER NOT NULL DEFAULT 0,
+               category_id        TEXT    NOT NULL DEFAULT '',
+               category_name      TEXT    NOT NULL DEFAULT '',
+               live_title         TEXT    NOT NULL DEFAULT '',
+               open_date          TEXT    NOT NULL DEFAULT '',
+               adult              INTEGER NOT NULL DEFAULT 0
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_rising_snap_time    ON rising_live_snapshots(collected_at)",
+        "CREATE INDEX IF NOT EXISTS idx_rising_snap_channel ON rising_live_snapshots(chzzk_channel_id, collected_at)",
+        "CREATE INDEX IF NOT EXISTS idx_rising_snap_category ON rising_live_snapshots(category_name, collected_at)",
+        # 각 수집 사이클의 메타(관측 총량/성공 여부) — 집계의 '최신 사이클' 앵커이자
+        # 수집기 헬스체크(대시보드/디버그에서 마지막 수집 시각·건수 확인)에 쓰인다.
+        """CREATE TABLE IF NOT EXISTS rising_collect_runs (
+               id            INTEGER PRIMARY KEY AUTOINCREMENT,
+               collected_at  INTEGER NOT NULL UNIQUE,
+               live_count    INTEGER NOT NULL DEFAULT 0,
+               total_viewers INTEGER NOT NULL DEFAULT 0,
+               ok            INTEGER NOT NULL DEFAULT 1,
+               note          TEXT    NOT NULL DEFAULT ''
+           )""",
     ]:
         try:
             await db.execute(sql)

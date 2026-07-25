@@ -16,6 +16,7 @@ from urllib.parse import quote
 from database import init_db
 from auth import exchange_code, get_discord_user, create_jwt, FRONTEND_URL, verify_oauth_state
 from chzzk_monitor import start_monitor
+from rising_collector import start_collector
 from routers.auth_router       import router as auth_router
 from routers.guilds_router     import router as guilds_router
 from routers.settings_router   import router as settings_router
@@ -26,12 +27,14 @@ from routers.chzzk_auth_router import router as chzzk_auth_router
 from routers.admin_router      import router as admin_router
 from routers.points_router     import router as points_router
 from routers.mc_event_router   import router as mc_event_router
+from routers.rising_router      import router as rising_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
     asyncio.create_task(start_monitor())
+    asyncio.create_task(start_collector())
     yield
 
 
@@ -56,6 +59,7 @@ app.include_router(chzzk_auth_router)
 app.include_router(admin_router)
 app.include_router(points_router)
 app.include_router(mc_event_router)
+app.include_router(rising_router)
 
 
 @app.get("/auth/callback")
