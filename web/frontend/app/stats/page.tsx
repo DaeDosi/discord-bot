@@ -64,17 +64,37 @@ function liveDuration(openDate: string): { ms: number; label: string } {
   return { ms, label: h > 0 ? `${h}시간 ${m}분` : `${m}분` };
 }
 
-function StatTile({ label, value, sub, accent, deltaPrev }:
-  { label: string; value: string; sub?: string; accent?: boolean; deltaPrev?: number | null }) {
+// KPI 증감: 절대 변화량 + 변동률 (예: ▲ 12,340명(+2.5%))
+function KpiDelta({ pct, cur, unit }: { pct?: number | null; cur?: number; unit?: string }) {
+  if (pct === null || pct === undefined || !isFinite(pct)) return <span className="text-muted">–</span>;
+  const up = pct >= 0;
+  let absPart = "";
+  if (cur != null && 1 + pct / 100 !== 0) {
+    const change = Math.round(cur - cur / (1 + pct / 100));
+    absPart = `${nf(Math.abs(change))}${unit ?? ""}`;
+  }
+  return (
+    <span className="font-semibold tabular-nums" style={{ color: up ? GREEN : "#F87171" }}>
+      {up ? "▲" : "▼"} {absPart}({up ? "+" : "-"}{Math.abs(pct).toFixed(1)}%)
+    </span>
+  );
+}
+
+function StatTile({ label, value, unit, sub, accent, deltaPrev, rawValue }:
+  { label: string; value: string; unit?: string; sub?: string; accent?: boolean;
+    deltaPrev?: number | null; rawValue?: number }) {
   return (
     <div className="card !p-5">
       <p className="text-sm text-muted">{label}</p>
-      <p className="text-xl md:text-2xl font-extrabold mt-1.5 tracking-tight tabular-nums">
-        {accent ? <GradText>{value}</GradText> : value}
+      <p className="mt-1.5 tracking-tight">
+        <span className="text-xl md:text-2xl font-extrabold tabular-nums">
+          {accent ? <GradText>{value}</GradText> : value}
+        </span>
+        {unit && <span className="text-sm text-muted font-normal ml-1">{unit}</span>}
       </p>
       {deltaPrev !== undefined ? (
         <p className="flex items-center gap-1 mt-2 text-xs">
-          <Delta pct={deltaPrev} /><span className="text-muted">직전 대비</span>
+          <KpiDelta pct={deltaPrev} cur={rawValue} unit={unit} /><span className="text-muted">직전 대비</span>
         </p>
       ) : sub ? <p className="text-xs text-muted mt-1.5">{sub}</p> : null}
     </div>
@@ -291,6 +311,7 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
   const liveCount = ov.summary?.live_count ?? 0;
   const totalV    = ov.summary?.total_viewers ?? 0;
   const avgV      = liveCount ? Math.round(totalV / liveCount) : 0;
+  const peakV     = (ts?.points ?? []).reduce((m, p) => Math.max(m, p.total_viewers), totalV);
   const dv = ov.deltas;
   const points = (ts?.points ?? []) as unknown as LinePoint[];
   const rangeDesc = RANGE_DESC;
@@ -326,10 +347,13 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
   return (
     <div className="space-y-5">
       {/* KPI */}
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        <StatTile label="현재 라이브 방송" value={nf(liveCount)} deltaPrev={dv?.live_count.prev} />
-        <StatTile label="전체 동시 시청자" value={nf(totalV)} accent deltaPrev={dv?.total_viewers.prev} />
-        <StatTile label="방송당 평균 시청자" value={nf(avgV)} sub="총 시청자 ÷ 방송 수" />
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatTile label="현재 라이브 방송" value={nf(liveCount)} unit="채널"
+          rawValue={liveCount} deltaPrev={dv?.live_count.prev} />
+        <StatTile label="전체 동시 시청자" value={nf(totalV)} unit="명" accent
+          rawValue={totalV} deltaPrev={dv?.total_viewers.prev} />
+        <StatTile label="방송당 평균 시청자" value={nf(avgV)} unit="명" sub="총 시청자 ÷ 방송 수" />
+        <StatTile label="뷰어쉽" value={nf(peakV)} unit="명" sub="최근 6시간 최고 동접" />
       </div>
 
       {/* 추이 차트 — 지표 필터(시청자/방송수) + 가변 Y축, 기간 선택은 좌측 아래 */}
@@ -516,11 +540,11 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                     </a>
                   </td>
 
-                  {/* 현재 시청자 — 증감(초록/빨강) + 노란 2톤 숫자/바 */}
+                  {/* 현재 시청자 — 증감(초록/빨강) + 흰 숫자 + 노란 2톤 바 */}
                   <td className="py-2.5 pr-1 align-top" style={{ minWidth: 120 }}>
                     <div className="flex items-center justify-end gap-1.5">
                       {vwDelta !== null && <span className="text-[10px]"><Delta pct={vwDelta} /></span>}
-                      <span className="font-bold tabular-nums"><GradText grad={YELLOW_GRAD}>{nf(s.concurrent_viewers)}</GradText></span>
+                      <span className="font-bold tabular-nums text-fg">{nf(s.concurrent_viewers)}</span>
                     </div>
                     <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden">
                       <div className="h-full rounded-full" style={{ width: `${vwPct}%`, background: YELLOW_GRAD }} />
