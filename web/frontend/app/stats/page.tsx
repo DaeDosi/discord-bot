@@ -352,7 +352,7 @@ export default function StatsPage() {
   return (
     <div className="min-h-screen bg-bg text-fg flex flex-col">
       <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
-        <div className="max-w-6xl mx-auto px-5 flex items-center justify-between" style={{ height: 60 }}>
+        <div className="w-full px-4 md:px-6 flex items-center justify-between" style={{ height: 60 }}>
           <div className="flex items-center gap-2.5">
             <Link href="/" className="flex items-center gap-2 font-bold text-[15px] text-muted hover:text-fg transition-colors">
               <Bot size={18} className="text-accent" /> NexBot
@@ -366,10 +366,10 @@ export default function StatsPage() {
         </div>
       </header>
 
-      <main className="flex-1 w-full max-w-6xl mx-auto px-5 py-7 md:py-9">
+      <main className="flex-1 w-full px-4 md:px-6 py-7 md:py-9">
         <div className="mb-6">
           <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight leading-tight">
-            치지직 <GradText>중소형 방송</GradText> 통계
+치지직 <GradText>방송</GradText> 통계
           </h1>
           <p className="text-muted mt-2 text-sm md:text-base flex items-center gap-2 flex-wrap">
             대형 방송에 가려진 라이징 생태계를 실시간·시계열로 분석합니다.

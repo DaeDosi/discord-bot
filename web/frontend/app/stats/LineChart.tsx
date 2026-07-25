@@ -160,19 +160,21 @@ export default function LineChart({
       {/* 툴팁 */}
       {hp && (
         <div
-          className="absolute pointer-events-none z-10 rounded-lg border border-border bg-bg-card px-3 py-2 shadow-xl text-xs"
+          className="absolute pointer-events-none z-10 rounded-lg border border-border bg-bg-card px-3 py-2 shadow-xl text-xs whitespace-nowrap"
           style={{
             left: `${(X(hp.t) / VB_W) * 100}%`,
             top: 0,
+            width: "max-content",
+            maxWidth: "none",
             transform: X(hp.t) > VB_W / 2 ? "translate(-108%, 0)" : "translate(8px, 0)",
           }}
         >
-          <p className="text-muted mb-1">{fmtFull(hp.t)}</p>
+          <p className="text-muted mb-1 whitespace-nowrap">{fmtFull(hp.t)}</p>
           {series.map((s) => (
-            <p key={s.key} className="flex items-center gap-1.5 tabular-nums">
-              <span className="w-2 h-2 rounded-full" style={{ background: s.color }} />
+            <p key={s.key} className="flex items-center gap-1.5 tabular-nums whitespace-nowrap">
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ background: s.color }} />
               <span className="text-fg font-medium">{s.name}</span>
-              <span className="text-fg ml-auto pl-3">{(hp[s.key] ?? 0).toLocaleString("ko-KR")}{unit}</span>
+              <span className="text-fg ml-auto pl-4">{(hp[s.key] ?? 0).toLocaleString("ko-KR")}{unit}</span>
             </p>
           ))}
         </div>
