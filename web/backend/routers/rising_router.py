@@ -5,9 +5,22 @@
 데이터가 쌓이기 전(수집 시작 직후)에는 일부 지표(라이징/히트맵)가 비어 있을 수 있다.
 """
 import time
+from datetime import datetime, timezone, timedelta
+from collections import Counter
 from fastapi import APIRouter
 from database import get_db
 from rising_collector import latest_image
+
+_KST = timezone(timedelta(hours=9))
+
+
+def _kst_date(ts: int) -> str:
+    return datetime.fromtimestamp(ts, _KST).date().isoformat()
+
+
+def _kst_week(ts: int) -> tuple[str, int]:
+    d = datetime.fromtimestamp(ts, _KST).isocalendar()
+    return (f"{d[0]}-W{d[1]:02d}", int(datetime.fromtimestamp(ts, _KST).timestamp()))
 
 router = APIRouter(prefix="/api/rising", tags=["rising"])
 
@@ -306,6 +319,96 @@ async def categories(range: str = "1h", limit: int = 60):
     for i, it in enumerate(items):
         it["rank"] = i + 1
     return {"collected_at": ts, "range": range if range in _CAT_WINDOWS else "1h", "categories": items[:limit]}
+
+
+@router.get("/streamer/{channel_id}")
+async def streamer(channel_id: str, days: int = 30):
+    """스트리머 개인 분석 — 최근 days일(보관 한계 14일) 스냅샷 집계.
+
+    각 스냅샷 ≈ 라이브 10분으로 보고 방송시간/뷰어쉽(시청자-시간)을 추정한다.
+    치지직 공개 API가 과거 데이터를 안 주므로 이력은 우리가 수집한 기간만큼만 존재한다.
+    """
+    days = max(1, min(400, days))
+    since = int(time.time()) - days * 86400
+    db = await get_db()
+    rows = await (await db.execute(
+        """SELECT collected_at, concurrent_viewers, follower_count, category_name, live_title, channel_name
+           FROM rising_live_snapshots
+           WHERE chzzk_channel_id=? AND collected_at >= ?
+           ORDER BY collected_at ASC""",
+        (channel_id, since)
+    )).fetchall()
+
+    latest_ts = await _latest_run_ts()
+    if not rows:
+        return {"found": False, "channel_id": channel_id, "channel_image_url": latest_image(channel_id)}
+
+    last = rows[-1]
+    viewers = [r["concurrent_viewers"] for r in rows]
+    n = len(rows)
+    snap_min = 10  # 스냅샷 간격(분) — 라이브 1구간 근사
+    broadcast_hours = round(n * snap_min / 60, 1)
+    viewership = round(sum(viewers) * snap_min / 60)  # 시청자-시간(뷰어-hour)
+    avg_v = round(sum(viewers) / n) if n else 0
+
+    # 카테고리 비중(스냅샷 수 기준)
+    cat_counter = Counter(r["category_name"] for r in rows if r["category_name"])
+    cat_total = sum(cat_counter.values()) or 1
+    categories = [
+        {"category": c, "share": round(cnt / cat_total * 100, 1), "snapshots": cnt}
+        for c, cnt in cat_counter.most_common(6)
+    ]
+
+    # 일별(잔디용)
+    daily_map: dict[str, dict] = {}
+    for r in rows:
+        d = _kst_date(r["collected_at"])
+        e = daily_map.setdefault(d, {"n": 0, "sv": 0, "peak": 0})
+        e["n"] += 1
+        e["sv"] += r["concurrent_viewers"]
+        e["peak"] = max(e["peak"], r["concurrent_viewers"])
+    daily = [
+        {"date": d, "minutes": e["n"] * snap_min, "avg_viewers": round(e["sv"] / e["n"]),
+         "peak": e["peak"], "viewership": round(e["sv"] * snap_min / 60)}
+        for d, e in sorted(daily_map.items())
+    ]
+
+    # 주별(추이용)
+    week_map: dict[str, dict] = {}
+    for r in rows:
+        wk, _ = _kst_week(r["collected_at"])
+        e = week_map.setdefault(wk, {"n": 0, "sv": 0, "peak": 0, "t": r["collected_at"]})
+        e["n"] += 1
+        e["sv"] += r["concurrent_viewers"]
+        e["peak"] = max(e["peak"], r["concurrent_viewers"])
+    weekly = [
+        {"week": wk, "t": e["t"], "avg_viewers": round(e["sv"] / e["n"]),
+         "peak": e["peak"], "viewership": round(e["sv"] * snap_min / 60)}
+        for wk, e in sorted(week_map.items())
+    ]
+
+    return {
+        "found": True,
+        "channel_id": channel_id,
+        "channel_name": last["channel_name"],
+        "channel_image_url": latest_image(channel_id),
+        "live_title": last["live_title"],
+        "follower_count": last["follower_count"],
+        "is_live": bool(latest_ts and last["collected_at"] == latest_ts),
+        "window_days": days,
+        "history_days": len(daily_map),
+        "summary": {
+            "peak_viewers": max(viewers),
+            "avg_viewers": avg_v,
+            "max_follower": max(r["follower_count"] for r in rows),
+            "broadcast_hours": broadcast_hours,
+            "viewership": viewership,
+            "active_days": len(daily_map),
+            "categories": categories,
+        },
+        "daily": daily,
+        "weekly": weekly,
+    }
 
 
 @router.get("/rising-stars")

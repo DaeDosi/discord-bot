@@ -285,3 +285,31 @@ export interface RisingCategories {
   range?:       string;
   categories:   RisingCategory[];
 }
+
+// ── 스트리머 개인 분석 대시보드 ──────────────────────────────────────────────
+export interface StreamerCategory { category: string; share: number; snapshots: number; }
+export interface StreamerDaily { date: string; minutes: number; avg_viewers: number; peak: number; viewership: number; }
+export interface StreamerWeekly { week: string; t: number; avg_viewers: number; peak: number; viewership: number; }
+export interface StreamerSummary {
+  peak_viewers:    number;
+  avg_viewers:     number;
+  max_follower:    number;
+  broadcast_hours: number;
+  viewership:      number;
+  active_days:     number;
+  categories:      StreamerCategory[];
+}
+export interface StreamerDashboard {
+  found:             boolean;
+  channel_id:        string;
+  channel_name?:     string;
+  channel_image_url: string;
+  live_title?:       string;
+  follower_count?:   number;
+  is_live?:          boolean;
+  window_days?:      number;
+  history_days?:     number;
+  summary?:          StreamerSummary;
+  daily?:            StreamerDaily[];
+  weekly?:           StreamerWeekly[];
+}

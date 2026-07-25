@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   Bot, BarChart3, LineChart as LineIcon, ListOrdered, Gamepad2, Radio,
-  TrendingUp, ArrowUpRight, Loader2, Search, Circle,
+  TrendingUp, Loader2, Search, Circle,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -522,9 +522,9 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                     className="border-b border-border/50 hover:bg-bg-hover transition-colors">
                   <td className="py-2.5 pl-2 tabular-nums text-muted text-sm align-top">{i + 1}</td>
 
-                  {/* 스트리머 */}
+                  {/* 스트리머 — 개인 분석 대시보드로 이동 */}
                   <td className="py-2.5 align-top">
-                    <a href={`https://chzzk.naver.com/${s.chzzk_channel_id}`} target="_blank" rel="noopener noreferrer"
+                    <Link href={`/stats/streamer/${s.chzzk_channel_id}`}
                        className="flex items-center gap-2 group">
                       <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
                         {s.channel_image_url && (
@@ -536,8 +536,8 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                       <span className="font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[150px] md:max-w-none">
                         {s.channel_name}
                       </span>
-                      <ArrowUpRight size={12} className="text-muted opacity-0 group-hover:opacity-100 shrink-0" />
-                    </a>
+                      <BarChart3 size={12} className="text-muted opacity-0 group-hover:opacity-100 shrink-0" />
+                    </Link>
                   </td>
 
                   {/* 현재 시청자 — 증감(초록/빨강) + 흰 숫자 + 노란 2톤 바 */}
