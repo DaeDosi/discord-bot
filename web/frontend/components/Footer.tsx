@@ -19,7 +19,6 @@ const COLUMNS: {
       { label: "기능", href: "/#features" },
       { label: "통계", href: "/#stats" },
       { label: "사용 방법", href: "/guide" },
-      { label: "커뮤니티", href: "/community" },
     ],
   },
   {

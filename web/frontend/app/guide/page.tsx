@@ -2,13 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import {
   Bot, LogIn, LayoutGrid, ExternalLink, ChevronRight,
-  Shield, Heart, Gem, Radio, BadgeCheck, Users,
+  Shield, Heart, Gem, Radio, BadgeCheck,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Footer from "@/components/Footer";
 import {
   TerminalMockup, PointsMockup, ChzzkEmbedMockup, ChzzkFollowVerifyMockup,
-  LevelingMockup, CommunityMockup,
+  LevelingMockup,
 } from "@/components/marketing/Mockups";
 
 export const metadata: Metadata = {
@@ -118,20 +118,6 @@ const features: {
     example: "예: 팔로우 4개월째 → \"@서포터\" 역할 자동 부여 (6개월 미달로 \"@충성팬\"은 보류)",
     mockup: <ChzzkFollowVerifyMockup color="#818CF8" />,
     flip:   false,
-  },
-  {
-    color: "#38BDF8",
-    bg:    "rgba(56,189,248,0.12)",
-    icon:  <Users size={20} style={{ color: "#38BDF8" }} />,
-    tag:   "커뮤니티",
-    title: "내 서버를 공개 커뮤니티 페이지에 홍보",
-    paragraphs: [
-      "\"일반 설정\" 탭 하단의 \"커뮤니티 홍보 페이지\" 스위치를 켜고 짧은 소개 문구를 작성하면, 로그인 없이 누구나 볼 수 있는 nexbot.shop/community 페이지에 서버가 노출됩니다.",
-      "치지직 계정이 연동된 서버는 방송 중 여부(LIVE 배지)와 함께 표시되고, 카드를 클릭하면 바로 치지직 채널로 이동할 수 있어 신규 시청자 유입에 활용할 수 있습니다.",
-    ],
-    example: "예: 소개 문구 \"매일 저녁 게임 방송해요!\" 등록 → 커뮤니티 페이지에 카드로 노출",
-    mockup: <CommunityMockup color="#38BDF8" />,
-    flip:   true,
   },
 ];
 

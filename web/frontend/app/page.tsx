@@ -275,12 +275,6 @@ export default function HomePage() {
             >
               사용 방법
             </Link>
-            <Link
-              href="/community"
-              className="hidden sm:block text-sm text-muted hover:text-fg transition-colors mr-1"
-            >
-              커뮤니티
-            </Link>
             <ThemeToggle />
             {user
               ? <ProfileDropdown user={user} />

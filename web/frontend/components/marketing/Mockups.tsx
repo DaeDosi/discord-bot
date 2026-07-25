@@ -1,4 +1,4 @@
-import { Hash, Radio, BadgeCheck, TrendingUp, Users, ExternalLink } from "lucide-react";
+import { Hash, Radio, BadgeCheck, TrendingUp } from "lucide-react";
 
 // 홈페이지 기능 소개 섹션과 /guide 페이지의 기능별 활용법 섹션이 공유하는 목업 컴포넌트들.
 // 실제 스크린샷 대신 손으로 그린 미리보기를 쓰는 이유: 스크린샷은 UI가 바뀔 때마다
@@ -195,38 +195,6 @@ export function LevelingMockup({ color = "#818CF8" }: { color?: string }) {
             </span>
           </div>
         </div>
-      </div>
-    </div>
-  );
-}
-
-// Mockup: 커뮤니티 홍보 카드
-export function CommunityMockup({ color = "#38BDF8" }: { color?: string }) {
-  return (
-    <div className="bg-bg-card rounded-2xl border border-border p-5 shadow-xl w-full max-w-sm space-y-4">
-      <div className="flex items-center gap-3">
-        <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
-             style={{ background: `${color}20` }}>
-          <Users size={18} style={{ color }} />
-        </div>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-fg truncate">우리 팬카페 서버</p>
-          <p className="flex items-center gap-1.5 text-[11px] text-muted truncate">
-            <Radio size={11} style={{ color: "#03C75A" }} />
-            치지직 스트리머 채널
-            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded"
-                  style={{ color: "#03C75A", background: "rgba(3,199,90,0.15)" }}>
-              LIVE
-            </span>
-          </p>
-        </div>
-      </div>
-      <p className="text-[12px] text-muted leading-relaxed">
-        매일 저녁 게임 방송해요! 편하게 놀러오세요 :)
-      </p>
-      <div className="flex items-center justify-center gap-1.5 text-[12px] font-medium px-3 py-2 rounded-lg border"
-           style={{ borderColor: "var(--color-border)", color }}>
-        치지직 바로가기 <ExternalLink size={12} />
       </div>
     </div>
   );
