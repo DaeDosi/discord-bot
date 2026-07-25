@@ -270,6 +270,12 @@ export default function HomePage() {
           </Link>
           <div className="flex items-center gap-3">
             <Link
+              href="/rising"
+              className="hidden sm:flex items-center gap-1 text-sm font-medium text-muted hover:text-fg transition-colors mr-1"
+            >
+              <Radio size={14} style={{ color: "#00FFA3" }} /> 라이징
+            </Link>
+            <Link
               href="/guide"
               className="hidden sm:block text-sm text-muted hover:text-fg transition-colors mr-1"
             >

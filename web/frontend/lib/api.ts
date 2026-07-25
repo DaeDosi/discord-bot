@@ -164,6 +164,16 @@ export const api = {
     },
   },
 
+  // CHZZK Rising — 공개(비로그인) 분석 포털. 인증 불필요라 plain fetch 사용.
+  rising: {
+    overview: () =>
+      fetch(`${BASE}/api/rising/overview`).then(r => r.json()) as Promise<import("./types").RisingOverview>,
+    risingStars: (limit = 20) =>
+      fetch(`${BASE}/api/rising/rising-stars?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingStars>,
+    status: () =>
+      fetch(`${BASE}/api/rising/status`).then(r => r.json()) as Promise<import("./types").RisingStatus>,
+  },
+
   chzzkAuth: {
     getLoginUrl: (gid: string) =>
       request<{ url: string }>(`/api/chzzk-auth/login-url?guild_id=${encodeURIComponent(gid)}`),

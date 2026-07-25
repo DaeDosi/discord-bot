@@ -182,3 +182,56 @@ export interface ChatCommand {
   reply_text:    string;
   is_active:     boolean;
 }
+
+// ── CHZZK Rising (분석 포털) ──────────────────────────────────────────────────
+export interface RisingTier {
+  key:           string;
+  label:         string;
+  channels:      number;
+  viewers:       number;
+  channel_share: number;
+}
+
+export interface RisingBlueOcean {
+  category:         string;
+  lives:            number;
+  viewers:          number;
+  blue_ocean_index: number;
+}
+
+export interface RisingOverview {
+  collected_at: number | null;
+  tiers:        RisingTier[];
+  blue_ocean:   RisingBlueOcean[];
+  summary:      { live_count: number; total_viewers: number } | null;
+}
+
+export interface RisingStar {
+  chzzk_channel_id: string;
+  channel_name:     string;
+  category:         string;
+  viewers_now:      number;
+  viewers_past:     number;
+  growth_rate:      number;
+  follower_count:   number;
+}
+
+export interface RisingStars {
+  collected_at: number | null;
+  compared_to?: number;
+  stars:        RisingStar[];
+  note?:        string;
+}
+
+export interface RisingStatus {
+  last_run: {
+    collected_at:  number;
+    live_count:    number;
+    total_viewers: number;
+    ok:            number;
+    note:          string;
+  } | null;
+  total_snapshots: number;
+  successful_runs: number;
+  server_time:     number;
+}
