@@ -47,7 +47,7 @@ function Delta({ pct }: { pct: number | null | undefined }) {
 type Tab = "overview" | "ranking" | "category" | "newcomers";
 const TABS: { key: Tab; label: string; desc: string; icon: React.ReactNode }[] = [
   { key: "overview",  label: "실시간 분석", desc: "추이·요약",    icon: <LineIcon size={17} /> },
-  { key: "newcomers", label: "신규/라이징", desc: "하꼬·신입 발굴", icon: <Sprout size={17} /> },
+  { key: "newcomers", label: "신규 스트리머", desc: "하꼬·신입 발굴", icon: <Sprout size={17} /> },
   { key: "ranking",   label: "랭킹",       desc: "실시간 방송",   icon: <ListOrdered size={17} /> },
   { key: "category",  label: "카테고리",   desc: "게임별 현황",   icon: <Gamepad2 size={17} /> },
 ];
@@ -703,7 +703,7 @@ function NewcomersTab({ data }: { data: RisingNewcomers }) {
         <SortBtn k="debut" label="🆕 최신 데뷔순" />
       </div>
       <p className="text-[11px] text-muted/70 mb-4">
-        평균 시청자 50명 미만 · 신규(30일 내) · 신입 태그 채널 · 최소 3명 이상 · 🔒 소통 화력은 채팅 미수집으로 잠금
+        최근 평균 시청자 50명 미만 또는 신입 태그 채널 · 최소 3명 이상 · 🔒 소통 화력은 채팅 미수집으로 잠금
       </p>
 
       {sorted.length === 0 ? (

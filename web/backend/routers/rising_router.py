@@ -331,10 +331,10 @@ _newcomers_cache: dict = {"ts": 0, "data": None}
 
 @router.get("/newcomers")
 async def newcomers(limit: int = 80):
-    """신규/라이징(하꼬) 스트리머 — 현재 라이브 중 소형/신규 채널만.
+    """신규 스트리머(하꼬/라이징) — 현재 라이브 중 소형 채널만.
 
-    포함 조건(하나 이상): 태그에 신입/하꼬 등 포함 / 최근 평균 시청자 50명 미만 /
-    첫 수집(대략 데뷔) 30일 이내. 최소 3명 이상 컷오프. 채팅(소통 화력)은 미수집이라 잠금.
+    포함 조건(하나 이상): 신입/하꼬 등 태그 포함 / 최근 평균 시청자 50명 미만.
+    최소 3명 이상 컷오프. 채팅(소통 화력)은 미수집이라 잠금.
     """
     now = int(time.time())
     if _newcomers_cache["data"] is not None and now - _newcomers_cache["ts"] < 30:
@@ -370,7 +370,10 @@ async def newcomers(limit: int = 80):
         first_days = round((ts - int(first_seen)) / 86400, 1)
         tags = r["tags"] or ""
         tag_new = any(t in tags for t in _NEW_TAGS)
-        if not (tag_new or (avg_all is not None and avg_all < 50) or first_days <= 30):
+        # 포함: 신입 태그이거나 최근 평균 시청자 50명 미만(하꼬/라이징)만.
+        # (첫 수집 30일 조건은 원천 보관이 14일이라 사실상 모든 채널을 통과시켜 대형 채널이
+        #  섞이는 문제가 있어 필터에서 제외 — 데뷔일은 아래 컬럼/뱃지 정보로만 유지)
+        if not (tag_new or (avg_all is not None and avg_all < 50)):
             continue
         avg7 = agg7.get(cid, avg_all) or avg_all or r["concurrent_viewers"]
         growth = round((r["concurrent_viewers"] - avg7) / avg7 * 100, 1) if avg7 and avg7 > 0 else None
