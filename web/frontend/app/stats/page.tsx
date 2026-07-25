@@ -68,7 +68,7 @@ function StatTile({ label, value, sub, accent, deltaPrev }:
   return (
     <div className="card !p-5">
       <p className="text-sm text-muted">{label}</p>
-      <p className="text-3xl md:text-4xl font-extrabold mt-1.5 tracking-tight tabular-nums">
+      <p className="text-xl md:text-2xl font-extrabold mt-1.5 tracking-tight tabular-nums">
         {accent ? <GradText>{value}</GradText> : value}
       </p>
       {deltaPrev !== undefined ? (
