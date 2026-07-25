@@ -375,24 +375,35 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
             {filtered.slice(0, limit).map((s, i) => (
               <tr key={s.chzzk_channel_id}
                   className="border-b border-border/50 hover:bg-bg-hover transition-colors">
-                <td className="py-2.5 pl-2 tabular-nums text-muted text-xs">{i + 1}</td>
+                <td className="py-2.5 pl-2 tabular-nums text-muted text-sm">{i + 1}</td>
                 <td className="py-2.5">
                   <a href={`https://chzzk.naver.com/${s.chzzk_channel_id}`} target="_blank" rel="noopener noreferrer"
-                     className="font-semibold text-fg hover:text-accent transition-colors inline-flex items-center gap-1 group">
-                    <span className="truncate max-w-[160px] md:max-w-none">{s.channel_name}</span>
+                     className="flex items-center gap-2 group">
+                    <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
+                      {s.channel_image_url && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={s.channel_image_url} alt="" width={24} height={24}
+                             loading="lazy" className="w-full h-full object-cover" />
+                      )}
+                    </span>
+                    <span className="font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[150px] md:max-w-none">
+                      {s.channel_name}
+                    </span>
                     <ArrowUpRight size={12} className="text-muted opacity-0 group-hover:opacity-100 shrink-0" />
                   </a>
                 </td>
                 <td className="py-2.5 text-right tabular-nums font-bold" style={{ color: GREEN }}>
                   {nf(s.concurrent_viewers)}
                 </td>
-                <td className="py-2.5 pl-4 text-muted text-xs hidden sm:table-cell truncate max-w-[140px]">
+                <td className="py-2.5 pl-4 text-muted text-sm hidden sm:table-cell truncate max-w-[140px]">
                   {s.category_name || "-"}
                 </td>
-                <td className="py-2.5 text-right tabular-nums text-muted text-xs hidden md:table-cell">
+                <td className="py-2.5 text-right tabular-nums text-muted text-sm hidden md:table-cell">
                   {s.dur.label}
                 </td>
-                <td className="py-2.5 pr-2 text-right tabular-nums text-muted text-xs">{nf(s.follower_count)}</td>
+                <td className="py-2.5 pr-2 text-right tabular-nums text-muted text-sm">
+                  {s.follower_count > 0 ? nf(s.follower_count) : "-"}
+                </td>
               </tr>
             ))}
           </tbody>

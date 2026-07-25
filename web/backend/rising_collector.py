@@ -33,10 +33,23 @@ PAGE_SIZE = int(os.getenv("RISING_PAGE_SIZE", "50"))
 # 원천 스냅샷 보관 기간(일). 이보다 오래된 행은 매 사이클 정리한다(시간대 히트맵/라이징
 # 24h 비교에 필요한 만큼만 남기면 되므로 기본 14일).
 RAW_RETENTION_DAYS = int(os.getenv("RISING_RAW_RETENTION_DAYS", "14"))
+# 팔로워 수는 라이브 목록 API가 주지 않으므로, 시청자 상위 N개 채널만 채널 상세 API로
+# 보강한다(전체 수천 개를 매 사이클 조회하면 과부하). 랭킹 상위가 곧 노출되는 부분이라 충분.
+FOLLOWER_ENRICH_N = int(os.getenv("RISING_FOLLOWER_ENRICH_N", "100"))
+FOLLOWER_CONCURRENCY = int(os.getenv("RISING_FOLLOWER_CONCURRENCY", "12"))
 
 
 def _log(msg: str):
     print(f"[rising_collector] {msg}", flush=True)
+
+
+# 채널 프로필 이미지 URL을 DB에 저장하지 않고 메모리에만 유지한다(수집 사이클마다 갱신).
+# 수집기와 web/backend가 같은 프로세스라 rising_router가 latest_image()로 바로 읽는다.
+_LATEST_IMAGES: dict[str, str] = {}
+
+
+def latest_image(channel_id: str) -> str:
+    return _LATEST_IMAGES.get(channel_id, "")
 
 
 def _parse_live(item: dict) -> dict | None:
@@ -48,7 +61,8 @@ def _parse_live(item: dict) -> dict | None:
     return {
         "chzzk_channel_id":   str(channel_id),
         "channel_name":       ch.get("channelName") or "",
-        "follower_count":     int(ch.get("followerCount") or 0),
+        "channel_image_url":  ch.get("channelImageUrl") or "",
+        "follower_count":     int(ch.get("followerCount") or 0),  # 목록 API엔 보통 없음 → _enrich_top에서 보강
         "concurrent_viewers": int(item.get("concurrentUserCount") or 0),
         "category_id":        item.get("liveCategory") or "",
         "category_name":      item.get("liveCategoryValue") or "",
@@ -56,6 +70,34 @@ def _parse_live(item: dict) -> dict | None:
         "open_date":          item.get("openDate") or "",
         "adult":              1 if item.get("adult") else 0,
     }
+
+
+async def _fetch_channel_meta(client: httpx.AsyncClient, channel_id: str) -> tuple[int | None, str | None]:
+    """채널 상세 API로 (followerCount, channelImageUrl)를 가져온다. 실패 시 (None, None)."""
+    try:
+        r = await client.get(f"{CHZZK_API}/service/v1/channels/{channel_id}", headers=HEADERS, timeout=8)
+        if r.status_code == 200:
+            c = (r.json() or {}).get("content") or {}
+            return (int(c.get("followerCount") or 0), c.get("channelImageUrl") or "")
+    except Exception:
+        pass
+    return (None, None)
+
+
+async def _enrich_top(client: httpx.AsyncClient, lives: list[dict]):
+    """시청자 상위 FOLLOWER_ENRICH_N개 채널의 팔로워 수(+이미지)를 채널 상세 API로 보강한다."""
+    top = sorted(lives, key=lambda l: l["concurrent_viewers"], reverse=True)[:FOLLOWER_ENRICH_N]
+    sem = asyncio.Semaphore(FOLLOWER_CONCURRENCY)
+
+    async def one(l: dict):
+        async with sem:
+            fc, img = await _fetch_channel_meta(client, l["chzzk_channel_id"])
+            if fc is not None:
+                l["follower_count"] = fc
+            if img:
+                l["channel_image_url"] = img
+
+    await asyncio.gather(*[one(l) for l in top])
 
 
 async def _fetch_all_lives(client: httpx.AsyncClient) -> list[dict]:
@@ -119,6 +161,9 @@ async def collect_once() -> tuple[int, str]:
     try:
         async with httpx.AsyncClient() as client:
             lives = await _fetch_all_lives(client)
+            if lives:
+                # 팔로워 수는 목록 API에 없으므로 상위 채널만 상세 API로 보강
+                await _enrich_top(client, lives)
     except Exception as e:
         note = f"fetch 실패: {e}"
         _log(note)
@@ -129,6 +174,10 @@ async def collect_once() -> tuple[int, str]:
         note = "라이브 0건 (API 응답 비었거나 방송 없음)"
         await _record_run(now, 0, 0, ok=0, note=note)
         return (0, note)
+
+    # 프로필 이미지는 DB가 아니라 메모리 맵으로만 유지(사이클마다 통째로 갱신)
+    global _LATEST_IMAGES
+    _LATEST_IMAGES = {l["chzzk_channel_id"]: l["channel_image_url"] for l in lives if l.get("channel_image_url")}
 
     db = await get_db()
     total_viewers = sum(l["concurrent_viewers"] for l in lives)

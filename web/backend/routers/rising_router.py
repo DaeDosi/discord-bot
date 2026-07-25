@@ -7,6 +7,7 @@
 import time
 from fastapi import APIRouter
 from database import get_db
+from rising_collector import latest_image
 
 router = APIRouter(prefix="/api/rising", tags=["rising"])
 
@@ -201,8 +202,8 @@ async def live_ranking(limit: int = 200):
         return {"collected_at": None, "streamers": []}
     db = await get_db()
     rows = await (await db.execute(
-        """SELECT chzzk_channel_id, channel_name, concurrent_viewers, category_name,
-                  open_date, follower_count, live_title, adult
+        """SELECT chzzk_channel_id, channel_name, concurrent_viewers,
+                  category_name, open_date, follower_count, live_title, adult
            FROM rising_live_snapshots
            WHERE collected_at=?
            ORDER BY concurrent_viewers DESC
@@ -214,6 +215,7 @@ async def live_ranking(limit: int = 200):
             "rank": i + 1,
             "chzzk_channel_id":   r["chzzk_channel_id"],
             "channel_name":       r["channel_name"],
+            "channel_image_url":  latest_image(r["chzzk_channel_id"]),  # DB 아님 — 메모리 맵
             "concurrent_viewers": r["concurrent_viewers"],
             "category_name":      r["category_name"],
             "open_date":          r["open_date"],

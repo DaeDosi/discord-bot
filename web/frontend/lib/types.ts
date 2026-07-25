@@ -254,6 +254,7 @@ export interface RisingStreamer {
   rank:               number;
   chzzk_channel_id:   string;
   channel_name:       string;
+  channel_image_url:  string;
   concurrent_viewers: number;
   category_name:      string;
   open_date:          string;
