@@ -357,7 +357,8 @@ function CategoryDonut() {
 }
 
 // ── 개요 탭 ───────────────────────────────────────────────────────────────────
-function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | null }) {
+function OverviewTab({ ov, stars, news, onMore }:
+  { ov: RisingOverview; stars: RisingStars | null; news: RisingNewcomers | null; onMore: () => void }) {
   const range: TimeRange = "live"; // 기간 옵션 제거 — 실시간(최근 6시간)만 사용
   const [ts, setTs] = useState<RisingTimeseries | null>(null);
   const [tsLoading, setTsLoading] = useState(true);
@@ -500,6 +501,37 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
           </div>
         ) : (
           <RisingSkeleton historyHours={ov.history_hours ?? 0} />
+        )}
+      </div>
+
+      {/* 신입 스트리머 미리보기 (약 10명) → 더보기 시 신규 스트리머 분석 탭 */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+          <h3 className="section-title flex items-center gap-1.5"><Sprout size={16} style={{ color: GREEN }} /> 신입 스트리머</h3>
+          <button onClick={onMore} className="text-xs font-medium hover:underline" style={{ color: GREEN }}>더보기 →</button>
+        </div>
+        <p className="text-xs text-muted mb-4">평균 50명 미만·팔로워 100 이하 소형/신입 채널 급성장 순</p>
+        {news && news.streamers.length > 0 ? (
+          <div className="space-y-1.5">
+            {news.streamers.slice(0, 10).map((s, i) => (
+              <Link key={s.chzzk_channel_id} href={`/stats/streamer/${s.chzzk_channel_id}`}
+                    className="flex items-center gap-3 rounded-lg px-2.5 py-2 hover:bg-bg-hover transition-colors">
+                <span className="text-xs font-bold w-5 text-center tabular-nums" style={{ color: i < 3 ? GREEN : undefined }}>{i + 1}</span>
+                <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
+                  {s.channel_image_url && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
+                  )}
+                </span>
+                <span className="text-sm font-semibold text-fg truncate flex-1">{s.channel_name}</span>
+                <span className="text-[11px] text-muted truncate hidden sm:block max-w-[100px]">{s.category_name || "-"}</span>
+                <span className="text-sm tabular-nums text-fg">{nf(s.concurrent_viewers)}명</span>
+                <span className="text-[11px] w-14 text-right"><Delta pct={s.growth_rate} /></span>
+              </Link>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted py-4 text-center">신입 스트리머 데이터를 불러오는 중...</p>
         )}
       </div>
     </div>
@@ -665,10 +697,31 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
 }
 
 // ── 신규/라이징 탭 ────────────────────────────────────────────────────────────
+const NC_DAY_MS = 24 * 3600 * 1000;
+function NcTile({ label, value, unit }: { label: string; value: string; unit?: string }) {
+  return (
+    <div className="card !p-4">
+      <p className="text-sm text-muted">{label}</p>
+      <p className="mt-1.5">
+        <span className="text-xl md:text-2xl font-extrabold tabular-nums" style={{ color: GREEN }}>{value}</span>
+        {unit && <span className="text-sm text-muted font-normal ml-1">{unit}</span>}
+      </p>
+    </div>
+  );
+}
+function InsightCard({ icon, title, children }: { icon: string; title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl border border-border p-4">
+      <p className="text-sm font-semibold text-fg">{icon} {title}</p>
+      <p className="text-xs text-muted mt-1.5 leading-relaxed">{children}</p>
+    </div>
+  );
+}
+
 type NcSort = "growth" | "duration";
 function NewcomersTab({ data }: { data: RisingNewcomers }) {
   const [sort, setSort] = useState<NcSort>("growth");
-  const [limit, setLimit] = useState(50);
+  const [limit, setLimit] = useState(30);
   const enriched = useMemo(() =>
     data.streamers.map((s) => ({ ...s, dur: liveDuration(s.open_date) })), [data]);
   const sorted = useMemo(() => {
@@ -677,6 +730,13 @@ function NewcomersTab({ data }: { data: RisingNewcomers }) {
     else a.sort((x, y) => (y.growth_rate ?? -1e9) - (x.growth_rate ?? -1e9));
     return a;
   }, [enriched, sort]);
+
+  const maxViewers  = useMemo(() => Math.max(1, ...enriched.map((s) => s.concurrent_viewers)), [enriched]);
+  const maxFollower = useMemo(() => Math.max(1, ...enriched.map((s) => s.follower_count)), [enriched]);
+
+  const sm = data.summary;
+  const ins = data.insights;
+  const hourLabel = (h: number) => `${String(h).padStart(2, "0")}:00 ~ ${String((h + 1) % 24).padStart(2, "0")}:00`;
 
   const SortBtn = ({ k, label }: { k: NcSort; label: string }) => {
     const active = sort === k;
@@ -692,58 +752,121 @@ function NewcomersTab({ data }: { data: RisingNewcomers }) {
   };
 
   return (
-    <div className="card !p-4 md:!p-5">
-      <div className="flex items-center gap-1.5 mb-4 flex-wrap">
-        <SortBtn k="growth" label="📈 급성장순" />
-        <SortBtn k="duration" label="⏱️ 열정 방송순" />
+    <div className="space-y-5">
+      {/* KPI 4카드 */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <NcTile label="현재 라이브 신입" value={nf(sm?.count ?? 0)} unit="채널" />
+        <NcTile label="신입 총 시청자" value={nf(sm?.total_viewers ?? 0)} unit="명" />
+        <NcTile label="신입 평균 시청자" value={nf(sm?.avg_viewers ?? 0)} unit="명" />
+        <NcTile label="신입 최고 동접" value={nf(sm?.peak_viewers ?? 0)} unit="명" />
       </div>
 
-      {sorted.length === 0 ? (
-        <p className="text-sm text-muted text-center py-8">조건에 맞는 신규/라이징 방송이 아직 없습니다.</p>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[600px]">
-            <thead>
-              <tr className="text-muted text-sm border-b border-border">
-                <th className="text-left font-semibold py-2.5 pl-2 w-8">#</th>
-                <th className="text-left font-semibold py-2.5">스트리머</th>
-                <th className="text-right font-semibold py-2.5">시청자</th>
-                <th className="text-right font-semibold py-2.5">성장률</th>
-                <th className="text-right font-semibold py-2.5 pl-4 hidden md:table-cell">방송시간</th>
-                <th className="text-right font-semibold py-2.5 pr-2">팔로워</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.slice(0, limit).map((s, i) => (
-                <tr key={s.chzzk_channel_id} className="border-b border-border/50 hover:bg-bg-hover transition-colors">
-                  <td className="py-2.5 pl-2 tabular-nums text-muted text-sm align-middle">{i + 1}</td>
-                  <td className="py-2.5">
-                    <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="flex items-center gap-2 group">
-                      <Sprout size={14} className="shrink-0" style={{ color: GREEN }} />
-                      <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
-                        {s.channel_image_url && (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
-                        )}
-                      </span>
-                      <span className="font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[140px] md:max-w-none">{s.channel_name}</span>
-                    </Link>
-                  </td>
-                  <td className="py-2.5 text-right tabular-nums font-bold text-fg">{nf(s.concurrent_viewers)}</td>
-                  <td className="py-2.5 text-right text-[11px]"><Delta pct={s.growth_rate} /></td>
-                  <td className="py-2.5 pl-4 text-right tabular-nums text-muted text-sm hidden md:table-cell">{s.dur.label}</td>
-                  <td className="py-2.5 pr-2 text-right tabular-nums text-muted text-sm">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</td>
+      {/* 인사이트 3 */}
+      <div className="card">
+        <h3 className="section-title mb-1">신입 라이징 인사이트</h3>
+        <p className="text-xs text-muted mb-4">신입/하꼬 그룹 데이터로 뽑은 방송 전략 힌트</p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <InsightCard icon="🌱" title="라이징 인기 카테고리">
+            {ins?.top_category
+              ? <>현재 신입 중 <b className="text-fg">{ins.top_category.name}</b> 카테고리가 방송당 평균 <b className="text-fg">{nf(ins.top_category.avg_viewers)}명</b>으로 유입이 가장 좋습니다.</>
+              : "데이터가 아직 부족합니다."}
+          </InsightCard>
+          <InsightCard icon="⏰" title="노출 최적 시간대">
+            {ins?.golden_hour
+              ? <><b className="text-fg">{hourLabel(ins.golden_hour.hour)}</b> 시간대에 신입 채널 방송당 평균 시청자가 가장 높습니다{ins.golden_hour.uplift_pct > 0 ? <> (평소 대비 <b style={{ color: GREEN }}>+{ins.golden_hour.uplift_pct}%</b>)</> : ""}.</>
+              : "시간대 분석용 데이터가 아직 부족합니다."}
+          </InsightCard>
+          <InsightCard icon="🎯" title="신입 평균 체급 기준선">
+            {ins?.baseline
+              ? <>현재 신입 그룹 평균은 <b className="text-fg">{nf(ins.baseline.avg_viewers)}명</b>입니다. <b style={{ color: GREEN }}>{nf(ins.baseline.next_target)}명</b> 달성 시 신입 상위권 진입, 상단 노출 기회가 커집니다.</>
+              : "데이터가 아직 부족합니다."}
+          </InsightCard>
+        </div>
+      </div>
+
+      {/* 리스트 */}
+      <div className="card !p-4 md:!p-5">
+        <div className="flex items-center gap-1.5 mb-4 flex-wrap">
+          <SortBtn k="growth" label="📈 급성장순" />
+          <SortBtn k="duration" label="⏱️ 열정 방송순" />
+        </div>
+
+        {sorted.length === 0 ? (
+          <p className="text-sm text-muted text-center py-8">조건에 맞는 신규/라이징 방송이 아직 없습니다.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[620px]">
+              <thead>
+                <tr className="text-muted text-sm border-b border-border">
+                  <th className="text-left font-semibold py-2.5 pl-2 w-8">#</th>
+                  <th className="text-left font-semibold py-2.5">스트리머</th>
+                  <th className="text-right font-semibold py-2.5 pr-6">시청자</th>
+                  <th className="text-right font-semibold py-2.5">성장률</th>
+                  <th className="text-left font-semibold py-2.5 pl-4 hidden sm:table-cell">카테고리</th>
+                  <th className="text-right font-semibold py-2.5 pl-6 pr-6 hidden md:table-cell">방송시간</th>
+                  <th className="text-right font-semibold py-2.5 pl-6 pr-2">팔로워</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {sorted.length > limit && (
-        <div className="text-center pt-4">
-          <button onClick={() => setLimit((l) => l + 50)} className="btn-secondary text-sm">더 보기 ({nf(sorted.length - limit)}개 남음)</button>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {sorted.slice(0, limit).map((s, i) => {
+                  const vwPct = (s.concurrent_viewers / maxViewers) * 100;
+                  const durPct = s.dur.ms > 0 ? (s.dur.ms / NC_DAY_MS) * 100 : 0;
+                  const folPct = s.follower_count > 0 ? (s.follower_count / maxFollower) * 100 : 0;
+                  return (
+                    <tr key={s.chzzk_channel_id} className="border-b border-border/50 hover:bg-bg-hover transition-colors">
+                      <td className="py-2.5 pl-2 tabular-nums text-muted text-sm align-top">{i + 1}</td>
+                      <td className="py-2.5 align-top">
+                        <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="flex items-center gap-2 group">
+                          <Sprout size={14} className="shrink-0" style={{ color: GREEN }} />
+                          <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
+                            {s.channel_image_url && (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
+                            )}
+                          </span>
+                          <span className="font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[130px] md:max-w-none">{s.channel_name}</span>
+                        </Link>
+                      </td>
+                      {/* 시청자 — 그린 바 */}
+                      <td className="py-2.5 pr-6 align-top">
+                        <div className="text-right tabular-nums font-bold text-fg">{nf(s.concurrent_viewers)}</div>
+                        <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden ml-auto" style={{ maxWidth: 90 }}>
+                          <div className="h-full rounded-full" style={{ width: `${vwPct}%`, background: GREEN }} />
+                        </div>
+                      </td>
+                      <td className="py-2.5 text-right text-[11px] align-top"><Delta pct={s.growth_rate} /></td>
+                      <td className="py-2.5 pl-4 hidden sm:table-cell align-top">
+                        {s.category_name
+                          ? <span className="inline-block bg-bg-hover text-fg px-2 py-0.5 rounded-md text-xs truncate max-w-[120px]">{s.category_name}</span>
+                          : <span className="text-muted text-xs">-</span>}
+                      </td>
+                      {/* 방송시간 — 보라 바 */}
+                      <td className="py-2.5 pl-6 pr-6 align-top hidden md:table-cell">
+                        <div className="text-right tabular-nums text-muted text-sm">{s.dur.label}</div>
+                        <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden ml-auto" style={{ maxWidth: 84 }}>
+                          <div className="h-full rounded-full" style={{ width: `${durPct}%`, background: "#A855F7" }} />
+                        </div>
+                      </td>
+                      {/* 팔로워 — 시안 바 */}
+                      <td className="py-2.5 pl-6 pr-2 align-top">
+                        <div className="text-right tabular-nums text-muted text-sm">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</div>
+                        <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden ml-auto" style={{ maxWidth: 84 }}>
+                          <div className="h-full rounded-full" style={{ width: `${folPct}%`, background: "#06B6D4" }} />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {sorted.length > limit && (
+          <div className="text-center pt-4">
+            <button onClick={() => setLimit((l) => l + 40)} className="btn-secondary text-sm">더 보기 ({nf(sorted.length - limit)}개 남음)</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -900,7 +1023,7 @@ export default function StatsPage() {
 
             {/* 우측 뷰 */}
             <div className="min-w-0">
-              {tab === "overview"  && ov && <OverviewTab ov={ov} stars={stars} />}
+              {tab === "overview"  && ov && <OverviewTab ov={ov} stars={stars} news={news} onMore={() => setTab("newcomers")} />}
               {tab === "newcomers" && news && <NewcomersTab data={news} />}
               {tab === "ranking"   && rank && <RankingTab rank={rank} />}
               {tab === "category"  && cats && <CategoryTab cats={cats} />}

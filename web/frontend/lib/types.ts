@@ -338,4 +338,15 @@ export interface RisingNewcomer {
   tag_new:            boolean;
   tags:               string[];
 }
-export interface RisingNewcomers { collected_at: number | null; streamers: RisingNewcomer[]; }
+export interface NewcomerSummary { count: number; total_viewers: number; avg_viewers: number; peak_viewers: number; }
+export interface NewcomerInsights {
+  top_category: { name: string; avg_viewers: number; lives: number } | null;
+  golden_hour:  { hour: number; avg_viewers: number; uplift_pct: number } | null;
+  baseline:     { avg_viewers: number; next_target: number } | null;
+}
+export interface RisingNewcomers {
+  collected_at: number | null;
+  streamers:    RisingNewcomer[];
+  summary?:     NewcomerSummary;
+  insights?:    NewcomerInsights;
+}

@@ -23,6 +23,10 @@ def _kst_date(ts: int) -> str:
     return datetime.fromtimestamp(ts, _KST).date().isoformat()
 
 
+def _kst_hour(ts: int) -> int:
+    return datetime.fromtimestamp(ts, _KST).hour
+
+
 def _kst_week(ts: int) -> tuple[str, int]:
     d = datetime.fromtimestamp(ts, _KST).isocalendar()
     return (f"{d[0]}-W{d[1]:02d}", int(datetime.fromtimestamp(ts, _KST).timestamp()))
@@ -331,7 +335,7 @@ _newcomers_cache: dict = {"ts": 0, "data": None}
 
 
 @router.get("/newcomers")
-async def newcomers(limit: int = 80):
+async def newcomers(limit: int = 100):
     """신규 스트리머(하꼬/라이징) — 현재 라이브 중 소형 채널만.
 
     포함 조건(하나 이상): 신입/하꼬 등 태그 포함 / 최근 평균 시청자 50명 미만.
@@ -410,7 +414,59 @@ async def newcomers(limit: int = 80):
         await asyncio.gather(*[_fill(x) for x in enrich])
     out = [x for x in enrich if x["follower_count"] <= 100]
 
-    result = {"collected_at": ts, "streamers": out[:limit]}
+    # ── KPI 요약 ──────────────────────────────────────────────────────────
+    count = len(out)
+    total_v = sum(x["concurrent_viewers"] for x in out)
+    avg_v = round(total_v / count) if count else 0
+    peak_v = max((x["concurrent_viewers"] for x in out), default=0)
+    summary = {"count": count, "total_viewers": total_v, "avg_viewers": avg_v, "peak_viewers": peak_v}
+
+    # ── 인사이트 ──────────────────────────────────────────────────────────
+    # 1) 인기 카테고리(방송당 평균 시청자 최고) — 채팅 미수집이라 소통 화력 대신 시청자 기반
+    cat_agg: dict = {}
+    for x in out:
+        c = x["category_name"] or "기타"
+        e = cat_agg.setdefault(c, {"v": 0, "n": 0})
+        e["v"] += x["concurrent_viewers"]; e["n"] += 1
+    top_category = None
+    if cat_agg:
+        nm, e = max(cat_agg.items(), key=lambda kv: kv[1]["v"] / kv[1]["n"])
+        top_category = {"name": nm, "avg_viewers": round(e["v"] / e["n"]), "lives": e["n"]}
+
+    # 2) 빈집(노출 최적) 시간대 — 신입 채널 스냅샷의 KST 시간대별 방송당 평균 시청자 최고
+    golden_hour = None
+    cids = [x["chzzk_channel_id"] for x in out]
+    if cids:
+        ph = ",".join("?" * len(cids))
+        hrows = await (await db.execute(
+            f"SELECT collected_at, concurrent_viewers FROM rising_live_snapshots "
+            f"WHERE chzzk_channel_id IN ({ph})", cids
+        )).fetchall()
+        hour_agg: dict = {}
+        for hr in hrows:
+            h = _kst_hour(hr["collected_at"])
+            e = hour_agg.setdefault(h, {"v": 0, "n": 0})
+            e["v"] += hr["concurrent_viewers"]; e["n"] += 1
+        # 표본이 어느 정도 있는 시간대만
+        cand = {h: e for h, e in hour_agg.items() if e["n"] >= 3}
+        pool = cand or hour_agg
+        if pool:
+            h, e = max(pool.items(), key=lambda kv: kv[1]["v"] / kv[1]["n"])
+            overall = (sum(e2["v"] for e2 in pool.values()) / max(1, sum(e2["n"] for e2 in pool.values())))
+            hour_avg = e["v"] / e["n"]
+            uplift = round((hour_avg / overall - 1) * 100) if overall > 0 else 0
+            golden_hour = {"hour": h, "avg_viewers": round(hour_avg), "uplift_pct": uplift}
+
+    # 3) 체급 기준선 — 신입 평균 + 상위 20% 진입 시청자 목표
+    baseline = None
+    if count:
+        sv = sorted(x["concurrent_viewers"] for x in out)
+        target = sv[min(int(count * 0.8), count - 1)]
+        baseline = {"avg_viewers": avg_v, "next_target": max(target, avg_v + 1)}
+
+    insights = {"top_category": top_category, "golden_hour": golden_hour, "baseline": baseline}
+
+    result = {"collected_at": ts, "streamers": out[:limit], "summary": summary, "insights": insights}
     _newcomers_cache["ts"] = now
     _newcomers_cache["data"] = result
     return result
