@@ -19,6 +19,7 @@ const GREEN = "#00FFA3";
 const CYAN  = "#00C2FF";
 const GRAD  = `linear-gradient(135deg, ${GREEN}, ${CYAN})`;
 const PEAK_GRAD = "linear-gradient(135deg, #FF4FA3, #A855F7)"; // 피크(핑크→퍼플) 2톤
+const YELLOW_GRAD = "linear-gradient(135deg, #FDE047, #F59E0B)"; // 현재 시청자(노랑→앰버) 2톤 — 증감 초록/빨강과 구분
 
 const nf = (n: number) => n.toLocaleString("ko-KR");
 
@@ -515,14 +516,14 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                     </a>
                   </td>
 
-                  {/* 현재 시청자 — 증감 + 그린 바 */}
+                  {/* 현재 시청자 — 증감(초록/빨강) + 노란 2톤 숫자/바 */}
                   <td className="py-2.5 pr-1 align-top" style={{ minWidth: 120 }}>
                     <div className="flex items-center justify-end gap-1.5">
                       {vwDelta !== null && <span className="text-[10px]"><Delta pct={vwDelta} /></span>}
-                      <span className="font-bold tabular-nums" style={{ color: GREEN }}>{nf(s.concurrent_viewers)}</span>
+                      <span className="font-bold tabular-nums"><GradText grad={YELLOW_GRAD}>{nf(s.concurrent_viewers)}</GradText></span>
                     </div>
                     <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden">
-                      <div className="h-full rounded-full" style={{ width: `${vwPct}%`, background: GREEN }} />
+                      <div className="h-full rounded-full" style={{ width: `${vwPct}%`, background: YELLOW_GRAD }} />
                     </div>
                   </td>
 
@@ -667,14 +668,16 @@ export default function StatsPage() {
           <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight leading-tight">
 치지직 <GradText>방송</GradText> 통계
           </h1>
-          <p className="text-muted mt-2 text-sm md:text-base flex items-center gap-2 flex-wrap">
-            치지직 라이브 방송의 시청자·카테고리 트렌드를 실시간·시계열로 분석합니다.
+          <div className="mt-2 flex items-end justify-between gap-3 flex-wrap">
+            <p className="text-muted text-sm md:text-base">
+              치지직 라이브 방송의 시청자·카테고리 트렌드를 실시간으로 분석합니다.
+            </p>
             {collectedLabel && (
-              <span className="inline-flex items-center gap-1 text-muted/70">
+              <span className="inline-flex items-center gap-1 text-muted/70 text-sm shrink-0 ml-auto">
                 <Circle size={7} className="fill-current" style={{ color: GREEN }} /> 마지막 집계 {collectedLabel}
               </span>
             )}
-          </p>
+          </div>
         </div>
 
         {loading ? (
