@@ -117,6 +117,114 @@ async def overview():
     }
 
 
+@router.get("/timeseries")
+async def timeseries(hours: int = 48):
+    """수집 사이클별 시계열 — 꺾은선 그래프용.
+
+    각 수집 시각(collected_at)마다 체급별 방송 수 + 전체 라이브 수/총 시청자를 반환한다.
+    데이터가 쌓일수록 촘촘해진다(수집 시작 직후엔 점 몇 개뿐).
+    """
+    hours = max(1, min(24 * 30, hours))
+    since = int(time.time()) - hours * 3600
+    db = await get_db()
+    rows = await (await db.execute(
+        """SELECT collected_at,
+                  SUM(CASE WHEN concurrent_viewers >= 1000 THEN 1 ELSE 0 END)              AS large,
+                  SUM(CASE WHEN concurrent_viewers BETWEEN 100 AND 999 THEN 1 ELSE 0 END)  AS mid,
+                  SUM(CASE WHEN concurrent_viewers BETWEEN 1 AND 99 THEN 1 ELSE 0 END)     AS rising,
+                  COUNT(*)                             AS live_count,
+                  COALESCE(SUM(concurrent_viewers),0)  AS total_viewers
+           FROM rising_live_snapshots
+           WHERE collected_at >= ?
+           GROUP BY collected_at
+           ORDER BY collected_at ASC""",
+        (since,)
+    )).fetchall()
+    points = [
+        {
+            "t":             int(r["collected_at"]),
+            "large":         r["large"],
+            "mid":           r["mid"],
+            "rising":        r["rising"],
+            "live_count":    r["live_count"],
+            "total_viewers": r["total_viewers"],
+        }
+        for r in rows
+    ]
+    return {"hours": hours, "points": points}
+
+
+@router.get("/live-ranking")
+async def live_ranking(limit: int = 200):
+    """최신 수집 사이클의 실시간 방송 랭킹 — 동시 시청자 내림차순 상위 N개.
+
+    소프트콘식 랭킹 테이블의 데이터 소스. 프론트에서 정렬/검색/페이지네이션하도록
+    상위 N개를 한 번에 내려준다.
+    """
+    ts = await _latest_run_ts()
+    if ts is None:
+        return {"collected_at": None, "streamers": []}
+    db = await get_db()
+    rows = await (await db.execute(
+        """SELECT chzzk_channel_id, channel_name, concurrent_viewers, category_name,
+                  open_date, follower_count, live_title, adult
+           FROM rising_live_snapshots
+           WHERE collected_at=?
+           ORDER BY concurrent_viewers DESC
+           LIMIT ?""",
+        (ts, limit)
+    )).fetchall()
+    streamers = [
+        {
+            "rank": i + 1,
+            "chzzk_channel_id":   r["chzzk_channel_id"],
+            "channel_name":       r["channel_name"],
+            "concurrent_viewers": r["concurrent_viewers"],
+            "category_name":      r["category_name"],
+            "open_date":          r["open_date"],
+            "follower_count":     r["follower_count"],
+            "live_title":         r["live_title"],
+            "adult":              bool(r["adult"]),
+        }
+        for i, r in enumerate(rows)
+    ]
+    return {"collected_at": ts, "streamers": streamers}
+
+
+@router.get("/categories")
+async def categories(limit: int = 60):
+    """최신 사이클의 카테고리(게임)별 집계 — 시청자 내림차순 전체 목록.
+
+    카테고리 탭용. 방송 수 필터 없이 전 카테고리를 내려주되, 블루오션 지수도 함께.
+    """
+    ts = await _latest_run_ts()
+    if ts is None:
+        return {"collected_at": None, "categories": []}
+    db = await get_db()
+    rows = await (await db.execute(
+        """SELECT category_name,
+                  COUNT(*)                            AS lives,
+                  COALESCE(SUM(concurrent_viewers),0) AS viewers
+           FROM rising_live_snapshots
+           WHERE collected_at=? AND category_name != ''
+           GROUP BY category_name
+           ORDER BY viewers DESC
+           LIMIT ?""",
+        (ts, limit)
+    )).fetchall()
+    cats = [
+        {
+            "category": r["category_name"],
+            "lives": r["lives"],
+            "viewers": r["viewers"],
+            "avg_viewers": round(r["viewers"] / r["lives"], 1) if r["lives"] else 0.0,
+            "blue_ocean_index": round(r["viewers"] / r["lives"], 1) if r["lives"] else 0.0,
+        }
+        for r in rows
+    ]
+    return {"collected_at": ts, "categories": cats}
+
+
 @router.get("/rising-stars")
 async def rising_stars(limit: int = 20):
     """이주의 라이징 — 약 24시간 전 대비 동시시청자 성장률 상위 채널.

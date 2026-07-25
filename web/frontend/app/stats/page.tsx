@@ -2,246 +2,341 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
-  Bot, BarChart3, Users, Flame, Trophy, Radio, ArrowUpRight, Loader2,
+  Bot, BarChart3, LineChart as LineIcon, ListOrdered, Gamepad2, Radio,
+  TrendingUp, ArrowUpRight, Loader2, Search, Circle,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { RisingOverview, RisingStars, RisingTier, RisingBlueOcean } from "@/lib/types";
+import type {
+  RisingOverview, RisingTimeseries, RisingLiveRanking, RisingCategories, RisingStars,
+} from "@/lib/types";
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
+import LineChart, { type LinePoint } from "./LineChart";
 
-const GREEN = "#00FFA3"; // 치지직 네온 그린 — 통계 포털 액센트
-
-// 체급 램프(순서형 규모 → 단일 그린 계열 명도 차). 라이징=가장 밝게(주목 대상).
-const TIER_COLORS: Record<string, string> = {
-  large:  "#0f6b4a",
-  mid:    "#12b17a",
-  rising: "#00FFA3",
-};
+// 2톤 그라데이션(그린 → 시안) — 브랜드 액센트
+const GREEN = "#00FFA3";
+const CYAN  = "#00C2FF";
+const GRAD  = `linear-gradient(135deg, ${GREEN}, ${CYAN})`;
+const TIER_LINE = { rising: "#00FFA3", mid: "#00C2FF", large: "#8B93A7" };
 
 const nf = (n: number) => n.toLocaleString("ko-KR");
 
-type ViewKey = "overview" | "blueocean" | "stars";
+// 그라데이션 텍스트
+function GradText({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <span className={className}
+      style={{ background: GRAD, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>
+      {children}
+    </span>
+  );
+}
 
-const VIEWS: { key: ViewKey; label: string; desc: string; icon: React.ReactNode }[] = [
-  { key: "overview",  label: "체급 지형도",     desc: "규모별 방송 분포",     icon: <Users size={17} /> },
-  { key: "blueocean", label: "틈새 게임",       desc: "블루오션 카테고리",    icon: <Flame size={17} /> },
-  { key: "stars",     label: "급상승 스트리머", desc: "24시간 성장률 랭킹",   icon: <Trophy size={17} /> },
+// 직전 대비 증감 뱃지
+function Delta({ pct }: { pct: number | null }) {
+  if (pct === null || !isFinite(pct)) return null;
+  const up = pct >= 0;
+  return (
+    <span className="text-[11px] font-semibold tabular-nums" style={{ color: up ? GREEN : "#F87171" }}>
+      {up ? "▲" : "▼"} {Math.abs(pct).toFixed(1)}%
+    </span>
+  );
+}
+
+type Tab = "overview" | "ranking" | "category";
+const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
+  { key: "overview", label: "개요",   icon: <LineIcon size={16} /> },
+  { key: "ranking",  label: "랭킹",   icon: <ListOrdered size={16} /> },
+  { key: "category", label: "카테고리", icon: <Gamepad2 size={16} /> },
 ];
 
-// ── SVG 도넛 (체급 분포) ──────────────────────────────────────────────────────
-function TierDonut({ tiers }: { tiers: RisingTier[] }) {
-  const size = 210, stroke = 26, R = (size - stroke) / 2, C = 2 * Math.PI * R, cx = size / 2, cy = size / 2;
-  const [hover, setHover] = useState<number | null>(null);
-  const total = tiers.reduce((s, t) => s + t.channels, 0);
-
-  let acc = 0;
-  const segs = tiers.map((t, i) => {
-    const len = (t.channel_share / 100) * C;
-    const dash = Math.max(0, len - 3); // 3px 간격
-    const seg = (
-      <circle
-        key={t.key}
-        r={R} cx={cx} cy={cy} fill="none"
-        stroke={TIER_COLORS[t.key]}
-        strokeWidth={hover === i ? stroke + 5 : stroke}
-        strokeDasharray={`${dash} ${C - dash}`}
-        strokeDashoffset={-acc}
-        transform={`rotate(-90 ${cx} ${cy})`}
-        style={{ transition: "stroke-width .15s", cursor: "pointer" }}
-        onMouseEnter={() => setHover(i)}
-        onMouseLeave={() => setHover(null)}
-      />
-    );
-    acc += len;
-    return seg;
-  });
-
-  const focus = hover !== null ? tiers[hover] : null;
-
-  return (
-    <div className="flex flex-col items-center">
-      <div className="relative" style={{ width: size, height: size }}>
-        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-          <circle r={R} cx={cx} cy={cy} fill="none" stroke="rgb(var(--color-bg-hover-rgb))" strokeWidth={stroke} />
-          {segs}
-        </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          {focus ? (
-            <>
-              <span className="text-2xl font-extrabold tabular-nums" style={{ color: TIER_COLORS[focus.key] }}>
-                {focus.channel_share}%
-              </span>
-              <span className="text-xs text-muted mt-0.5">{focus.label}</span>
-            </>
-          ) : (
-            <>
-              <span className="text-2xl font-extrabold text-fg tabular-nums">{nf(total)}</span>
-              <span className="text-xs text-muted mt-0.5">라이브 방송</span>
-            </>
-          )}
-        </div>
-      </div>
-      {/* 범례 + 직접 라벨 */}
-      <div className="grid grid-cols-3 gap-2 w-full mt-5">
-        {tiers.map((t, i) => (
-          <button
-            key={t.key}
-            onMouseEnter={() => setHover(i)}
-            onMouseLeave={() => setHover(null)}
-            className="flex flex-col items-center rounded-lg py-2 transition-colors hover:bg-bg-hover"
-          >
-            <span className="flex items-center gap-1.5 text-xs text-muted">
-              <span className="w-2.5 h-2.5 rounded-full" style={{ background: TIER_COLORS[t.key] }} />
-              {t.label}
-            </span>
-            <span className="text-lg font-bold text-fg tabular-nums mt-0.5">{t.channel_share}%</span>
-            <span className="text-[11px] text-muted">{nf(t.channels)}개</span>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
+// 방송시간(KST 문자열 → 경과) 계산
+function liveDuration(openDate: string): { ms: number; label: string } {
+  if (!openDate) return { ms: -1, label: "-" };
+  const iso = openDate.replace(" ", "T") + "+09:00";
+  const start = new Date(iso).getTime();
+  if (isNaN(start)) return { ms: -1, label: "-" };
+  const ms = Date.now() - start;
+  if (ms < 0) return { ms: -1, label: "-" };
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  return { ms, label: h > 0 ? `${h}시간 ${m}분` : `${m}분` };
 }
 
-// ── SVG 수평 막대 (블루오션 / 급상승 공용) ───────────────────────────────────
-function HBar({
-  rows,
-}: {
-  rows: { label: string; value: number; valueLabel: string; sub: string; href?: string }[];
-}) {
-  const max = Math.max(1, ...rows.map((r) => r.value));
-  const [hover, setHover] = useState<number | null>(null);
-
-  return (
-    <div className="space-y-1">
-      {rows.map((r, i) => {
-        const pct = (r.value / max) * 100;
-        const Row = (
-          <div
-            className="relative flex items-center gap-3 rounded-lg px-2.5 py-2 transition-colors"
-            style={{ background: hover === i ? "rgb(var(--color-bg-hover-rgb))" : "transparent" }}
-            onMouseEnter={() => setHover(i)}
-            onMouseLeave={() => setHover(null)}
-          >
-            <span className="text-xs font-bold w-5 text-center tabular-nums shrink-0"
-                  style={{ color: i < 3 ? GREEN : "rgb(var(--color-muted-rgb))" }}>
-              {i + 1}
-            </span>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold text-fg truncate flex items-center gap-1">
-                  {r.label}
-                  {r.href && <ArrowUpRight size={12} className="text-muted shrink-0" />}
-                </span>
-                <span className="text-sm font-bold tabular-nums shrink-0" style={{ color: GREEN }}>{r.valueLabel}</span>
-              </div>
-              {/* 막대: 얇은 마크 + 4px 둥근 데이터엔드 */}
-              <div className="mt-1.5 h-2 w-full rounded bg-bg-hover overflow-hidden">
-                <div className="h-full" style={{ width: `${pct}%`, background: GREEN, borderRadius: 4 }} />
-              </div>
-              <p className="text-[11px] text-muted mt-1 truncate">{r.sub}</p>
-            </div>
-          </div>
-        );
-        return r.href ? (
-          <a key={i} href={r.href} target="_blank" rel="noopener noreferrer" className="block group">{Row}</a>
-        ) : (
-          <div key={i}>{Row}</div>
-        );
-      })}
-    </div>
-  );
-}
-
-function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function StatTile({ label, value, sub, accent, delta }:
+  { label: string; value: string; sub?: string; accent?: boolean; delta?: number | null }) {
   return (
     <div className="card !p-4">
       <p className="text-xs text-muted">{label}</p>
-      <p className="text-xl md:text-2xl font-extrabold text-fg mt-1 tracking-tight tabular-nums">{value}</p>
-      {sub && <p className="text-[11px] text-muted mt-0.5">{sub}</p>}
+      <p className="text-xl md:text-2xl font-extrabold mt-1 tracking-tight tabular-nums">
+        {accent ? <GradText>{value}</GradText> : value}
+      </p>
+      <p className="text-[11px] mt-0.5 flex items-center gap-1.5">
+        {delta !== undefined && <Delta pct={delta} />}
+        {sub && <span className="text-muted">{sub}</span>}
+      </p>
     </div>
   );
 }
 
-// ── 우측 상세 패널 ────────────────────────────────────────────────────────────
-function DetailPanel({
-  view, ov, stars,
-}: {
-  view: ViewKey; ov: RisingOverview; stars: RisingStars | null;
-}) {
-  if (view === "overview") {
-    const total = ov.summary?.live_count ?? 0;
-    const rising = ov.tiers.find((t) => t.key === "rising");
-    return (
-      <div className="space-y-6">
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <StatTile label="현재 라이브" value={nf(total)} sub="집계 시점 기준" />
-          <StatTile label="전체 동시 시청자" value={nf(ov.summary?.total_viewers ?? 0)} sub="명" />
-          <StatTile label="라이징 비중" value={`${rising?.channel_share ?? 0}%`} sub="1~99명 방송" />
-        </div>
-        <div className="card">
-          <h3 className="section-title mb-1">체급별 지형도</h3>
-          <p className="text-sm text-muted mb-6">라이브 방송을 동시 시청자 규모로 나눈 분포입니다.</p>
-          <TierDonut tiers={ov.tiers} />
-          <p className="text-[11px] text-muted/70 mt-6 text-center">
-            대기업 1,000명+ · 허리층 100~999명 · 라이징 1~99명
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  if (view === "blueocean") {
-    const rows = ov.blue_ocean.map((b: RisingBlueOcean) => ({
-      label: b.category,
-      value: b.blue_ocean_index,
-      valueLabel: `${nf(b.blue_ocean_index)} /방송`,
-      sub: `방송 ${nf(b.lives)}개 · 시청자 ${nf(b.viewers)}명`,
-    }));
-    return (
-      <div className="card">
-        <h3 className="section-title mb-1">실시간 틈새(블루오션) 게임 TOP 10</h3>
-        <p className="text-sm text-muted mb-5">
-          블루오션 지수 = 카테고리 시청자 ÷ 방송 수. 방송 1개당 평균 시청자가 많을수록 경쟁 대비 노출 기회가 큽니다.
-        </p>
-        {rows.length === 0
-          ? <p className="text-sm text-muted py-6 text-center">표본이 충분한 카테고리가 아직 없습니다.</p>
-          : <HBar rows={rows} />}
-      </div>
-    );
-  }
-
-  // stars
-  const rows = (stars?.stars ?? []).map((s) => ({
-    label: s.channel_name,
-    value: s.growth_rate,
-    valueLabel: `+${nf(s.growth_rate)}%`,
-    sub: `${s.category || "카테고리 없음"} · ${nf(s.viewers_past)}→${nf(s.viewers_now)}명 · 팔로워 ${nf(s.follower_count)}`,
-    href: `https://chzzk.naver.com/${s.chzzk_channel_id}`,
-  }));
+function LegendDot({ color, label }: { color: string; label: string }) {
   return (
-    <div className="card">
-      <h3 className="section-title mb-1">급상승 스트리머</h3>
-      <p className="text-sm text-muted mb-5">24시간 전 대비 동시 시청자 성장률 상위 중소형 채널(현재 1,000명 미만)입니다.</p>
-      {rows.length === 0
-        ? <p className="text-sm text-muted py-6 text-center">
-            {stars?.note || "성장률 집계를 위한 데이터가 아직 충분히 쌓이지 않았습니다. 최소 24시간 후부터 표시됩니다."}
+    <span className="flex items-center gap-1.5 text-xs text-muted">
+      <span className="w-2.5 h-2.5 rounded-full" style={{ background: color }} /> {label}
+    </span>
+  );
+}
+
+// ── 개요 탭 ───────────────────────────────────────────────────────────────────
+function OverviewTab({ ov, ts, stars }: { ov: RisingOverview; ts: RisingTimeseries; stars: RisingStars | null }) {
+  const rising = ov.tiers.find((t) => t.key === "rising");
+  const points = ts.points as unknown as LinePoint[];
+
+  // 직전 수집 대비 증감(%)
+  const pts = ts.points;
+  const delta = (key: "total_viewers" | "live_count"): number | null => {
+    if (pts.length < 2) return null;
+    const cur = pts[pts.length - 1][key];
+    const prev = pts[pts.length - 2][key];
+    if (!prev) return null;
+    return ((cur - prev) / prev) * 100;
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatTile label="현재 라이브" value={nf(ov.summary?.live_count ?? 0)} sub="직전 대비" delta={delta("live_count")} />
+        <StatTile label="전체 동시 시청자" value={nf(ov.summary?.total_viewers ?? 0)} sub="직전 대비" accent delta={delta("total_viewers")} />
+        <StatTile label="라이징 비중" value={`${rising?.channel_share ?? 0}%`} sub="1~99명 방송" />
+        <StatTile label="대기업 방송" value={nf(ov.tiers.find((t) => t.key === "large")?.channels ?? 0)} sub="1,000명+" />
+      </div>
+
+      {/* 총 시청자 추이 (단일 시계열, 2톤 그라데이션) */}
+      <div className="card">
+        <h3 className="section-title mb-1">전체 동시 시청자 추이</h3>
+        <p className="text-xs text-muted mb-4">약 10분 주기 수집 · 치지직 전체 라이브 합계</p>
+        <LineChart points={points}
+          series={[{ key: "total_viewers", name: "총 시청자", color: GREEN, gradient: [GREEN, CYAN] }]}
+          area unit="명" />
+      </div>
+
+      {/* 체급별 방송 수 추이 (다중 시계열) */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+          <h3 className="section-title">체급별 방송 수 추이</h3>
+          <div className="flex items-center gap-3">
+            <LegendDot color={TIER_LINE.rising} label="라이징(1~99)" />
+            <LegendDot color={TIER_LINE.mid} label="허리층(100~999)" />
+            <LegendDot color={TIER_LINE.large} label="대기업(1000+)" />
+          </div>
+        </div>
+        <p className="text-xs text-muted mb-4">규모별 라이브 방송 수가 시간에 따라 어떻게 변하는지</p>
+        <LineChart
+          points={points}
+          series={[
+            { key: "rising", name: "라이징", color: TIER_LINE.rising },
+            { key: "mid",    name: "허리층", color: TIER_LINE.mid },
+            { key: "large",  name: "대기업", color: TIER_LINE.large },
+          ]}
+          unit="개"
+        />
+      </div>
+
+      {/* 급상승 스트리머 (컴팩트) */}
+      <div className="card">
+        <h3 className="section-title mb-1">급상승 스트리머</h3>
+        <p className="text-xs text-muted mb-4">24시간 전 대비 시청자 성장률 상위(현재 1,000명 미만)</p>
+        {!stars || stars.stars.length === 0 ? (
+          <p className="text-sm text-muted py-4 text-center">
+            {stars?.note || "성장률 집계용 데이터가 아직 부족합니다. 최소 24시간 후부터 표시됩니다."}
           </p>
-        : <HBar rows={rows} />}
+        ) : (
+          <div className="space-y-1.5">
+            {stars.stars.slice(0, 8).map((s, i) => (
+              <a key={s.chzzk_channel_id} href={`https://chzzk.naver.com/${s.chzzk_channel_id}`}
+                 target="_blank" rel="noopener noreferrer"
+                 className="flex items-center gap-3 rounded-lg px-2.5 py-2 hover:bg-bg-hover transition-colors">
+                <span className="text-xs font-bold w-5 text-center tabular-nums"
+                      style={{ color: i < 3 ? GREEN : undefined }}>{i + 1}</span>
+                <span className="text-sm font-semibold text-fg truncate flex-1">{s.channel_name}</span>
+                <span className="text-[11px] text-muted truncate hidden sm:block">{s.category || "-"}</span>
+                <span className="text-sm font-bold tabular-nums flex items-center gap-1" style={{ color: GREEN }}>
+                  <TrendingUp size={12} /> +{nf(s.growth_rate)}%
+                </span>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── 랭킹 탭 (소프트콘식 실시간 방송 랭킹 테이블) ──────────────────────────────
+type SortKey = "viewers" | "followers" | "duration";
+function RankingTab({ rank }: { rank: RisingLiveRanking }) {
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState<SortKey>("viewers");
+  const [limit, setLimit] = useState(50);
+
+  const enriched = useMemo(() =>
+    rank.streamers.map((s) => ({ ...s, dur: liveDuration(s.open_date) })), [rank]);
+
+  const filtered = useMemo(() => {
+    const kw = q.trim().toLowerCase();
+    let list = enriched;
+    if (kw) list = list.filter((s) =>
+      s.channel_name.toLowerCase().includes(kw) || s.category_name.toLowerCase().includes(kw));
+    const sorted = [...list].sort((a, b) =>
+      sort === "viewers" ? b.concurrent_viewers - a.concurrent_viewers
+      : sort === "followers" ? b.follower_count - a.follower_count
+      : b.dur.ms - a.dur.ms);
+    return sorted;
+  }, [enriched, q, sort]);
+
+  const SortBtn = ({ k, label }: { k: SortKey; label: string }) => (
+    <button onClick={() => setSort(k)}
+      className="text-xs px-2.5 py-1 rounded-md border transition-colors"
+      style={{ background: sort === k ? "rgba(0,255,163,0.1)" : "transparent",
+               borderColor: sort === k ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
+               color: sort === k ? GREEN : "rgb(var(--color-muted-rgb))" }}>
+      {label}
+    </button>
+  );
+
+  return (
+    <div className="card !p-4 md:!p-5">
+      {/* 컨트롤 */}
+      <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+        <div className="relative flex-1 min-w-[180px] max-w-xs">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <input value={q} onChange={(e) => { setQ(e.target.value); setLimit(50); }}
+            placeholder="스트리머·게임 검색"
+            className="w-full bg-bg border border-border rounded-lg pl-9 pr-3 py-2 text-sm text-fg placeholder-muted focus:outline-none focus:border-accent" />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-muted mr-1">정렬</span>
+          <SortBtn k="viewers" label="시청자" />
+          <SortBtn k="followers" label="팔로워" />
+          <SortBtn k="duration" label="방송시간" />
+        </div>
+      </div>
+
+      {/* 테이블 */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[560px]">
+          <thead>
+            <tr className="text-muted text-xs border-b border-border">
+              <th className="text-left font-medium py-2 pl-2 w-10">#</th>
+              <th className="text-left font-medium py-2">스트리머</th>
+              <th className="text-right font-medium py-2">현재 시청자</th>
+              <th className="text-left font-medium py-2 pl-4 hidden sm:table-cell">카테고리</th>
+              <th className="text-right font-medium py-2 hidden md:table-cell">방송시간</th>
+              <th className="text-right font-medium py-2 pr-2">팔로워</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.slice(0, limit).map((s, i) => (
+              <tr key={s.chzzk_channel_id}
+                  className="border-b border-border/50 hover:bg-bg-hover transition-colors">
+                <td className="py-2.5 pl-2 tabular-nums text-muted text-xs">{i + 1}</td>
+                <td className="py-2.5">
+                  <a href={`https://chzzk.naver.com/${s.chzzk_channel_id}`} target="_blank" rel="noopener noreferrer"
+                     className="font-semibold text-fg hover:text-accent transition-colors inline-flex items-center gap-1 group">
+                    <span className="truncate max-w-[160px] md:max-w-none">{s.channel_name}</span>
+                    <ArrowUpRight size={12} className="text-muted opacity-0 group-hover:opacity-100 shrink-0" />
+                  </a>
+                </td>
+                <td className="py-2.5 text-right tabular-nums font-bold" style={{ color: GREEN }}>
+                  {nf(s.concurrent_viewers)}
+                </td>
+                <td className="py-2.5 pl-4 text-muted text-xs hidden sm:table-cell truncate max-w-[140px]">
+                  {s.category_name || "-"}
+                </td>
+                <td className="py-2.5 text-right tabular-nums text-muted text-xs hidden md:table-cell">
+                  {s.dur.label}
+                </td>
+                <td className="py-2.5 pr-2 text-right tabular-nums text-muted text-xs">{nf(s.follower_count)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {filtered.length === 0 && (
+        <p className="text-sm text-muted text-center py-6">검색 결과가 없습니다.</p>
+      )}
+      {filtered.length > limit && (
+        <div className="text-center pt-4">
+          <button onClick={() => setLimit((l) => l + 50)} className="btn-secondary text-sm">
+            더 보기 ({nf(filtered.length - limit)}개 남음)
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 카테고리 탭 ───────────────────────────────────────────────────────────────
+function CategoryTab({ cats }: { cats: RisingCategories }) {
+  const maxV = Math.max(1, ...cats.categories.map((c) => c.viewers));
+  return (
+    <div className="card !p-4 md:!p-5">
+      <h3 className="section-title mb-1">카테고리(게임)별 현황</h3>
+      <p className="text-xs text-muted mb-4">
+        방송당 평균 = 시청자 ÷ 방송 수. 값이 높을수록 방송 대비 시청 유입(블루오션)이 큽니다.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[520px]">
+          <thead>
+            <tr className="text-muted text-xs border-b border-border">
+              <th className="text-left font-medium py-2 pl-2 w-10">#</th>
+              <th className="text-left font-medium py-2">카테고리</th>
+              <th className="text-right font-medium py-2">시청자</th>
+              <th className="text-right font-medium py-2 hidden sm:table-cell">방송 수</th>
+              <th className="text-right font-medium py-2 pr-2">방송당 평균</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cats.categories.map((c, i) => (
+              <tr key={c.category} className="border-b border-border/50 hover:bg-bg-hover transition-colors">
+                <td className="py-2.5 pl-2 tabular-nums text-muted text-xs">{i + 1}</td>
+                <td className="py-2.5">
+                  <div className="font-semibold text-fg truncate max-w-[160px] md:max-w-none">{c.category}</div>
+                  <div className="mt-1 h-1.5 rounded-full bg-bg-hover overflow-hidden max-w-[220px]">
+                    <div className="h-full rounded-full" style={{ width: `${(c.viewers / maxV) * 100}%`, background: GRAD }} />
+                  </div>
+                </td>
+                <td className="py-2.5 text-right tabular-nums font-bold text-fg">{nf(c.viewers)}</td>
+                <td className="py-2.5 text-right tabular-nums text-muted text-xs hidden sm:table-cell">{nf(c.lives)}</td>
+                <td className="py-2.5 pr-2 text-right tabular-nums font-bold"><GradText>{nf(c.avg_viewers)}</GradText></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {cats.categories.length === 0 && (
+        <p className="text-sm text-muted text-center py-6">카테고리 데이터가 아직 없습니다.</p>
+      )}
     </div>
   );
 }
 
 export default function StatsPage() {
   const [ov, setOv]       = useState<RisingOverview | null>(null);
+  const [ts, setTs]       = useState<RisingTimeseries | null>(null);
+  const [rank, setRank]   = useState<RisingLiveRanking | null>(null);
+  const [cats, setCats]   = useState<RisingCategories | null>(null);
   const [stars, setStars] = useState<RisingStars | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(false);
-  const [view, setView]       = useState<ViewKey>("overview");
+  const [tab, setTab]         = useState<Tab>("overview");
 
   useEffect(() => {
-    Promise.all([api.rising.overview(), api.rising.risingStars(20)])
-      .then(([o, s]) => { setOv(o); setStars(s); })
+    Promise.all([
+      api.rising.overview(), api.rising.timeseries(48),
+      api.rising.liveRanking(200), api.rising.categories(60), api.rising.risingStars(20),
+    ])
+      .then(([o, t, r, c, s]) => { setOv(o); setTs(t); setRank(r); setCats(c); setStars(s); })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
   }, []);
@@ -256,7 +351,6 @@ export default function StatsPage() {
 
   return (
     <div className="min-h-screen bg-bg text-fg flex flex-col">
-      {/* Navbar */}
       <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
         <div className="max-w-6xl mx-auto px-5 flex items-center justify-between" style={{ height: 60 }}>
           <div className="flex items-center gap-2.5">
@@ -264,23 +358,26 @@ export default function StatsPage() {
               <Bot size={18} className="text-accent" /> NexBot
             </Link>
             <span className="text-border">/</span>
-            <span className="flex items-center gap-1.5 font-extrabold text-[16px]" style={{ color: GREEN }}>
-              <BarChart3 size={17} /> 치지직 통계
+            <span className="flex items-center gap-1.5 font-extrabold text-[16px]">
+              <BarChart3 size={17} style={{ color: GREEN }} /> <GradText>치지직 통계</GradText>
             </span>
           </div>
           <ThemeToggle />
         </div>
       </header>
 
-      <main className="flex-1 w-full max-w-6xl mx-auto px-5 py-8 md:py-10">
-        {/* Hero */}
-        <div className="mb-8">
+      <main className="flex-1 w-full max-w-6xl mx-auto px-5 py-7 md:py-9">
+        <div className="mb-6">
           <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight leading-tight">
-            치지직 <span style={{ color: GREEN }}>중소형 방송</span> 통계
+            치지직 <GradText>중소형 방송</GradText> 통계
           </h1>
-          <p className="text-muted mt-2 leading-relaxed max-w-2xl text-sm md:text-base">
-            대형 방송에 가려진 라이징 생태계의 지형도와 유행을 실시간으로 분석합니다.
-            {collectedLabel && <span className="text-muted/70"> · 마지막 집계 {collectedLabel}</span>}
+          <p className="text-muted mt-2 text-sm md:text-base flex items-center gap-2 flex-wrap">
+            대형 방송에 가려진 라이징 생태계를 실시간·시계열로 분석합니다.
+            {collectedLabel && (
+              <span className="inline-flex items-center gap-1 text-muted/70">
+                <Circle size={7} className="fill-current" style={{ color: GREEN }} /> 마지막 집계 {collectedLabel}
+              </span>
+            )}
           </p>
         </div>
 
@@ -297,43 +394,32 @@ export default function StatsPage() {
             <p className="text-sm text-muted mt-1">첫 집계가 완료되면 곧 통계가 표시됩니다.</p>
           </div>
         ) : (
-          // ── 좌: 옵션 / 우: 상세 시각화 ──
-          <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-5 md:gap-7">
-            {/* 좌측 옵션 레일 */}
-            <aside className="md:sticky md:top-[76px] md:self-start">
-              <p className="text-xs font-semibold text-muted/70 uppercase tracking-wider px-1 mb-2">분석 항목</p>
-              <nav className="flex md:flex-col gap-1.5 overflow-x-auto md:overflow-visible pb-1">
-                {VIEWS.map((v) => {
-                  const active = view === v.key;
-                  return (
-                    <button
-                      key={v.key}
-                      onClick={() => setView(v.key)}
-                      className="flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors shrink-0 md:w-full border"
-                      style={{
-                        background: active ? "rgba(0,255,163,0.10)" : "transparent",
-                        borderColor: active ? "rgba(0,255,163,0.35)" : "transparent",
-                      }}
-                    >
-                      <span style={{ color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>{v.icon}</span>
-                      <span className="min-w-0">
-                        <span className="block text-sm font-semibold" style={{ color: active ? GREEN : undefined }}>{v.label}</span>
-                        <span className="block text-[11px] text-muted whitespace-nowrap">{v.desc}</span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </nav>
-              <p className="hidden md:block text-[11px] text-muted/60 mt-4 px-1 leading-relaxed">
-                약 10분 주기로 치지직 공개 라이브 목록을 수집합니다. 비공식 서비스로 실제 수치와 오차가 있을 수 있습니다.
-              </p>
-            </aside>
-
-            {/* 우측 상세 */}
-            <div>
-              <DetailPanel view={view} ov={ov} stars={stars} />
+          <>
+            {/* 탭 */}
+            <div className="flex items-center gap-1 border-b border-border mb-6 overflow-x-auto">
+              {TABS.map((t) => {
+                const active = tab === t.key;
+                return (
+                  <button key={t.key} onClick={() => setTab(t.key)}
+                    className="relative flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold whitespace-nowrap transition-colors"
+                    style={{ color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
+                    {t.icon} {t.label}
+                    {active && (
+                      <span className="absolute left-0 right-0 -bottom-px h-0.5 rounded-full" style={{ background: GRAD }} />
+                    )}
+                  </button>
+                );
+              })}
             </div>
-          </div>
+
+            {tab === "overview" && ov && ts && <OverviewTab ov={ov} ts={ts} stars={stars} />}
+            {tab === "ranking"  && rank && <RankingTab rank={rank} />}
+            {tab === "category" && cats && <CategoryTab cats={cats} />}
+
+            <p className="text-xs text-muted/60 text-center pt-8">
+              데이터 출처: 치지직 공개 라이브 목록 · 약 10분 주기 수집 · 비공식 서비스로 실제 수치와 오차가 있을 수 있습니다.
+            </p>
+          </>
         )}
       </main>
 

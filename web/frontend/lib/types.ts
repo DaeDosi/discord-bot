@@ -235,3 +235,44 @@ export interface RisingStatus {
   successful_runs: number;
   server_time:     number;
 }
+
+export interface RisingTimeseriesPoint {
+  t:             number; // epoch seconds
+  large:         number;
+  mid:           number;
+  rising:        number;
+  live_count:    number;
+  total_viewers: number;
+}
+export interface RisingTimeseries {
+  hours:  number;
+  points: RisingTimeseriesPoint[];
+}
+
+export interface RisingStreamer {
+  rank:               number;
+  chzzk_channel_id:   string;
+  channel_name:       string;
+  concurrent_viewers: number;
+  category_name:      string;
+  open_date:          string;
+  follower_count:     number;
+  live_title:         string;
+  adult:              boolean;
+}
+export interface RisingLiveRanking {
+  collected_at: number | null;
+  streamers:    RisingStreamer[];
+}
+
+export interface RisingCategory {
+  category:         string;
+  lives:            number;
+  viewers:          number;
+  avg_viewers:      number;
+  blue_ocean_index: number;
+}
+export interface RisingCategories {
+  collected_at: number | null;
+  categories:   RisingCategory[];
+}

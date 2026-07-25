@@ -168,6 +168,12 @@ export const api = {
   rising: {
     overview: () =>
       fetch(`${BASE}/api/rising/overview`).then(r => r.json()) as Promise<import("./types").RisingOverview>,
+    timeseries: (hours = 48) =>
+      fetch(`${BASE}/api/rising/timeseries?hours=${hours}`).then(r => r.json()) as Promise<import("./types").RisingTimeseries>,
+    liveRanking: (limit = 200) =>
+      fetch(`${BASE}/api/rising/live-ranking?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingLiveRanking>,
+    categories: (limit = 60) =>
+      fetch(`${BASE}/api/rising/categories?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingCategories>,
     risingStars: (limit = 20) =>
       fetch(`${BASE}/api/rising/rising-stars?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingStars>,
     status: () =>
