@@ -201,14 +201,33 @@ async def live_ranking(limit: int = 200):
     if ts is None:
         return {"collected_at": None, "streamers": []}
     db = await get_db()
+
+    # 직전 수집 사이클(시청자 증감용) + 약 24시간 전 사이클(팔로워 신규 유입용)
+    last2 = await (await db.execute(
+        "SELECT collected_at FROM rising_collect_runs WHERE ok=1 ORDER BY collected_at DESC LIMIT 2"
+    )).fetchall()
+    prev_ts = int(last2[1]["collected_at"]) if len(last2) > 1 else None
+    t24row = await (await db.execute(
+        "SELECT collected_at FROM rising_collect_runs "
+        "WHERE ok=1 AND ABS(collected_at - ?) <= 5400 ORDER BY ABS(collected_at - ?) ASC LIMIT 1",
+        (ts - 86400, ts - 86400)
+    )).fetchone()
+    t24 = int(t24row["collected_at"]) if t24row else None
+
     rows = await (await db.execute(
-        """SELECT chzzk_channel_id, channel_name, concurrent_viewers,
-                  category_name, open_date, follower_count, live_title, adult
-           FROM rising_live_snapshots
-           WHERE collected_at=?
-           ORDER BY concurrent_viewers DESC
+        """SELECT n.chzzk_channel_id, n.channel_name, n.concurrent_viewers,
+                  n.category_name, n.open_date, n.follower_count, n.live_title, n.adult,
+                  p.concurrent_viewers AS viewers_prev,
+                  f.follower_count     AS follower_prev24h
+           FROM rising_live_snapshots n
+           LEFT JOIN rising_live_snapshots p
+             ON p.chzzk_channel_id = n.chzzk_channel_id AND p.collected_at = ?
+           LEFT JOIN rising_live_snapshots f
+             ON f.chzzk_channel_id = n.chzzk_channel_id AND f.collected_at = ?
+           WHERE n.collected_at = ?
+           ORDER BY n.concurrent_viewers DESC
            LIMIT ?""",
-        (ts, limit)
+        (prev_ts if prev_ts is not None else -1, t24 if t24 is not None else -1, ts, limit)
     )).fetchall()
     streamers = [
         {
@@ -217,9 +236,11 @@ async def live_ranking(limit: int = 200):
             "channel_name":       r["channel_name"],
             "channel_image_url":  latest_image(r["chzzk_channel_id"]),  # DB 아님 — 메모리 맵
             "concurrent_viewers": r["concurrent_viewers"],
+            "viewers_prev":       r["viewers_prev"],       # 직전 사이클(없으면 None)
             "category_name":      r["category_name"],
             "open_date":          r["open_date"],
             "follower_count":     r["follower_count"],
+            "follower_prev24h":   r["follower_prev24h"],   # 약 24h 전(없으면 None)
             "live_title":         r["live_title"],
             "adult":              bool(r["adult"]),
         }

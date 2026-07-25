@@ -84,11 +84,7 @@ function StatTile({ label, value, sub, accent, deltaPrev, delta24h }:
 
 type Metric = "viewers" | "lives";
 
-const RANGE_OPTS: { k: TimeRange; label: string; desc: string }[] = [
-  { k: "live", label: "실시간", desc: "최근 6시간 · 10분 간격" },
-  { k: "24h",  label: "24시간", desc: "최근 24시간 · 1시간 평균" },
-  { k: "7d",   label: "7일",    desc: "최근 7일 · 1시간 평균" },
-];
+const RANGE_DESC = "최근 6시간 · 10분 간격";
 const METRIC_OPTS: { k: Metric; label: string }[] = [
   { k: "viewers", label: "시청자" },
   { k: "lives",   label: "라이브" },
@@ -216,7 +212,7 @@ function CategoryDonut({ categories }: { categories: RisingCategory[] }) {
 
 // ── 개요 탭 ───────────────────────────────────────────────────────────────────
 function OverviewTab({ ov, cats, stars }: { ov: RisingOverview; cats: RisingCategories | null; stars: RisingStars | null }) {
-  const [range, setRange] = useState<TimeRange>("24h");
+  const range: TimeRange = "live"; // 기간 옵션 제거 — 실시간(최근 6시간)만 사용
   const [ts, setTs] = useState<RisingTimeseries | null>(null);
   const [tsLoading, setTsLoading] = useState(true);
 
@@ -237,7 +233,7 @@ function OverviewTab({ ov, cats, stars }: { ov: RisingOverview; cats: RisingCate
   const avgV      = liveCount ? Math.round(totalV / liveCount) : 0;
   const dv = ov.deltas;
   const points = (ts?.points ?? []) as unknown as LinePoint[];
-  const rangeDesc = RANGE_OPTS.find((o) => o.k === range)?.desc ?? "";
+  const rangeDesc = RANGE_DESC;
 
   const chartSeries: LineSeries = metric === "viewers"
     ? { key: "total_viewers", name: "시청자", color: GREEN, gradient: [GREEN, CYAN] }
@@ -289,11 +285,10 @@ function OverviewTab({ ov, cats, stars }: { ov: RisingOverview; cats: RisingCate
           <LineChart points={points} series={[chartSeries]} area dynamicY unit={chartUnit}
             tooltipItems={tooltipItems} showPeak />
         )}
-        {/* 기간 선택 — 그래프 좌측 아래 */}
-        <div className="mt-3 flex items-center justify-between gap-2 flex-wrap">
-          <Seg options={RANGE_OPTS} value={range} onChange={setRange} />
+        {/* 피크 마커 범례 */}
+        <div className="mt-3 flex items-center justify-end">
           <span className="flex items-center gap-1.5 text-[11px] text-muted">
-            <span className="inline-block w-2.5 h-2.5 rounded-full border-2" style={{ borderColor: "#FF4FA3" }} />
+            <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#FF4FA3" }} />
             피크 타임(최고 시청자)
           </span>
         </div>
@@ -391,6 +386,12 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
     return sorted;
   }, [enriched, q, sort]);
 
+  // 프로그레스 바 기준값(리스트 전체 최대치)
+  const DAY_MS = 24 * 3600 * 1000;
+  const maxViewers  = useMemo(() => Math.max(1, ...enriched.map((s) => s.concurrent_viewers)), [enriched]);
+  const maxFollower = useMemo(() => Math.max(1, ...enriched.map((s) => s.follower_count)), [enriched]);
+  const maxDur      = useMemo(() => Math.max(DAY_MS, ...enriched.map((s) => (s.dur.ms > 0 ? s.dur.ms : 0))), [enriched, DAY_MS]);
+
   const SortBtn = ({ k, label }: { k: SortKey; label: string }) => (
     <button onClick={() => setSort(k)}
       className="text-xs px-2.5 py-1 rounded-md border transition-colors"
@@ -433,40 +434,76 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
             </tr>
           </thead>
           <tbody>
-            {filtered.slice(0, limit).map((s, i) => (
-              <tr key={s.chzzk_channel_id}
-                  className="border-b border-border/50 hover:bg-bg-hover transition-colors">
-                <td className="py-2.5 pl-2 tabular-nums text-muted text-sm">{i + 1}</td>
-                <td className="py-2.5">
-                  <a href={`https://chzzk.naver.com/${s.chzzk_channel_id}`} target="_blank" rel="noopener noreferrer"
-                     className="flex items-center gap-2 group">
-                    <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
-                      {s.channel_image_url && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={s.channel_image_url} alt="" width={24} height={24}
-                             loading="lazy" className="w-full h-full object-cover" />
-                      )}
-                    </span>
-                    <span className="font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[150px] md:max-w-none">
-                      {s.channel_name}
-                    </span>
-                    <ArrowUpRight size={12} className="text-muted opacity-0 group-hover:opacity-100 shrink-0" />
-                  </a>
-                </td>
-                <td className="py-2.5 text-right tabular-nums font-bold" style={{ color: GREEN }}>
-                  {nf(s.concurrent_viewers)}
-                </td>
-                <td className="py-2.5 pl-4 text-muted text-sm hidden sm:table-cell truncate max-w-[140px]">
-                  {s.category_name || "-"}
-                </td>
-                <td className="py-2.5 text-right tabular-nums text-muted text-sm hidden md:table-cell">
-                  {s.dur.label}
-                </td>
-                <td className="py-2.5 pr-2 text-right tabular-nums text-muted text-sm">
-                  {s.follower_count > 0 ? nf(s.follower_count) : "-"}
-                </td>
-              </tr>
-            ))}
+            {filtered.slice(0, limit).map((s, i) => {
+              const vwPct  = (s.concurrent_viewers / maxViewers) * 100;
+              const durPct = s.dur.ms > 0 ? (s.dur.ms / maxDur) * 100 : 0;
+              const folPct = s.follower_count > 0 ? (s.follower_count / maxFollower) * 100 : 0;
+              const vwDelta = s.viewers_prev && s.viewers_prev > 0
+                ? ((s.concurrent_viewers - s.viewers_prev) / s.viewers_prev) * 100 : null;
+              const newFol = s.follower_prev24h != null ? s.follower_count - s.follower_prev24h : null;
+              return (
+                <tr key={s.chzzk_channel_id}
+                    className="border-b border-border/50 hover:bg-bg-hover transition-colors">
+                  <td className="py-2.5 pl-2 tabular-nums text-muted text-sm align-top">{i + 1}</td>
+
+                  {/* 스트리머 */}
+                  <td className="py-2.5 align-top">
+                    <a href={`https://chzzk.naver.com/${s.chzzk_channel_id}`} target="_blank" rel="noopener noreferrer"
+                       className="flex items-center gap-2 group">
+                      <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
+                        {s.channel_image_url && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={s.channel_image_url} alt="" width={24} height={24}
+                               loading="lazy" className="w-full h-full object-cover" />
+                        )}
+                      </span>
+                      <span className="font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[150px] md:max-w-none">
+                        {s.channel_name}
+                      </span>
+                      <ArrowUpRight size={12} className="text-muted opacity-0 group-hover:opacity-100 shrink-0" />
+                    </a>
+                  </td>
+
+                  {/* 현재 시청자 — 증감 + 그린 바 */}
+                  <td className="py-2.5 pr-1 align-top" style={{ minWidth: 120 }}>
+                    <div className="flex items-center justify-end gap-1.5">
+                      {vwDelta !== null && <span className="text-[10px]"><Delta pct={vwDelta} /></span>}
+                      <span className="font-bold tabular-nums" style={{ color: GREEN }}>{nf(s.concurrent_viewers)}</span>
+                    </div>
+                    <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden">
+                      <div className="h-full rounded-full" style={{ width: `${vwPct}%`, background: GREEN }} />
+                    </div>
+                  </td>
+
+                  {/* 카테고리 — 뱃지 */}
+                  <td className="py-2.5 pl-4 hidden sm:table-cell align-top">
+                    {s.category_name
+                      ? <span className="inline-block bg-bg-hover text-fg px-2 py-1 rounded-md text-xs truncate max-w-[130px]">{s.category_name}</span>
+                      : <span className="text-muted text-sm">-</span>}
+                  </td>
+
+                  {/* 방송시간 — 보라 바 */}
+                  <td className="py-2.5 hidden md:table-cell align-top" style={{ minWidth: 90 }}>
+                    <div className="text-right tabular-nums text-muted text-sm">{s.dur.label}</div>
+                    <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden">
+                      <div className="h-full rounded-full" style={{ width: `${durPct}%`, background: "#A855F7" }} />
+                    </div>
+                  </td>
+
+                  {/* 팔로워 — 시안 바 + 신규 유입 */}
+                  <td className="py-2.5 pr-2 align-top" style={{ minWidth: 96 }}>
+                    <div className="flex items-center justify-end gap-1.5">
+                      {newFol != null && newFol > 0 &&
+                        <span className="text-[10px] font-semibold tabular-nums" style={{ color: "#06B6D4" }}>+{nf(newFol)}</span>}
+                      <span className="tabular-nums text-fg text-sm">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</span>
+                    </div>
+                    <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden">
+                      <div className="h-full rounded-full" style={{ width: `${folPct}%`, background: "#06B6D4" }} />
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

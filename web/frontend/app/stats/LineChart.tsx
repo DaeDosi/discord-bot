@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 export type LinePoint = { t: number } & Record<string, number>;
 export interface LineSeries { key: string; name: string; color: string; gradient?: [string, string] }
 
-const PAD  = { l: 46, r: 14, t: 14, b: 26 };
+const PAD  = { l: 14, r: 14, t: 16, b: 26 };
 
 // "예쁜" 눈금 알고리즘 — 일정 간격(1/2/2.5/5 ×10ⁿ)의 둥근 눈금으로 정렬한다.
 function niceNum(x: number, round: boolean): number {
@@ -26,11 +26,6 @@ function niceScale(min: number, max: number, maxTicks = 5): { nMin: number; nMax
   for (let v = nMin; v <= nMax + step * 0.5; v += step) ticks.push(Math.round(v));
   return { nMin, nMax, ticks };
 }
-
-const fmtCompact = (n: number) =>
-  n >= 10000 ? `${(n / 10000).toFixed(n >= 100000 ? 0 : 1)}만`
-  : n >= 1000 ? `${(n / 1000).toFixed(1)}천`
-  : `${n}`;
 
 const fmtTime = (t: number) =>
   new Date(t * 1000).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -137,14 +132,10 @@ export default function LineChart({
           ))}
         </defs>
 
-        {/* y 그리드 + 라벨 */}
+        {/* y 그리드 (숫자 라벨 없이 가로선만) */}
         {yTicks.map((v) => (
-          <g key={v}>
-            <line x1={PAD.l} y1={Y(v)} x2={VB_W - PAD.r} y2={Y(v)}
-                  stroke="rgb(var(--color-border-rgb))" strokeWidth="1" opacity="0.55" />
-            <text x={PAD.l - 8} y={Y(v) + 3} textAnchor="end"
-                  fontSize="11" fill="rgb(var(--color-muted-rgb))">{fmtCompact(v)}</text>
-          </g>
+          <line key={v} x1={PAD.l} y1={Y(v)} x2={VB_W - PAD.r} y2={Y(v)}
+                stroke="rgb(var(--color-border-rgb))" strokeWidth="1" opacity="0.5" />
         ))}
 
         {/* x 라벨 */}
@@ -169,7 +160,7 @@ export default function LineChart({
           );
         })}
 
-        {/* 피크(최고치) 마커 — 핑크 쌍동그라미 */}
+        {/* 피크(최고치) 마커 — 축까지 내려가는 점선 + 발광 점 (피크 시각을 명확히 표시) */}
         {showPeak && (() => {
           const s0 = series[0];
           let mi = 0, mv = -Infinity;
@@ -177,8 +168,11 @@ export default function LineChart({
           const px = X(points[mi].t), py = Y(mv);
           return (
             <g style={{ pointerEvents: "none" }}>
-              <circle cx={px} cy={py} r={7} fill="none" stroke="#FF4FA3" strokeWidth={2} />
-              <circle cx={px} cy={py} r={3} fill="#FF4FA3" />
+              <line x1={px} y1={py} x2={px} y2={PAD.t + plotH}
+                    stroke="#FF4FA3" strokeWidth="1.5" strokeDasharray="3 3" opacity="0.5" />
+              <circle cx={px} cy={py} r="9" fill="#FF4FA3" opacity="0.18" />
+              <circle cx={px} cy={py} r="4.5" fill="#FF4FA3"
+                      stroke="rgb(var(--color-bg-card-rgb))" strokeWidth="2" />
             </g>
           );
         })()}

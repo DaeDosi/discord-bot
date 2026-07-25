@@ -256,9 +256,11 @@ export interface RisingStreamer {
   channel_name:       string;
   channel_image_url:  string;
   concurrent_viewers: number;
+  viewers_prev:       number | null;
   category_name:      string;
   open_date:          string;
   follower_count:     number;
+  follower_prev24h:   number | null;
   live_title:         string;
   adult:              boolean;
 }
