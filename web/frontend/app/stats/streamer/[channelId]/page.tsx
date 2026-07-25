@@ -18,22 +18,29 @@ const nf = (n: number) => n.toLocaleString("ko-KR");
 const SUB_TABS = ["요약", "통계", "카테고리", "랭킹", "방송기록", "구간분석"];
 const HEAT_LEVELS = ["rgba(0,255,163,0.08)", "rgba(0,255,163,0.28)", "rgba(0,255,163,0.5)", "rgba(0,255,163,0.72)", "#00FFA3"];
 
-// 반원 게이지 (상위 카테고리 비중)
+// 반원 게이지 (상위 카테고리 비중) — 순수 SVG arc.
+// 호 범위는 항상 180° 이하라 large-arc-flag는 언제나 0 (0.5 초과 시 major arc로
+// 무너지던 버그 수정). sweep-flag=1로 좌→우 상단 반원, 스트로크 기반이라 radius 충돌 없음.
 function SemiGauge({ share, label }: { share: number; label: string }) {
-  const w = 200, h = 110, cx = w / 2, cy = h - 6, R = 82, sw = 20;
+  const w = 200, sw = 20, R = 82, cx = w / 2, cy = 98;
+  const h = cy + sw / 2 + 4; // 캡이 잘리지 않게 여유
   const frac = Math.max(0, Math.min(100, share)) / 100;
-  const pt = (deg: number) => [cx + R * Math.cos((Math.PI * deg) / 180), cy + R * Math.sin((Math.PI * deg) / 180)];
-  const [sx, sy] = pt(180), [ex, ey] = pt(180 + frac * 180);
-  const large = frac > 0.5 ? 1 : 0;
+  const P = (deg: number): [number, number] =>
+    [cx + R * Math.cos((Math.PI * deg) / 180), cy + R * Math.sin((Math.PI * deg) / 180)];
+  const [lx, ly] = P(180);                 // 좌측 끝 (cx-R, cy)
+  const [rx, ry] = P(360);                 // 우측 끝 (cx+R, cy)
+  const [ex, ey] = P(180 + frac * 180);    // 채움 끝점
   return (
     <div className="flex flex-col items-center">
       <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
-        <path d={`M ${pt(180)[0]} ${pt(180)[1]} A ${R} ${R} 0 0 1 ${pt(360)[0]} ${pt(360)[1]}`}
+        <path d={`M ${lx} ${ly} A ${R} ${R} 0 0 1 ${rx} ${ry}`}
               fill="none" stroke="rgb(var(--color-bg-hover-rgb))" strokeWidth={sw} strokeLinecap="round" />
-        <path d={`M ${sx} ${sy} A ${R} ${R} 0 ${large} 1 ${ex} ${ey}`}
-              fill="none" stroke={GREEN} strokeWidth={sw} strokeLinecap="round" />
+        {frac > 0.002 && (
+          <path d={`M ${lx} ${ly} A ${R} ${R} 0 0 1 ${ex} ${ey}`}
+                fill="none" stroke={GREEN} strokeWidth={sw} strokeLinecap="round" />
+        )}
       </svg>
-      <div className="-mt-8 text-center">
+      <div className="-mt-9 text-center">
         <p className="text-2xl font-extrabold tabular-nums" style={{ color: GREEN }}>{share.toFixed(0)}%</p>
         <p className="text-xs text-muted truncate max-w-[160px]">{label}</p>
       </div>
