@@ -47,7 +47,7 @@ function Delta({ pct }: { pct: number | null | undefined }) {
 type Tab = "overview" | "ranking" | "category" | "newcomers";
 const TABS: { key: Tab; label: string; desc: string; icon: React.ReactNode }[] = [
   { key: "overview",  label: "실시간 분석", desc: "추이·요약",    icon: <LineIcon size={17} /> },
-  { key: "newcomers", label: "신규 스트리머", desc: "하꼬·신입 발굴", icon: <Sprout size={17} /> },
+  { key: "newcomers", label: "신규 스트리머 분석", desc: "하꼬·신입 발굴", icon: <Sprout size={17} /> },
   { key: "ranking",   label: "랭킹",       desc: "실시간 방송",   icon: <ListOrdered size={17} /> },
   { key: "category",  label: "카테고리",   desc: "게임별 현황",   icon: <Gamepad2 size={17} /> },
 ];
@@ -700,7 +700,7 @@ function NewcomersTab({ data }: { data: RisingNewcomers }) {
         <SortBtn label="🔥 소통 화력순" locked />
         <SortBtn k="growth" label="📈 급성장순" />
         <SortBtn k="duration" label="⏱️ 열정 방송순" />
-        <SortBtn k="debut" label="🆕 최신 데뷔순" />
+        <SortBtn k="debut" label="🆕 신규 등장순" />
       </div>
       <p className="text-[11px] text-muted/70 mb-4">
         최근 평균 시청자 50명 미만 또는 신입 태그 채널 · 최소 3명 이상 · 🔒 소통 화력은 채팅 미수집으로 잠금
@@ -718,7 +718,7 @@ function NewcomersTab({ data }: { data: RisingNewcomers }) {
                 <th className="text-right font-medium py-2">시청자</th>
                 <th className="text-right font-medium py-2">성장률</th>
                 <th className="text-right font-medium py-2 pl-4 hidden md:table-cell">방송시간</th>
-                <th className="text-right font-medium py-2 hidden sm:table-cell">데뷔</th>
+                <th className="text-right font-medium py-2 hidden sm:table-cell" title="우리 수집기가 이 채널을 처음 관측한 시점(최대 14일). 치지직 개설일/첫방송일은 공개 API로 제공되지 않음">첫 등장</th>
                 <th className="text-right font-medium py-2 pr-2">팔로워</th>
               </tr>
             </thead>
@@ -736,9 +736,6 @@ function NewcomersTab({ data }: { data: RisingNewcomers }) {
                         )}
                       </span>
                       <span className="font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[140px] md:max-w-none">{s.channel_name}</span>
-                      {(s.is_new || s.tag_new) && (
-                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0" style={{ color: GREEN, background: "rgba(0,255,163,0.12)" }}>🆕 신입</span>
-                      )}
                     </Link>
                   </td>
                   <td className="py-2.5 text-right tabular-nums font-bold text-fg">{nf(s.concurrent_viewers)}</td>
