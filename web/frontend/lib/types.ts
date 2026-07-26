@@ -346,9 +346,14 @@ export interface NewcomerInsights {
   baseline:     { avg_viewers: number; top20_cut: number; top10_cut: number;
                   next_target: number } | null;
 }
+// 신입 기준 카테고리 점유율 — 필터를 통과한 신입 전체로 집계(streamers 절단 전)
+export interface NewcomerCategory {
+  category: string; viewers: number; lives: number; avg_viewers: number; share: number;
+}
 export interface RisingNewcomers {
   collected_at: number | null;
   streamers:    RisingNewcomer[];
   summary?:     NewcomerSummary;
   insights?:    NewcomerInsights;
+  categories?:  NewcomerCategory[];
 }

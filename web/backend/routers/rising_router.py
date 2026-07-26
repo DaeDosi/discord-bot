@@ -490,7 +490,26 @@ async def newcomers(limit: int = 100):
 
     insights = {"top_category": top_category, "golden_hour": golden_hour, "baseline": baseline}
 
-    result = {"collected_at": ts, "streamers": out[:limit], "summary": summary, "insights": insights}
+    # ── 카테고리 점유율(신입 기준) ─────────────────────────────────────────
+    # cat_agg는 필터를 통과한 신입 '전체'로 집계돼 있으므로, streamers[:limit]로 자른
+    # 목록이 아니라 이걸 써야 점유율 합이 실제 100%가 된다.
+    cat_total_v = sum(e["v"] for e in cat_agg.values()) or 1
+    categories = sorted(
+        (
+            {
+                "category":    name,
+                "viewers":     e["v"],
+                "lives":       e["n"],
+                "avg_viewers": round(e["v"] / e["n"]) if e["n"] else 0,
+                "share":       round(e["v"] / cat_total_v * 100, 1),
+            }
+            for name, e in cat_agg.items()
+        ),
+        key=lambda x: x["viewers"], reverse=True,
+    )[:20]
+
+    result = {"collected_at": ts, "streamers": out[:limit], "summary": summary,
+              "insights": insights, "categories": categories}
     _newcomers_cache["ts"] = now
     _newcomers_cache["data"] = result
     return result

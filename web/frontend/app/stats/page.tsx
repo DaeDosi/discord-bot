@@ -10,6 +10,7 @@ import { api } from "@/lib/api";
 import type {
   RisingOverview, RisingTimeseries, RisingLiveRanking, RisingCategories, RisingCategory,
   RisingStars, TimeRange, CatRange, RisingSearchResult, RisingNewcomers, RisingNewcomer,
+  NewcomerCategory,
 } from "@/lib/types";
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
@@ -274,6 +275,69 @@ const CAT_RANGE_OPTS: { k: CatRange; label: string }[] = [
   { k: "24h",  label: "24시간 평균" },
 ];
 
+// 도넛 차트 본체 — 전체/신입 점유율이 공유한다(호버 상태는 범례와 동기화하려고 부모가 소유).
+// 여기엔 아크 계산과 중앙 라벨만 두고, 범례 테이블은 컬럼이 달라 각 호출부가 그린다.
+function DonutChart({ slices, hover, onHover, centerLabel, centerValue, size = 190 }: {
+  slices: { label: string; value: number }[];
+  hover: number | null;
+  onHover: (i: number | null) => void;
+  centerLabel: string;
+  centerValue?: string;
+  size?: number;
+}) {
+  const stroke = 26, R = (size - stroke - 10) / 2, C = 2 * Math.PI * R, cx = size / 2, cy = size / 2;
+  const total = slices.reduce((s, x) => s + x.value, 0) || 1;
+  let acc = 0;
+  const segs = slices.map((sl, i) => {
+    const len = (sl.value / total) * C;
+    const dash = Math.max(0, len - 3); // 세그먼트 사이 3px 간격
+    const seg = (
+      <circle key={i} r={R} cx={cx} cy={cy} fill="none" stroke={DONUT_PAL[i % DONUT_PAL.length]}
+        strokeWidth={hover === i ? stroke + 5 : stroke}
+        strokeDasharray={`${dash} ${C - dash}`} strokeDashoffset={-acc}
+        transform={`rotate(-90 ${cx} ${cy})`} style={{ transition: "stroke-width .15s", cursor: "pointer" }}
+        onMouseEnter={() => onHover(i)} onMouseLeave={() => onHover(null)} />
+    );
+    acc += len;
+    return seg;
+  });
+  const focus = hover !== null && hover < slices.length ? slices[hover] : null;
+
+  return (
+    <div className="relative" style={{ width: size, height: size }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle r={R} cx={cx} cy={cy} fill="none" stroke="rgb(var(--color-bg-hover-rgb))" strokeWidth={stroke} />
+        {segs}
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+        {focus ? (
+          <>
+            <span className="text-xl font-extrabold tabular-nums" style={{ color: DONUT_PAL[hover! % DONUT_PAL.length] }}>
+              {((focus.value / total) * 100).toFixed(1)}%
+            </span>
+            <span className="text-[11px] text-muted mt-0.5 max-w-[110px] truncate text-center">{focus.label}</span>
+          </>
+        ) : (
+          <>
+            <span className="text-lg font-extrabold text-fg tabular-nums">{centerValue ?? nf(Math.round(total))}</span>
+            <span className="text-[11px] text-muted mt-0.5">{centerLabel}</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// 상위 N개 + '기타'로 도넛 슬라이스 구성 (전체/신입 공용)
+function toSlices<T>(rows: T[], topN: number, label: (r: T) => string, value: (r: T) => number) {
+  const top = rows.slice(0, topN);
+  const restV = rows.slice(topN).reduce((s, r) => s + value(r), 0);
+  return [
+    ...top.map((r) => ({ label: label(r), value: value(r) })),
+    ...(restV > 0 ? [{ label: "기타", value: restV }] : []),
+  ];
+}
+
 function CategoryDonut() {
   const [range, setRange] = useState<CatRange>("1h");
   const [data, setData] = useState<RisingCategory[]>([]);
@@ -290,32 +354,9 @@ function CategoryDonut() {
     return () => { alive = false; };
   }, [range]);
 
-  // 도넛: 상위 5 + 기타
-  const top = data.slice(0, 5);
-  const restV = data.slice(5).reduce((s, c) => s + c.viewers, 0);
-  const slices = [
-    ...top.map((c) => ({ label: c.category, value: c.viewers })),
-    ...(restV > 0 ? [{ label: "기타", value: restV }] : []),
-  ];
-  const total = slices.reduce((s, x) => s + x.value, 0) || 1;
-  const legendRows = data.slice(0, 8); // 범례 테이블은 상위 8개
-
-  const size = 190, stroke = 26, R = (size - stroke - 10) / 2, C = 2 * Math.PI * R, cx = size / 2, cy = size / 2;
-  let acc = 0;
-  const segs = slices.map((sl, i) => {
-    const len = (sl.value / total) * C;
-    const dash = Math.max(0, len - 3);
-    const seg = (
-      <circle key={i} r={R} cx={cx} cy={cy} fill="none" stroke={DONUT_PAL[i % DONUT_PAL.length]}
-        strokeWidth={hover === i ? stroke + 5 : stroke}
-        strokeDasharray={`${dash} ${C - dash}`} strokeDashoffset={-acc}
-        transform={`rotate(-90 ${cx} ${cy})`} style={{ transition: "stroke-width .15s", cursor: "pointer" }}
-        onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)} />
-    );
-    acc += len;
-    return seg;
-  });
-  const focus = hover !== null && hover < slices.length ? slices[hover] : null;
+  // 도넛: 상위 5 + 기타 / 범례 테이블은 상위 8개
+  const slices = toSlices(data, 5, (c) => c.category, (c) => c.viewers);
+  const legendRows = data.slice(0, 8);
 
   return (
     <div className="card">
@@ -333,27 +374,7 @@ function CategoryDonut() {
         <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
           {/* 좌: 도넛 (~40%) */}
           <div className="md:col-span-5 flex justify-center">
-            <div className="relative" style={{ width: size, height: size }}>
-              <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-                <circle r={R} cx={cx} cy={cy} fill="none" stroke="rgb(var(--color-bg-hover-rgb))" strokeWidth={stroke} />
-                {segs}
-              </svg>
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                {focus ? (
-                  <>
-                    <span className="text-xl font-extrabold tabular-nums" style={{ color: DONUT_PAL[hover! % DONUT_PAL.length] }}>
-                      {((focus.value / total) * 100).toFixed(1)}%
-                    </span>
-                    <span className="text-[11px] text-muted mt-0.5 max-w-[110px] truncate text-center">{focus.label}</span>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-lg font-extrabold text-fg tabular-nums">{nf(Math.round(total))}</span>
-                    <span className="text-[11px] text-muted mt-0.5">평균 시청자</span>
-                  </>
-                )}
-              </div>
-            </div>
+            <DonutChart slices={slices} hover={hover} onHover={setHover} centerLabel="평균 시청자" />
           </div>
 
           {/* 우: 범례 테이블 (~60%) */}
@@ -800,18 +821,85 @@ function HelpTip({ children }: { children: React.ReactNode }) {
   );
 }
 
+// 카테고리 점유율(신입 기준) — 전체 스트리머 분석의 CategoryDonut과 같은 구성.
+// 데이터는 newcomers 응답에 함께 실려오므로 별도 요청/기간 필터가 없다.
+function NewcomerCategoryDonut({ cats }: { cats: NewcomerCategory[] }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const slices = toSlices(cats, 5, (c) => c.category, (c) => c.viewers);
+  const legendRows = cats.slice(0, 8);
+  const totalLives = cats.reduce((s, c) => s + c.lives, 0);
+
+  return (
+    <div className="card">
+      <div className="flex items-start justify-between mb-4 flex-wrap gap-2">
+        <div>
+          <h3 className="section-title">카테고리 점유율 (신입)</h3>
+          <p className="text-xs text-muted mt-0.5">
+            현재 신입/라이징 방송의 시청자가 어떤 카테고리에 몰려 있는지 — 라이브 {nf(totalLives)}개 기준
+          </p>
+        </div>
+      </div>
+
+      {cats.length === 0 ? (
+        <p className="text-sm text-muted py-6 text-center">신입 카테고리 데이터가 아직 없습니다.</p>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
+          <div className="md:col-span-5 flex justify-center">
+            <DonutChart slices={slices} hover={hover} onHover={setHover} centerLabel="신입 총 시청자" />
+          </div>
+
+          <div className="md:col-span-7 overflow-x-auto">
+            <table className="w-full text-sm min-w-[360px]">
+              <thead>
+                <tr className="text-muted text-xs border-b border-border">
+                  <th className="text-left font-medium py-1.5 w-7">#</th>
+                  <th className="text-left font-medium py-1.5">카테고리</th>
+                  <th className="text-right font-medium py-1.5">점유율</th>
+                  <th className="text-right font-medium py-1.5 hidden sm:table-cell">방송 수</th>
+                  <th className="text-right font-medium py-1.5 pr-1">방송당 평균</th>
+                </tr>
+              </thead>
+              <tbody>
+                {legendRows.map((c, i) => (
+                  <tr key={c.category}
+                      onMouseEnter={() => setHover(i < slices.length ? i : null)} onMouseLeave={() => setHover(null)}
+                      className="border-b border-border/40 transition-colors"
+                      style={{ background: hover === i ? "rgb(var(--color-bg-hover-rgb))" : "transparent" }}>
+                    <td className="py-1.5 tabular-nums text-muted text-xs">{i + 1}</td>
+                    <td className="py-1.5">
+                      <span className="flex items-center gap-2 min-w-0">
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0"
+                              style={{ background: i < 5 ? DONUT_PAL[i] : "rgb(var(--color-muted-rgb))" }} />
+                        <span className="text-fg truncate">{c.category}</span>
+                      </span>
+                    </td>
+                    <td className="py-1.5 text-right font-semibold tabular-nums text-fg">{c.share.toFixed(1)}%</td>
+                    <td className="py-1.5 text-right tabular-nums text-muted hidden sm:table-cell">{nf(c.lives)}개</td>
+                    <td className="py-1.5 text-right pr-1 tabular-nums font-semibold"><GradText>{nf(c.avg_viewers)}</GradText></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // 신입 인라인 프로그레스 바 테이블 (랭킹 탭 + 분석 탭 미리보기 공용)
 function NewcomerTable({ items, maxViewers, maxFollower }:
   { items: RisingNewcomer[]; maxViewers: number; maxFollower: number }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-sm min-w-[620px]">
+      {/* 레이아웃/타이포/컬러는 전체 스트리머 랭킹 테이블과 동일 규격 */}
+      <table className="w-full text-sm min-w-[780px]">
         <thead>
-          <tr className="text-muted text-sm border-b border-border">
-            <th className="text-left font-semibold py-2.5 pl-2 w-8">#</th>
-            <th className="text-left font-semibold py-2.5">스트리머</th>
-            <th className="text-right font-semibold py-2.5 pr-6">시청자</th>
-            <th className="text-right font-semibold py-2.5">
+          <tr className="text-muted text-xs border-b border-border">
+            <th className="text-left font-medium py-2 pl-2 w-12">#</th>
+            <th className="text-left font-medium py-2">스트리머</th>
+            <th className="text-right font-medium py-2 px-6">시청자</th>
+            <th className="text-right font-medium py-2 px-6">
               <span className="inline-flex items-center justify-end whitespace-nowrap">
                 성장률
                 <HelpTip>
@@ -830,55 +918,60 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
                 </HelpTip>
               </span>
             </th>
-            <th className="text-left font-semibold py-2.5 pl-4 hidden sm:table-cell">카테고리</th>
-            <th className="text-right font-semibold py-2.5 pl-6 pr-6 hidden md:table-cell">방송시간</th>
-            <th className="text-right font-semibold py-2.5 pl-6 pr-2">팔로워</th>
+            <th className="text-left font-medium py-2 px-6 hidden sm:table-cell">카테고리</th>
+            <th className="text-right font-medium py-2 px-6 hidden md:table-cell">방송시간</th>
+            <th className="text-right font-medium py-2 px-6">팔로워</th>
           </tr>
         </thead>
         <tbody>
           {items.map((s, i) => {
             const dur = liveDuration(s.open_date);
             const vwPct = (s.concurrent_viewers / maxViewers) * 100;
-            const durPct = dur.ms > 0 ? (dur.ms / DAY_MS) * 100 : 0;
+            const durPct = dur.ms > 0 ? Math.min(100, (dur.ms / DAY_MS) * 100) : 0;
             const folPct = s.follower_count > 0 ? (s.follower_count / maxFollower) * 100 : 0;
+            const medal = MEDALS[i]; // TOP 3만 값이 있음
             return (
               <tr key={s.chzzk_channel_id} className="border-b border-border/50 hover:bg-bg-hover transition-colors">
-                <td className="py-2.5 pl-2 tabular-nums text-muted text-sm align-top">{i + 1}</td>
-                <td className="py-2.5 align-top">
+                {/* 순위 — TOP 3는 골드/실버/브론즈 강조 */}
+                <td className="py-3 pl-2 tabular-nums text-sm align-top">
+                  {medal
+                    ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
+                    : <span className="text-muted">{i + 1}</span>}
+                </td>
+                <td className="py-3 align-top">
                   <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="flex items-center gap-2 group">
                     <Sprout size={14} className="shrink-0" style={{ color: GREEN }} />
-                    <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
+                    <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0"
+                          style={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined}>
                       {s.channel_image_url && (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
                       )}
                     </span>
-                    <span className="font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[130px] md:max-w-none">{s.channel_name}</span>
+                    <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[130px] md:max-w-none">{s.channel_name}</span>
                   </Link>
                 </td>
-                <td className="py-2.5 pr-6 align-top">
-                  <div className="text-right tabular-nums font-bold text-fg">{nf(s.concurrent_viewers)}</div>
-                  <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden ml-auto" style={{ maxWidth: 90 }}>
-                    <div className="h-full rounded-full" style={{ width: `${vwPct}%`, background: GREEN }} />
-                  </div>
+                {/* 시청자 — 셀 하단 골드 바 (1위 대비 %) */}
+                <td className="relative py-3 px-6 align-top" style={{ minWidth: 132 }}>
+                  <div className="text-right text-base tabular-nums font-bold text-fg">{nf(s.concurrent_viewers)}</div>
+                  <CellBar pct={vwPct} background={YELLOW_GRAD} />
                 </td>
-                <td className="py-2.5 text-right text-[11px] align-top"><Delta pct={s.growth_rate} /></td>
-                <td className="py-2.5 pl-4 hidden sm:table-cell align-top">
+                <td className="py-3 px-6 text-right text-[11px] align-top"><Delta pct={s.growth_rate} /></td>
+                <td className="py-3 px-6 hidden sm:table-cell align-top">
                   {s.category_name
-                    ? <span className="inline-block bg-bg-hover text-fg px-2 py-0.5 rounded-md text-xs truncate max-w-[120px]">{s.category_name}</span>
-                    : <span className="text-muted text-xs">-</span>}
+                    ? <span className="inline-block max-w-[150px] truncate rounded-full border border-border
+                                       bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{s.category_name}</span>
+                    : <span className="text-muted text-sm">-</span>}
                 </td>
-                <td className="py-2.5 pl-6 pr-6 align-top hidden md:table-cell">
+                {/* 방송시간 — 셀 하단 퍼플 바 (최대 24시간 대비 비율) */}
+                <td className="relative py-3 px-6 align-top hidden md:table-cell" style={{ minWidth: 128 }}>
                   <div className="text-right tabular-nums text-muted text-sm">{dur.label}</div>
-                  <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden ml-auto" style={{ maxWidth: 84 }}>
-                    <div className="h-full rounded-full" style={{ width: `${durPct}%`, background: "#A855F7" }} />
-                  </div>
+                  <CellBar pct={durPct} background={PURPLE_GRAD} />
                 </td>
-                <td className="py-2.5 pl-6 pr-2 align-top">
-                  <div className="text-right tabular-nums text-muted text-sm">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</div>
-                  <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden ml-auto" style={{ maxWidth: 84 }}>
-                    <div className="h-full rounded-full" style={{ width: `${folPct}%`, background: "#06B6D4" }} />
-                  </div>
+                {/* 팔로워 — 셀 하단 시안 바 */}
+                <td className="relative py-3 px-6 align-top" style={{ minWidth: 132 }}>
+                  <div className="text-right text-base tabular-nums font-bold text-fg">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</div>
+                  <CellBar pct={folPct} background={CYAN_GRAD} />
                 </td>
               </tr>
             );
@@ -937,6 +1030,9 @@ function NewcomersAnalysisTab({ data, onRanking }: { data: RisingNewcomers; onRa
           </InsightCard>
         </div>
       </div>
+
+      {/* 카테고리 점유율 (신입 기준) */}
+      <NewcomerCategoryDonut cats={data.categories ?? []} />
 
       {/* 상위 미리보기(10) → 전체 순위 */}
       <div className="card">
