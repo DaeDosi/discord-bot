@@ -345,6 +345,9 @@ export interface NewcomerInsights {
                   samples: number; hours_covered: number } | null;
   baseline:     { avg_viewers: number; top20_cut: number; top10_cut: number;
                   next_target: number } | null;
+  // 24시간 골든타임 히트맵 (항상 24칸) / 체급 구간 분포
+  hourly?:      { hour: number; avg_viewers: number; channels: number; snaps: number }[];
+  tiers?:       { label: string; desc: string; count: number; share: number }[];
 }
 // 신입 기준 카테고리 점유율 — 필터를 통과한 신입 전체로 집계(streamers 절단 전)
 export interface NewcomerCategory {

@@ -464,7 +464,8 @@ async def newcomers(limit: int = 100):
     hrows = await (await db.execute(
         """SELECT CAST(strftime('%H', hour_ts + 32400, 'unixepoch') AS INTEGER) AS h,
                   SUM(sum_viewers) AS v,
-                  SUM(snaps)       AS n
+                  SUM(snaps)       AS n,
+                  COUNT(DISTINCT chzzk_channel_id) AS ch
            FROM rising_hourly_rollup
            WHERE hour_ts >= ?
              AND chzzk_channel_id IN (
@@ -474,7 +475,8 @@ async def newcomers(limit: int = 100):
            GROUP BY h""",
         (ts - 86400, _NEWCOMER_AVG_MAX)
     )).fetchall()
-    hour_agg = {int(r["h"]): {"v": int(r["v"] or 0), "n": int(r["n"] or 0)} for r in hrows if r["n"]}
+    hour_agg = {int(r["h"]): {"v": int(r["v"] or 0), "n": int(r["n"] or 0), "ch": int(r["ch"] or 0)}
+                for r in hrows if r["n"]}
     # 표본이 어느 정도 쌓인 시간대만 후보 (한두 개 스냅샷으로 최적 시간대가 뒤집히지 않게)
     pool = {h: e for h, e in hour_agg.items() if e["n"] >= _GOLDEN_HOUR_MIN_SAMPLES} or hour_agg
     if pool:
@@ -484,6 +486,17 @@ async def newcomers(limit: int = 100):
         uplift = round((hour_avg / overall - 1) * 100) if overall > 0 else 0
         golden_hour = {"hour": h, "avg_viewers": round(hour_avg), "uplift_pct": uplift,
                        "samples": e["n"], "hours_covered": len(hour_agg)}
+
+    # 2-1) 24시간 골든타임 히트맵용 — 비어 있는 시간도 0으로 채워 항상 24칸을 만든다
+    hourly = []
+    for h in range(24):
+        e = hour_agg.get(h)
+        hourly.append({
+            "hour": h,
+            "avg_viewers": round(e["v"] / e["n"]) if e and e["n"] else 0,
+            "channels": e["ch"] if e else 0,
+            "snaps": e["n"] if e else 0,
+        })
 
     # 3) 체급 기준선 — 신입 평균 + 상위 20%/10% 컷오프(구체적 목표 수치)
     baseline = None
@@ -499,7 +512,19 @@ async def newcomers(limit: int = 100):
             "next_target": max(top20, avg_v + 1),  # 하위호환
         }
 
-    insights = {"top_category": top_category, "golden_hour": golden_hour, "baseline": baseline}
+    # 체급 구간 분포 — 신입이 지금 어느 단계에 몰려 있는지. summary와 같이
+    # streamers[:limit]가 아니라 필터를 통과한 전체(out)로 집계해야 비율이 정확하다.
+    _TIER_BANDS = [(0, 2, "0~2명", "초기 단계"), (3, 5, "3~5명", "기반 확보"),
+                   (6, 9, "6~9명", "상위 20% 진입"), (10, None, "10명+", "상위 10% 메인 노출")]
+    tiers = []
+    for lo, hi, label, desc in _TIER_BANDS:
+        n = sum(1 for x in out
+                if x["concurrent_viewers"] >= lo and (hi is None or x["concurrent_viewers"] <= hi))
+        tiers.append({"label": label, "desc": desc, "count": n,
+                      "share": round(n / count * 100, 1) if count else 0.0})
+
+    insights = {"top_category": top_category, "golden_hour": golden_hour,
+                "baseline": baseline, "hourly": hourly, "tiers": tiers}
 
     # ── 카테고리 점유율(신입 기준) ─────────────────────────────────────────
     # cat_agg는 필터를 통과한 신입 '전체'로 집계돼 있으므로, streamers[:limit]로 자른

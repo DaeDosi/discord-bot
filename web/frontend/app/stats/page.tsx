@@ -17,6 +17,7 @@ import Footer from "@/components/Footer";
 import CollapsibleAbout from "@/components/CollapsibleAbout";
 import CategoryRankCards from "./CategoryRankCards";
 import RankingCharts from "./RankingCharts";
+import { GoldenHourHeatmap, BlueOceanCards, TierDistribution } from "./NewcomerInsightViz";
 import StatsNav, { type Tab } from "./StatsNav";
 
 import LineChart, { type LinePoint, type LineSeries } from "./LineChart";
@@ -1150,9 +1151,16 @@ function NewcomersAnalysisTab({ data, onRanking }: { data: RisingNewcomers; onRa
                   <b style={{ color: GREEN }}>{nf(ins.baseline.top10_cut)}명</b> 달성 시 상위 10%권에 진입하여
                   메인 노출 기회가 대폭 늘어납니다.</>
               : "데이터가 아직 부족합니다."}
+            {ins?.tiers && ins.tiers.length > 0 && <TierDistribution tiers={ins.tiers} />}
           </InsightCard>
         </div>
       </div>
+
+      {/* 24시간 골든타임 히트맵 */}
+      {ins?.hourly && ins.hourly.length > 0 && <GoldenHourHeatmap hourly={ins.hourly} />}
+
+      {/* 블루오션 카테고리 TOP 5 */}
+      <BlueOceanCards cats={data.categories ?? []} summary={sm} />
 
       {/* 카테고리 점유율 (신입 기준) */}
       <NewcomerCategoryDonut cats={data.categories ?? []} />
