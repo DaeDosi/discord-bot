@@ -81,6 +81,15 @@ function CellBar({ pct, background }: { pct: number; background: string }) {
   );
 }
 
+// 랭킹 표 수치 — text-base가 과해 살짝 줄이고(text-sm) 뒤에 단위를 붙인다.
+function StatNum({ value, unit }: { value: number; unit: string }) {
+  return (
+    <span className="text-sm font-bold tabular-nums text-fg">
+      {nf(value)}<span className="ml-0.5 text-[11px] font-normal text-muted">{unit}</span>
+    </span>
+  );
+}
+
 // 수치 + 바를 촘촘한 세로 간격으로 묶는 래퍼
 function CellCol({ children }: { children: React.ReactNode }) {
   return <div className="flex flex-col gap-1.5">{children}</div>;
@@ -163,15 +172,22 @@ function StreamerSearch() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
+  // 드롭다운은 '입력이 있으면' 즉시 열고 로딩 중에도 계속 열어 둔다.
+  // 예전엔 fetch가 성공한 뒤에야 setOpen(true)를 해서, 타이핑할 때마다 패널이
+  // 닫혔다 열리며 아래로 내려왔다 올라가는 것처럼 보였다.
+  // reqId: 늦게 도착한 이전 요청이 최신 결과를 덮어쓰지 않게 하는 가드.
+  const reqId = useRef(0);
   useEffect(() => {
     const kw = q.trim();
-    if (kw.length < 1) { setResults([]); setOpen(false); return; }
+    if (kw.length < 1) { setResults([]); setOpen(false); setLoading(false); return; }
+    setOpen(true);
+    setLoading(true);
     const id = setTimeout(() => {
-      setLoading(true);
+      const my = ++reqId.current;
       api.rising.search(kw)
-        .then((r) => { setResults(r.results || []); setOpen(true); })
-        .catch(() => setResults([]))
-        .finally(() => setLoading(false));
+        .then((r) => { if (my === reqId.current) setResults(r.results || []); })
+        .catch(() => { if (my === reqId.current) setResults([]); })
+        .finally(() => { if (my === reqId.current) setLoading(false); });
     }, 350);
     return () => clearTimeout(id);
   }, [q]);
@@ -194,8 +210,12 @@ function StreamerSearch() {
       </div>
       {open && (
         <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-bg-card border border-border rounded-xl shadow-xl py-1.5 max-h-80 overflow-y-auto">
-          {results.length === 0 ? (
-            <p className="px-4 py-3 text-sm text-muted">{loading ? "검색 중..." : "결과가 없습니다."}</p>
+          {loading && results.length === 0 ? (
+            <p className="flex items-center gap-2 px-4 py-3 text-sm text-muted">
+              <Loader2 size={13} className="animate-spin" /> 검색 중...
+            </p>
+          ) : results.length === 0 ? (
+            <p className="px-4 py-3 text-sm text-muted">결과가 없습니다.</p>
           ) : results.map((c) => (
             <Link key={c.channel_id} href={`/stats/streamer/${c.channel_id}`} onClick={() => setOpen(false)}
               className="flex items-center gap-2.5 px-3 py-2 mx-1.5 rounded-lg hover:bg-bg-hover transition-colors">
@@ -750,7 +770,7 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                     <CellCol>
                       <div className="flex items-center justify-end gap-1.5">
                         {vwDelta !== null && <span className="text-[11px]"><Delta pct={vwDelta} /></span>}
-                        <span className="text-base font-bold tabular-nums text-fg">{nf(s.concurrent_viewers)}</span>
+                        <StatNum value={s.concurrent_viewers} unit="명" />
                       </div>
                       <CellBar pct={vwPct} background={YELLOW_GRAD} />
                     </CellCol>
@@ -770,7 +790,7 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                       <div className="flex items-center justify-end gap-1.5">
                         {newFol != null && newFol > 0 &&
                           <span className="text-[11px] font-semibold tabular-nums" style={{ color: "#06B6D4" }}>+{nf(newFol)}</span>}
-                        <span className="text-base font-bold tabular-nums text-fg">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</span>
+                        {s.follower_count > 0 ? <StatNum value={s.follower_count} unit="명" /> : <span className="text-sm text-muted">-</span>}
                       </div>
                       <CellBar pct={folPct} background={CYAN_GRAD} />
                     </CellCol>
@@ -1037,7 +1057,7 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
                 {/* 시청자 — 바로 아래 골드 바 (1위 대비 %) */}
                 <td className="py-3.5 px-6 align-top" style={{ minWidth: 132 }}>
                   <CellCol>
-                    <div className="text-right text-base tabular-nums font-bold text-fg">{nf(s.concurrent_viewers)}</div>
+                    <div className="text-right"><StatNum value={s.concurrent_viewers} unit="명" /></div>
                     <CellBar pct={vwPct} background={YELLOW_GRAD} />
                   </CellCol>
                 </td>
@@ -1051,7 +1071,7 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
                 {/* 팔로워 — 시안 바 */}
                 <td className="py-3.5 px-6 align-top" style={{ minWidth: 132 }}>
                   <CellCol>
-                    <div className="text-right text-base tabular-nums font-bold text-fg">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</div>
+                    <div className="text-right">{s.follower_count > 0 ? <StatNum value={s.follower_count} unit="명" /> : <span className="text-sm text-muted">-</span>}</div>
                     <CellBar pct={folPct} background={CYAN_GRAD} />
                   </CellCol>
                 </td>
@@ -1185,46 +1205,185 @@ function NewcomersRankingTab({ data }: { data: RisingNewcomers }) {
 }
 
 // ── 카테고리 탭 ───────────────────────────────────────────────────────────────
-function CategoryTab({ cats }: { cats: RisingCategories }) {
-  const maxV = Math.max(1, ...cats.categories.map((c) => c.viewers));
+// 선택한 카테고리로 방송 중인 스트리머 목록 — 랭킹 테이블과 동일한 디자인 규격.
+// 별도 API 없이 이미 받아둔 라이브 랭킹 스냅샷을 카테고리로 필터링한다.
+function CategoryStreamerList({ category, rank, onClose }:
+  { category: string; rank: RisingLiveRanking | null; onClose: () => void }) {
+  const items = useMemo(() => {
+    if (!rank) return [];
+    return rank.streamers
+      .filter((s) => (s.category_name || "").trim() === category)
+      .sort((a, b) => b.concurrent_viewers - a.concurrent_viewers)
+      .map((s) => ({ ...s, dur: liveDuration(s.open_date) }));
+  }, [rank, category]);
+
+  const maxViewers  = Math.max(1, ...items.map((s) => s.concurrent_viewers));
+  const maxFollower = Math.max(1, ...items.map((s) => s.follower_count));
+
   return (
     <div className="card !p-4 md:!p-5">
-      <h3 className="section-title mb-1">카테고리(게임)별 현황</h3>
-      <p className="text-xs text-muted mb-4">
-        방송당 평균 = 시청자 ÷ 방송 수. 값이 높을수록 방송 대비 시청 유입(블루오션)이 큽니다.
-      </p>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[520px]">
-          <thead>
-            <tr className="text-muted text-xs border-b border-border">
-              <th className="text-left font-medium py-2 pl-2 w-10">#</th>
-              <th className="text-left font-medium py-2">카테고리</th>
-              <th className="text-right font-medium py-2">시청자</th>
-              <th className="text-right font-medium py-2 hidden sm:table-cell">방송 수</th>
-              <th className="text-right font-medium py-2 pr-2">방송당 평균</th>
-            </tr>
-          </thead>
-          <tbody>
-            {cats.categories.map((c, i) => (
-              <tr key={c.category} className="border-b border-border/50 hover:bg-bg-hover transition-colors">
-                <td className="py-2.5 pl-2 tabular-nums text-muted text-xs">{i + 1}</td>
-                <td className="py-2.5">
-                  <div className="font-semibold text-fg truncate max-w-[160px] md:max-w-none">{c.category}</div>
-                  <div className="mt-1 h-1.5 rounded-full bg-bg-hover overflow-hidden max-w-[220px]">
-                    <div className="h-full rounded-full" style={{ width: `${(c.viewers / maxV) * 100}%`, background: GRAD }} />
-                  </div>
-                </td>
-                <td className="py-2.5 text-right tabular-nums font-bold text-fg">{nf(c.viewers)}</td>
-                <td className="py-2.5 text-right tabular-nums text-muted text-xs hidden sm:table-cell">{nf(c.lives)}</td>
-                <td className="py-2.5 pr-2 text-right tabular-nums font-bold"><GradText>{nf(c.avg_viewers)}</GradText></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
+        <div>
+          <h3 className="section-title flex items-center gap-2 flex-wrap">
+            <span className="inline-block rounded-full border border-border bg-bg-hover px-3 py-1 text-xs font-medium text-fg">
+              {category}
+            </span>
+            방송 중인 스트리머
+          </h3>
+          <p className="text-xs text-muted mt-1">
+            {items.length > 0
+              ? <>현재 이 카테고리로 방송 중인 스트리머 {nf(items.length)}명 · 시청자 내림차순</>
+              : "이 카테고리로 방송 중인 스트리머를 찾지 못했습니다."}
+          </p>
+        </div>
+        <button onClick={onClose} className="text-xs font-medium text-muted hover:text-fg transition-colors">
+          닫기
+        </button>
       </div>
-      {cats.categories.length === 0 && (
-        <p className="text-sm text-muted text-center py-6">카테고리 데이터가 아직 없습니다.</p>
+
+      {items.length === 0 ? (
+        <p className="text-sm text-muted text-center py-8">
+          랭킹 상위 목록에 포함된 방송이 없습니다. 수집 시점 차이로 목록에 없을 수 있습니다.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[680px]">
+            <thead>
+              <tr className="text-muted text-xs border-b border-border">
+                <th className="text-left font-medium py-2 pl-2 w-12">#</th>
+                <th className="text-left font-medium py-2">스트리머</th>
+                <th className="text-right font-medium py-2 px-6">전체 시청자</th>
+                <th className="text-right font-medium py-2 px-6 hidden md:table-cell">방송시간</th>
+                <th className="text-right font-medium py-2 px-6">팔로워</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((s, i) => {
+                const vwPct  = (s.concurrent_viewers / maxViewers) * 100;
+                const durPct = s.dur.ms > 0 ? Math.min(100, (s.dur.ms / DAY_MS) * 100) : 0;
+                const folPct = s.follower_count > 0 ? (s.follower_count / maxFollower) * 100 : 0;
+                const medal  = MEDALS[i];
+                return (
+                  <tr key={s.chzzk_channel_id} className="border-b border-border hover:bg-bg-hover/70 transition-colors">
+                    <td className="py-3.5 pl-2 tabular-nums text-sm align-top">
+                      {medal
+                        ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
+                        : <span className="text-muted">{i + 1}</span>}
+                    </td>
+                    <td className="py-3.5 align-top">
+                      <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="flex items-center gap-2 group">
+                        <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0"
+                              style={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined}>
+                          {s.channel_image_url && (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
+                          )}
+                        </span>
+                        <ChzzkMark />
+                        <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[150px] md:max-w-none">
+                          {s.channel_name}
+                        </span>
+                      </Link>
+                    </td>
+                    <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
+                      <CellCol>
+                        <div className="text-right"><StatNum value={s.concurrent_viewers} unit="명" /></div>
+                        <CellBar pct={vwPct} background={YELLOW_GRAD} />
+                      </CellCol>
+                    </td>
+                    <td className="py-3.5 px-6 align-top hidden md:table-cell" style={{ minWidth: 128 }}>
+                      <CellCol>
+                        <div className="text-right tabular-nums text-muted text-sm">{s.dur.label}</div>
+                        <CellBar pct={durPct} background={PURPLE_GRAD} />
+                      </CellCol>
+                    </td>
+                    <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
+                      <CellCol>
+                        <div className="text-right">
+                          {s.follower_count > 0 ? <StatNum value={s.follower_count} unit="명" /> : <span className="text-sm text-muted">-</span>}
+                        </div>
+                        <CellBar pct={folPct} background={CYAN_GRAD} />
+                      </CellCol>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
+    </div>
+  );
+}
+
+// 카테고리 분석 — 표 디자인을 스트리머 랭킹과 동일 규격으로 맞추고,
+// 행을 누르면 해당 카테고리로 방송 중인 스트리머 목록이 아래에 펼쳐진다.
+function CategoryTab({ cats, rank }: { cats: RisingCategories; rank: RisingLiveRanking | null }) {
+  const [picked, setPicked] = useState<string | null>(null);
+  const maxV = Math.max(1, ...cats.categories.map((c) => c.viewers));
+
+  return (
+    <div className="space-y-5">
+      <div className="card !p-4 md:!p-5">
+        <h3 className="section-title mb-1">카테고리(게임)별 현황</h3>
+        <p className="text-xs text-muted mb-4">
+          방송당 평균 = 시청자 ÷ 방송 수. 값이 높을수록 방송 대비 시청 유입(블루오션)이 큽니다.
+          행을 클릭하면 해당 카테고리로 방송 중인 스트리머 목록이 열립니다.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[620px]">
+            <thead>
+              <tr className="text-muted text-xs border-b border-border">
+                <th className="text-left font-medium py-2 pl-2 w-12">#</th>
+                <th className="text-left font-medium py-2">카테고리</th>
+                <th className="text-right font-medium py-2 px-6">시청자</th>
+                <th className="text-right font-medium py-2 px-6 hidden sm:table-cell">방송 수</th>
+                <th className="text-right font-medium py-2 px-6">방송당 평균</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cats.categories.map((c, i) => {
+                const medal = MEDALS[i];
+                const active = picked === c.category;
+                return (
+                  <tr key={c.category}
+                      onClick={() => setPicked(active ? null : c.category)}
+                      className="border-b border-border hover:bg-bg-hover/70 transition-colors cursor-pointer"
+                      style={active ? { background: "rgba(0,255,163,0.06)" } : undefined}>
+                    <td className="py-3.5 pl-2 tabular-nums text-sm align-top">
+                      {medal
+                        ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
+                        : <span className="text-muted">{i + 1}</span>}
+                    </td>
+                    <td className="py-3.5 align-top">
+                      <span className="inline-block max-w-[180px] truncate rounded-full border border-border
+                                       bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{c.category}</span>
+                    </td>
+                    <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
+                      <CellCol>
+                        <div className="text-right"><StatNum value={c.viewers} unit="명" /></div>
+                        <CellBar pct={(c.viewers / maxV) * 100} background={YELLOW_GRAD} />
+                      </CellCol>
+                    </td>
+                    <td className="py-3.5 px-6 text-right align-top hidden sm:table-cell">
+                      <StatNum value={c.lives} unit="개" />
+                    </td>
+                    <td className="py-3.5 px-6 text-right align-top tabular-nums font-bold">
+                      <GradText>{nf(c.avg_viewers)}</GradText>
+                      <span className="ml-0.5 text-[11px] font-normal text-muted">명</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {cats.categories.length === 0 && (
+          <p className="text-sm text-muted text-center py-6">카테고리 데이터가 아직 없습니다.</p>
+        )}
+      </div>
+
+      {picked && <CategoryStreamerList category={picked} rank={rank} onClose={() => setPicked(null)} />}
     </div>
   );
 }
@@ -1278,8 +1437,12 @@ export default function StatsPage() {
 
       <main className="flex-1 w-full px-4 md:px-6 py-7 md:py-9">
         <div className="mb-6">
-          <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight leading-tight">
-치지직 <GradText>방송</GradText> 통계
+          <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight leading-tight flex items-center gap-2 flex-wrap">
+            <span>치지직 <GradText>방송</GradText> 통계</span>
+            <span className="rounded-md border px-1.5 py-0.5 text-[11px] font-bold tracking-wide align-middle"
+                  style={{ color: GREEN, borderColor: "rgba(0,255,163,0.45)", background: "rgba(0,255,163,0.10)" }}>
+              Beta
+            </span>
           </h1>
           <div className="mt-2 flex items-end justify-between gap-3 flex-wrap">
             <p className="text-muted text-sm md:text-base">
@@ -1318,7 +1481,7 @@ export default function StatsPage() {
               {tab === "newcomers_analysis" && news && <NewcomersAnalysisTab data={news} onRanking={() => selectTab("newcomers_ranking")} />}
               {tab === "ranking"            && rank && <RankingTab rank={rank} />}
               {tab === "newcomers_ranking"  && news && <NewcomersRankingTab data={news} />}
-              {tab === "category"           && cats && <CategoryTab cats={cats} />}
+              {tab === "category"           && cats && <CategoryTab cats={cats} rank={rank} />}
             </div>
           </div>
         )}
