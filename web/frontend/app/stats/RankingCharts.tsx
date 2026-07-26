@@ -1,200 +1,374 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { BarChart3, ScatterChart, ChevronDown } from "lucide-react";
-import type { RisingStreamer } from "@/lib/types";
+import { BarChart3, ScatterChart, ChevronDown, RotateCcw } from "lucide-react";
 
 // 랭킹 테이블 상단 요약 차트. 외부 차트 라이브러리 없이 SVG/div로 그린다
-// (vis-network 도입 때 확인한 것처럼 차트 라이브러리는 번들이 크다).
+// (vis-network 도입 때 확인했듯 차트 라이브러리는 번들이 크다).
+// 전체 스트리머 랭킹과 신규 스트리머 랭킹이 공유하므로, Y축 지표를 주입받는다:
+//   전체 → 24시간 팔로워 증가량 / 신규 → 성장률(%). RisingNewcomer에는
+//   follower_prev24h가 없어 같은 축을 만들 수 없기 때문이다.
 
 const GREEN = "#00FFA3";
 const CYAN  = "#06B6D4";
-const PURPLE = "#A855F7";
 const UP = "#10B981", DOWN = "#EF4444";
 const nf = (n: number) => n.toLocaleString("ko-KR");
 const DAY_MS = 24 * 3600 * 1000;
 
-export interface ChartRow extends RisingStreamer { dur: { ms: number; label: string } }
+export interface ChartRow {
+  chzzk_channel_id: string;
+  channel_name: string;
+  channel_image_url: string;
+  concurrent_viewers: number;
+  follower_count: number;
+  category_name: string;
+  dur: { ms: number; label: string };
+  /** 막대 우측 변동률 — 전체 랭킹은 직전 수집 대비, 신규 랭킹은 성장률 */
+  deltaPct?: number | null;
+  /** 산점도 Y값 — 전체는 팔로워 증가량(명), 신규는 성장률(%) */
+  yValue?: number | null;
+}
+
+export interface YAxisSpec {
+  label: string;          // 예: '팔로워 증가량'
+  unit: string;           // 예: '명' / '%'
+  /** 값 차이가 커서 로그 스케일을 쓸지 (팔로워 증가량=true, 성장률=false) */
+  log: boolean;
+  tooltip: string;        // 툴팁 항목 이름
+}
+
+// 부호를 유지하는 로그 — 0과 음수를 다룰 수 있어야 한다(팔로워 감소/성장률 하락)
+const slog = (v: number) => Math.sign(v) * Math.log10(1 + Math.abs(v));
+const compact = (v: number) => {
+  const a = Math.abs(v);
+  if (a >= 10000) return `${(v / 1000).toFixed(0)}k`;
+  if (a >= 1000) return `${(v / 1000).toFixed(1)}k`;
+  return `${Math.round(v)}`;
+};
+const signed = (v: number) => (v > 0 ? `+${compact(v)}` : compact(v));
 
 // ── 컴포넌트 1: Top 10 수평 막대 ─────────────────────────────────────────────
-function BarPanel({ rows, onPick }: { rows: ChartRow[]; onPick: (id: string) => void }) {
+function BarPanel({ rows, onPick, deltaName }:
+  { rows: ChartRow[]; onPick: (id: string) => void; deltaName: string }) {
   const top = rows.slice(0, 10);
   const max = Math.max(1, ...top.map((r) => r.concurrent_viewers));
 
   return (
     <div className="space-y-1.5">
-      {top.map((r, i) => {
-        const pct = (r.concurrent_viewers / max) * 100;
-        const delta = r.viewers_prev && r.viewers_prev > 0
-          ? ((r.concurrent_viewers - r.viewers_prev) / r.viewers_prev) * 100 : null;
-        return (
-          <div key={r.chzzk_channel_id} className="group relative flex items-center gap-2">
-            {/* Y축: 순위 + 프로필 + 닉네임 */}
-            <span className="w-5 shrink-0 text-right text-[11px] tabular-nums text-muted">{i + 1}</span>
-            <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full bg-bg-hover">
-              {r.channel_image_url && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={r.channel_image_url} alt="" width={24} height={24} loading="lazy" className="h-full w-full object-cover" />
-              )}
-            </span>
-            <button type="button" onClick={() => onPick(r.chzzk_channel_id)}
-              className="w-[104px] shrink-0 truncate text-left text-xs font-semibold text-fg hover:text-accent transition-colors">
-              {r.channel_name}
-            </button>
+      {top.map((r, i) => (
+        <div key={r.chzzk_channel_id} className="group relative flex items-center gap-2">
+          <span className="w-5 shrink-0 text-right text-[11px] tabular-nums text-muted">{i + 1}</span>
+          <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full bg-bg-hover">
+            {r.channel_image_url && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={r.channel_image_url} alt="" width={24} height={24} loading="lazy" className="h-full w-full object-cover" />
+            )}
+          </span>
+          <button type="button" onClick={() => onPick(r.chzzk_channel_id)}
+            className="w-[104px] shrink-0 truncate text-left text-xs font-semibold text-fg transition-colors hover:text-accent">
+            {r.channel_name}
+          </button>
 
-            {/* X축: 시청자 막대 */}
-            <div className="h-3.5 flex-1 overflow-hidden rounded bg-bg-hover">
-              <div className="h-full rounded transition-all"
-                   style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${GREEN}, ${CYAN})` }} />
-            </div>
-
-            {/* 막대 우측: 변동률 + 시청자 수 */}
-            <span className="flex w-[116px] shrink-0 items-center justify-end gap-1 text-right tabular-nums">
-              {delta !== null && (
-                <span className="text-[10px] font-semibold" style={{ color: delta >= 0 ? UP : DOWN }}>
-                  {delta >= 0 ? "▲" : "▼"} {Math.abs(delta).toFixed(1)}%
-                </span>
-              )}
-              <span className="text-xs font-bold text-fg">{nf(r.concurrent_viewers)}명</span>
-            </span>
-
-            {/* 호버 툴팁 — 방송 시간 / 팔로워 상세 */}
-            <div className="pointer-events-none absolute left-[140px] top-full z-30 mt-1 hidden whitespace-nowrap
-                            rounded-lg border border-border bg-bg-card px-3 py-2 text-[11px] leading-relaxed
-                            text-fg shadow-2xl group-hover:block">
-              <b className="block">{r.channel_name}</b>
-              방송 시간 {r.dur.label} · 팔로워 {r.follower_count > 0 ? `${nf(r.follower_count)}명` : "미집계"}
-              {r.follower_prev24h != null && (
-                <> · 24h 신규 <b style={{ color: GREEN }}>+{nf(Math.max(0, r.follower_count - r.follower_prev24h))}</b></>
-              )}
-              {r.category_name && <><br />카테고리 {r.category_name}</>}
-            </div>
+          <div className="h-3.5 flex-1 overflow-hidden rounded bg-bg-hover">
+            <div className="h-full rounded transition-all"
+                 style={{ width: `${(r.concurrent_viewers / max) * 100}%`,
+                          background: `linear-gradient(90deg, ${GREEN}, ${CYAN})` }} />
           </div>
-        );
-      })}
+
+          <span className="flex w-[116px] shrink-0 items-center justify-end gap-1 text-right tabular-nums">
+            {r.deltaPct != null && (
+              <span className="text-[10px] font-semibold" style={{ color: r.deltaPct >= 0 ? UP : DOWN }}>
+                {r.deltaPct >= 0 ? "▲" : "▼"} {Math.abs(r.deltaPct).toFixed(1)}%
+              </span>
+            )}
+            <span className="text-xs font-bold text-fg">{nf(r.concurrent_viewers)}명</span>
+          </span>
+
+          <div className="pointer-events-none absolute left-[140px] top-full z-30 mt-1 hidden whitespace-nowrap
+                          rounded-lg border border-border bg-bg-card px-3 py-2 text-[11px] leading-relaxed
+                          text-fg shadow-2xl group-hover:block">
+            <b className="block">{r.channel_name}</b>
+            방송 시간 {r.dur.label} · 팔로워 {r.follower_count > 0 ? `${nf(r.follower_count)}명` : "미집계"}
+            {r.deltaPct != null && <> · {deltaName} {r.deltaPct >= 0 ? "+" : ""}{r.deltaPct.toFixed(1)}%</>}
+            {r.category_name && <><br />카테고리 {r.category_name}</>}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
 
 // ── 컴포넌트 2: 성장성 산점도 ────────────────────────────────────────────────
-// X=시청자(체급), Y=팔로워 증가량(유입), 버블 크기=방송 시간.
-// X는 시청자가 수십~수만으로 자릿수가 달라 log 스케일을 쓴다(선형이면 좌측에 뭉친다).
-function ScatterPanel({ rows, onPick }: { rows: ChartRow[]; onPick: (id: string) => void }) {
+const W = 760, H = 380, P = { l: 58, r: 18, t: 16, b: 40 };
+
+function ScatterPanel({ rows, onPick, y }:
+  { rows: ChartRow[]; onPick: (id: string) => void; y: YAxisSpec }) {
   const [hover, setHover] = useState<string | null>(null);
+  // 보이는 영역(정규화 0~1 도메인). 줌/팬은 이 도메인을 바꾸므로 눈금 라벨도 함께 정확해진다.
+  const [view, setView] = useState({ x0: 0, x1: 1, y0: 0, y1: 1 });
+  const drag = useRef<{ mx: number; my: number; v: typeof view } | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
 
-  const pts = useMemo(() => {
-    // 팔로워 증가량은 24시간 전 스냅샷이 있는 채널만 계산 가능하다
-    const usable = rows.filter((r) => r.follower_prev24h != null && r.follower_count > 0);
+  const data = useMemo(() => {
+    const usable = rows.filter((r) => r.yValue != null && isFinite(r.yValue));
     if (usable.length === 0) return null;
-    const gains = usable.map((r) => r.follower_count - (r.follower_prev24h as number));
-    const yMax = Math.max(1, ...gains), yMin = Math.min(0, ...gains);
-    const xVals = usable.map((r) => Math.log10(Math.max(1, r.concurrent_viewers)));
-    const xMax = Math.max(...xVals), xMin = Math.min(...xVals);
-    const maxDur = Math.max(1, ...usable.map((r) => r.dur.ms));
-    return usable.map((r, i) => ({
-      r,
-      gain: gains[i],
-      x: (xVals[i] - xMin) / Math.max(0.0001, xMax - xMin),
-      y: (gains[i] - yMin) / Math.max(1, yMax - yMin),
-      rad: 7 + (Math.min(r.dur.ms, DAY_MS) / Math.min(maxDur, DAY_MS)) * 11,
-    }));
-  }, [rows]);
 
-  const W = 720, H = 340, P = { l: 46, r: 16, t: 14, b: 34 };
-  if (!pts) {
+    const xr = usable.map((r) => Math.log10(Math.max(1, r.concurrent_viewers)));
+    const yr = usable.map((r) => (y.log ? slog(r.yValue as number) : (r.yValue as number)));
+    const xMin = Math.min(...xr), xMax = Math.max(...xr);
+    const yMin = Math.min(...yr), yMax = Math.max(...yr);
+    const maxDur = Math.max(1, ...usable.map((r) => r.dur.ms));
+    const nx = (v: number) => (v - xMin) / Math.max(1e-6, xMax - xMin);
+    const ny = (v: number) => (v - yMin) / Math.max(1e-6, yMax - yMin);
+
+    const pts = usable.map((r, i) => {
+      // 지터: 완전히 같은 좌표에 뭉치는 것을 막되 채널 id로 결정론적으로 만들어
+      // 리렌더마다 위치가 흔들리지 않게 한다(±3px 상당)
+      let h = 0;
+      for (let k = 0; k < r.chzzk_channel_id.length; k++) h = (h * 31 + r.chzzk_channel_id.charCodeAt(k)) >>> 0;
+      const jx = (((h % 100) / 100) - 0.5) * 0.012;
+      const jy = ((((h >> 7) % 100) / 100) - 0.5) * 0.012;
+      return {
+        r, yv: r.yValue as number,
+        x: Math.min(1, Math.max(0, nx(xr[i]) + jx)),
+        yn: Math.min(1, Math.max(0, ny(yr[i]) + jy)),
+        rad: 7 + (Math.min(r.dur.ms, DAY_MS) / Math.min(maxDur, DAY_MS)) * 11,
+      };
+    });
+
+    // 축 눈금 — 데이터 값으로 만들어 정규화 좌표로 변환(줌해도 라벨이 맞는다)
+    const xTickVals = [1, 10, 100, 1000, 10000, 100000].filter(
+      (v) => Math.log10(v) >= xMin - 0.3 && Math.log10(v) <= xMax + 0.3);
+    const xTicks = xTickVals.map((v) => ({ n: nx(Math.log10(v)), text: compact(v) }));
+
+    const rawYMin = Math.min(...usable.map((r) => r.yValue as number));
+    const rawYMax = Math.max(...usable.map((r) => r.yValue as number));
+    const cand = y.log
+      ? [-10000, -1000, -100, 0, 100, 1000, 10000, 100000]
+      : [-100, -50, 0, 50, 100, 200, 500, 1000, 2000];
+    const yTicks = cand
+      .filter((v) => v >= rawYMin - Math.abs(rawYMin) * 0.05 && v <= rawYMax + Math.abs(rawYMax) * 0.05)
+      .map((v) => ({ n: ny(y.log ? slog(v) : v), text: `${signed(v)}${y.unit === "%" ? "%" : ""}` }));
+
+    // 4분면 기준선 = 중앙값(평균은 이상치에 끌려간다)
+    const med = (a: number[]) => { const s = [...a].sort((p, q) => p - q); return s[Math.floor(s.length / 2)]; };
+    return { pts, xTicks, yTicks, medX: med(pts.map((p) => p.x)), medY: med(pts.map((p) => p.yn)) };
+  }, [rows, y]);
+
+  if (!data) {
     return (
       <p className="py-12 text-center text-sm text-muted">
-        팔로워 증가량을 계산할 24시간 전 데이터가 아직 없습니다.
+        {y.label}을 계산할 데이터가 아직 없습니다.
       </p>
     );
   }
-  const px = (v: number) => P.l + v * (W - P.l - P.r);
-  const py = (v: number) => H - P.b - v * (H - P.t - P.b);
-  const hp = pts.find((p) => p.r.chzzk_channel_id === hover);
+
+  // 정규화 좌표 → 화면 좌표 (현재 보이는 도메인 기준)
+  const sx = (n: number) => P.l + ((n - view.x0) / (view.x1 - view.x0)) * (W - P.l - P.r);
+  const sy = (n: number) => H - P.b - ((n - view.y0) / (view.y1 - view.y0)) * (H - P.t - P.b);
+  const inView = (n: number, a: number, b: number) => n >= a - 0.02 && n <= b + 0.02;
+
+  const onWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    // 커서 위치를 도메인 좌표로 환산해 그 점을 고정한 채 확대/축소
+    const fx = view.x0 + ((e.clientX - rect.left) / rect.width * W - P.l) / (W - P.l - P.r) * (view.x1 - view.x0);
+    const fy = view.y0 + (1 - ((e.clientY - rect.top) / rect.height * H - P.t) / (H - P.t - P.b)) * (view.y1 - view.y0);
+    const k = e.deltaY > 0 ? 1.2 : 1 / 1.2;
+    const w = Math.min(1, Math.max(0.06, (view.x1 - view.x0) * k));
+    const h = Math.min(1, Math.max(0.06, (view.y1 - view.y0) * k));
+    let x0 = fx - (fx - view.x0) * (w / (view.x1 - view.x0));
+    let y0 = fy - (fy - view.y0) * (h / (view.y1 - view.y0));
+    x0 = Math.min(1 - w, Math.max(0, x0));
+    y0 = Math.min(1 - h, Math.max(0, y0));
+    setView({ x0, x1: x0 + w, y0, y1: y0 + h });
+  };
+
+  const onDown = (e: React.MouseEvent) => { drag.current = { mx: e.clientX, my: e.clientY, v: view }; };
+  const onMove = (e: React.MouseEvent) => {
+    const d = drag.current;
+    if (!d || !svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const dx = ((e.clientX - d.mx) / rect.width) * (d.v.x1 - d.v.x0);
+    const dy = ((e.clientY - d.my) / rect.height) * (d.v.y1 - d.v.y0);
+    const w = d.v.x1 - d.v.x0, h = d.v.y1 - d.v.y0;
+    const x0 = Math.min(1 - w, Math.max(0, d.v.x0 - dx));
+    const y0 = Math.min(1 - h, Math.max(0, d.v.y0 + dy));
+    setView({ x0, x1: x0 + w, y0, y1: y0 + h });
+  };
+  const endDrag = () => { drag.current = null; };
+  const zoomed = view.x0 !== 0 || view.x1 !== 1 || view.y0 !== 0 || view.y1 !== 1;
+
+  // 호버된 버블을 마지막에 그려 z-order 최상단으로 올린다(SVG는 문서 순서대로 페인트)
+  const ordered = [...data.pts].sort((a, b) =>
+    (a.r.chzzk_channel_id === hover ? 1 : 0) - (b.r.chzzk_channel_id === hover ? 1 : 0));
+  const hp = data.pts.find((p) => p.r.chzzk_channel_id === hover);
 
   return (
     <div className="relative">
-      <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ minWidth: 560, display: "block" }}>
-          <defs>
-            {pts.map((p) => (
-              <clipPath key={p.r.chzzk_channel_id} id={`c-${p.r.chzzk_channel_id}`}>
-                <circle cx={px(p.x)} cy={py(p.y)} r={p.rad} />
-              </clipPath>
-            ))}
-          </defs>
+      <div className="mb-1 flex items-center justify-end gap-2">
+        {zoomed && (
+          <button type="button" onClick={() => setView({ x0: 0, x1: 1, y0: 0, y1: 1 })}
+            className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px]
+                       text-muted transition-colors hover:text-fg">
+            <RotateCcw size={11} /> 확대 초기화
+          </button>
+        )}
+      </div>
 
-          {/* 격자 + 축 */}
-          {[0, 0.25, 0.5, 0.75, 1].map((g) => (
-            <line key={g} x1={P.l} y1={py(g)} x2={W - P.r} y2={py(g)}
-                  stroke="rgb(var(--color-border-rgb))" strokeWidth="1" opacity="0.5" />
+      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" height={H}
+           style={{ display: "block", cursor: drag.current ? "grabbing" : "grab", touchAction: "none" }}
+           onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove}
+           onMouseUp={endDrag} onMouseLeave={() => { endDrag(); setHover(null); }}>
+        <defs>
+          <clipPath id="plot-clip">
+            <rect x={P.l} y={P.t} width={W - P.l - P.r} height={H - P.t - P.b} />
+          </clipPath>
+          <linearGradient id="q1-grad" x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0%" stopColor={GREEN} stopOpacity="0.03" />
+            <stop offset="100%" stopColor={GREEN} stopOpacity="0.16" />
+          </linearGradient>
+          {data.pts.map((p) => (
+            <clipPath key={p.r.chzzk_channel_id} id={`c-${p.r.chzzk_channel_id}`}>
+              <circle cx={sx(p.x)} cy={sy(p.yn)}
+                      r={p.rad * (hover === p.r.chzzk_channel_id ? 1.2 : 1)} />
+            </clipPath>
           ))}
-          <text x={P.l - 8} y={py(1)} textAnchor="end" fontSize="10" fill="rgb(var(--color-muted-rgb))">많음</text>
-          <text x={P.l - 8} y={py(0) + 4} textAnchor="end" fontSize="10" fill="rgb(var(--color-muted-rgb))">적음</text>
-          <text x={P.l} y={H - 10} fontSize="10" fill="rgb(var(--color-muted-rgb))">시청자 적음</text>
-          <text x={W - P.r} y={H - 10} textAnchor="end" fontSize="10" fill="rgb(var(--color-muted-rgb))">시청자 많음 →</text>
-          <text x={12} y={P.t + 8} fontSize="10" fill="rgb(var(--color-muted-rgb))">팔로워</text>
-          <text x={12} y={P.t + 20} fontSize="10" fill="rgb(var(--color-muted-rgb))">증가량</text>
+        </defs>
 
-          {/* 버블 — 프로필 이미지를 원형 크롭해 넣는다 */}
-          {pts.map((p) => {
+        <g clipPath="url(#plot-clip)">
+          {/* 1분면(우상향) 강조 — '슈퍼 라이징 구간' */}
+          <rect x={sx(data.medX)} y={P.t}
+                width={Math.max(0, W - P.r - sx(data.medX))}
+                height={Math.max(0, sy(data.medY) - P.t)} fill="url(#q1-grad)" />
+
+          {/* 눈금 격자 */}
+          {data.yTicks.filter((t) => inView(t.n, view.y0, view.y1)).map((t, i) => (
+            <line key={`gy${i}`} x1={P.l} y1={sy(t.n)} x2={W - P.r} y2={sy(t.n)}
+                  stroke="rgb(var(--color-border-rgb))" strokeWidth="1" opacity="0.45" />
+          ))}
+          {data.xTicks.filter((t) => inView(t.n, view.x0, view.x1)).map((t, i) => (
+            <line key={`gx${i}`} x1={sx(t.n)} y1={P.t} x2={sx(t.n)} y2={H - P.b}
+                  stroke="rgb(var(--color-border-rgb))" strokeWidth="1" opacity="0.3" />
+          ))}
+
+          {/* 4분면 십자 가이드(중앙값) */}
+          <line x1={sx(data.medX)} y1={P.t} x2={sx(data.medX)} y2={H - P.b}
+                stroke="rgb(var(--color-muted-rgb))" strokeWidth="1" strokeDasharray="4 4" opacity="0.55" />
+          <line x1={P.l} y1={sy(data.medY)} x2={W - P.r} y2={sy(data.medY)}
+                stroke="rgb(var(--color-muted-rgb))" strokeWidth="1" strokeDasharray="4 4" opacity="0.55" />
+          <text x={W - P.r - 6} y={P.t + 14} textAnchor="end" fontSize="10"
+                fill={GREEN} opacity="0.75" style={{ pointerEvents: "none" }}>
+            슈퍼 라이징 구간
+          </text>
+
+          {/* 버블 */}
+          {ordered.map((p) => {
             const on = hover === p.r.chzzk_channel_id;
+            const rr = p.rad * (on ? 1.2 : 1);
             return (
               <g key={p.r.chzzk_channel_id} style={{ cursor: "pointer" }}
                  onMouseEnter={() => setHover(p.r.chzzk_channel_id)}
-                 onMouseLeave={() => setHover(null)}
                  onClick={() => onPick(p.r.chzzk_channel_id)}>
-                <circle cx={px(p.x)} cy={py(p.y)} r={p.rad + 2}
-                        fill={on ? GREEN : "rgba(0,255,163,0.18)"} opacity={on ? 0.5 : 1} />
+                <circle cx={sx(p.x)} cy={sy(p.yn)} r={rr + 2}
+                        fill={on ? GREEN : "rgba(0,255,163,0.16)"} opacity={on ? 0.45 : 1} />
                 {p.r.channel_image_url && (
                   <image href={p.r.channel_image_url}
-                         x={px(p.x) - p.rad} y={py(p.y) - p.rad}
-                         width={p.rad * 2} height={p.rad * 2}
+                         x={sx(p.x) - rr} y={sy(p.yn) - rr} width={rr * 2} height={rr * 2}
                          clipPath={`url(#c-${p.r.chzzk_channel_id})`}
                          preserveAspectRatio="xMidYMid slice" />
                 )}
-                <circle cx={px(p.x)} cy={py(p.y)} r={p.rad} fill="none"
+                <circle cx={sx(p.x)} cy={sy(p.yn)} r={rr} fill="none"
                         stroke={on ? "#fff" : GREEN} strokeWidth={on ? 2 : 1.5} />
               </g>
             );
           })}
-        </svg>
-      </div>
+        </g>
 
+        {/* 축 — 클립 밖에 그려 항상 보이게 한다 */}
+        <line x1={P.l} y1={H - P.b} x2={W - P.r} y2={H - P.b} stroke="rgb(var(--color-border-rgb))" />
+        <line x1={P.l} y1={P.t} x2={P.l} y2={H - P.b} stroke="rgb(var(--color-border-rgb))" />
+
+        {data.yTicks.filter((t) => inView(t.n, view.y0, view.y1)).map((t, i) => (
+          <text key={`ty${i}`} x={P.l - 7} y={sy(t.n) + 3} textAnchor="end" fontSize="10"
+                fill="rgb(var(--color-muted-rgb))">{t.text}</text>
+        ))}
+        {data.xTicks.filter((t) => inView(t.n, view.x0, view.x1)).map((t, i) => (
+          <text key={`tx${i}`} x={sx(t.n)} y={H - P.b + 14} textAnchor="middle" fontSize="10"
+                fill="rgb(var(--color-muted-rgb))">{t.text}</text>
+        ))}
+
+        {/* 축 제목 — Y축은 세로로 회전해 눈금 라벨과 겹치지 않게 한다 */}
+        <text x={14} y={(P.t + H - P.b) / 2} fontSize="10" fill="rgb(var(--color-muted-rgb))"
+              textAnchor="middle" transform={`rotate(-90 14 ${(P.t + H - P.b) / 2})`}>
+          {y.label} ({y.unit})
+        </text>
+        <text x={(P.l + W - P.r) / 2} y={H - 6} textAnchor="middle" fontSize="10"
+              fill="rgb(var(--color-muted-rgb))">현재 시청자 (명, 로그 스케일)</text>
+      </svg>
+
+      {/* 다크 툴팁 */}
       {hp && (
-        <div className="pointer-events-none absolute z-30 rounded-lg border border-border bg-bg-card
-                        px-3 py-2 text-[11px] leading-relaxed text-fg shadow-2xl"
-             style={{ left: `min(${(px(hp.x) / W) * 100}%, calc(100% - 200px))`, top: py(hp.y) + 16 }}>
-          <b className="block">{hp.r.channel_name}</b>
-          시청자 {nf(hp.r.concurrent_viewers)}명 · 방송 {hp.r.dur.label}<br />
-          팔로워 {nf(hp.r.follower_count)}명 (24h <b style={{ color: hp.gain >= 0 ? GREEN : DOWN }}>
-            {hp.gain >= 0 ? "+" : ""}{nf(hp.gain)}</b>)
+        <div className="pointer-events-none absolute z-40 w-[210px] rounded-xl border border-border
+                        bg-bg-card/95 p-3 shadow-2xl backdrop-blur"
+             style={{ left: `min(${(sx(hp.x) / W) * 100}%, calc(100% - 220px))`,
+                      top: Math.min(sy(hp.yn) + 18, H - 40) }}>
+          <div className="flex items-center gap-2">
+            <span className="h-7 w-7 shrink-0 overflow-hidden rounded-full bg-bg-hover">
+              {hp.r.channel_image_url && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={hp.r.channel_image_url} alt="" width={28} height={28} className="h-full w-full object-cover" />
+              )}
+            </span>
+            <b className="truncate text-xs text-fg">{hp.r.channel_name}</b>
+          </div>
+          <dl className="mt-2 space-y-0.5 text-[11px]">
+            <div className="flex justify-between gap-2">
+              <dt className="text-muted">현재 시청자</dt>
+              <dd className="tabular-nums text-fg">{nf(hp.r.concurrent_viewers)}명</dd>
+            </div>
+            <div className="flex justify-between gap-2">
+              <dt className="text-muted">{y.tooltip}</dt>
+              <dd className="tabular-nums font-semibold" style={{ color: hp.yv >= 0 ? GREEN : DOWN }}>
+                {hp.yv >= 0 ? "+" : ""}{nf(Math.round(hp.yv))}{y.unit}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-2">
+              <dt className="text-muted">방송 시간</dt>
+              <dd className="tabular-nums text-fg">{hp.r.dur.label}</dd>
+            </div>
+          </dl>
         </div>
       )}
 
       <p className="mt-2 text-[11px] text-muted">
-        * 우상향에 위치할수록 시청자 대비 팔로워 유입 증가율이 높은 성장세 스트리머입니다.
-        버블이 클수록 방송 시간이 깁니다 · X축은 시청자 규모 차이가 커서 로그 스케일입니다 ·
-        24시간 전 팔로워가 집계된 채널만 표시됩니다.
+        * 우상향에 위치할수록 시청자 대비 {y.label} 증가율이 높은 성장세 스트리머입니다.
+        버블이 클수록 방송 시간이 깁니다 · 점선은 중앙값 기준 4분면 · 마우스 휠로 확대,
+        드래그로 이동할 수 있습니다{y.log && " · 값 차이가 커서 두 축 모두 로그 스케일입니다"}.
       </p>
     </div>
   );
 }
 
 // ── 래퍼: 접기/펼치기 + 차트 전환 ────────────────────────────────────────────
-export default function RankingCharts({ rows }: { rows: ChartRow[] }) {
+export default function RankingCharts({ rows, y, deltaName = "변동률" }:
+  { rows: ChartRow[]; y: YAxisSpec; deltaName?: string }) {
   const [open, setOpen] = useState(true);
   const [mode, setMode] = useState<"bar" | "scatter">("bar");
   const router = useRouter();
   const pick = (id: string) => router.push(`/stats/streamer/${id}`);
 
-  const tabBtn = (active: boolean) =>
-    "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors " +
-    (active ? "" : "hover:text-fg");
+  const tab = (active: boolean) => ({
+    background: active ? "rgba(0,255,163,0.1)" : "transparent",
+    borderColor: active ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
+    color: active ? GREEN : "rgb(var(--color-muted-rgb))",
+  });
 
   return (
     <div className="card !p-4 md:!p-5">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <button type="button" onClick={() => setOpen((v) => !v)}
           className="flex items-center gap-1.5 text-left" aria-expanded={open}>
           <h3 className="section-title">랭킹 요약 차트</h3>
@@ -205,35 +379,32 @@ export default function RankingCharts({ rows }: { rows: ChartRow[] }) {
 
         {open && (
           <div className="flex shrink-0 items-center gap-1.5">
-            <button type="button" onClick={() => setMode("bar")} className={tabBtn(mode === "bar")}
-              style={{ background: mode === "bar" ? "rgba(0,255,163,0.1)" : "transparent",
-                       borderColor: mode === "bar" ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
-                       color: mode === "bar" ? GREEN : "rgb(var(--color-muted-rgb))" }}>
+            <button type="button" onClick={() => setMode("bar")}
+              className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
+              style={tab(mode === "bar")}>
               <BarChart3 size={13} /> Top 10 시청자
             </button>
-            <button type="button" onClick={() => setMode("scatter")} className={tabBtn(mode === "scatter")}
-              style={{ background: mode === "scatter" ? "rgba(0,255,163,0.1)" : "transparent",
-                       borderColor: mode === "scatter" ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
-                       color: mode === "scatter" ? GREEN : "rgb(var(--color-muted-rgb))" }}>
+            <button type="button" onClick={() => setMode("scatter")}
+              className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
+              style={tab(mode === "scatter")}>
               <ScatterChart size={13} /> 성장성 분석
             </button>
           </div>
         )}
       </div>
 
-      {/* max-height 전환으로 접는다 — 내용이 DOM에 남아 레이아웃 점프가 적다 */}
       <div className="overflow-hidden transition-[max-height] duration-300 ease-in-out"
-           style={{ maxHeight: open ? 1200 : 0 }}>
+           style={{ maxHeight: open ? 1400 : 0 }}>
         <p className="mb-3 mt-1 text-[11px] text-muted">
           {mode === "bar"
             ? "동시 시청자 상위 10명 · 막대에 마우스를 올리면 방송 시간과 팔로워를 볼 수 있습니다."
-            : "체급(시청자) 대비 팔로워 유입을 한눈에 비교합니다."}
+            : `체급(시청자) 대비 ${y.label}을 한눈에 비교합니다.`}
         </p>
         {rows.length === 0
           ? <p className="py-10 text-center text-sm text-muted">랭킹 데이터가 아직 없습니다.</p>
           : mode === "bar"
-            ? <BarPanel rows={rows} onPick={pick} />
-            : <ScatterPanel rows={rows} onPick={pick} />}
+            ? <BarPanel rows={rows} onPick={pick} deltaName={deltaName} />
+            : <ScatterPanel rows={rows} onPick={pick} y={y} />}
       </div>
     </div>
   );

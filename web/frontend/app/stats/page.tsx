@@ -697,7 +697,17 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
   return (
     <div className="space-y-5">
       {/* 랭킹 요약 차트 (Top 10 수평 막대 / 성장성 산점도) */}
-      <RankingCharts rows={filtered} />
+      <RankingCharts
+        rows={filtered.map((s) => ({
+          ...s,
+          deltaPct: s.viewers_prev && s.viewers_prev > 0
+            ? ((s.concurrent_viewers - s.viewers_prev) / s.viewers_prev) * 100 : null,
+          // 팔로워 증가량은 24시간 전 스냅샷이 있는 채널만 계산 가능
+          yValue: s.follower_prev24h != null && s.follower_count > 0
+            ? s.follower_count - s.follower_prev24h : null,
+        }))}
+        y={{ label: "팔로워 증가량", unit: "명", log: true, tooltip: "팔로워 증가" }}
+        deltaName="직전 대비" />
 
       <div className="card !p-4 md:!p-5">
       {/* 컨트롤 — 정렬만 (검색바는 제거) */}
@@ -1195,6 +1205,12 @@ function NewcomersRankingTab({ data }: { data: RisingNewcomers }) {
 
   return (
     <div className="space-y-5">
+      {/* 랭킹 요약 차트 — 신규는 팔로워 증가량(follower_prev24h)이 없어 Y축을 성장률로 쓴다 */}
+      <RankingCharts
+        rows={sorted.map((s) => ({ ...s, deltaPct: s.growth_rate, yValue: s.growth_rate }))}
+        y={{ label: "성장률", unit: "%", log: false, tooltip: "성장률" }}
+        deltaName="성장률" />
+
       <div className="card !p-4 md:!p-5">
         <div className="flex items-center gap-2 mb-4 flex-wrap">
           <SortBtn k="growth" label="급성장순" />
