@@ -85,10 +85,17 @@ export default function StreamerPage() {
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    Promise.all([api.rising.streamer(channelId, days), api.rising.streamerDetail(channelId, days)])
-      .then(([d, dt]) => { if (alive) { setData(d); setDetail(dt); } })
-      .catch(() => { if (alive) { setData(null); setDetail(null); } })
+    // 두 요청을 분리한다. detail(시간대·세션·랭킹 추이)은 무거운데(실측 수 초)
+    // Promise.all로 묶으면 가벼운 streamer(0.7초)까지 기다리게 돼 페이지 전체가 멈춰 보였다.
+    // 이제 본문은 streamer가 오는 즉시 그려지고, detail은 해당 탭에서 개별로 채워진다.
+    api.rising.streamer(channelId, days)
+      .then((d) => { if (alive) setData(d); })
+      .catch(() => { if (alive) setData(null); })
       .finally(() => { if (alive) setLoading(false); });
+    setDetail(null);
+    api.rising.streamerDetail(channelId, days)
+      .then((dt) => { if (alive) setDetail(dt); })
+      .catch(() => { if (alive) setDetail(null); });
     return () => { alive = false; };
   }, [channelId, days]);
 

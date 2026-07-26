@@ -624,6 +624,9 @@ async def search(keyword: str, size: int = 8):
 async def _fetch_first_broadcast(channel_id: str) -> str | None:
     """채널 다시보기(VOD) 목록에서 가장 오래된 영상 날짜로 첫 방송을 추정한다(공식 API에
     개설일/첫방송일 필드가 없어 이 방식이 유일). VOD 삭제 등으로 실제보다 늦을 수 있어 '추정'."""
+    # 채널 ID가 URL에 그대로 들어가므로 형식을 먼저 검증한다
+    if not _valid_channel_id(channel_id):
+        return None
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(
@@ -739,7 +742,8 @@ async def streamer(channel_id: str, days: int = 30):
     live_follower = None
     try:
         async with httpx.AsyncClient() as _c:
-            live_follower, _ = await _fetch_channel_meta(_c, channel_id)
+            if _valid_channel_id(channel_id):
+                live_follower, _ = await _fetch_channel_meta(_c, channel_id)
     except Exception:
         live_follower = None
     snap_follower = int(live_row["follower_count"]) if live_row else int(last["max_follower"] or 0)
@@ -988,9 +992,20 @@ async def category_streamers(category: str, enrich: bool = True):
 # 개인 분석 페이지의 서브 탭(통계·방송기록·랭킹)에 필요한 집계.
 # 전부 rising_hourly_rollup에서 계산한다 — 원본은 26시간만 보관하므로 장기 이력의
 # 유일한 소스이며, 시간 단위 지표는 롤업으로 정보 손실 없이 재현된다.
+# 채널별 detail 캐시 — rank_daily의 윈도우 함수가 무거워(실측 약 4.5초) 새로고침마다
+# 다시 계산하면 체감이 크게 나빠진다. 수집 주기가 10분이라 60초 캐시는 신선도 손실이 없다.
+_detail_cache: dict = {}
+_DETAIL_TTL = 60
+
+
 @router.get("/streamer/{channel_id}/detail")
 async def streamer_detail(channel_id: str, days: int = 30):
     days = max(1, min(400, days))
+    ck = (channel_id, days)
+    hit = _detail_cache.get(ck)
+    now_s = time.time()
+    if hit and now_s - hit[0] < _DETAIL_TTL:
+        return hit[1]
     ts = await _latest_run_ts()
     if ts is None:
         return {"channel_id": channel_id, "hourly": [], "sessions": [], "rank_daily": []}
@@ -1090,8 +1105,13 @@ async def streamer_detail(channel_id: str, days: int = 30):
         for r in rrows
     ]
 
-    return {"channel_id": channel_id, "window_days": days,
-            "hourly": hourly, "sessions": out_sessions, "rank_daily": rank_daily}
+    result = {"channel_id": channel_id, "window_days": days,
+              "hourly": hourly, "sessions": out_sessions, "rank_daily": rank_daily}
+    # 캐시가 무한정 커지지 않도록 상한을 둔다(채널 수만큼 늘어날 수 있다)
+    if len(_detail_cache) > 200:
+        _detail_cache.clear()
+    _detail_cache[ck] = (now_s, result)
+    return result
 
 
 @router.get("/streamer/{channel_id}/session")
@@ -1365,6 +1385,15 @@ _TITLE_STOP = {
     "with", "the", "and", "for", "live", "new",
 }
 _TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9]+")
+
+# 치지직 채널 ID는 32자리 16진수다. 이 값은 경로 파라미터로 들어와 외부 API URL에
+# 그대로 붙으므로(f"{_CHZZK_API}/service/v1/channels/{channel_id}/videos"),
+# 형식을 검증해 URL 조작(경로 이탈 등) 여지를 없앤다.
+_CHANNEL_ID_RE = re.compile(r"^[0-9a-fA-F]{8,64}$")
+
+
+def _valid_channel_id(cid: str) -> bool:
+    return bool(_CHANNEL_ID_RE.match(cid or ""))
 
 
 @router.get("/title-keywords")
