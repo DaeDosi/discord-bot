@@ -418,3 +418,13 @@ export interface StreamerDetail {
 }
 export interface SessionPoint { t: number; viewers: number; peak?: number; category: string; title: string; }
 export interface StreamerSessionSeries { resolution: "10m" | "1h"; points: SessionPoint[]; }
+
+// 태그 검색
+export interface RisingTag { tag: string; lives: number; viewers: number; avg_viewers: number; }
+export interface RisingTags { collected_at: number | null; tags: RisingTag[]; }
+export interface TagStreamer {
+  chzzk_channel_id: string; channel_name: string; channel_image_url: string;
+  concurrent_viewers: number; viewers_prev: number | null; category_name: string;
+  open_date: string; follower_count: number; live_title: string; tags: string[]; adult: boolean;
+}
+export interface RisingTagStreamers { collected_at: number | null; tag: string; streamers: TagStreamer[]; }

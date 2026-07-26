@@ -182,6 +182,10 @@ export const api = {
       fetch(`${BASE}/api/rising/streamer/${encodeURIComponent(cid)}/detail?days=${days}`).then(r => r.json()) as Promise<import("./types").StreamerDetail>,
     streamerSession: (cid: string, start: number, end: number) =>
       fetch(`${BASE}/api/rising/streamer/${encodeURIComponent(cid)}/session?start=${start}&end=${end}`).then(r => r.json()) as Promise<import("./types").StreamerSessionSeries>,
+    tags: (limit = 60) =>
+      fetch(`${BASE}/api/rising/tags?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingTags>,
+    tagStreamers: (tag: string) =>
+      fetch(`${BASE}/api/rising/tag-streamers?tag=${encodeURIComponent(tag)}`).then(r => r.json()) as Promise<import("./types").RisingTagStreamers>,
     search: (keyword: string) =>
       fetch(`${BASE}/api/rising/search?keyword=${encodeURIComponent(keyword)}`).then(r => r.json()) as Promise<{ results: import("./types").RisingSearchResult[] }>,
     rankingPeriod: (range = "24h", sort = "viewership", limit = 100) =>

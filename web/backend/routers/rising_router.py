@@ -1105,3 +1105,87 @@ async def streamer_session(channel_id: str, start: int, end: int):
          "category": r["category_name"] or "", "title": ""}
         for r in rrows
     ]}
+
+
+# ── 태그 검색 ────────────────────────────────────────────────────────────────
+# 스트리머가 방송에 붙인 태그(rising_live_snapshots.tags, 쉼표 구분)로 방송을 찾는다.
+# 태그는 정규화되지 않은 자유 입력이라 SQL로 쪼개기보다 최신 스냅샷을 한 번 읽어
+# 파이썬에서 분해하는 편이 단순하고 빠르다(최신 사이클 1장 = 수천 행).
+def _split_tags(raw: str) -> list[str]:
+    return [t.strip() for t in (raw or "").split(",") if t.strip()]
+
+
+@router.get("/tags")
+async def tags(limit: int = 60):
+    """현재 라이브에서 많이 쓰인 태그 — 태그 검색 페이지의 추천 목록."""
+    ts = await _latest_run_ts()
+    if ts is None:
+        return {"collected_at": None, "tags": []}
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT tags, concurrent_viewers FROM rising_live_snapshots "
+        "WHERE collected_at=? AND tags != ''", (ts,)
+    )).fetchall()
+    agg: dict[str, dict] = {}
+    for r in rows:
+        for t in _split_tags(r["tags"]):
+            e = agg.setdefault(t, {"lives": 0, "viewers": 0})
+            e["lives"] += 1
+            e["viewers"] += int(r["concurrent_viewers"] or 0)
+    items = sorted(
+        ({"tag": k, "lives": v["lives"], "viewers": v["viewers"],
+          "avg_viewers": round(v["viewers"] / v["lives"]) if v["lives"] else 0}
+         for k, v in agg.items()),
+        key=lambda x: (x["lives"], x["viewers"]), reverse=True,
+    )
+    return {"collected_at": ts, "tags": items[:max(1, min(300, limit))]}
+
+
+@router.get("/tag-streamers")
+async def tag_streamers(tag: str, exact: bool = False):
+    """특정 태그를 단 방송 전체. exact=false면 부분 일치(대소문자 무시)."""
+    ts = await _latest_run_ts()
+    if ts is None:
+        return {"collected_at": None, "tag": tag, "streamers": []}
+    kw = tag.strip().lower()
+    if not kw:
+        return {"collected_at": ts, "tag": tag, "streamers": []}
+
+    db = await get_db()
+    last2 = await (await db.execute(
+        "SELECT collected_at FROM rising_collect_runs WHERE ok=1 ORDER BY collected_at DESC LIMIT 2"
+    )).fetchall()
+    prev_ts = int(last2[1]["collected_at"]) if len(last2) > 1 else None
+
+    rows = await (await db.execute(
+        """SELECT n.chzzk_channel_id, n.channel_name, n.concurrent_viewers, n.category_name,
+                  n.open_date, n.follower_count, n.live_title, n.tags, n.adult,
+                  p.concurrent_viewers AS viewers_prev
+           FROM rising_live_snapshots n
+           LEFT JOIN rising_live_snapshots p
+             ON p.chzzk_channel_id = n.chzzk_channel_id AND p.collected_at = ?
+           WHERE n.collected_at = ? AND n.tags != ''
+           ORDER BY n.concurrent_viewers DESC""",
+        (prev_ts if prev_ts is not None else -1, ts)
+    )).fetchall()
+
+    out = []
+    for r in rows:
+        tl = _split_tags(r["tags"])
+        hit = any(t.lower() == kw for t in tl) if exact else any(kw in t.lower() for t in tl)
+        if not hit:
+            continue
+        out.append({
+            "chzzk_channel_id":   r["chzzk_channel_id"],
+            "channel_name":       r["channel_name"],
+            "channel_image_url":  latest_image(r["chzzk_channel_id"]),  # DB 아님 — 메모리 맵
+            "concurrent_viewers": r["concurrent_viewers"],
+            "viewers_prev":       r["viewers_prev"],
+            "category_name":      r["category_name"],
+            "open_date":          r["open_date"],
+            "follower_count":     r["follower_count"],
+            "live_title":         r["live_title"],
+            "tags":               tl,
+            "adult":              bool(r["adult"]),
+        })
+    return {"collected_at": ts, "tag": tag, "streamers": out}

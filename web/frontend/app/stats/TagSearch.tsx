@@ -1,0 +1,233 @@
+"use client";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { Search, Loader2, X, Hash } from "lucide-react";
+import { api } from "@/lib/api";
+import type { RisingTag, TagStreamer } from "@/lib/types";
+
+// 태그 검색 — 스트리머가 방송에 붙인 태그로 라이브를 찾는다.
+// 태그는 자유 입력이라 표기가 제각각이므로 기본은 부분 일치로 찾고,
+// 인기 태그 칩으로 탐색도 가능하게 한다.
+
+const GREEN = "#00FFA3";
+const YELLOW_GRAD = "linear-gradient(90deg, #FBBF24, #F59E0B)";
+const CYAN_GRAD = "linear-gradient(90deg, #06B6D4, #00FFA3)";
+const nf = (n: number) => n.toLocaleString("ko-KR");
+const DAY_MS = 24 * 3600 * 1000;
+const MEDALS = [{ color: "#FBBF24" }, { color: "#D1D5DB" }, { color: "#D97706" }] as const;
+
+function dur(openDate: string): { ms: number; label: string } {
+  if (!openDate) return { ms: -1, label: "-" };
+  const start = new Date(openDate.replace(" ", "T") + "+09:00").getTime();
+  if (isNaN(start)) return { ms: -1, label: "-" };
+  const ms = Date.now() - start;
+  if (ms < 0) return { ms: -1, label: "-" };
+  const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
+  return { ms, label: h > 0 ? `${h}시간 ${m}분` : `${m}분` };
+}
+
+export default function TagSearch() {
+  const [tags, setTags] = useState<RisingTag[]>([]);
+  const [tagsLoading, setTagsLoading] = useState(true);
+  const [q, setQ] = useState("");
+  const [applied, setApplied] = useState<string | null>(null);
+  const [rows, setRows] = useState<TagStreamer[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api.rising.tags(80)
+      .then((d) => { if (alive) setTags(d.tags || []); })
+      .catch(() => { if (alive) setTags([]); })
+      .finally(() => { if (alive) setTagsLoading(false); });
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!applied) { setRows([]); return; }
+    let alive = true;
+    setLoading(true);
+    api.rising.tagStreamers(applied)
+      .then((d) => { if (alive) setRows(d.streamers || []); })
+      .catch(() => { if (alive) setRows([]); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [applied]);
+
+  const items = useMemo(() => rows.map((s) => ({ ...s, d: dur(s.open_date) })), [rows]);
+  const maxV = Math.max(1, ...items.map((s) => s.concurrent_viewers));
+  const maxF = Math.max(1, ...items.map((s) => s.follower_count));
+
+  const submit = (v?: string) => {
+    const kw = (v ?? q).trim();
+    if (kw) { setQ(kw); setApplied(kw); }
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="card !p-4 md:!p-5">
+        <h3 className="section-title mb-1">태그 검색</h3>
+        <p className="text-xs text-muted mb-4">
+          스트리머가 방송에 붙인 태그로 현재 라이브를 찾습니다. 태그 일부만 입력해도 됩니다.
+        </p>
+
+        <form onSubmit={(e) => { e.preventDefault(); submit(); }}
+              className="flex items-center gap-2 flex-wrap">
+          <div className="relative min-w-[200px] flex-1 max-w-sm">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="예: 신입, 버추얼, 소통"
+              className="w-full rounded-lg border border-border bg-bg py-2 pl-9 pr-3 text-sm text-fg
+                         placeholder-muted focus:border-accent focus:outline-none" />
+          </div>
+          <button type="submit"
+            className="rounded-lg px-4 py-2 text-sm font-bold text-[#04140d]"
+            style={{ background: `linear-gradient(135deg, ${GREEN}, #00C2FF)` }}>
+            검색
+          </button>
+          {applied && (
+            <button type="button" onClick={() => { setApplied(null); setQ(""); }}
+              className="inline-flex items-center gap-1 text-xs font-medium text-muted transition-colors hover:text-fg">
+              <X size={12} /> 초기화
+            </button>
+          )}
+        </form>
+
+        {/* 인기 태그 칩 */}
+        <div className="mt-4">
+          <p className="mb-2 text-[11px] text-muted">현재 라이브에서 많이 쓰인 태그</p>
+          {tagsLoading ? (
+            <div className="flex items-center gap-2 py-3 text-sm text-muted">
+              <Loader2 size={15} className="animate-spin" /> 태그를 불러오는 중...
+            </div>
+          ) : tags.length === 0 ? (
+            <p className="py-3 text-sm text-muted">태그가 달린 방송이 아직 없습니다.</p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {tags.slice(0, 30).map((t) => {
+                const on = applied === t.tag;
+                return (
+                  <button key={t.tag} type="button" onClick={() => submit(t.tag)}
+                    className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors"
+                    style={{ background: on ? "rgba(0,255,163,0.1)" : "transparent",
+                             borderColor: on ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
+                             color: on ? GREEN : "rgb(var(--color-muted-rgb))" }}>
+                    <Hash size={11} />{t.tag}
+                    <span className="text-[10px] text-muted/70">{t.lives}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {applied && (
+        <div className="card !p-4 md:!p-5">
+          <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
+            <h3 className="section-title flex items-center gap-2 flex-wrap">
+              <span className="inline-flex items-center gap-1 rounded-full border border-border bg-bg-hover px-3 py-1 text-xs font-medium text-fg">
+                <Hash size={11} />{applied}
+              </span>
+              태그가 달린 방송
+            </h3>
+            {!loading && <span className="text-[11px] text-muted">{nf(items.length)}개 방송</span>}
+          </div>
+
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 py-16 text-muted">
+              <Loader2 size={18} className="animate-spin" /> 검색 중...
+            </div>
+          ) : items.length === 0 ? (
+            <p className="py-12 text-center text-sm text-muted">
+              이 태그를 단 방송을 찾지 못했습니다. 태그 일부만 입력해 보세요.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[800px]">
+                <thead>
+                  <tr className="border-b border-border text-xs text-muted">
+                    <th className="w-12 py-2 pl-2 text-left font-medium">#</th>
+                    <th className="py-2 text-left font-medium">스트리머</th>
+                    <th className="py-2 px-6 text-left font-medium hidden lg:table-cell">태그</th>
+                    <th className="py-2 px-6 text-right font-medium">전체 시청자</th>
+                    <th className="py-2 px-6 text-right font-medium hidden md:table-cell">방송시간</th>
+                    <th className="py-2 px-6 text-right font-medium">팔로워</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((s, i) => {
+                    const medal = MEDALS[i];
+                    return (
+                      <tr key={s.chzzk_channel_id} className="border-b border-border transition-colors hover:bg-bg-hover/70">
+                        <td className="py-3.5 pl-2 align-top text-sm tabular-nums">
+                          {medal ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
+                                 : <span className="text-muted">{i + 1}</span>}
+                        </td>
+                        <td className="py-3.5 align-top">
+                          <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="group flex items-center gap-2">
+                            <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full bg-bg-hover"
+                                  style={medal ? { boxShadow: `0 0 0 2px ${medal.color}` } : undefined}>
+                              {s.channel_image_url && (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="h-full w-full object-cover" />
+                              )}
+                            </span>
+                            <span className="truncate max-w-[150px] text-base font-semibold text-fg transition-colors group-hover:text-accent md:max-w-none">
+                              {s.channel_name}
+                            </span>
+                          </Link>
+                          <p className="mt-0.5 truncate text-[11px] text-muted max-w-[220px]">{s.category_name || "-"}</p>
+                        </td>
+                        <td className="py-3.5 px-6 align-middle hidden lg:table-cell">
+                          <span className="flex flex-wrap gap-1">
+                            {s.tags.slice(0, 4).map((t) => (
+                              <span key={t} onClick={() => submit(t)}
+                                className="cursor-pointer rounded-full border border-border bg-bg-hover px-2 py-0.5 text-[10px] text-muted hover:text-fg">
+                                {t}
+                              </span>
+                            ))}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
+                          <div className="flex flex-col gap-1.5">
+                            <div className="text-right text-sm font-bold tabular-nums text-fg">
+                              {nf(s.concurrent_viewers)}<span className="ml-0.5 text-[11px] font-normal text-muted">명</span>
+                            </div>
+                            <span className="block h-[3px] overflow-hidden rounded-full bg-bg-hover">
+                              <span className="block h-full rounded-full"
+                                    style={{ width: `${(s.concurrent_viewers / maxV) * 100}%`, background: YELLOW_GRAD }} />
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-6 align-top hidden md:table-cell text-right text-sm tabular-nums text-muted">
+                          {s.d.label}
+                        </td>
+                        <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
+                          <div className="flex flex-col gap-1.5">
+                            <div className="text-right text-sm font-bold tabular-nums text-fg">
+                              {s.follower_count > 0
+                                ? <>{nf(s.follower_count)}<span className="ml-0.5 text-[11px] font-normal text-muted">명</span></>
+                                : <span className="text-muted">-</span>}
+                            </div>
+                            <span className="block h-[3px] overflow-hidden rounded-full bg-bg-hover">
+                              <span className="block h-full rounded-full"
+                                    style={{ width: `${(s.follower_count / maxF) * 100}%`, background: CYAN_GRAD }} />
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="mt-3 text-[11px] text-muted/70">
+            * 최신 수집 사이클 기준이며, 태그는 스트리머가 자유롭게 입력하는 값이라 표기가
+            제각각일 수 있습니다. 방송시간은 최대 {DAY_MS / 3600000}시간 기준입니다.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}

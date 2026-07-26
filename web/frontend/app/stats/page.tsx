@@ -17,6 +17,7 @@ import Footer from "@/components/Footer";
 import CollapsibleAbout from "@/components/CollapsibleAbout";
 import CategoryRankCards from "./CategoryRankCards";
 import RankingCharts from "./RankingCharts";
+import TagSearch from "./TagSearch";
 import { GoldenHourHeatmap, BlueOceanCards, TierDistribution } from "./NewcomerInsightViz";
 import StatsNav, { type Tab } from "./StatsNav";
 
@@ -1572,6 +1573,24 @@ function PeriodRankingTab() {
   const maxMetric = Math.max(1, ...rows.map((r) => r[sort] as number));
 
   return (
+    <div className="space-y-5">
+      {/* 요약 차트 — 누적 지표에 맞춰 매핑한다.
+          PeriodStreamer에는 open_date/viewers_prev가 없어 방송시간은 broadcast_hours로
+          환산하고, 막대 변동률은 표시하지 않는다. */}
+      <RankingCharts
+        rows={rows.map((s) => ({
+          chzzk_channel_id: s.chzzk_channel_id,
+          channel_name: s.channel_name,
+          channel_image_url: s.channel_image_url,
+          concurrent_viewers: s.avg_viewers,      // 체급 = 기간 평균 시청자
+          follower_count: s.follower_count,
+          category_name: s.category_name,
+          dur: { ms: s.broadcast_hours * 3600 * 1000, label: `${s.broadcast_hours}시간` },
+          deltaPct: null,
+          yValue: s.viewership,                   // 유입 대신 누적 시청 시간
+        }))}
+        y={{ label: "시청 시간", unit: "시간", log: true, tooltip: "시청 시간" }} />
+
     <div className="card !p-4 md:!p-5">
       <div className="flex items-start justify-between gap-3 mb-1 flex-wrap">
         <h3 className="section-title">기간별 누적 랭킹</h3>
@@ -1689,6 +1708,7 @@ function PeriodRankingTab() {
           )}
         </>
       )}
+    </div>
     </div>
   );
 }
@@ -1867,6 +1887,7 @@ export default function StatsPage() {
               {tab === "newcomers_ranking"  && news && <NewcomersRankingTab data={news} />}
               {tab === "ranking_period"                && <PeriodRankingTab />}
               {tab === "category"           && cats && <CategoryTab cats={cats} onPick={pickCategory} />}
+              {tab === "tags"                         && <TagSearch />}
               {tab === "category_streamers"          && (
                 <CategoryStreamerList category={pickedCat} onPick={setPickedCat} />
               )}

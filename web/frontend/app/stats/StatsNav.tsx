@@ -1,36 +1,34 @@
 "use client";
 import { useState } from "react";
-import { ChevronDown, LineChart as LineIcon, ListOrdered, Gamepad2, Sprout, Radio, Users } from "lucide-react";
+import { ChevronDown, LineChart as LineIcon, ListOrdered, Gamepad2, Sprout, Radio, Users, Hash } from "lucide-react";
 
 // /stats 좌측 메뉴. 탭은 URL이 아니라 state로 전환된다.
 // (route 기반 항목을 지원하던 분기는 /stats/network 제거와 함께 걷어냈다.)
 export type Tab =
   | "overview" | "newcomers_analysis"
   | "ranking" | "ranking_period" | "newcomers_ranking"
-  | "category" | "category_streamers";
+  | "category" | "category_streamers" | "tags";
 
-export interface NavItem { key: Tab; label: string; icon: React.ReactNode }
+export interface NavItem { key: Tab; label: string; icon: React.ReactNode; live?: boolean }
 
-// 랭킹을 '실시간'과 '누적'으로 분리한 이유:
-// 실시간 랭킹은 최신 수집 사이클 한 장의 동시 시청자 순위라, 마침 그 순간 방송 중이었는지에
-// 크게 좌우된다(잠깐 스파이크가 뜬 방송이 상위로 올라옴). 누적 랭킹은 기간 전체를 집계해
-// 시청 시간·방송 시간 기준으로 줄 세우므로 꾸준함이 반영된다. 두 순위의 성격이 달라
-// 한 표에 섞으면 어느 기준인지 알 수 없어 분리했다.
+// 랭킹은 한 그룹으로 묶되 기준이 다르다는 것은 LIVE 표시로 구분한다.
+// 실시간 랭킹은 최신 수집 사이클 한 장의 동시 시청자 순위라 그 순간 방송 중이었는지에
+// 크게 좌우되고, 누적 랭킹은 기간 전체를 집계해 꾸준함이 반영된다.
 export const NAV_GROUPS: { header: string | null; items: NavItem[] }[] = [
   { header: "실시간 분석", items: [
     { key: "overview",           label: "전체 스트리머 분석", icon: <LineIcon size={16} /> },
     { key: "newcomers_analysis", label: "신규 스트리머 분석", icon: <Sprout size={16} /> },
   ] },
-  { header: "실시간 랭킹", items: [
-    { key: "ranking",           label: "전체 스트리머 랭킹", icon: <Radio size={16} /> },
-    { key: "newcomers_ranking", label: "신규 스트리머 랭킹", icon: <Sprout size={16} /> },
-  ] },
-  { header: "누적 랭킹", items: [
-    { key: "ranking_period", label: "기간별 누적 랭킹", icon: <ListOrdered size={16} /> },
+  // 실시간/누적을 한 그룹으로 합치고, 실시간 기준인 항목에만 LIVE 표시를 붙인다
+  { header: "랭킹", items: [
+    { key: "ranking",           label: "전체 스트리머 랭킹", icon: <Radio size={16} />, live: true },
+    { key: "newcomers_ranking", label: "신규 스트리머 랭킹", icon: <Sprout size={16} />, live: true },
+    { key: "ranking_period",    label: "기간별 누적 랭킹",   icon: <ListOrdered size={16} /> },
   ] },
   { header: "카테고리", items: [
     { key: "category",            label: "카테고리 분석",     icon: <Gamepad2 size={16} /> },
     { key: "category_streamers",  label: "카테고리별 스트리머", icon: <Users size={16} /> },
+    { key: "tags",                label: "태그 검색",         icon: <Hash size={16} /> },
   ] },
 ];
 
@@ -66,6 +64,12 @@ export default function StatsNav({
         {isActive && <span className="absolute left-0 top-0 bottom-0 w-1 rounded-r" style={{ background: GRAD }} />}
         <span style={{ color: isActive ? GREEN : "rgb(var(--color-muted-rgb))" }}>{t.icon}</span>
         <span className="block text-sm font-semibold whitespace-nowrap" style={{ color: isActive ? GREEN : undefined }}>{t.label}</span>
+        {t.live && (
+          <span className="ml-auto flex shrink-0 items-center gap-1" title="실시간 기준">
+            <span className="nb-live-dot h-1.5 w-1.5 rounded-full" style={{ background: "#FF4D4D" }} />
+            <span className="text-[9px] font-bold tracking-wide" style={{ color: "#FF4D4D" }}>LIVE</span>
+          </span>
+        )}
       </button>
     );
   };

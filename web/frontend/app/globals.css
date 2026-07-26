@@ -184,3 +184,15 @@ html.light .hero-grid {
   .nb-neon-border:hover::before,
   .nb-neon-border:focus-visible::before { animation: none; }
 }
+
+/* 좌측 메뉴 LIVE 표시 — 은은한 깜빡임(과하지 않게 1.6초 주기) */
+@keyframes nb-live-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+.nb-live-dot {
+  animation: nb-live-blink 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nb-live-dot { animation: none; }
+}
