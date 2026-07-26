@@ -16,6 +16,7 @@ import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
 import CollapsibleAbout from "@/components/CollapsibleAbout";
 import CategoryRankCards from "./CategoryRankCards";
+import RankingCharts from "./RankingCharts";
 import StatsNav, { type Tab } from "./StatsNav";
 
 import LineChart, { type LinePoint, type LineSeries } from "./LineChart";
@@ -694,7 +695,11 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
   );
 
   return (
-    <div className="card !p-4 md:!p-5">
+    <div className="space-y-5">
+      {/* 랭킹 요약 차트 (Top 10 수평 막대 / 성장성 산점도) */}
+      <RankingCharts rows={filtered} />
+
+      <div className="card !p-4 md:!p-5">
       {/* 컨트롤 — 정렬만 (검색바는 제거) */}
       <div className="flex items-center justify-end gap-2 mb-4 flex-wrap">
         <span className="text-xs text-muted mr-1">정렬</span>
@@ -813,6 +818,7 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
           </button>
         </div>
       )}
+      </div>
     </div>
   );
 }
