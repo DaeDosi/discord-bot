@@ -99,15 +99,19 @@ function BarPanel({ rows, onPick, deltaName }:
 }
 
 // ── 컴포넌트 2: 성장성 산점도 ────────────────────────────────────────────────
-const W = 760, H = 380, P = { l: 58, r: 18, t: 16, b: 40 };
+const W = 820, H = 420, P = { l: 80, r: 56, t: 50, b: 56 };
+// 팬 오버스크롤 허용 폭(도메인 비율) — 가장자리 노드를 화면 중앙까지 끌어올 수 있게 한다
+const OVER = 0.35;
+// 클립 여유 — 버블 최대 반지름(7+11=18, 호버 시 x1.2 = 약 22px)보다 크게 잡는다
+const CLIP_PAD = 28;
 
 // 4분면 정의 — 중앙값 십자선 기준. 사용자가 스트리머 포지션을 바로 읽을 수 있게
 // 구역마다 이름을 붙인다. X=체급(시청자), Y=유입(팔로워 증가/성장률).
 const QUADRANTS = [
-  { key: "q1", text: "🚀 슈퍼 라이징 (대세)",   color: "#00FFA3", at: "tr" },
-  { key: "q2", text: "🌱 라이징 루키 (유망주)", color: "#22D3EE", at: "tl" },
-  { key: "q3", text: "⚓ 초기 탐색 구간",       color: "#9CA3AF", at: "bl" },
-  { key: "q4", text: "🏰 콘크리트 충성층",      color: "#C084FC", at: "br" },
+  { key: "q1", text: "슈퍼 라이징 (대세)",   color: "#00FFA3", at: "tr" },
+  { key: "q2", text: "라이징 루키 (유망주)", color: "#22D3EE", at: "tl" },
+  { key: "q3", text: "초기 탐색 구간",       color: "#9CA3AF", at: "bl" },
+  { key: "q4", text: "콘크리트 충성층",      color: "#C084FC", at: "br" },
 ] as const;
 
 // SVG에는 텍스트 자동 크기 측정이 없어 뱃지 폭을 추정한다.
@@ -136,30 +140,53 @@ function ScatterPanel({ rows, onPick, y }:
 
     const xr = usable.map((r) => Math.log10(Math.max(1, r.concurrent_viewers)));
     const yr = usable.map((r) => (y.log ? slog(r.yValue as number) : (r.yValue as number)));
-    const xMin = Math.min(...xr), xMax = Math.max(...xr);
-    const yMin = Math.min(...yr), yMax = Math.max(...yr);
     const maxDur = Math.max(1, ...usable.map((r) => r.dur.ms));
-    const nx = (v: number) => (v - xMin) / Math.max(1e-6, xMax - xMin);
-    const ny = (v: number) => (v - yMin) / Math.max(1e-6, yMax - yMin);
+
+    // 도메인을 '중앙값 기준 대칭'으로 만든다.
+    //
+    // 이게 핵심 수정이다. 예전에는 [min,max]를 그대로 0~1에 매핑하고 십자선을 중앙값 위치에
+    // 찍었는데, 시청자 분포가 심하게 한쪽으로 쏠려 있어(대부분 소규모) 십자선이 구석으로
+    // 밀리고 한 분면만 비정상적으로 커졌다. 중앙값이 항상 도메인 정중앙(0.5)에 오도록
+    // 반폭을 잡으면 십자선이 뷰포트 정중앙에 놓이면서 4분면이 정확히 균등 면적이 되고,
+    // '중앙값보다 크다/작다'는 분면의 의미도 그대로 유지된다.
+    //
+    // 양끝에는 PAD(20%)의 여유를 둔다 — 최외곽 노드가 버블 반지름만큼 잘리던 문제 해결.
+    const PAD = 0.2;
+    const mid = (a: number[]) => { const s = [...a].sort((p, q) => p - q); return s[Math.floor(s.length / 2)]; };
+    // 중앙값 양쪽에 '각각 다른 스케일'을 쓰는 구간 선형 매핑.
+    // 양쪽 반폭을 같게 잡으면(대칭 도메인) 중앙값이 0.5에 오긴 하지만, 데이터가 한쪽으로
+    // 쏠려 있을 때 반대편 절반이 통째로 비어 캔버스를 절반밖에 못 쓴다.
+    // 아래→0~0.5, 위→0.5~1 로 각각 펼치면 중앙값은 정확히 0.5에 고정되면서 사방을 꽉 채운다.
+    const axis = (vals: number[]) => {
+      const c = mid(vals);
+      const lo0 = Math.min(...vals), hi0 = Math.max(...vals);
+      const lo = lo0 - Math.max(1e-6, c - lo0) * PAD;   // 양끝 20% 여유 — 버블 반지름 잘림 방지
+      const hi = hi0 + Math.max(1e-6, hi0 - c) * PAD;
+      return (v: number) => v <= c
+        ? 0.5 * ((v - lo) / Math.max(1e-6, c - lo))
+        : 0.5 + 0.5 * ((v - c) / Math.max(1e-6, hi - c));
+    };
+    const nx = axis(xr), ny = axis(yr);
 
     const pts = usable.map((r, i) => {
       // 지터: 완전히 같은 좌표에 뭉치는 것을 막되 채널 id로 결정론적으로 만들어
-      // 리렌더마다 위치가 흔들리지 않게 한다(±3px 상당)
+      // 리렌더마다 위치가 흔들리지 않게 한다(±3px 상당).
+      // 도메인에 20% 여유가 있어 더 이상 0~1로 클램프하지 않는다(클램프가 곧 가장자리 겹침이었다).
       let h = 0;
       for (let k = 0; k < r.chzzk_channel_id.length; k++) h = (h * 31 + r.chzzk_channel_id.charCodeAt(k)) >>> 0;
       const jx = (((h % 100) / 100) - 0.5) * 0.012;
       const jy = ((((h >> 7) % 100) / 100) - 0.5) * 0.012;
       return {
         r, yv: r.yValue as number,
-        x: Math.min(1, Math.max(0, nx(xr[i]) + jx)),
-        yn: Math.min(1, Math.max(0, ny(yr[i]) + jy)),
+        x: nx(xr[i]) + jx,
+        yn: ny(yr[i]) + jy,
         rad: 7 + (Math.min(r.dur.ms, DAY_MS) / Math.min(maxDur, DAY_MS)) * 11,
       };
     });
 
     // 축 눈금 — 데이터 값으로 만들어 정규화 좌표로 변환(줌해도 라벨이 맞는다)
     const xTickVals = [1, 10, 100, 1000, 10000, 100000].filter(
-      (v) => Math.log10(v) >= xMin - 0.3 && Math.log10(v) <= xMax + 0.3);
+      (v) => Math.log10(v) >= Math.min(...xr) - 0.3 && Math.log10(v) <= Math.max(...xr) + 0.3);
     const xTicks = xTickVals.map((v) => ({ n: nx(Math.log10(v)), text: compact(v) }));
 
     const rawYMin = Math.min(...usable.map((r) => r.yValue as number));
@@ -171,9 +198,9 @@ function ScatterPanel({ rows, onPick, y }:
       .filter((v) => v >= rawYMin - Math.abs(rawYMin) * 0.05 && v <= rawYMax + Math.abs(rawYMax) * 0.05)
       .map((v) => ({ n: ny(y.log ? slog(v) : v), text: `${signed(v)}${y.unit === "%" ? "%" : ""}` }));
 
-    // 4분면 기준선 = 중앙값(평균은 이상치에 끌려간다)
-    const med = (a: number[]) => { const s = [...a].sort((p, q) => p - q); return s[Math.floor(s.length / 2)]; };
-    return { pts, xTicks, yTicks, medX: med(pts.map((p) => p.x)), medY: med(pts.map((p) => p.yn)) };
+    // 도메인을 중앙값 대칭으로 잡았으므로 십자선은 항상 정확히 0.5 = 뷰포트 정중앙이다.
+    // 결과적으로 4분면 면적이 1:1:1:1로 균등하게 나뉜다.
+    return { pts, xTicks, yTicks, medX: 0.5, medY: 0.5 };
   }, [rows, y]);
 
   if (!data) {
@@ -202,8 +229,9 @@ function ScatterPanel({ rows, onPick, y }:
     const h = Math.min(1, Math.max(0.06, (view.y1 - view.y0) * k));
     let x0 = fx - (fx - view.x0) * (w / (view.x1 - view.x0));
     let y0 = fy - (fy - view.y0) * (h / (view.y1 - view.y0));
-    x0 = Math.min(1 - w, Math.max(0, x0));
-    y0 = Math.min(1 - h, Math.max(0, y0));
+    // 오버스크롤 여유(OVER): 최외곽 노드까지 화면 중앙으로 끌어올 수 있게 한다
+    x0 = Math.min(1 - w + OVER, Math.max(-OVER, x0));
+    y0 = Math.min(1 - h + OVER, Math.max(-OVER, y0));
     setView({ x0, x1: x0 + w, y0, y1: y0 + h });
   };
 
@@ -215,8 +243,8 @@ function ScatterPanel({ rows, onPick, y }:
     const dx = ((e.clientX - d.mx) / rect.width) * (d.v.x1 - d.v.x0);
     const dy = ((e.clientY - d.my) / rect.height) * (d.v.y1 - d.v.y0);
     const w = d.v.x1 - d.v.x0, h = d.v.y1 - d.v.y0;
-    const x0 = Math.min(1 - w, Math.max(0, d.v.x0 - dx));
-    const y0 = Math.min(1 - h, Math.max(0, d.v.y0 + dy));
+    const x0 = Math.min(1 - w + OVER, Math.max(-OVER, d.v.x0 - dx));
+    const y0 = Math.min(1 - h + OVER, Math.max(-OVER, d.v.y0 + dy));
     setView({ x0, x1: x0 + w, y0, y1: y0 + h });
   };
   const endDrag = () => { drag.current = null; };
@@ -240,12 +268,16 @@ function ScatterPanel({ rows, onPick, y }:
       </div>
 
       <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" height={H}
+           className="overflow-visible"
            style={{ display: "block", cursor: drag.current ? "grabbing" : "grab", touchAction: "none" }}
            onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove}
            onMouseUp={endDrag} onMouseLeave={() => { endDrag(); setHover(null); }}>
         <defs>
+          {/* 버블 최대 반지름(약 22px)보다 넉넉히 넓혀 가장자리 노드가 잘리지 않게 한다.
+              줌/팬으로 밀려난 요소는 여전히 이 범위에서 정리된다. */}
           <clipPath id="plot-clip">
-            <rect x={P.l} y={P.t} width={W - P.l - P.r} height={H - P.t - P.b} />
+            <rect x={P.l - CLIP_PAD} y={P.t - CLIP_PAD}
+                  width={W - P.l - P.r + CLIP_PAD * 2} height={H - P.t - P.b + CLIP_PAD * 2} />
           </clipPath>
           {/* 4분면 미세 배경 — 각 구역 바깥쪽 모서리로 갈수록 옅게 진해진다 */}
           {QUADRANTS.map((q) => {
