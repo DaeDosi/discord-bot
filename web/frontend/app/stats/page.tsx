@@ -34,10 +34,21 @@ const DAY_MS = 24 * 3600 * 1000;
 
 // 랭킹 TOP 3 강조 — 이모지 대신 골드/실버/브론즈 색 텍스트 + 프로필 하이라이트 링
 const MEDALS = [
-  { color: "#FFD700" }, // 1위 골드
-  { color: "#C4CCD8" }, // 2위 실버
-  { color: "#CD7F32" }, // 3위 브론즈
+  { color: "#FBBF24" }, // 1위 골드
+  { color: "#D1D5DB" }, // 2위 실버 (gray-300)
+  { color: "#D97706" }, // 3위 브론즈 (amber-600)
 ] as const;
+
+// 치지직 플랫폼 마크 — 저장소에 공식 로고 SVG가 없어서, 코드베이스가 이미 치지직을
+// 나타낼 때 쓰는 관례(lucide Radio + 브랜드 그린)를 따른다. 공식 심볼을 넣고 싶으면
+// public/에 SVG를 두고 여기만 <img>로 바꾸면 된다.
+function ChzzkMark() {
+  return (
+    <span title="치지직" aria-label="치지직" className="shrink-0 inline-flex">
+      <Radio size={16} strokeWidth={2.5} style={{ color: GREEN }} />
+    </span>
+  );
+}
 
 const nf = (n: number) => n.toLocaleString("ko-KR");
 
@@ -641,16 +652,16 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
               const newFol = s.follower_prev24h != null ? s.follower_count - s.follower_prev24h : null;
               return (
                 <tr key={s.chzzk_channel_id}
-                    className="border-b border-border/50 hover:bg-bg-hover transition-colors">
+                    className="border-b border-border hover:bg-bg-hover/70 transition-colors">
                   {/* 순위 — TOP 3는 골드/실버/브론즈 강조 */}
-                  <td className="py-2.5 pl-2 tabular-nums text-sm align-top">
+                  <td className="py-3.5 pl-2 tabular-nums text-sm align-top">
                     {medal
                       ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
                       : <span className="text-muted">{i + 1}</span>}
                   </td>
 
                   {/* 스트리머 — 개인 분석 대시보드로 이동 */}
-                  <td className="py-2.5 align-top">
+                  <td className="py-3.5 align-top">
                     <Link href={`/stats/streamer/${s.chzzk_channel_id}`}
                        className="flex items-center gap-2 group">
                       <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0"
@@ -661,6 +672,7 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                                loading="lazy" className="w-full h-full object-cover" />
                         )}
                       </span>
+                      <ChzzkMark />
                       <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[150px] md:max-w-none">
                         {s.channel_name}
                       </span>
@@ -669,7 +681,7 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                   </td>
 
                   {/* 현재 시청자 — 증감 + 숫자 / 셀 하단 골드 바 (1위 대비 %) */}
-                  <td className="relative py-3 px-6 align-top" style={{ minWidth: 140 }}>
+                  <td className="relative py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
                     <div className="flex items-center justify-end gap-1.5">
                       {vwDelta !== null && <span className="text-[11px]"><Delta pct={vwDelta} /></span>}
                       <span className="text-base font-bold tabular-nums text-fg">{nf(s.concurrent_viewers)}</span>
@@ -678,7 +690,7 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                   </td>
 
                   {/* 카테고리 — 알약형 뱃지 (테마 토큰 사용, 라이트 모드에서도 대비 유지) */}
-                  <td className="py-3 px-6 hidden sm:table-cell align-top">
+                  <td className="py-3.5 px-6 hidden sm:table-cell align-top">
                     {s.category_name
                       ? <span className="inline-block max-w-[150px] truncate rounded-full border border-border
                                          bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{s.category_name}</span>
@@ -686,13 +698,13 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                   </td>
 
                   {/* 방송시간 — 셀 하단 퍼플 바 (최대 24시간 대비 비율) */}
-                  <td className="relative py-3 px-6 hidden md:table-cell align-top" style={{ minWidth: 128 }}>
+                  <td className="relative py-3.5 px-6 hidden md:table-cell align-top" style={{ minWidth: 128 }}>
                     <div className="text-right tabular-nums text-muted text-sm">{s.dur.label}</div>
                     <CellBar pct={durPct} background={PURPLE_GRAD} />
                   </td>
 
                   {/* 팔로워 — 신규 유입 + 셀 하단 시안 바 */}
-                  <td className="relative py-3 px-6 align-top" style={{ minWidth: 140 }}>
+                  <td className="relative py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
                     <div className="flex items-center justify-end gap-1.5">
                       {newFol != null && newFol > 0 &&
                         <span className="text-[11px] font-semibold tabular-nums" style={{ color: "#06B6D4" }}>+{nf(newFol)}</span>}
@@ -931,14 +943,14 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
             const folPct = s.follower_count > 0 ? (s.follower_count / maxFollower) * 100 : 0;
             const medal = MEDALS[i]; // TOP 3만 값이 있음
             return (
-              <tr key={s.chzzk_channel_id} className="border-b border-border/50 hover:bg-bg-hover transition-colors">
+              <tr key={s.chzzk_channel_id} className="border-b border-border hover:bg-bg-hover/70 transition-colors">
                 {/* 순위 — TOP 3는 골드/실버/브론즈 강조 */}
-                <td className="py-3 pl-2 tabular-nums text-sm align-top">
+                <td className="py-3.5 pl-2 tabular-nums text-sm align-top">
                   {medal
                     ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
                     : <span className="text-muted">{i + 1}</span>}
                 </td>
-                <td className="py-3 align-top">
+                <td className="py-3.5 align-top">
                   <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="flex items-center gap-2 group">
                     <Sprout size={14} className="shrink-0" style={{ color: GREEN }} />
                     <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0"
@@ -948,28 +960,29 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
                         <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
                       )}
                     </span>
+                    <ChzzkMark />
                     <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[130px] md:max-w-none">{s.channel_name}</span>
                   </Link>
                 </td>
                 {/* 시청자 — 셀 하단 골드 바 (1위 대비 %) */}
-                <td className="relative py-3 px-6 align-top" style={{ minWidth: 132 }}>
+                <td className="relative py-3.5 px-6 align-top" style={{ minWidth: 132 }}>
                   <div className="text-right text-base tabular-nums font-bold text-fg">{nf(s.concurrent_viewers)}</div>
                   <CellBar pct={vwPct} background={YELLOW_GRAD} />
                 </td>
-                <td className="py-3 px-6 text-right text-[11px] align-top"><Delta pct={s.growth_rate} /></td>
-                <td className="py-3 px-6 hidden sm:table-cell align-top">
+                <td className="py-3.5 px-6 text-right text-[11px] align-top"><Delta pct={s.growth_rate} /></td>
+                <td className="py-3.5 px-6 hidden sm:table-cell align-top">
                   {s.category_name
                     ? <span className="inline-block max-w-[150px] truncate rounded-full border border-border
                                        bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{s.category_name}</span>
                     : <span className="text-muted text-sm">-</span>}
                 </td>
                 {/* 방송시간 — 셀 하단 퍼플 바 (최대 24시간 대비 비율) */}
-                <td className="relative py-3 px-6 align-top hidden md:table-cell" style={{ minWidth: 128 }}>
+                <td className="relative py-3.5 px-6 align-top hidden md:table-cell" style={{ minWidth: 128 }}>
                   <div className="text-right tabular-nums text-muted text-sm">{dur.label}</div>
                   <CellBar pct={durPct} background={PURPLE_GRAD} />
                 </td>
                 {/* 팔로워 — 셀 하단 시안 바 */}
-                <td className="relative py-3 px-6 align-top" style={{ minWidth: 132 }}>
+                <td className="relative py-3.5 px-6 align-top" style={{ minWidth: 132 }}>
                   <div className="text-right text-base tabular-nums font-bold text-fg">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</div>
                   <CellBar pct={folPct} background={CYAN_GRAD} />
                 </td>
