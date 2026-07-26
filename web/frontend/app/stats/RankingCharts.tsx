@@ -395,8 +395,12 @@ function ScatterPanel({ rows, onPick, y }:
             const rr = p.rad * (on ? 1.3 : 1);
             const cxp = clampX(sx(p.x + jitX(p)), rr), cyp = clampY(sy(p.yn + jitY(p)), rr);
             return (
+              // onMouseLeave가 없으면 SVG를 완전히 벗어나기 전까지 툴팁이 계속 남는다.
+              // 겹친 버블 사이를 옮길 때는 leave(null) 뒤 enter(다음 id)가 이어서 실행되므로
+              // 깜빡임 없이 대상만 바뀐다.
               <g key={p.r.chzzk_channel_id} style={{ cursor: "pointer" }}
                  onMouseEnter={() => setHover(p.r.chzzk_channel_id)}
+                 onMouseLeave={() => setHover((cur) => (cur === p.r.chzzk_channel_id ? null : cur))}
                  onClick={() => onPick(p.r.chzzk_channel_id)}>
                 <circle cx={cxp} cy={cyp} r={rr + 2}
                         fill={on ? GREEN : "rgba(0,255,163,0.16)"} opacity={on ? 0.45 : 1} />
