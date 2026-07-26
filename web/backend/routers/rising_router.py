@@ -922,3 +922,147 @@ async def category_streamers(category: str, enrich: bool = True):
             enriched = sum(1 for x in todo if x["follower_count"])
 
     return {"collected_at": ts, "category": category, "streamers": out, "enriched": enriched}
+
+
+# ── 스트리머 상세: 시간대/세션/랭킹 추이 ──────────────────────────────────────
+# 개인 분석 페이지의 서브 탭(통계·방송기록·랭킹)에 필요한 집계.
+# 전부 rising_hourly_rollup에서 계산한다 — 원본은 26시간만 보관하므로 장기 이력의
+# 유일한 소스이며, 시간 단위 지표는 롤업으로 정보 손실 없이 재현된다.
+@router.get("/streamer/{channel_id}/detail")
+async def streamer_detail(channel_id: str, days: int = 30):
+    days = max(1, min(400, days))
+    ts = await _latest_run_ts()
+    if ts is None:
+        return {"channel_id": channel_id, "hourly": [], "sessions": [], "rank_daily": []}
+    since = ts - days * 86400
+    db = await get_db()
+    snap_min = 10
+
+    # ① 시간대별 유입 — KST 시각별 평균 시청자(그 시간에 방송을 켰을 때의 성과)
+    hrows = await (await db.execute(
+        """SELECT CAST(strftime('%H', hour_ts + 32400, 'unixepoch') AS INTEGER) AS h,
+                  SUM(snaps) AS n, SUM(sum_viewers) AS v, MAX(peak_viewers) AS p
+           FROM rising_hourly_rollup
+           WHERE chzzk_channel_id=? AND hour_ts >= ?
+           GROUP BY h ORDER BY h""",
+        (channel_id, since)
+    )).fetchall()
+    hourly = [
+        {"hour": int(r["h"]), "snaps": int(r["n"]),
+         "avg_viewers": round((r["v"] or 0) / r["n"]) if r["n"] else 0,
+         "peak_viewers": int(r["p"] or 0),
+         "hours": round(int(r["n"]) * snap_min / 60, 1)}
+        for r in hrows
+    ]
+
+    # ② 방송 세션 — 연속된 시간 버킷을 하나의 방송으로 묶는다.
+    # 롤업은 시간 단위라 정확한 시작/종료 '분'은 알 수 없다(원본 26시간 밖은 복원 불가).
+    # 한 시간 이상 공백이 생기면 다른 방송으로 끊는다.
+    srows = await (await db.execute(
+        """SELECT hour_ts, snaps, sum_viewers, peak_viewers, category_name
+           FROM rising_hourly_rollup
+           WHERE chzzk_channel_id=? AND hour_ts >= ?
+           ORDER BY hour_ts ASC""",
+        (channel_id, since)
+    )).fetchall()
+    sessions: list[dict] = []
+    for r in srows:
+        h, snaps = int(r["hour_ts"]), int(r["snaps"])
+        cur = sessions[-1] if sessions else None
+        if cur and h == cur["_next"]:
+            cur["_next"] = h + 3600
+            cur["end"] = h + 3600
+            cur["snaps"] += snaps
+            cur["_sv"] += int(r["sum_viewers"])
+            cur["peak_viewers"] = max(cur["peak_viewers"], int(r["peak_viewers"]))
+            if r["category_name"]:
+                cur["_cats"][r["category_name"]] = cur["_cats"].get(r["category_name"], 0) + snaps
+        else:
+            sessions.append({
+                "start": h, "end": h + 3600, "_next": h + 3600,
+                "snaps": snaps, "_sv": int(r["sum_viewers"]),
+                "peak_viewers": int(r["peak_viewers"]),
+                "_cats": {r["category_name"]: snaps} if r["category_name"] else {},
+            })
+    out_sessions = []
+    for s in reversed(sessions):  # 최신 방송부터
+        cats = sorted(s["_cats"].items(), key=lambda kv: kv[1], reverse=True)
+        out_sessions.append({
+            "start": s["start"], "end": s["end"],
+            "hours": round(s["snaps"] * snap_min / 60, 1),
+            "avg_viewers": round(s["_sv"] / s["snaps"]) if s["snaps"] else 0,
+            "peak_viewers": s["peak_viewers"],
+            "viewership": round(s["_sv"] * snap_min / 60),
+            "category": cats[0][0] if cats else "",
+            "categories": [c for c, _ in cats[:3]],
+        })
+
+    # ③ 일별 랭킹 추이 — 그날 방송한 전체 채널 중 평균 시청자 순위.
+    # 별도 랭킹 이력 테이블 없이 롤업에서 매번 계산한다(윈도우 함수).
+    rrows = await (await db.execute(
+        """WITH daily AS (
+               SELECT chzzk_channel_id,
+                      strftime('%Y-%m-%d', hour_ts + 32400, 'unixepoch') AS d,
+                      CAST(SUM(sum_viewers) AS REAL) / NULLIF(SUM(snaps),0) AS avg_v,
+                      SUM(snaps) AS snaps
+               FROM rising_hourly_rollup
+               WHERE hour_ts >= ?
+               GROUP BY chzzk_channel_id, d
+           ), ranked AS (
+               SELECT d, chzzk_channel_id, avg_v, snaps,
+                      RANK() OVER (PARTITION BY d ORDER BY avg_v DESC) AS rk,
+                      COUNT(*) OVER (PARTITION BY d) AS total
+               FROM daily
+           )
+           SELECT d, rk, total, avg_v, snaps FROM ranked
+           WHERE chzzk_channel_id = ? ORDER BY d ASC""",
+        (since, channel_id)
+    )).fetchall()
+    rank_daily = [
+        {"date": r["d"], "rank": int(r["rk"]), "total": int(r["total"]),
+         "avg_viewers": round(r["avg_v"] or 0),
+         "percentile": round(int(r["rk"]) / int(r["total"]) * 100, 1) if r["total"] else None}
+        for r in rrows
+    ]
+
+    return {"channel_id": channel_id, "window_days": days,
+            "hourly": hourly, "sessions": out_sessions, "rank_daily": rank_daily}
+
+
+@router.get("/streamer/{channel_id}/session")
+async def streamer_session(channel_id: str, start: int, end: int):
+    """구간분석 — 방송 1건의 시청자 추이.
+
+    원본(10분 간격)은 RAW_RETENTION_HOURS(기본 26시간)만 보관하므로, 그 안의 방송은
+    10분 해상도로, 그보다 오래된 방송은 롤업의 1시간 해상도로 응답한다.
+    resolution 필드로 어느 쪽인지 알려 프론트가 안내를 띄울 수 있게 한다.
+    """
+    db = await get_db()
+    rows = await (await db.execute(
+        """SELECT collected_at AS t, concurrent_viewers AS v, category_name, live_title
+           FROM rising_live_snapshots
+           WHERE chzzk_channel_id=? AND collected_at BETWEEN ? AND ?
+           ORDER BY collected_at ASC""",
+        (channel_id, start, end)
+    )).fetchall()
+    if rows:
+        return {"resolution": "10m", "points": [
+            {"t": int(r["t"]), "viewers": int(r["v"]),
+             "category": r["category_name"] or "", "title": r["live_title"] or ""}
+            for r in rows
+        ]}
+
+    rrows = await (await db.execute(
+        """SELECT hour_ts AS t, snaps, sum_viewers, peak_viewers, category_name
+           FROM rising_hourly_rollup
+           WHERE chzzk_channel_id=? AND hour_ts BETWEEN ? AND ?
+           ORDER BY hour_ts ASC""",
+        (channel_id, start, end)
+    )).fetchall()
+    return {"resolution": "1h", "points": [
+        {"t": int(r["t"]),
+         "viewers": round((r["sum_viewers"] or 0) / r["snaps"]) if r["snaps"] else 0,
+         "peak": int(r["peak_viewers"] or 0),
+         "category": r["category_name"] or "", "title": ""}
+        for r in rrows
+    ]}

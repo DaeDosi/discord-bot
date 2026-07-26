@@ -401,3 +401,17 @@ export interface RisingCategoryStreamers {
   streamers:    CategoryStreamer[];
   enriched:     number;
 }
+
+// 스트리머 상세 서브탭용 집계 (시간대/세션/랭킹 추이)
+export interface StreamerHourly { hour: number; snaps: number; avg_viewers: number; peak_viewers: number; hours: number; }
+export interface StreamerSession {
+  start: number; end: number; hours: number; avg_viewers: number;
+  peak_viewers: number; viewership: number; category: string; categories: string[];
+}
+export interface StreamerRankDay { date: string; rank: number; total: number; avg_viewers: number; percentile: number | null; }
+export interface StreamerDetail {
+  channel_id: string; window_days?: number;
+  hourly: StreamerHourly[]; sessions: StreamerSession[]; rank_daily: StreamerRankDay[];
+}
+export interface SessionPoint { t: number; viewers: number; peak?: number; category: string; title: string; }
+export interface StreamerSessionSeries { resolution: "10m" | "1h"; points: SessionPoint[]; }
