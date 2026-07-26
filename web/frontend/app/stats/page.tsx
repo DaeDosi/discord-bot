@@ -20,6 +20,17 @@ const CYAN  = "#00C2FF";
 const GRAD  = `linear-gradient(135deg, ${GREEN}, ${CYAN})`;
 const PEAK_GRAD = "linear-gradient(135deg, #FF4FA3, #A855F7)"; // 피크(핑크→퍼플) 2톤
 const YELLOW_GRAD = "linear-gradient(135deg, #FDE047, #F59E0B)"; // 현재 시청자(노랑→앰버) 2톤 — 증감 초록/빨강과 구분
+const PURPLE_GRAD = "linear-gradient(90deg, #A855F7, #6366F1)"; // 방송시간(퍼플→인디고) 2톤
+const CYAN_GRAD   = "linear-gradient(90deg, #06B6D4, #00C2FF)"; // 팔로워(시안) 2톤
+
+const DAY_MS = 24 * 3600 * 1000;
+
+// 랭킹 TOP 3 강조 — 이모지 대신 골드/실버/브론즈 색 텍스트 + 프로필 하이라이트 링
+const MEDALS = [
+  { color: "#FFD700" }, // 1위 골드
+  { color: "#C4CCD8" }, // 2위 실버
+  { color: "#CD7F32" }, // 3위 브론즈
+] as const;
 
 const nf = (n: number) => n.toLocaleString("ko-KR");
 
@@ -29,6 +40,17 @@ function GradText({ children, className, grad = GRAD }: { children: React.ReactN
     <span className={className}
       style={{ background: grad, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>
       {children}
+    </span>
+  );
+}
+
+// 셀 하단에 full-bleed로 깔리는 비율 바 — 부모 <td>에 `relative`가 있어야 한다.
+// 시청자/방송시간/팔로워 세 컬럼이 같은 위치·두께를 공유하도록 한 곳에서 관리.
+function CellBar({ pct, background }: { pct: number; background: string }) {
+  return (
+    <span className="absolute inset-x-0 bottom-0 h-[3px] bg-bg-hover">
+      <span className="absolute inset-y-0 left-0"
+            style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background }} />
     </span>
   );
 }
@@ -387,7 +409,11 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
   const liveCount = ov.summary?.live_count ?? 0;
   const totalV    = ov.summary?.total_viewers ?? 0;
   const avgV      = liveCount ? Math.round(totalV / liveCount) : 0;
-  const peakV     = (ts?.points ?? []).reduce((m, p) => Math.max(m, p.total_viewers), totalV);
+  // 뷰어쉽(hours watched) = 방송 시간 × 평균 시청자.
+  // 스냅샷 1개 = 10분 구간으로 보고 Σ(동시 시청자) × (10/60)h 로 적분 — 집계 사이트의
+  // hours watched와 동일한 정의. 수집 공백이 있으면 그만큼 과소 집계된다.
+  const SNAP_HOURS = 10 / 60;
+  const viewership = Math.round((ts?.points ?? []).reduce((s, p) => s + p.total_viewers, 0) * SNAP_HOURS);
   const dv = ov.deltas;
   const points = (ts?.points ?? []) as unknown as LinePoint[];
   const rangeDesc = RANGE_DESC;
@@ -429,7 +455,8 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
         <StatTile label="전체 동시 시청자" value={nf(totalV)} unit="명" accent
           rawValue={totalV} deltaPrev={dv?.total_viewers.prev} />
         <StatTile label="방송당 평균 시청자" value={nf(avgV)} unit="명" sub="총 시청자 ÷ 방송 수" />
-        <StatTile label="뷰어쉽" value={nf(peakV)} unit="명" sub="최근 24시간 최고 동접" />
+        <StatTile label="뷰어쉽" value={nf(viewership)} unit="시간"
+          sub="최근 24시간 시청 시간 (방송 시간 × 평균 시청자)" />
       </div>
 
       {/* 추이 차트 — 지표 필터(시청자/방송수) + 가변 Y축, 기간 선택은 좌측 아래 */}
@@ -539,11 +566,9 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
     return sorted;
   }, [enriched, q, sort]);
 
-  // 프로그레스 바 기준값(리스트 전체 최대치)
-  const DAY_MS = 24 * 3600 * 1000;
+  // 프로그레스 바 기준값(리스트 전체 최대치). 방송시간만 DAY_MS 고정 기준을 쓴다.
   const maxViewers  = useMemo(() => Math.max(1, ...enriched.map((s) => s.concurrent_viewers)), [enriched]);
   const maxFollower = useMemo(() => Math.max(1, ...enriched.map((s) => s.follower_count)), [enriched]);
-  const maxDur      = useMemo(() => Math.max(DAY_MS, ...enriched.map((s) => (s.dur.ms > 0 ? s.dur.ms : 0))), [enriched, DAY_MS]);
 
   const SortBtn = ({ k, label }: { k: SortKey; label: string }) => (
     <button onClick={() => setSort(k)}
@@ -578,32 +603,41 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
         <table className="w-full text-sm min-w-[560px]">
           <thead>
             <tr className="text-muted text-xs border-b border-border">
-              <th className="text-left font-medium py-2 pl-2 w-10">#</th>
+              <th className="text-left font-medium py-2 pl-2 w-12">#</th>
               <th className="text-left font-medium py-2">스트리머</th>
-              <th className="text-right font-medium py-2">현재 시청자</th>
-              <th className="text-left font-medium py-2 pl-4 hidden sm:table-cell">카테고리</th>
-              <th className="text-right font-medium py-2 hidden md:table-cell">방송시간</th>
-              <th className="text-right font-medium py-2 pr-2">팔로워</th>
+              <th className="text-right font-medium py-2 px-5">현재 시청자</th>
+              <th className="text-left font-medium py-2 px-5 hidden sm:table-cell">카테고리</th>
+              <th className="text-right font-medium py-2 px-5 hidden md:table-cell">방송시간</th>
+              <th className="text-right font-medium py-2 px-5">팔로워</th>
             </tr>
           </thead>
           <tbody>
             {filtered.slice(0, limit).map((s, i) => {
               const vwPct  = (s.concurrent_viewers / maxViewers) * 100;
-              const durPct = s.dur.ms > 0 ? (s.dur.ms / maxDur) * 100 : 0;
+              // 방송시간 바는 '최대 24시간' 고정 기준 — 1위 방송시간 대비가 아니라
+              // 절대 길이를 읽을 수 있어야 하루 중 얼마나 켜뒀는지가 한눈에 들어온다.
+              const durPct = s.dur.ms > 0 ? Math.min(100, (s.dur.ms / DAY_MS) * 100) : 0;
               const folPct = s.follower_count > 0 ? (s.follower_count / maxFollower) * 100 : 0;
+              const medal  = MEDALS[i]; // TOP 3만 값이 있음
               const vwDelta = s.viewers_prev && s.viewers_prev > 0
                 ? ((s.concurrent_viewers - s.viewers_prev) / s.viewers_prev) * 100 : null;
               const newFol = s.follower_prev24h != null ? s.follower_count - s.follower_prev24h : null;
               return (
                 <tr key={s.chzzk_channel_id}
                     className="border-b border-border/50 hover:bg-bg-hover transition-colors">
-                  <td className="py-2.5 pl-2 tabular-nums text-muted text-sm align-top">{i + 1}</td>
+                  {/* 순위 — TOP 3는 골드/실버/브론즈 강조 */}
+                  <td className="py-2.5 pl-2 tabular-nums text-sm align-top">
+                    {medal
+                      ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
+                      : <span className="text-muted">{i + 1}</span>}
+                  </td>
 
                   {/* 스트리머 — 개인 분석 대시보드로 이동 */}
                   <td className="py-2.5 align-top">
                     <Link href={`/stats/streamer/${s.chzzk_channel_id}`}
                        className="flex items-center gap-2 group">
-                      <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0">
+                      <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0"
+                            style={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined}>
                         {s.channel_image_url && (
                           // eslint-disable-next-line @next/next/no-img-element
                           <img src={s.channel_image_url} alt="" width={24} height={24}
@@ -617,42 +651,37 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                     </Link>
                   </td>
 
-                  {/* 현재 시청자 — 증감(초록/빨강) + 흰 숫자 + 노란 2톤 바 */}
-                  <td className="py-2.5 pr-1 align-top" style={{ minWidth: 120 }}>
+                  {/* 현재 시청자 — 증감(초록/빨강) + 숫자 / 셀 하단 전체 너비 노란 바 (1위 대비 %) */}
+                  <td className="relative py-2.5 px-5 align-top" style={{ minWidth: 132 }}>
                     <div className="flex items-center justify-end gap-1.5">
                       {vwDelta !== null && <span className="text-[10px]"><Delta pct={vwDelta} /></span>}
                       <span className="font-bold tabular-nums text-fg">{nf(s.concurrent_viewers)}</span>
                     </div>
-                    <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden">
-                      <div className="h-full rounded-full" style={{ width: `${vwPct}%`, background: YELLOW_GRAD }} />
-                    </div>
+                    <CellBar pct={vwPct} background={YELLOW_GRAD} />
                   </td>
 
-                  {/* 카테고리 — 뱃지 */}
-                  <td className="py-2.5 pl-4 hidden sm:table-cell align-top">
+                  {/* 카테고리 — 알약형 뱃지 (테마 토큰 사용, 라이트 모드에서도 대비 유지) */}
+                  <td className="py-2.5 px-5 hidden sm:table-cell align-top">
                     {s.category_name
-                      ? <span className="inline-block bg-bg-hover text-fg px-2 py-1 rounded-md text-xs truncate max-w-[130px]">{s.category_name}</span>
+                      ? <span className="inline-block max-w-[140px] truncate rounded-full border border-border
+                                         bg-bg-hover px-2.5 py-0.5 text-xs font-medium text-fg">{s.category_name}</span>
                       : <span className="text-muted text-sm">-</span>}
                   </td>
 
-                  {/* 방송시간 — 보라 바 (우측 정렬, 폭 제한, 팔로워와 간격 확보) */}
-                  <td className="py-2.5 pr-6 hidden md:table-cell align-top" style={{ minWidth: 110 }}>
+                  {/* 방송시간 — 셀 하단 전체 너비 퍼플 바 (최대 24시간 대비 비율) */}
+                  <td className="relative py-2.5 px-5 hidden md:table-cell align-top" style={{ minWidth: 120 }}>
                     <div className="text-right tabular-nums text-muted text-sm">{s.dur.label}</div>
-                    <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden ml-auto" style={{ maxWidth: 84 }}>
-                      <div className="h-full rounded-full" style={{ width: `${durPct}%`, background: "#A855F7" }} />
-                    </div>
+                    <CellBar pct={durPct} background={PURPLE_GRAD} />
                   </td>
 
-                  {/* 팔로워 — 시안 바 + 신규 유입 (좌측 간격 확보, 우측 정렬, 폭 제한) */}
-                  <td className="py-2.5 pl-6 pr-2 align-top" style={{ minWidth: 120 }}>
+                  {/* 팔로워 — 신규 유입 + 셀 하단 전체 너비 시안 바 */}
+                  <td className="relative py-2.5 px-5 align-top" style={{ minWidth: 132 }}>
                     <div className="flex items-center justify-end gap-1.5">
                       {newFol != null && newFol > 0 &&
                         <span className="text-[10px] font-semibold tabular-nums" style={{ color: "#06B6D4" }}>+{nf(newFol)}</span>}
                       <span className="tabular-nums text-fg text-sm">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</span>
                     </div>
-                    <div className="mt-1.5 h-[3px] rounded-full bg-bg-hover overflow-hidden ml-auto" style={{ maxWidth: 92 }}>
-                      <div className="h-full rounded-full" style={{ width: `${folPct}%`, background: "#06B6D4" }} />
-                    </div>
+                    <CellBar pct={folPct} background={CYAN_GRAD} />
                   </td>
                 </tr>
               );
@@ -676,7 +705,8 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
 }
 
 // ── 신규/라이징 탭 ────────────────────────────────────────────────────────────
-const NC_DAY_MS = 24 * 3600 * 1000;
+// 백엔드 _CAT_MIN_LIVES와 동일 — 표본 부족 안내 문구용
+const NC_CAT_MIN_LIVES = 3;
 function NcTile({ label, value, unit }: { label: string; value: string; unit?: string }) {
   return (
     <div className="card !p-4">
@@ -698,19 +728,38 @@ function InsightCard({ title, children }: { title: string; children: React.React
   );
 }
 
-// 표 헤더용 도움말 — 회색 원형 '?'에 마우스를 올리거나 포커스하면 설명이 뜬다.
-function HelpTip({ text }: { text: string }) {
+// 표 헤더용 도움말 — 회색 원형 '?'. 호버 미리보기 + 클릭 토글.
+// 순수 CSS(group-hover/focus-within)만 쓰면 터치 기기에는 hover가 없고, Safari/Firefox는
+// 폼 요소가 아닌 span을 클릭해도 포커스를 주지 않아 "눌러도 안 뜬다"가 된다.
+// 실제 <button>과 open 상태로 처리해 클릭에서도 확실히 열리도록 한다.
+function HelpTip({ text, children }: { text: React.ReactNode; children?: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+
   return (
-    <span className="relative inline-flex group align-middle ml-1">
-      <span tabIndex={0} role="button" aria-label={text}
+    <span ref={ref} className="relative inline-flex group align-middle ml-1">
+      <button type="button" aria-label="설명 보기" aria-expanded={open}
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
         className="w-4 h-4 rounded-full border border-border bg-bg-hover text-muted
                    text-[10px] font-bold leading-none flex items-center justify-center
-                   cursor-help select-none focus:outline-none focus:border-accent">?</span>
+                   cursor-help select-none transition-colors hover:text-fg
+                   focus:outline-none focus:border-accent">?</button>
       <span role="tooltip"
-        className="pointer-events-none absolute bottom-full right-0 mb-2 z-30 hidden
-                   group-hover:block group-focus-within:block w-60 rounded-lg border border-border
-                   bg-bg-card px-3 py-2 text-[11px] font-normal leading-relaxed text-fg
-                   text-left normal-case shadow-xl">{text}</span>
+        className={`absolute bottom-full right-0 mb-2 z-30 w-64 rounded-lg border border-border
+                    bg-bg-card px-3 py-2 text-[11px] font-normal leading-relaxed text-fg
+                    text-left normal-case shadow-xl
+                    ${open ? "block" : "hidden group-hover:block"}`}>
+        {children ?? text}
+      </span>
     </span>
   );
 }
@@ -729,7 +778,20 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
             <th className="text-right font-semibold py-2.5">
               <span className="inline-flex items-center justify-end whitespace-nowrap">
                 성장률
-                <HelpTip text="현재 동시 시청자가 이 채널의 최근 7일 평균 시청자보다 얼마나 높은지를 나타냅니다. 예를 들어 +50%는 평소 평균보다 1.5배 많은 시청자가 보고 있다는 뜻입니다." />
+                <HelpTip text="">
+                  <b className="block text-fg mb-1">성장률이란?</b>
+                  지금 이 채널이 <b className="text-fg">평소보다</b> 얼마나 잘 나오고 있는지를 나타냅니다.
+                  <span className="block my-1.5 rounded bg-bg-hover px-2 py-1 font-mono text-[10px] text-fg">
+                    (현재 시청자 − 최근 7일 평균) ÷ 최근 7일 평균 × 100
+                  </span>
+                  <span className="block">
+                    <b style={{ color: GREEN }}>+50%</b> = 평소 평균의 1.5배가 보고 있는 중,{" "}
+                    <b style={{ color: "#F87171" }}>−20%</b> = 평소보다 적은 상태입니다.
+                  </span>
+                  <span className="block mt-1.5 text-muted">
+                    절대 시청자 수가 아니라 <b className="text-fg">자기 자신 대비</b> 변화라, 소규모 채널도 상위권에 오를 수 있습니다.
+                  </span>
+                </HelpTip>
               </span>
             </th>
             <th className="text-left font-semibold py-2.5 pl-4 hidden sm:table-cell">카테고리</th>
@@ -741,7 +803,7 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
           {items.map((s, i) => {
             const dur = liveDuration(s.open_date);
             const vwPct = (s.concurrent_viewers / maxViewers) * 100;
-            const durPct = dur.ms > 0 ? (dur.ms / NC_DAY_MS) * 100 : 0;
+            const durPct = dur.ms > 0 ? (dur.ms / DAY_MS) * 100 : 0;
             const folPct = s.follower_count > 0 ? (s.follower_count / maxFollower) * 100 : 0;
             return (
               <tr key={s.chzzk_channel_id} className="border-b border-border/50 hover:bg-bg-hover transition-colors">
@@ -815,19 +877,26 @@ function NewcomersAnalysisTab({ data, onRanking }: { data: RisingNewcomers; onRa
         <h3 className="section-title mb-1">신입 라이징 인사이트</h3>
         <p className="text-xs text-muted mb-4">신입/하꼬 그룹 데이터로 뽑은 방송 전략 힌트</p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <InsightCard title="라이징 인기 카테고리">
+          <InsightCard title="인기 추천 카테고리">
             {ins?.top_category
-              ? <>현재 신입 중 <b className="text-fg">{ins.top_category.name}</b> 카테고리가 방송당 평균 <b className="text-fg">{nf(ins.top_category.avg_viewers)}명</b>으로 유입이 가장 좋습니다.</>
-              : "데이터가 아직 부족합니다."}
+              ? <>현재 신입 스트리머 그룹에서 <b className="text-fg">{ins.top_category.name}</b> 카테고리가 방송당 평균{" "}
+                  <b className="text-fg">{nf(ins.top_category.avg_viewers)}명</b>으로 시청자 반응이 가장 좋습니다.{" "}
+                  <span className="text-muted/70">(신입 라이브 {nf(ins.top_category.lives)}개 기준)</span></>
+              : `신입 라이브가 ${NC_CAT_MIN_LIVES}개 이상인 카테고리가 아직 없습니다. 표본이 쌓이면 표시됩니다.`}
           </InsightCard>
           <InsightCard title="노출 최적 시간대">
             {ins?.golden_hour
-              ? <><b className="text-fg">{hourLabel(ins.golden_hour.hour)}</b> 시간대에 신입 채널 방송당 평균 시청자가 가장 높습니다{ins.golden_hour.uplift_pct > 0 ? <> (평소 대비 <b style={{ color: GREEN }}>+{ins.golden_hour.uplift_pct}%</b>)</> : ""}.</>
+              ? <>최근 24시간 분석 결과, <b className="text-fg">{hourLabel(ins.golden_hour.hour)}</b> 시간대에 신입 채널의
+                  방송당 평균 시청자가 <b className="text-fg">{nf(ins.golden_hour.avg_viewers)}명</b>으로 가장 높았습니다
+                  {ins.golden_hour.uplift_pct > 0 ? <> (평소 대비 <b style={{ color: GREEN }}>+{ins.golden_hour.uplift_pct}%</b>)</> : ""}.</>
               : "시간대 분석용 데이터가 아직 부족합니다."}
           </InsightCard>
           <InsightCard title="신입 평균 체급 기준선">
             {ins?.baseline
-              ? <>현재 신입 그룹 평균은 <b className="text-fg">{nf(ins.baseline.avg_viewers)}명</b>입니다. <b style={{ color: GREEN }}>{nf(ins.baseline.next_target)}명</b> 달성 시 신입 상위권 진입, 상단 노출 기회가 커집니다.</>
+              ? <>현재 신입 그룹 평균은 <b className="text-fg">{nf(ins.baseline.avg_viewers)}명</b>입니다.{" "}
+                  <b style={{ color: GREEN }}>{nf(ins.baseline.top20_cut)}명</b> 달성 시 상위 20%,{" "}
+                  <b style={{ color: GREEN }}>{nf(ins.baseline.top10_cut)}명</b> 달성 시 상위 10%권에 진입하여
+                  메인 노출 기회가 대폭 늘어납니다.</>
               : "데이터가 아직 부족합니다."}
           </InsightCard>
         </div>

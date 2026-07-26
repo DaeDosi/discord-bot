@@ -331,6 +331,12 @@ async def categories(range: str = "1h", limit: int = 60):
 
 
 _NEW_TAGS = ("신입", "신규", "첫방송", "하꼬", "뉴비", "초보")
+
+# 신입/하꼬 판정 기준: 보관창 평균 동시 시청자 상한
+_NEWCOMER_AVG_MAX = 50
+# 인사이트 표본 하한 — 아웃라이어(1~2개 표본)가 대표값이 되는 것을 막는다
+_CAT_MIN_LIVES = 3            # 인기 카테고리: 신입 라이브 최소 개수
+_GOLDEN_HOUR_MIN_SAMPLES = 10  # 최적 시간대: 시간 버킷당 최소 스냅샷 수
 _newcomers_cache: dict = {"ts": 0, "data": None}
 
 
@@ -378,7 +384,7 @@ async def newcomers(limit: int = 100):
         # 포함: 신입 태그이거나 최근 평균 시청자 50명 미만(하꼬/라이징)만.
         # (첫 수집 30일 조건은 원천 보관이 14일이라 사실상 모든 채널을 통과시켜 대형 채널이
         #  섞이는 문제가 있어 필터에서 제외 — 데뷔일은 아래 컬럼/뱃지 정보로만 유지)
-        if not (tag_new or (avg_all is not None and avg_all < 50)):
+        if not (tag_new or (avg_all is not None and avg_all < _NEWCOMER_AVG_MAX)):
             continue
         avg7 = agg7.get(cid, avg_all) or avg_all or r["concurrent_viewers"]
         growth = round((r["concurrent_viewers"] - avg7) / avg7 * 100, 1) if avg7 and avg7 > 0 else None
@@ -428,41 +434,59 @@ async def newcomers(limit: int = 100):
         c = x["category_name"] or "기타"
         e = cat_agg.setdefault(c, {"v": 0, "n": 0})
         e["v"] += x["concurrent_viewers"]; e["n"] += 1
+    # 표본 필터: 신입 라이브가 3개 이상인 카테고리만 후보. 1명이 마이너 게임을 켜서
+    # 시청자 16명을 모으면 '방송당 평균 16명'으로 대표 카테고리가 되는 아웃라이어 방지.
+    cat_pool = {k: v for k, v in cat_agg.items() if v["n"] >= _CAT_MIN_LIVES}
     top_category = None
-    if cat_agg:
-        nm, e = max(cat_agg.items(), key=lambda kv: kv[1]["v"] / kv[1]["n"])
+    if cat_pool:
+        nm, e = max(cat_pool.items(), key=lambda kv: kv[1]["v"] / kv[1]["n"])
         top_category = {"name": nm, "avg_viewers": round(e["v"] / e["n"]), "lives": e["n"]}
 
-    # 2) 빈집(노출 최적) 시간대 — 신입 채널 스냅샷의 KST 시간대별 방송당 평균 시청자 최고
+    # 2) 빈집(노출 최적) 시간대 — 최근 24시간 누적, KST 1시간 단위 (신입 총 시청자 / 신입 라이브 수)
+    #
+    # 이전 구현은 '지금 라이브 중인' 채널의 보관 전체 스냅샷을 봤다. 지금 켜져 있는 채널은
+    # 현재 시각 버킷에 100% 기여하는 반면 과거 시각에는 일부만 남아 있어, 접속한 시각이
+    # 늘 최적 시간대로 뽑히는 편향이 있었다. 이제 (a) 최근 24시간으로 창을 자르고
+    # (b) 채널 집합을 '보관창 평균 시청자 50명 미만'(신입/하꼬 기준)으로 잡아 지금 라이브
+    # 여부와 무관하게 24시간을 고르게 반영한다. 시간 변환은 KST(UTC+9) 오프셋으로 SQL에서 처리.
     golden_hour = None
-    cids = [x["chzzk_channel_id"] for x in out]
-    if cids:
-        ph = ",".join("?" * len(cids))
-        hrows = await (await db.execute(
-            f"SELECT collected_at, concurrent_viewers FROM rising_live_snapshots "
-            f"WHERE chzzk_channel_id IN ({ph})", cids
-        )).fetchall()
-        hour_agg: dict = {}
-        for hr in hrows:
-            h = _kst_hour(hr["collected_at"])
-            e = hour_agg.setdefault(h, {"v": 0, "n": 0})
-            e["v"] += hr["concurrent_viewers"]; e["n"] += 1
-        # 표본이 어느 정도 있는 시간대만
-        cand = {h: e for h, e in hour_agg.items() if e["n"] >= 3}
-        pool = cand or hour_agg
-        if pool:
-            h, e = max(pool.items(), key=lambda kv: kv[1]["v"] / kv[1]["n"])
-            overall = (sum(e2["v"] for e2 in pool.values()) / max(1, sum(e2["n"] for e2 in pool.values())))
-            hour_avg = e["v"] / e["n"]
-            uplift = round((hour_avg / overall - 1) * 100) if overall > 0 else 0
-            golden_hour = {"hour": h, "avg_viewers": round(hour_avg), "uplift_pct": uplift}
+    hrows = await (await db.execute(
+        """SELECT CAST(strftime('%H', collected_at + 32400, 'unixepoch') AS INTEGER) AS h,
+                  SUM(concurrent_viewers) AS v,
+                  COUNT(*)                AS n
+           FROM rising_live_snapshots
+           WHERE collected_at >= ?
+             AND chzzk_channel_id IN (
+                   SELECT chzzk_channel_id FROM rising_live_snapshots
+                   GROUP BY chzzk_channel_id
+                   HAVING AVG(concurrent_viewers) < ?)
+           GROUP BY h""",
+        (ts - 86400, _NEWCOMER_AVG_MAX)
+    )).fetchall()
+    hour_agg = {int(r["h"]): {"v": int(r["v"] or 0), "n": int(r["n"] or 0)} for r in hrows if r["n"]}
+    # 표본이 어느 정도 쌓인 시간대만 후보 (한두 개 스냅샷으로 최적 시간대가 뒤집히지 않게)
+    pool = {h: e for h, e in hour_agg.items() if e["n"] >= _GOLDEN_HOUR_MIN_SAMPLES} or hour_agg
+    if pool:
+        h, e = max(pool.items(), key=lambda kv: kv[1]["v"] / kv[1]["n"])
+        overall = sum(e2["v"] for e2 in pool.values()) / max(1, sum(e2["n"] for e2 in pool.values()))
+        hour_avg = e["v"] / e["n"]
+        uplift = round((hour_avg / overall - 1) * 100) if overall > 0 else 0
+        golden_hour = {"hour": h, "avg_viewers": round(hour_avg), "uplift_pct": uplift,
+                       "samples": e["n"], "hours_covered": len(hour_agg)}
 
-    # 3) 체급 기준선 — 신입 평균 + 상위 20% 진입 시청자 목표
+    # 3) 체급 기준선 — 신입 평균 + 상위 20%/10% 컷오프(구체적 목표 수치)
     baseline = None
     if count:
-        sv = sorted(x["concurrent_viewers"] for x in out)
-        target = sv[min(int(count * 0.8), count - 1)]
-        baseline = {"avg_viewers": avg_v, "next_target": max(target, avg_v + 1)}
+        sv = sorted(x["concurrent_viewers"] for x in out)  # 오름차순
+        def _cut(p: float) -> int:
+            return int(sv[min(int(count * p), count - 1)])
+        top20, top10 = _cut(0.80), _cut(0.90)
+        baseline = {
+            "avg_viewers": avg_v,
+            "top20_cut":   max(top20, avg_v + 1),
+            "top10_cut":   max(top10, top20, avg_v + 1),
+            "next_target": max(top20, avg_v + 1),  # 하위호환
+        }
 
     insights = {"top_category": top_category, "golden_hour": golden_hour, "baseline": baseline}
 
