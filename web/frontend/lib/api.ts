@@ -204,6 +204,21 @@ export const api = {
       fetch(`${BASE}/api/rising/newcomers?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingNewcomers>,
     status: () =>
       fetch(`${BASE}/api/rising/status`).then(r => r.json()) as Promise<import("./types").RisingStatus>,
+    periodFilters: () =>
+      fetch(`${BASE}/api/rising/period-filters`).then(r => r.json()) as Promise<import("./types").RisingPeriodFilters>,
+    periodAnalysis: (q: {
+      range: string; start?: string; end?: string;
+      category?: string; tags?: string[]; tier?: string;
+    }) => {
+      const p = new URLSearchParams({ range: q.range });
+      if (q.start) p.set("start", q.start);
+      if (q.end) p.set("end", q.end);
+      if (q.category) p.set("category", q.category);
+      if (q.tags?.length) p.set("tags", q.tags.join(","));
+      if (q.tier) p.set("tier", q.tier);
+      return fetch(`${BASE}/api/rising/period-analysis?${p}`)
+        .then(r => r.json()) as Promise<import("./types").RisingPeriodAnalysis>;
+    },
   },
 
   chzzkAuth: {

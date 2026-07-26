@@ -1,11 +1,11 @@
 "use client";
 import { useState } from "react";
-import { ChevronDown, LineChart as LineIcon, ListOrdered, Gamepad2, Sprout, Radio, Users, Hash } from "lucide-react";
+import { ChevronDown, LineChart as LineIcon, ListOrdered, Gamepad2, Sprout, Radio, Users, Hash, SlidersHorizontal } from "lucide-react";
 
 // /stats 좌측 메뉴. 탭은 URL이 아니라 state로 전환된다.
 // (route 기반 항목을 지원하던 분기는 /stats/network 제거와 함께 걷어냈다.)
 export type Tab =
-  | "overview" | "newcomers_analysis"
+  | "overview" | "newcomers_analysis" | "period_analysis"
   | "ranking" | "ranking_period" | "newcomers_ranking"
   | "category" | "category_streamers" | "tags";
 
@@ -18,6 +18,8 @@ export const NAV_GROUPS: { header: string | null; items: NavItem[] }[] = [
   { header: "실시간 분석", items: [
     { key: "overview",           label: "전체 스트리머 분석", icon: <LineIcon size={16} />, live: true },
     { key: "newcomers_analysis", label: "신규 스트리머 분석", icon: <Sprout size={16} />, live: true },
+    // 실시간 한 장이 아니라 기간 누적이지만, '분석' 성격이 같아 같은 그룹에 둔다(LIVE 표시 없음)
+    { key: "period_analysis",    label: "기간별 상세 분석",   icon: <SlidersHorizontal size={16} /> },
   ] },
   // 실시간/누적을 한 그룹으로 합치고, 실시간 기준인 항목에만 LIVE 표시를 붙인다
   { header: "랭킹", items: [

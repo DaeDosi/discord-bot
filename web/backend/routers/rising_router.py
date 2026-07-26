@@ -10,7 +10,7 @@ import asyncio
 import httpx
 from datetime import datetime, timezone, timedelta
 from collections import Counter
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from database import get_db
 from rising_collector import latest_image, _fetch_channel_meta
 
@@ -1454,3 +1454,257 @@ async def sitemap_channels(limit: int = 2000):
     )).fetchall()
     return {"channels": [{"id": r["chzzk_channel_id"], "last_at": int(r["last_at"] or 0)}
                          for r in rows]}
+
+
+# ── 기간별 상세 분석 (다중 필터 추이) ────────────────────────────────────────
+# 기간 + 카테고리 + 태그 + 체급을 조합해 시계열/시간대/요일/카테고리표를 한 번에 낸다.
+#
+# 소스는 rising_hourly_rollup 하나다. 한 시간 버킷 안에서
+#   · 그 시간의 동시 시청자 총합 ≈ SUM(avg_viewers)   (채널별 시간 평균의 합)
+#   · 그 시간에 방송한 채널 수    = COUNT(*)
+#   · 뷰어쉽(시청 시간)           = SUM(sum_viewers) × 스냅샷간격(10분) / 60
+# 으로 계산한다. sum_viewers는 '스냅샷 시청자 합'이라 시간 단위로 환산해야 의미가 있다.
+_PA_TTL = 60
+_pa_cache: dict[tuple, tuple[float, dict]] = {}
+
+# 체급 구간(기간 내 채널 평균 동시 시청자 기준). 상단 TIERS와 경계가 다른데,
+# 저쪽은 '실시간 한 장'의 체급 분포용이고 여기는 기획서가 지정한 필터 구간이다.
+_PA_TIERS: dict[str, tuple[float, float]] = {
+    "all":    (0.0, 1e12),
+    "rookie": (0.0, 10.0),      # 신입/라이징 — 10명 이하
+    "small":  (10.0001, 100.0),  # 중소형 — 11~100명
+    "large":  (100.0001, 1e12),  # 대기업 — 100명 초과
+}
+_PA_PRESETS = {"today": 1, "7d": 7, "30d": 30}
+_PA_MAX_DAYS = 90
+
+
+def _pa_day_bounds(day: str) -> int | None:
+    """'YYYY-MM-DD'(KST) → 그 날 00:00 KST의 epoch. 형식이 어긋나면 None."""
+    try:
+        d = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=_KST)
+    except (ValueError, TypeError):
+        return None
+    return int(d.timestamp())
+
+
+@router.get("/period-analysis")
+async def period_analysis(
+    # 쿼리 이름은 다른 엔드포인트와 맞춰 range로 두되, 파이썬 쪽 이름은 period로 받는다.
+    # 파라미터를 range로 두면 내장 range()가 가려져 함수 안에서 range(24)가 터진다
+    # (실제로 500이 났다 — ranking_period는 range()를 안 써서 드러나지 않았을 뿐이다).
+    period: str = Query("7d", alias="range"),
+    start: str | None = None,
+    end: str | None = None,
+    category: str | None = None,
+    tags: str | None = None,
+    tier: str = "all",
+):
+    """기간별 상세 분석 — 필터 조건 아래의 시청자/채널 수 추이와 카테고리 집계.
+
+    range=today|7d|30d|custom (custom이면 start/end를 'YYYY-MM-DD'(KST)로 준다),
+    tags는 쉼표 구분 다중 선택(하나라도 해당하면 포함, OR).
+    """
+    now = int(time.time())
+    tier = tier if tier in _PA_TIERS else "all"
+    tag_list = [t.strip() for t in (tags or "").split(",") if t.strip()][:8]
+
+    if period == "custom" and start and end:
+        s, e = _pa_day_bounds(start), _pa_day_bounds(end)
+        if s is None or e is None:
+            return {"error": "invalid_date", "detail": "날짜 형식은 YYYY-MM-DD여야 합니다."}
+        if e < s:
+            s, e = e, s
+        e += 86400  # 종료일을 포함하도록 그 날 끝까지
+        s = max(s, e - _PA_MAX_DAYS * 86400)
+        range_key = "custom"
+    else:
+        range_key = period if period in _PA_PRESETS else "7d"
+        days = _PA_PRESETS[range_key]
+        if range_key == "today":
+            # '오늘'은 최근 24시간이 아니라 KST 자정부터 — 화면 문구와 일치시킨다
+            s = int(datetime.fromtimestamp(now, _KST).replace(
+                hour=0, minute=0, second=0, microsecond=0).timestamp())
+        else:
+            s = now - days * 86400
+        e = now + 3600
+
+    ck = (range_key, s // 300, e // 300, category or "", ",".join(tag_list), tier)
+    hit = _pa_cache.get(ck)
+    if hit and time.time() - hit[0] < _PA_TTL:
+        return hit[1]
+
+    db = await get_db()
+    lo, hi = _PA_TIERS[tier]
+    params: list = [s, e]
+    where = ["hour_ts >= ?", "hour_ts < ?"]
+    if category:
+        where.append("category_name = ?")
+        params.append(category)
+
+    # 태그는 롤업에 없다(용량 때문에 컬럼을 늘리지 않았다) — 원본 스냅샷에서
+    # 최근에 그 태그를 단 채널 집합을 뽑아 필터로 쓴다. 원본 보관이 약 26시간이므로
+    # '최근 하루 안에 그 태그로 방송한 채널의 과거 추이'라는 뜻이 된다(응답의 tag_scope_hours).
+    tag_scope_hours = 0
+    if tag_list:
+        tag_scope_hours = 26
+        like = " OR ".join(["tags LIKE ?"] * len(tag_list))
+        where.append(
+            f"chzzk_channel_id IN (SELECT DISTINCT chzzk_channel_id FROM rising_live_snapshots"
+            f" WHERE collected_at >= ? AND ({like}))")
+        params.append(now - tag_scope_hours * 3600)
+        params.extend(f"%{t}%" for t in tag_list)
+
+    base_where = " AND ".join(where)
+    # 체급은 '기간 내 채널 평균 동시 시청자'로 판정하므로 같은 필터를 두 번 쓴다
+    # (CTE로 묶고 싶지만 파라미터 순서가 뒤엉켜 가독성이 떨어져 서브쿼리로 둔다).
+    sql = f"""
+        SELECT hour_ts, category_name,
+               COUNT(*)          AS chans,
+               SUM(avg_viewers)  AS total_v,
+               SUM(sum_viewers)  AS sum_v,
+               SUM(snaps)        AS sn
+        FROM rising_hourly_rollup
+        WHERE {base_where}
+          AND chzzk_channel_id IN (
+              SELECT chzzk_channel_id FROM rising_hourly_rollup
+              WHERE {base_where}
+              GROUP BY chzzk_channel_id
+              HAVING SUM(sum_viewers) * 1.0 / NULLIF(SUM(snaps),0) BETWEEN ? AND ?)
+        GROUP BY hour_ts, category_name
+    """
+    rows = await (await db.execute(sql, (*params, *params, lo, hi))).fetchall()
+
+    if not rows:
+        empty = {"range": range_key, "start": s, "end": min(e, now), "tier": tier,
+                 "category": category or "", "tags": tag_list,
+                 "tag_scope_hours": tag_scope_hours, "bucket": "hour",
+                 "summary": None, "series": [], "hourly": [], "dow": [], "table": []}
+        _pa_cache[ck] = (time.time(), empty)
+        return empty
+
+    snap_min = 10
+    span = e - s
+    bucket = "hour" if span <= 3 * 86400 else "day"
+
+    hours: dict[int, dict] = {}          # hour_ts -> 시간 단위 합계
+    cats: dict[str, dict] = {}           # category -> 누적
+    cat_hours: dict[str, dict[int, dict]] = {}  # category -> hour -> 합계(최고/평균 채널·시청자용)
+
+    for r in rows:
+        h = int(r["hour_ts"])
+        cat = r["category_name"] or "기타"
+        chans, tv = int(r["chans"] or 0), float(r["total_v"] or 0)
+        sv, sn = int(r["sum_v"] or 0), int(r["sn"] or 0)
+
+        b = hours.setdefault(h, {"chans": 0, "v": 0.0, "sv": 0, "sn": 0})
+        b["chans"] += chans; b["v"] += tv; b["sv"] += sv; b["sn"] += sn
+
+        c = cats.setdefault(cat, {"sv": 0, "sn": 0, "peak_ch": 0, "peak_v": 0.0})
+        c["sv"] += sv; c["sn"] += sn
+        c["peak_ch"] = max(c["peak_ch"], chans)
+        c["peak_v"] = max(c["peak_v"], tv)
+        ch = cat_hours.setdefault(cat, {})
+        ch[h] = {"chans": chans, "v": tv}
+
+    # ① 시계열 — 시간 또는 일 단위로 다시 묶는다
+    buckets: dict[int, dict] = {}
+    for h, b in hours.items():
+        key = h if bucket == "hour" else (h + 32400) // 86400 * 86400 - 32400  # KST 자정 기준
+        g = buckets.setdefault(key, {"v": 0.0, "chans": 0, "n": 0, "sv": 0})
+        g["v"] += b["v"]; g["chans"] += b["chans"]; g["n"] += 1; g["sv"] += b["sv"]
+    series = [{"t": k,
+               "viewers": round(g["v"] / g["n"]),
+               "channels": round(g["chans"] / g["n"]),
+               "viewership": round(g["sv"] * snap_min / 60)}
+              for k, g in sorted(buckets.items())]
+
+    # ② 요약 — 피크는 '시간 버킷의 동시 시청자 합'이 가장 컸던 시각
+    peak_h = max(hours.items(), key=lambda kv: kv[1]["v"])
+    total_sv = sum(b["sv"] for b in hours.values())
+    summary = {
+        "viewership":     round(total_sv * snap_min / 60),
+        "avg_viewers":    round(sum(b["v"] for b in hours.values()) / len(hours)),
+        "peak_viewers":   round(peak_h[1]["v"]),
+        "peak_at":        peak_h[0],
+        "avg_channels":   round(sum(b["chans"] for b in hours.values()) / len(hours)),
+        "total_channels": None,   # 아래에서 채운다
+        "top_category":   "",
+        "top_category_share": 0.0,
+    }
+
+    # ③ 시간대별 / 요일별 평균 — 시간 버킷을 KST 시/요일로 되묶는다
+    hb: dict[int, list] = {h: [] for h in range(24)}
+    db_: dict[int, list] = {d: [] for d in range(7)}
+    for h, b in hours.items():
+        dt = datetime.fromtimestamp(h, _KST)
+        hb[dt.hour].append(b["v"])
+        db_[dt.weekday()].append(b["v"])   # weekday(): 월=0 — 화면 순서와 같다
+    hourly = [{"hour": h, "avg_viewers": round(sum(v) / len(v)) if v else 0, "samples": len(v)}
+              for h, v in hb.items()]
+    dow = [{"dow": d, "avg_viewers": round(sum(v) / len(v)) if v else 0, "samples": len(v)}
+           for d, v in db_.items()]
+
+    # ④ 카테고리 표
+    table = []
+    for cat, c in cats.items():
+        hs = cat_hours.get(cat, {})
+        n = len(hs) or 1
+        table.append({
+            "category":       cat,
+            "hours":          round(c["sn"] * snap_min / 60, 1),
+            "peak_channels":  c["peak_ch"],
+            "avg_channels":   round(sum(x["chans"] for x in hs.values()) / n, 1),
+            "peak_viewers":   round(c["peak_v"]),
+            "avg_viewers":    round(sum(x["v"] for x in hs.values()) / n),
+            "viewership":     round(c["sv"] * snap_min / 60),
+        })
+    table.sort(key=lambda x: x["viewership"], reverse=True)
+    if table:
+        tot = sum(t["viewership"] for t in table) or 1
+        summary["top_category"] = table[0]["category"]
+        summary["top_category_share"] = round(table[0]["viewership"] / tot * 100, 1)
+
+    # 기간 내 순 채널 수 — 시간 합계로는 알 수 없어 따로 센다
+    crow = await (await db.execute(
+        f"""SELECT COUNT(*) AS n FROM (
+                SELECT chzzk_channel_id FROM rising_hourly_rollup WHERE {base_where}
+                GROUP BY chzzk_channel_id
+                HAVING SUM(sum_viewers) * 1.0 / NULLIF(SUM(snaps),0) BETWEEN ? AND ?)""",
+        (*params, lo, hi)
+    )).fetchone()
+    summary["total_channels"] = int(crow["n"] or 0) if crow else 0
+
+    out = {"range": range_key, "start": s, "end": min(e, now), "tier": tier,
+           "category": category or "", "tags": tag_list,
+           "tag_scope_hours": tag_scope_hours, "bucket": bucket,
+           "summary": summary, "series": series, "hourly": hourly,
+           "dow": dow, "table": table}
+    _pa_cache[ck] = (time.time(), out)
+    if len(_pa_cache) > 200:   # 필터 조합이 무한하므로 상한을 둔다
+        for k in list(_pa_cache)[:100]:
+            _pa_cache.pop(k, None)
+    return out
+
+
+@router.get("/period-filters")
+async def period_filters():
+    """필터 드롭다운 채우기용 — 최근 이력에 실제로 존재하는 카테고리/태그 목록."""
+    now = int(time.time())
+    db = await get_db()
+    crows = await (await db.execute(
+        """SELECT category_name AS c, SUM(sum_viewers) AS v FROM rising_hourly_rollup
+           WHERE hour_ts >= ? AND category_name <> ''
+           GROUP BY category_name ORDER BY v DESC LIMIT 200""",
+        (now - 8 * 86400,)
+    )).fetchall()
+    trows = await (await db.execute(
+        "SELECT tags FROM rising_live_snapshots WHERE collected_at >= ? AND tags <> ''",
+        (now - 26 * 3600,)
+    )).fetchall()
+    tc: Counter = Counter()
+    for r in trows:
+        for t in _split_tags(r["tags"]):
+            tc[t] += 1
+    return {"categories": [r["c"] for r in crows],
+            "tags": [{"tag": t, "lives": n} for t, n in tc.most_common(40)]}

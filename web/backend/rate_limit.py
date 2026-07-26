@@ -39,6 +39,8 @@ _HEAVY_MARKERS = (
     "/api/rising/ranking-period",
     "/api/rising/category-streamers",
     "/api/rising/search",
+    # 기간별 상세 분석: 롤업 전 구간 스캔 + 체급 판정 서브쿼리라 무겁다
+    "/api/rising/period-analysis",
 )
 
 

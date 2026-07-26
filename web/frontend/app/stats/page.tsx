@@ -18,6 +18,7 @@ import CollapsibleAbout from "@/components/CollapsibleAbout";
 import CategoryRankCards from "./CategoryRankCards";
 import RankingCharts from "./RankingCharts";
 import TagSearch from "./TagSearch";
+import PeriodAnalysis from "./PeriodAnalysis";
 import { ViewerDistribution, TrafficHeatmap, TitleKeywordRank } from "./OverviewViz";
 import { GoldenHourHeatmap, BlueOceanCards, TierDistribution, TitleKeywordCard } from "./NewcomerInsightViz";
 import StatsNav, { type Tab } from "./StatsNav";
@@ -1904,6 +1905,7 @@ export default function StatsPage() {
             <div className="min-w-0">
               {tab === "overview"           && ov   && <OverviewTab ov={ov} stars={stars} />}
               {tab === "newcomers_analysis" && news && <NewcomersAnalysisTab data={news} onRanking={() => selectTab("newcomers_ranking")} />}
+              {tab === "period_analysis"              && <PeriodAnalysis />}
               {tab === "ranking"            && rank && <RankingTab rank={rank} />}
               {tab === "newcomers_ranking"  && news && <NewcomersRankingTab data={news} />}
               {tab === "ranking_period"                && <PeriodRankingTab />}

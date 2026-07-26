@@ -456,3 +456,36 @@ export interface HeatCell { avg_viewers: number; samples: number; }
 export interface RisingTrafficHeatmap { days: number; grid: HeatCell[][]; }
 export interface TitleKeyword { keyword: string; lives: number; viewers: number; avg_viewers: number; }
 export interface RisingTitleKeywords { collected_at: number | null; keywords: TitleKeyword[]; }
+
+// ── 기간별 상세 분석 ────────────────────────────────────────────────────────
+export interface RisingPeriodFilters {
+  categories: string[];
+  tags: { tag: string; lives: number }[];
+}
+export interface PeriodPoint { t: number; viewers: number; channels: number; viewership: number }
+export interface PeriodSummary {
+  viewership: number; avg_viewers: number;
+  peak_viewers: number; peak_at: number;
+  avg_channels: number; total_channels: number;
+  top_category: string; top_category_share: number;
+}
+export interface PeriodTableRow {
+  category: string; hours: number;
+  peak_channels: number; avg_channels: number;
+  peak_viewers: number; avg_viewers: number; viewership: number;
+}
+export interface RisingPeriodAnalysis {
+  range: string; start: number; end: number;
+  tier: string; category: string; tags: string[];
+  /** 태그 필터가 참조한 원본 스냅샷 범위(시간). 0이면 태그 필터 없음 */
+  tag_scope_hours: number;
+  /** 시계열 묶음 단위 — 3일 이하면 "hour" */
+  bucket: "hour" | "day";
+  summary: PeriodSummary | null;
+  series: PeriodPoint[];
+  hourly: { hour: number; avg_viewers: number; samples: number }[];
+  dow: { dow: number; avg_viewers: number; samples: number }[];
+  table: PeriodTableRow[];
+  error?: string;
+  detail?: string;
+}
