@@ -4,6 +4,7 @@
 익명 트래픽/크롤러가 접근하므로 무거운 재계산은 '최신 수집 사이클' 기준으로만 한다.
 데이터가 쌓이기 전(수집 시작 직후)에는 일부 지표(라이징/히트맵)가 비어 있을 수 있다.
 """
+import re
 import time
 import asyncio
 import httpx
@@ -340,6 +341,10 @@ _GOLDEN_HOUR_MIN_SAMPLES = 10  # 최적 시간대: 시간 버킷당 최소 스�
 # 팔로워 온디맨드 보강 — 외부 API 호출이라 응답 시간을 좌우한다. 개수와 총 시간을 모두 제한.
 _NEWCOMER_ENRICH_N = 80
 _NEWCOMER_ENRICH_TIMEOUT = 3.0
+# 제목 유입 키워드 — 신입이 자주 쓰는 소통/참여 유도 표현
+_TITLE_KEYWORD_LIST = ["시참", "훈수", "소통", "티어", "뉴비", "초보"]
+_TITLE_KEYWORDS = re.compile("|".join(_TITLE_KEYWORD_LIST))
+_TITLE_MIN_SAMPLES = 5   # 양쪽 그룹이 이보다 적으면 비교하지 않는다
 _newcomers_cache: dict = {"ts": 0, "data": None}
 
 
@@ -413,6 +418,7 @@ async def newcomers(limit: int = 100):
             "first_seen_days":    first_days,
             "is_new":             first_days <= 7,
             "tag_new":            tag_new,
+            "live_title":         r["live_title"] or "",
             "tags":               [t for t in tags.split(",") if t][:4],
         })
 
@@ -533,8 +539,27 @@ async def newcomers(limit: int = 100):
         tiers.append({"label": label, "desc": desc, "count": n,
                       "share": round(n / count * 100, 1) if count else 0.0})
 
+    # ── 제목 키워드 효율 ──────────────────────────────────────────────────
+    # 신입 방송 제목에 유입 키워드가 있는 그룹과 없는 그룹의 평균 시청자를 비교한다.
+    # 상관관계일 뿐 인과가 아니라는 점은 프론트 안내 문구에 명시한다.
+    kw_hit, kw_miss = [], []
+    for x in out:
+        title = (x.get("live_title") or "")
+        (kw_hit if _TITLE_KEYWORDS.search(title) else kw_miss).append(x["concurrent_viewers"])
+    title_keyword = None
+    if len(kw_hit) >= _TITLE_MIN_SAMPLES and len(kw_miss) >= _TITLE_MIN_SAMPLES:
+        a = sum(kw_hit) / len(kw_hit)
+        b = sum(kw_miss) / len(kw_miss)
+        title_keyword = {
+            "with_count": len(kw_hit), "without_count": len(kw_miss),
+            "with_avg": round(a, 1), "without_avg": round(b, 1),
+            "lift_pct": round((a / b - 1) * 100, 1) if b > 0 else None,
+            "keywords": _TITLE_KEYWORD_LIST,
+        }
+
     insights = {"top_category": top_category, "golden_hour": golden_hour,
-                "baseline": baseline, "hourly": hourly, "tiers": tiers}
+                "baseline": baseline, "hourly": hourly, "tiers": tiers,
+                "title_keyword": title_keyword}
 
     # ── 카테고리 점유율(신입 기준) ─────────────────────────────────────────
     # cat_agg는 필터를 통과한 신입 '전체'로 집계돼 있으므로, streamers[:limit]로 자른

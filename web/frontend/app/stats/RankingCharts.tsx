@@ -356,13 +356,23 @@ function ScatterPanel({ rows, onPick, y }:
               </linearGradient>
             );
           })}
+          {/* 호버 오버레이 전용 클립 — 한 번에 하나뿐이라 재생성 비용이 없다 */}
+          {hp && (() => {
+            const rr = hp.rad * 1.3;
+            return (
+              <clipPath id="c-hover">
+                <circle cx={clampX(sx(hp.x + hp.ju * spread), rr)}
+                        cy={clampY(sy(hp.yn + hp.jv * spread), rr)} r={rr} />
+              </clipPath>
+            );
+          })()}
           {visible.map((p) => (
             <clipPath key={p.r.chzzk_channel_id} id={`c-${p.r.chzzk_channel_id}`}>
-              {/* 반지름을 호버 배율(1.3)로 고정한다. 호버마다 defs를 다시 만들면
-                  보이는 노드 전부의 clipPath가 재생성돼 버벅인다. 크게 잡아 두면
-                  평상시엔 원보다 넉넉해 이미지가 잘리지 않는다. */}
-              <circle cx={clampX(sx(p.x + p.ju * spread), p.rad * 1.3)}
-                      cy={clampY(sy(p.yn + p.jv * spread), p.rad * 1.3)} r={p.rad * 1.3} />
+              {/* 반지름은 호버와 무관하게 rad로 고정한다. 호버마다 defs를 다시 만들면
+                  보이는 노드 전부의 clipPath가 재생성돼 버벅인다.
+                  이미지도 같은 rad로 그려야 정사각형 모서리가 원 밖으로 드러나지 않는다. */}
+              <circle cx={clampX(sx(p.x + p.ju * spread), p.rad)}
+                      cy={clampY(sy(p.yn + p.jv * spread), p.rad)} r={p.rad} />
             </clipPath>
           ))}
         </defs>
@@ -466,7 +476,7 @@ function ScatterPanel({ rows, onPick, y }:
                 {hp.r.channel_image_url && (
                   <image href={hp.r.channel_image_url} x={cxp - rr} y={cyp - rr}
                          width={rr * 2} height={rr * 2}
-                         clipPath={`url(#c-${hp.r.chzzk_channel_id})`}
+                         clipPath="url(#c-hover)"
                          preserveAspectRatio="xMidYMid slice" />
                 )}
                 <circle cx={cxp} cy={cyp} r={rr} fill="none" stroke="#fff" strokeWidth={2} />

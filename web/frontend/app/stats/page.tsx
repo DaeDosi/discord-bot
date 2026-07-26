@@ -18,7 +18,7 @@ import CollapsibleAbout from "@/components/CollapsibleAbout";
 import CategoryRankCards from "./CategoryRankCards";
 import RankingCharts from "./RankingCharts";
 import TagSearch from "./TagSearch";
-import { GoldenHourHeatmap, BlueOceanCards, TierDistribution } from "./NewcomerInsightViz";
+import { GoldenHourHeatmap, BlueOceanCards, TierDistribution, TitleKeywordCard } from "./NewcomerInsightViz";
 import StatsNav, { type Tab } from "./StatsNav";
 
 import LineChart, { type LinePoint, type LineSeries } from "./LineChart";
@@ -209,8 +209,9 @@ function StreamerSearch() {
         <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
         <input value={q} onChange={(e) => setQ(e.target.value)} onFocus={() => results.length > 0 && setOpen(true)}
           placeholder="채널명으로 검색"
-          className="w-full bg-bg border border-border rounded-lg pl-9 pr-8 py-2 text-sm text-fg placeholder-muted focus:outline-none focus:border-accent" />
-        {loading && <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted animate-spin" />}
+          className="w-full bg-bg border border-border rounded-lg pl-9 pr-3 py-2 text-sm text-fg placeholder-muted focus:outline-none focus:border-accent" />
+        {/* 입력창 안 스피너는 제거했다 — 드롭다운에 '검색 중...' 행이 따로 있어
+            로딩 표시가 두 개로 겹쳐 보였다. */}
       </div>
       {open && (
         <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-bg-card border border-border rounded-xl shadow-xl py-1.5 max-h-80 overflow-y-auto">
@@ -851,9 +852,9 @@ function NcTile({ label, value, unit }: { label: string; value: string; unit?: s
 }
 function InsightCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-border p-4">
-      <p className="text-sm font-semibold text-fg">{title}</p>
-      <p className="text-xs text-muted mt-1.5 leading-relaxed">{children}</p>
+    <div className="rounded-xl border border-border p-5">
+      <p className="text-base font-bold text-fg">{title}</p>
+      <p className="text-sm text-muted mt-2 leading-relaxed">{children}</p>
     </div>
   );
 }
@@ -1127,8 +1128,8 @@ function NewcomersAnalysisTab({ data, onRanking }: { data: RisingNewcomers; onRa
 
       {/* 인사이트 3 */}
       <div className="card">
-        <h3 className="section-title mb-1">신입 라이징 인사이트</h3>
-        <p className="text-xs text-muted mb-4">신입/하꼬 그룹 데이터로 뽑은 방송 전략 힌트</p>
+        <h3 className="section-title mb-1">신입 인사이트</h3>
+        <p className="text-sm text-muted mb-4">신입/하꼬 그룹 데이터로 뽑은 방송 전략 힌트</p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <InsightCard title="인기 추천 카테고리">
             {ins?.top_category
@@ -1155,6 +1156,9 @@ function NewcomersAnalysisTab({ data, onRanking }: { data: RisingNewcomers; onRa
           </InsightCard>
         </div>
       </div>
+
+      {/* 제목 키워드 효율 */}
+      {ins?.title_keyword && <TitleKeywordCard tk={ins.title_keyword} />}
 
       {/* 24시간 골든타임 히트맵 */}
       {ins?.hourly && ins.hourly.length > 0 && <GoldenHourHeatmap hourly={ins.hourly} />}

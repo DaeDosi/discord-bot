@@ -91,6 +91,49 @@ export function GoldenHourHeatmap({ hourly }: { hourly: NonNullable<NewcomerInsi
   );
 }
 
+// ── 제목 키워드 효율 ────────────────────────────────────────────────────────
+export function TitleKeywordCard({ tk }: { tk: NonNullable<NewcomerInsights["title_keyword"]> }) {
+  const up = (tk.lift_pct ?? 0) >= 0;
+  return (
+    <div className="card">
+      <h3 className="section-title">제목 키워드 효율</h3>
+      <p className="mt-1 text-sm text-muted">
+        방송 제목에 유입 키워드({tk.keywords.join(", ")})가 있는 신입과 없는 신입의 평균 시청자 비교입니다.
+      </p>
+
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="rounded-xl border p-4" style={{ borderColor: "rgba(0,255,163,0.35)", background: "rgba(0,255,163,0.05)" }}>
+          <p className="text-xs text-muted">키워드 포함</p>
+          <p className="mt-1 text-xl font-extrabold tabular-nums" style={{ color: GREEN }}>
+            {nf(tk.with_avg)}<span className="ml-1 text-xs font-normal text-muted">명</span>
+          </p>
+          <p className="mt-0.5 text-[11px] text-muted">방송 {nf(tk.with_count)}개</p>
+        </div>
+        <div className="rounded-xl border border-border p-4">
+          <p className="text-xs text-muted">미포함</p>
+          <p className="mt-1 text-xl font-extrabold tabular-nums text-fg">
+            {nf(tk.without_avg)}<span className="ml-1 text-xs font-normal text-muted">명</span>
+          </p>
+          <p className="mt-0.5 text-[11px] text-muted">방송 {nf(tk.without_count)}개</p>
+        </div>
+        <div className="rounded-xl border border-border p-4">
+          <p className="text-xs text-muted">차이</p>
+          <p className="mt-1 text-xl font-extrabold tabular-nums"
+             style={{ color: tk.lift_pct == null ? undefined : up ? GREEN : "#EF4444" }}>
+            {tk.lift_pct == null ? "-" : `${up ? "+" : ""}${tk.lift_pct}%`}
+          </p>
+          <p className="mt-0.5 text-[11px] text-muted">미포함 그룹 대비</p>
+        </div>
+      </div>
+
+      <Sub>
+        * 키워드를 넣으면 시청자가 는다는 인과가 아니라, 그런 제목을 쓰는 방송이 평균적으로
+        어떤 성과를 냈는지를 보여 주는 상관 지표입니다. 양쪽 그룹이 각각 5개 이상일 때만 계산합니다.
+      </Sub>
+    </div>
+  );
+}
+
 // ── ② 블루오션 카테고리 TOP 5 ───────────────────────────────────────────────
 export function BlueOceanCards({ cats, summary }:
   { cats: NewcomerCategory[]; summary?: NewcomerSummary }) {
