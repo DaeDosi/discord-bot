@@ -12,7 +12,8 @@
     "lucide-react": "^0.400.0",
     "next": "^16.2.9",
     "react": "^18",
-    "react-dom": "^18"
+    "react-dom": "^18",
+    "vis-network": "^10.1.0"
   },
   "devDependencies": {
     "@types/node": "^20",

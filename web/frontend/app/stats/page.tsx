@@ -15,6 +15,7 @@ import type {
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
 import LineChart, { type LinePoint, type LineSeries } from "./LineChart";
+import CategoryNetwork from "./CategoryNetwork";
 
 // 2톤 그라데이션(그린 → 시안) — 브랜드 액센트
 const GREEN = "#00FFA3";
@@ -63,17 +64,24 @@ function GradText({ children, className, grad = GRAD }: { children: React.ReactN
   );
 }
 
-// 셀 하단 비율 바 — 부모 <td>에 `relative`가 있어야 한다.
-// 시청자/방송시간/팔로워가 같은 위치·두께를 공유하도록 한 곳에서 관리.
-// left-3/right-3 안쪽 여백이 핵심: 셀을 100% 채우면 옆 컬럼 바와 끝이 맞닿아
-// 보라 바와 시안 바가 하나로 이어져 보인다(컬럼 경계에서 총 24px 간격 확보).
+// 수치 셀의 비율 바 — 시청자/방송시간/팔로워가 두께·간격을 공유하도록 한 곳에서 관리.
+//
+// 예전엔 absolute bottom-0으로 셀 바닥에 붙였는데, td 박스는 행 높이만큼 늘어나므로
+// 바가 항상 '행 바닥'에 고정되고 수치 텍스트와의 간격이 14px 이상 벌어졌다. 이제 CellCol로
+// 텍스트와 함께 flex-col gap-1.5(6px)로 묶어 수치 바로 아래에 붙인다.
+// 폭은 셀 콘텐츠 박스 기준이라 px-6 패딩이 그대로 컬럼 간 여백으로 남는다(바끼리 안 붙음).
 function CellBar({ pct, background }: { pct: number; background: string }) {
   return (
-    <span className="absolute bottom-0 left-3 right-3 h-[3px] rounded-full bg-bg-hover">
-      <span className="absolute inset-y-0 left-0 rounded-full"
+    <span className="block h-[3px] rounded-full bg-bg-hover overflow-hidden">
+      <span className="block h-full rounded-full"
             style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background }} />
     </span>
   );
+}
+
+// 수치 + 바를 촘촘한 세로 간격으로 묶는 래퍼
+function CellCol({ children }: { children: React.ReactNode }) {
+  return <div className="flex flex-col gap-1.5">{children}</div>;
 }
 
 // 증감 뱃지 (null이면 '-')
@@ -98,8 +106,8 @@ const NAV_GROUPS: { header: string | null; items: NavItem[] }[] = [
     { key: "ranking",           label: "전체 스트리머 랭킹", icon: <ListOrdered size={16} /> },
     { key: "newcomers_ranking", label: "신규 스트리머 랭킹", icon: <Sprout size={16} /> },
   ] },
-  { header: null, items: [
-    { key: "category", label: "카테고리", icon: <Gamepad2 size={16} /> },
+  { header: "카테고리", items: [
+    { key: "category", label: "카테고리 분석", icon: <Gamepad2 size={16} /> },
   ] },
 ];
 const groupHeaderOf = (k: Tab): string | null =>
@@ -430,7 +438,7 @@ function CategoryDonut() {
 }
 
 // ── 개요 탭 ───────────────────────────────────────────────────────────────────
-function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | null }) {
+function OverviewTab({ ov, stars, rank }: { ov: RisingOverview; stars: RisingStars | null; rank: RisingLiveRanking | null }) {
   const range: TimeRange = "live"; // 기간 옵션 제거 — 롤링 24시간(10분 간격)만 사용
   const [ts, setTs] = useState<RisingTimeseries | null>(null);
   const [tsLoading, setTsLoading] = useState(true);
@@ -555,6 +563,26 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
 
       {/* 카테고리 점유율 (자체 시간 필터) */}
       <CategoryDonut />
+
+      {/* 연관 관계망 — 카테고리(중앙) ↔ 스트리머(외곽) */}
+      <div className="card">
+        <h3 className="section-title mb-1">연관 관계망</h3>
+        <p className="text-xs text-muted mb-4">
+          상위 카테고리와 그 카테고리를 방송 중인 주요 스트리머의 연결 관계.
+          노드 크기와 선 두께는 시청자 수에 비례하며, 스트리머 노드를 클릭하면 개인 분석으로 이동합니다.
+        </p>
+        {rank
+          ? <CategoryNetwork rank={rank} />
+          : <ChartSkeleton height={460} />}
+        <div className="mt-3 flex items-center justify-end gap-4 text-[11px] text-muted flex-wrap">
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#A855F7" }} />카테고리
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: GREEN }} />스트리머
+          </span>
+        </div>
+      </div>
 
       {/* 급상승 스트리머 */}
       <div className="card">
@@ -681,13 +709,15 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                     </Link>
                   </td>
 
-                  {/* 현재 시청자 — 증감 + 숫자 / 셀 하단 골드 바 (1위 대비 %) */}
-                  <td className="relative py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
-                    <div className="flex items-center justify-end gap-1.5">
-                      {vwDelta !== null && <span className="text-[11px]"><Delta pct={vwDelta} /></span>}
-                      <span className="text-base font-bold tabular-nums text-fg">{nf(s.concurrent_viewers)}</span>
-                    </div>
-                    <CellBar pct={vwPct} background={YELLOW_GRAD} />
+                  {/* 현재 시청자 — 증감 + 숫자 / 바로 아래 골드 바 (1위 대비 %) */}
+                  <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
+                    <CellCol>
+                      <div className="flex items-center justify-end gap-1.5">
+                        {vwDelta !== null && <span className="text-[11px]"><Delta pct={vwDelta} /></span>}
+                        <span className="text-base font-bold tabular-nums text-fg">{nf(s.concurrent_viewers)}</span>
+                      </div>
+                      <CellBar pct={vwPct} background={YELLOW_GRAD} />
+                    </CellCol>
                   </td>
 
                   {/* 카테고리 — 알약형 뱃지 (테마 토큰 사용, 라이트 모드에서도 대비 유지) */}
@@ -698,20 +728,24 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                       : <span className="text-muted text-sm">-</span>}
                   </td>
 
-                  {/* 방송시간 — 셀 하단 퍼플 바 (최대 24시간 대비 비율) */}
-                  <td className="relative py-3.5 px-6 hidden md:table-cell align-top" style={{ minWidth: 128 }}>
-                    <div className="text-right tabular-nums text-muted text-sm">{s.dur.label}</div>
-                    <CellBar pct={durPct} background={PURPLE_GRAD} />
+                  {/* 방송시간 — 퍼플 바 (최대 24시간 대비 비율) */}
+                  <td className="py-3.5 px-6 hidden md:table-cell align-top" style={{ minWidth: 128 }}>
+                    <CellCol>
+                      <div className="text-right tabular-nums text-muted text-sm">{s.dur.label}</div>
+                      <CellBar pct={durPct} background={PURPLE_GRAD} />
+                    </CellCol>
                   </td>
 
-                  {/* 팔로워 — 신규 유입 + 셀 하단 시안 바 */}
-                  <td className="relative py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
-                    <div className="flex items-center justify-end gap-1.5">
-                      {newFol != null && newFol > 0 &&
-                        <span className="text-[11px] font-semibold tabular-nums" style={{ color: "#06B6D4" }}>+{nf(newFol)}</span>}
-                      <span className="text-base font-bold tabular-nums text-fg">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</span>
-                    </div>
-                    <CellBar pct={folPct} background={CYAN_GRAD} />
+                  {/* 팔로워 — 신규 유입 + 시안 바 */}
+                  <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
+                    <CellCol>
+                      <div className="flex items-center justify-end gap-1.5">
+                        {newFol != null && newFol > 0 &&
+                          <span className="text-[11px] font-semibold tabular-nums" style={{ color: "#06B6D4" }}>+{nf(newFol)}</span>}
+                        <span className="text-base font-bold tabular-nums text-fg">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</span>
+                      </div>
+                      <CellBar pct={folPct} background={CYAN_GRAD} />
+                    </CellCol>
                   </td>
                 </tr>
               );
@@ -965,10 +999,12 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
                     <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[130px] md:max-w-none">{s.channel_name}</span>
                   </Link>
                 </td>
-                {/* 시청자 — 셀 하단 골드 바 (1위 대비 %) */}
-                <td className="relative py-3.5 px-6 align-top" style={{ minWidth: 132 }}>
-                  <div className="text-right text-base tabular-nums font-bold text-fg">{nf(s.concurrent_viewers)}</div>
-                  <CellBar pct={vwPct} background={YELLOW_GRAD} />
+                {/* 시청자 — 바로 아래 골드 바 (1위 대비 %) */}
+                <td className="py-3.5 px-6 align-top" style={{ minWidth: 132 }}>
+                  <CellCol>
+                    <div className="text-right text-base tabular-nums font-bold text-fg">{nf(s.concurrent_viewers)}</div>
+                    <CellBar pct={vwPct} background={YELLOW_GRAD} />
+                  </CellCol>
                 </td>
                 <td className="py-3.5 px-6 text-right text-[11px] align-top"><Delta pct={s.growth_rate} /></td>
                 <td className="py-3.5 px-6 hidden sm:table-cell align-top">
@@ -977,15 +1013,19 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
                                        bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{s.category_name}</span>
                     : <span className="text-muted text-sm">-</span>}
                 </td>
-                {/* 방송시간 — 셀 하단 퍼플 바 (최대 24시간 대비 비율) */}
-                <td className="relative py-3.5 px-6 align-top hidden md:table-cell" style={{ minWidth: 128 }}>
-                  <div className="text-right tabular-nums text-muted text-sm">{dur.label}</div>
-                  <CellBar pct={durPct} background={PURPLE_GRAD} />
+                {/* 방송시간 — 퍼플 바 (최대 24시간 대비 비율) */}
+                <td className="py-3.5 px-6 align-top hidden md:table-cell" style={{ minWidth: 128 }}>
+                  <CellCol>
+                    <div className="text-right tabular-nums text-muted text-sm">{dur.label}</div>
+                    <CellBar pct={durPct} background={PURPLE_GRAD} />
+                  </CellCol>
                 </td>
-                {/* 팔로워 — 셀 하단 시안 바 */}
-                <td className="relative py-3.5 px-6 align-top" style={{ minWidth: 132 }}>
-                  <div className="text-right text-base tabular-nums font-bold text-fg">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</div>
-                  <CellBar pct={folPct} background={CYAN_GRAD} />
+                {/* 팔로워 — 시안 바 */}
+                <td className="py-3.5 px-6 align-top" style={{ minWidth: 132 }}>
+                  <CellCol>
+                    <div className="text-right text-base tabular-nums font-bold text-fg">{s.follower_count > 0 ? nf(s.follower_count) : "-"}</div>
+                    <CellBar pct={folPct} background={CYAN_GRAD} />
+                  </CellCol>
                 </td>
               </tr>
             );
@@ -1291,7 +1331,7 @@ export default function StatsPage() {
 
             {/* 우측 뷰 */}
             <div className="min-w-0">
-              {tab === "overview"           && ov   && <OverviewTab ov={ov} stars={stars} />}
+              {tab === "overview"           && ov   && <OverviewTab ov={ov} stars={stars} rank={rank} />}
               {tab === "newcomers_analysis" && news && <NewcomersAnalysisTab data={news} onRanking={() => selectTab("newcomers_ranking")} />}
               {tab === "ranking"            && rank && <RankingTab rank={rank} />}
               {tab === "newcomers_ranking"  && news && <NewcomersRankingTab data={news} />}
