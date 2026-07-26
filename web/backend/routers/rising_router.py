@@ -364,20 +364,29 @@ async def newcomers(limit: int = 100):
         (ts,)
     )).fetchall()
 
-    # 채널별 전체 보관창 평균/첫 관측 + 최근 7일 평균
-    agg = {r["chzzk_channel_id"]: (r["avg_all"], r["first_seen"]) for r in await (await db.execute(
-        "SELECT chzzk_channel_id, AVG(concurrent_viewers) AS avg_all, MIN(collected_at) AS first_seen "
-        "FROM rising_live_snapshots GROUP BY chzzk_channel_id"
+    # 채널별 보관창 평균/최근 7일 평균 — 롤업에서 읽는다(원본은 24시간만 보관하므로
+    # 원본으로는 7일 평균을 낼 수 없다). 시간 가중 평균이 되도록 sum/snaps로 재집계한다.
+    agg = {r["chzzk_channel_id"]: r["avg_all"] for r in await (await db.execute(
+        "SELECT chzzk_channel_id, "
+        "       CAST(SUM(sum_viewers) AS REAL) / NULLIF(SUM(snaps),0) AS avg_all "
+        "FROM rising_hourly_rollup GROUP BY chzzk_channel_id"
     )).fetchall()}
     agg7 = {r["chzzk_channel_id"]: r["avg7"] for r in await (await db.execute(
-        "SELECT chzzk_channel_id, AVG(concurrent_viewers) AS avg7 FROM rising_live_snapshots "
-        "WHERE collected_at >= ? GROUP BY chzzk_channel_id", (ts - 7 * 86400,)
+        "SELECT chzzk_channel_id, "
+        "       CAST(SUM(sum_viewers) AS REAL) / NULLIF(SUM(snaps),0) AS avg7 "
+        "FROM rising_hourly_rollup WHERE hour_ts >= ? GROUP BY chzzk_channel_id",
+        (ts - 7 * 86400,)
+    )).fetchall()}
+    # 데뷔일(first_seen)은 채널 통계 테이블에서 — 원본 절단과 무관하게 누적 유지된다
+    first_map = {r["chzzk_channel_id"]: r["first_seen"] for r in await (await db.execute(
+        "SELECT chzzk_channel_id, first_seen FROM rising_channel_stats"
     )).fetchall()}
 
     out = []
     for r in cur:
         cid = r["chzzk_channel_id"]
-        avg_all, first_seen = agg.get(cid, (r["concurrent_viewers"], ts))
+        avg_all = agg.get(cid, r["concurrent_viewers"])
+        first_seen = first_map.get(cid, ts)
         first_days = round((ts - int(first_seen)) / 86400, 1)
         tags = r["tags"] or ""
         tag_new = any(t in tags for t in _NEW_TAGS)
@@ -450,16 +459,18 @@ async def newcomers(limit: int = 100):
     # (b) 채널 집합을 '보관창 평균 시청자 50명 미만'(신입/하꼬 기준)으로 잡아 지금 라이브
     # 여부와 무관하게 24시간을 고르게 반영한다. 시간 변환은 KST(UTC+9) 오프셋으로 SQL에서 처리.
     golden_hour = None
+    # 롤업에서 집계한다 — 원본은 24시간만 보관하므로 경계에서 표본이 잘릴 수 있고,
+    # 시간대 버킷은 애초에 시간 단위라 롤업이 정보 손실 없이 정확히 같은 값을 준다.
     hrows = await (await db.execute(
-        """SELECT CAST(strftime('%H', collected_at + 32400, 'unixepoch') AS INTEGER) AS h,
-                  SUM(concurrent_viewers) AS v,
-                  COUNT(*)                AS n
-           FROM rising_live_snapshots
-           WHERE collected_at >= ?
+        """SELECT CAST(strftime('%H', hour_ts + 32400, 'unixepoch') AS INTEGER) AS h,
+                  SUM(sum_viewers) AS v,
+                  SUM(snaps)       AS n
+           FROM rising_hourly_rollup
+           WHERE hour_ts >= ?
              AND chzzk_channel_id IN (
-                   SELECT chzzk_channel_id FROM rising_live_snapshots
+                   SELECT chzzk_channel_id FROM rising_hourly_rollup
                    GROUP BY chzzk_channel_id
-                   HAVING AVG(concurrent_viewers) < ?)
+                   HAVING CAST(SUM(sum_viewers) AS REAL) / NULLIF(SUM(snaps),0) < ?)
            GROUP BY h""",
         (ts - 86400, _NEWCOMER_AVG_MAX)
     )).fetchall()
@@ -590,11 +601,14 @@ async def streamer(channel_id: str, days: int = 30):
     days = max(1, min(400, days))
     since = int(time.time()) - days * 86400
     db = await get_db()
+    # 롤업(채널×시간)에서 읽는다 — 원본은 짧게만 보관하므로 30일 이력의 유일한 소스다.
+    # snaps/sum_viewers/peak_viewers를 그대로 합산하면 원본 순회와 동일한 값이 나온다.
     rows = await (await db.execute(
-        """SELECT collected_at, concurrent_viewers, follower_count, category_name, live_title, channel_name
-           FROM rising_live_snapshots
-           WHERE chzzk_channel_id=? AND collected_at >= ?
-           ORDER BY collected_at ASC""",
+        """SELECT hour_ts, snaps, sum_viewers, peak_viewers, max_follower,
+                  category_name, channel_name
+           FROM rising_hourly_rollup
+           WHERE chzzk_channel_id=? AND hour_ts >= ?
+           ORDER BY hour_ts ASC""",
         (channel_id, since)
     )).fetchall()
 
@@ -602,16 +616,29 @@ async def streamer(channel_id: str, days: int = 30):
     if not rows:
         return {"found": False, "channel_id": channel_id, "channel_image_url": latest_image(channel_id)}
 
+    # live_title / is_live 는 시각 단위 롤업으로 알 수 없어 최신 원본 스냅샷에서 가져온다
+    # (보관창 안이면 존재. 방송을 안 켠 지 오래됐으면 None → is_live=False).
+    live_row = await (await db.execute(
+        """SELECT collected_at, live_title, channel_name, follower_count
+           FROM rising_live_snapshots
+           WHERE chzzk_channel_id=? ORDER BY collected_at DESC LIMIT 1""",
+        (channel_id,)
+    )).fetchone()
+
     last = rows[-1]
-    viewers = [r["concurrent_viewers"] for r in rows]
-    n = len(rows)
+    n = sum(int(r["snaps"]) for r in rows)                 # 총 스냅샷 수
+    sv_total = sum(int(r["sum_viewers"]) for r in rows)    # 시청자 합
     snap_min = 10  # 스냅샷 간격(분) — 라이브 1구간 근사
     broadcast_hours = round(n * snap_min / 60, 1)
-    viewership = round(sum(viewers) * snap_min / 60)  # 시청자-시간(뷰어-hour)
-    avg_v = round(sum(viewers) / n) if n else 0
+    viewership = round(sv_total * snap_min / 60)           # 시청자-시간(뷰어-hour)
+    avg_v = round(sv_total / n) if n else 0
+    peak_all = max(int(r["peak_viewers"]) for r in rows)
 
-    # 카테고리 비중(스냅샷 수 기준)
-    cat_counter = Counter(r["category_name"] for r in rows if r["category_name"])
+    # 카테고리 비중(스냅샷 수 기준) — 시간 버킷의 대표 카테고리에 그 시간의 스냅샷 수를 가중
+    cat_counter: Counter = Counter()
+    for r in rows:
+        if r["category_name"]:
+            cat_counter[r["category_name"]] += int(r["snaps"])
     cat_total = sum(cat_counter.values()) or 1
     categories = [
         {"category": c, "share": round(cnt / cat_total * 100, 1), "snapshots": cnt}
@@ -621,13 +648,13 @@ async def streamer(channel_id: str, days: int = 30):
     # 일별(잔디용)
     daily_map: dict[str, dict] = {}
     for r in rows:
-        d = _kst_date(r["collected_at"])
+        d = _kst_date(r["hour_ts"])
         e = daily_map.setdefault(d, {"n": 0, "sv": 0, "peak": 0})
-        e["n"] += 1
-        e["sv"] += r["concurrent_viewers"]
-        e["peak"] = max(e["peak"], r["concurrent_viewers"])
+        e["n"] += int(r["snaps"])
+        e["sv"] += int(r["sum_viewers"])
+        e["peak"] = max(e["peak"], int(r["peak_viewers"]))
     daily = [
-        {"date": d, "minutes": e["n"] * snap_min, "avg_viewers": round(e["sv"] / e["n"]),
+        {"date": d, "minutes": e["n"] * snap_min, "avg_viewers": round(e["sv"] / e["n"]) if e["n"] else 0,
          "peak": e["peak"], "viewership": round(e["sv"] * snap_min / 60)}
         for d, e in sorted(daily_map.items())
     ]
@@ -635,13 +662,13 @@ async def streamer(channel_id: str, days: int = 30):
     # 주별(추이용)
     week_map: dict[str, dict] = {}
     for r in rows:
-        wk, _ = _kst_week(r["collected_at"])
-        e = week_map.setdefault(wk, {"n": 0, "sv": 0, "peak": 0, "t": r["collected_at"]})
-        e["n"] += 1
-        e["sv"] += r["concurrent_viewers"]
-        e["peak"] = max(e["peak"], r["concurrent_viewers"])
+        wk, _ = _kst_week(r["hour_ts"])
+        e = week_map.setdefault(wk, {"n": 0, "sv": 0, "peak": 0, "t": r["hour_ts"]})
+        e["n"] += int(r["snaps"])
+        e["sv"] += int(r["sum_viewers"])
+        e["peak"] = max(e["peak"], int(r["peak_viewers"]))
     weekly = [
-        {"week": wk, "t": e["t"], "avg_viewers": round(e["sv"] / e["n"]),
+        {"week": wk, "t": e["t"], "avg_viewers": round(e["sv"] / e["n"]) if e["n"] else 0,
          "peak": e["peak"], "viewership": round(e["sv"] * snap_min / 60)}
         for wk, e in sorted(week_map.items())
     ]
@@ -655,22 +682,23 @@ async def streamer(channel_id: str, days: int = 30):
             live_follower, _ = await _fetch_channel_meta(_c, channel_id)
     except Exception:
         live_follower = None
-    follower_now = live_follower if live_follower is not None else last["follower_count"]
-    max_follower = max([follower_now] + [r["follower_count"] for r in rows])
+    snap_follower = int(live_row["follower_count"]) if live_row else int(last["max_follower"] or 0)
+    follower_now = live_follower if live_follower is not None else snap_follower
+    max_follower = max([follower_now] + [int(r["max_follower"] or 0) for r in rows])
 
     return {
         "found": True,
         "channel_id": channel_id,
-        "channel_name": last["channel_name"],
+        "channel_name": (live_row["channel_name"] if live_row else None) or last["channel_name"],
         "channel_image_url": latest_image(channel_id),
-        "live_title": last["live_title"],
+        "live_title": (live_row["live_title"] if live_row else "") or "",
         "follower_count": follower_now,
-        "is_live": bool(latest_ts and last["collected_at"] == latest_ts),
+        "is_live": bool(latest_ts and live_row and live_row["collected_at"] == latest_ts),
         "first_broadcast": first_broadcast,   # 추정(다시보기 기반), 없으면 None
         "window_days": days,
         "history_days": len(daily_map),
         "summary": {
-            "peak_viewers": max(viewers),
+            "peak_viewers": peak_all,
             "avg_viewers": avg_v,
             "max_follower": max_follower,
             "broadcast_hours": broadcast_hours,
@@ -769,18 +797,19 @@ async def ranking_period(range: str = "24h", sort: str = "viewership", limit: in
 
     # 채널별 집계. channel_name/category_name은 구간 내 '마지막' 값을 쓴다
     # (MAX(collected_at)와 함께 뽑으면 SQLite의 bare-column 규칙으로 같은 행 값이 선택된다).
+    # 롤업 기반 — 원본은 24시간만 남으므로 7d 집계는 롤업이 유일한 소스다.
+    # 24h도 롤업으로 통일해 두 기간의 산출 방식이 갈리지 않게 한다.
     rows = await (await db.execute(
         """SELECT chzzk_channel_id,
                   channel_name,
                   category_name,
-                  MAX(collected_at)                      AS last_at,
-                  COUNT(*)                               AS snaps,
-                  AVG(concurrent_viewers)                AS avg_v,
-                  MAX(concurrent_viewers)                AS peak_v,
-                  SUM(concurrent_viewers)                AS sum_v,
-                  MAX(follower_count)                    AS follower
-           FROM rising_live_snapshots
-           WHERE collected_at >= ?
+                  MAX(hour_ts)        AS last_at,
+                  SUM(snaps)          AS snaps,
+                  CAST(SUM(sum_viewers) AS REAL) / NULLIF(SUM(snaps),0) AS avg_v,
+                  MAX(peak_viewers)   AS peak_v,
+                  SUM(sum_viewers)    AS sum_v,
+                  MAX(max_follower)   AS follower
+           FROM (SELECT * FROM rising_hourly_rollup WHERE hour_ts >= ? ORDER BY hour_ts)
            GROUP BY chzzk_channel_id""",
         (since,)
     )).fetchall()

@@ -491,6 +491,32 @@ async def init_db():
                ok            INTEGER NOT NULL DEFAULT 1,
                note          TEXT    NOT NULL DEFAULT ''
            )""",
+        # ── 다운샘플링(용량 절감) ────────────────────────────────────────────
+        # 10분 원본 스냅샷을 14일 들고 있으면 3.25GB까지 커진다(실측 303B/행).
+        # 대신 원본은 짧게(기본 24시간)만 두고, 채널×시간 단위로 롤업해 장기 보관한다.
+        # 같은 채널의 한 시간은 6행 -> 1행이 되므로 장기 구간이 약 1/6로 줄어든다.
+        """CREATE TABLE IF NOT EXISTS rising_hourly_rollup (
+               hour_ts          INTEGER NOT NULL,       -- 정시 epoch(UTC 기준 시각 버킷)
+               chzzk_channel_id TEXT    NOT NULL,
+               channel_name     TEXT    NOT NULL DEFAULT '',
+               category_name    TEXT    NOT NULL DEFAULT '',
+               snaps            INTEGER NOT NULL DEFAULT 0,
+               avg_viewers      REAL    NOT NULL DEFAULT 0,
+               peak_viewers     INTEGER NOT NULL DEFAULT 0,
+               sum_viewers      INTEGER NOT NULL DEFAULT 0,
+               max_follower     INTEGER NOT NULL DEFAULT 0,
+               PRIMARY KEY (hour_ts, chzzk_channel_id)
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_rising_roll_time    ON rising_hourly_rollup(hour_ts)",
+        "CREATE INDEX IF NOT EXISTS idx_rising_roll_channel ON rising_hourly_rollup(chzzk_channel_id, hour_ts)",
+        # 채널별 최초/최종 관측 시각 — 원본을 짧게 자르면 MIN(collected_at)으로
+        # '데뷔일(first_seen)'을 알 수 없어진다. 채널 수만큼(수천 행)이라 영구 보관해도 가볍다.
+        """CREATE TABLE IF NOT EXISTS rising_channel_stats (
+               chzzk_channel_id TEXT PRIMARY KEY,
+               first_seen       INTEGER NOT NULL,
+               last_seen        INTEGER NOT NULL,
+               channel_name     TEXT    NOT NULL DEFAULT ''
+           )""",
     ]:
         try:
             await db.execute(sql)

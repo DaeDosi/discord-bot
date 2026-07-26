@@ -47,6 +47,17 @@ PAGE_RETRIES = int(os.getenv("RISING_PAGE_RETRIES", "3"))
 # 원천 스냅샷 보관 기간(일). 이보다 오래된 행은 매 사이클 정리한다(시간대 히트맵/라이징
 # 24h 비교에 필요한 만큼만 남기면 되므로 기본 14일).
 RAW_RETENTION_DAYS = int(os.getenv("RISING_RAW_RETENTION_DAYS", "14"))
+# 다운샘플링: 원본(10분)은 짧게, 롤업(채널×시간)은 길게 보관한다.
+# 실측 303B/행 × 5,718행/사이클 기준 원본은 238MB/일이라 14일이면 3.25GB가 된다.
+# RAW_RETENTION_HOURS가 설정되면 RAW_RETENTION_DAYS보다 우선한다(시간 단위 제어).
+# 26시간(24h + 2h 여유): live_ranking의 24h 전 팔로워, rising_stars의 24h 전 비교,
+# categories range=24h 는 '약 24시간 전 원본 스냅샷'을 점 조회한다. 정확히 24시간으로
+# 자르면 이 세 곳이 경계에서 조용히 빈 값이 되므로 여유를 둔다.
+RAW_RETENTION_HOURS = int(os.getenv("RISING_RAW_RETENTION_HOURS", "26"))
+# 롤업 보관 일수. 성장률이 '최근 7일 평균'을 쓰므로 7일 + 여유 1일 = 8일을 기본으로 둔다.
+# 실측 기준 용량: 원본 26h(258MB) + 롤업 8일(210MB) = 약 468MB → Railway 500MB 안에 들어간다.
+# (14일로 늘리면 약 625MB로 초과한다. 저장 공간이 늘어나면 이 값을 올리면 된다.)
+ROLLUP_RETENTION_DAYS = int(os.getenv("RISING_ROLLUP_RETENTION_DAYS", "8"))
 # 팔로워 수는 라이브 목록 API가 주지 않으므로, 시청자 상위 N개 채널만 채널 상세 API로
 # 보강한다(전체 수천 개를 매 사이클 조회하면 과부하). 랭킹 상위가 곧 노출되는 부분이라 충분.
 FOLLOWER_ENRICH_N = int(os.getenv("RISING_FOLLOWER_ENRICH_N", "100"))
@@ -228,13 +239,60 @@ async def _record_run(collected_at: int, live_count: int, total_viewers: int, ok
     await db.commit()
 
 
-async def _prune_old(now: int):
-    # 원천 스냅샷(사이클당 수천 행)만 롤링 정리한다. 콤팩트한 사이클 요약
-    # (rising_collect_runs, 사이클당 1행)은 영구 보관 — 시계열 차트의 장기 이력이
-    # 계속 누적되도록 한다. (runs는 하루 ~144행이라 장기 보관해도 부담 없음)
-    cutoff = now - RAW_RETENTION_DAYS * 86400
+async def _build_rollup(now: int):
+    """현재/직전 시간 버킷을 원본에서 재집계해 rising_hourly_rollup에 upsert한다.
+
+    매 사이클 두 버킷을 다시 계산하는 이유: 진행 중인 시간은 스냅샷이 계속 늘어나고,
+    사이클이 정시 경계를 넘나들 때 직전 시간이 마지막 1~2개 스냅샷을 놓칠 수 있다.
+    원본 보관이 최소 2시간 이상이면 항상 정확한 값으로 덮어써진다(멱등).
+    """
     db = await get_db()
-    await db.execute("DELETE FROM rising_live_snapshots WHERE collected_at < ?", (cutoff,))
+    cur_hour = now - (now % 3600)
+    for hour_ts in (cur_hour - 3600, cur_hour):
+        await db.execute(
+            """INSERT OR REPLACE INTO rising_hourly_rollup
+                   (hour_ts, chzzk_channel_id, channel_name, category_name,
+                    snaps, avg_viewers, peak_viewers, sum_viewers, max_follower)
+               SELECT ?,
+                      chzzk_channel_id,
+                      channel_name,      -- bare column: MAX(collected_at)와 같은 행의 값
+                      category_name,
+                      COUNT(*),
+                      AVG(concurrent_viewers),
+                      MAX(concurrent_viewers),
+                      SUM(concurrent_viewers),
+                      MAX(follower_count)
+               FROM (SELECT * FROM rising_live_snapshots
+                     WHERE collected_at >= ? AND collected_at < ?
+                     ORDER BY collected_at)
+               GROUP BY chzzk_channel_id""",
+            (hour_ts, hour_ts, hour_ts + 3600),
+        )
+    # 채널별 최초/최종 관측 — 원본을 짧게 자르면 first_seen을 복원할 수 없으므로 누적 보관
+    await db.execute(
+        """INSERT INTO rising_channel_stats (chzzk_channel_id, first_seen, last_seen, channel_name)
+           SELECT chzzk_channel_id, MIN(collected_at), MAX(collected_at), channel_name
+           FROM (SELECT * FROM rising_live_snapshots WHERE collected_at = ?)
+           GROUP BY chzzk_channel_id
+           ON CONFLICT(chzzk_channel_id) DO UPDATE SET
+               last_seen    = excluded.last_seen,
+               first_seen   = MIN(rising_channel_stats.first_seen, excluded.first_seen),
+               channel_name = excluded.channel_name""",
+        (now,),
+    )
+    await db.commit()
+
+
+async def _prune_old(now: int):
+    # 원본 스냅샷은 짧게(기본 24시간), 롤업은 길게(기본 14일) 정리한다.
+    # 콤팩트한 사이클 요약(rising_collect_runs, 사이클당 1행)과 채널 통계는 영구 보관 —
+    # 시계열 차트의 장기 이력과 데뷔일(first_seen)이 계속 유지되도록 한다.
+    raw_cutoff = now - (RAW_RETENTION_HOURS * 3600 if RAW_RETENTION_HOURS > 0
+                        else RAW_RETENTION_DAYS * 86400)
+    db = await get_db()
+    await db.execute("DELETE FROM rising_live_snapshots WHERE collected_at < ?", (raw_cutoff,))
+    await db.execute("DELETE FROM rising_hourly_rollup WHERE hour_ts < ?",
+                     (now - ROLLUP_RETENTION_DAYS * 86400,))
     await db.commit()
 
 
@@ -283,6 +341,8 @@ async def collect_once() -> tuple[int, str]:
     await db.commit()
     # 종료 사유를 note에 남긴다 — page_cap_reached면 MAX_PAGES를 더 올려야 한다는 신호다.
     await _record_run(now, len(lives), total_viewers, ok=1, note=fetch_note)
+    # 롤업은 prune '전에' 만들어야 한다 — prune이 원본을 지운 뒤면 집계할 소스가 없다.
+    await _build_rollup(now)
     await _prune_old(now)
 
     if fetch_note == "page_cap_reached":
