@@ -39,14 +39,15 @@ const MEDALS = [
   { color: "#D97706" }, // 3위 브론즈 (amber-600)
 ] as const;
 
-// 치지직 플랫폼 마크 — 저장소에 공식 로고 SVG가 없어서, 코드베이스가 이미 치지직을
-// 나타낼 때 쓰는 관례(lucide Radio + 브랜드 그린)를 따른다. 공식 심볼을 넣고 싶으면
-// public/에 SVG를 두고 여기만 <img>로 바꾸면 된다.
+// 치지직 플랫폼 마크 — public/chzzk.png (1024px 앱 아이콘 타일: 검정 라운드 배경 +
+// 네온 그린 Z). 모서리는 원본에서 이미 투명 처리돼 있어 CSS 라운딩을 덧대지 않는다.
+// 랭킹 테이블 두 곳(전체/신입)이 공유하므로 로고 교체는 이 컴포넌트만 고치면 된다.
 function ChzzkMark() {
   return (
-    <span title="치지직" aria-label="치지직" className="shrink-0 inline-flex">
-      <Radio size={16} strokeWidth={2.5} style={{ color: GREEN }} />
-    </span>
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src="/chzzk.png" alt="치지직" title="치지직"
+         width={16} height={16} loading="lazy"
+         className="w-4 h-4 shrink-0" />
   );
 }
 
