@@ -30,6 +30,9 @@ function niceScale(min: number, max: number, maxTicks = 5): { nMin: number; nMax
 const fmtTime = (t: number) =>
   new Date(t * 1000).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
 
+const fmtDate = (t: number) =>
+  new Date(t * 1000).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" });
+
 const fmtFull = (t: number) =>
   new Date(t * 1000).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 
@@ -96,6 +99,19 @@ export default function LineChart({
   for (let t = Math.ceil(xMin / xStep) * xStep; t <= xMax; t += xStep) xTicks.push(t);
   if (xTicks.length === 0) xTicks.push(xMin, xMax);
 
+  // 자정 경계 — 창이 하루를 넘길 때(롤링 24시간 등) 날짜가 바뀌는 지점을 표시한다.
+  // HH:mm 라벨만으로는 어제 13:00과 오늘 13:00을 구분할 수 없어서 필요.
+  // += 86400 대신 setDate로 넘겨 DST가 있는 지역에서도 실제 자정에 맞춘다.
+  const midnights: number[] = [];
+  {
+    const d = new Date(xMin * 1000);
+    d.setHours(24, 0, 0, 0);
+    while (d.getTime() / 1000 <= xMax) {
+      midnights.push(Math.floor(d.getTime() / 1000));
+      d.setDate(d.getDate() + 1);
+    }
+  }
+
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * VB_W;
@@ -140,6 +156,17 @@ export default function LineChart({
         {yTicks.map((v) => (
           <line key={v} x1={PAD.l} y1={Y(v)} x2={VB_W - PAD.r} y2={Y(v)}
                 stroke="rgb(var(--color-border-rgb))" strokeWidth="1" opacity="0.5" />
+        ))}
+
+        {/* 자정 구분선 + 날짜 라벨 (데이터 뒤에 깔리도록 시리즈보다 먼저) */}
+        {midnights.map((t) => (
+          <g key={`mn-${t}`} style={{ pointerEvents: "none" }}>
+            <line x1={X(t)} y1={PAD.t} x2={X(t)} y2={PAD.t + plotH}
+                  stroke="rgb(var(--color-muted-rgb))" strokeWidth="1"
+                  strokeDasharray="2 4" opacity="0.55" />
+            <text x={Math.min(X(t) + 4, VB_W - PAD.r - 28)} y={PAD.t + 10}
+                  fontSize="10" fill="rgb(var(--color-muted-rgb))">{fmtDate(t)}</text>
+          </g>
         ))}
 
         {/* x 라벨 */}

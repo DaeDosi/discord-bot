@@ -173,7 +173,7 @@ async def overview():
 
 # 기간 필터: (윈도우 초, 버킷 초 — 0이면 원본 10분 그대로)
 _TS_RANGES = {
-    "live": (6 * 3600, 0),        # 최근 6시간, 원본 10분 간격
+    "live": (24 * 3600, 0),       # 롤링 24시간(NOW-24h ~ NOW), 원본 10분 간격
     "24h":  (24 * 3600, 3600),    # 최근 24시간, 1시간 평균
     "7d":   (7 * 86400, 3600),    # 최근 7일, 1시간 평균
 }
@@ -184,7 +184,7 @@ async def timeseries(range: str = "24h"):
     """전체 시청자·라이브 방송 수 시계열 — 꺾은선 그래프용.
 
     rising_collect_runs(사이클당 1행, 영구 보관)에서 읽으므로 이력이 계속 누적된다.
-    range=live(6h 원본) / 24h(1시간 평균) / 7d(1시간 평균).
+    range=live(롤링 24h, 원본 10분) / 24h(1시간 평균) / 7d(1시간 평균).
     """
     window, bucket = _TS_RANGES.get(range, _TS_RANGES["24h"])
     since = int(time.time()) - window

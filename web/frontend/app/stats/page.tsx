@@ -114,7 +114,7 @@ function StatTile({ label, value, unit, sub, accent, deltaPrev, rawValue }:
 
 type Metric = "viewers" | "lives";
 
-const RANGE_DESC = "최근 6시간 · 10분 간격";
+const RANGE_DESC = "최근 24시간 추이 · 10분 간격";
 const METRIC_OPTS: { k: Metric; label: string }[] = [
   { k: "viewers", label: "시청자" },
   { k: "lives",   label: "라이브" },
@@ -368,7 +368,7 @@ function CategoryDonut() {
 
 // ── 개요 탭 ───────────────────────────────────────────────────────────────────
 function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | null }) {
-  const range: TimeRange = "live"; // 기간 옵션 제거 — 실시간(최근 6시간)만 사용
+  const range: TimeRange = "live"; // 기간 옵션 제거 — 롤링 24시간(10분 간격)만 사용
   const [ts, setTs] = useState<RisingTimeseries | null>(null);
   const [tsLoading, setTsLoading] = useState(true);
 
@@ -429,7 +429,7 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
         <StatTile label="전체 동시 시청자" value={nf(totalV)} unit="명" accent
           rawValue={totalV} deltaPrev={dv?.total_viewers.prev} />
         <StatTile label="방송당 평균 시청자" value={nf(avgV)} unit="명" sub="총 시청자 ÷ 방송 수" />
-        <StatTile label="뷰어쉽" value={nf(peakV)} unit="명" sub="최근 6시간 최고 동접" />
+        <StatTile label="뷰어쉽" value={nf(peakV)} unit="명" sub="최근 24시간 최고 동접" />
       </div>
 
       {/* 추이 차트 — 지표 필터(시청자/방송수) + 가변 Y축, 기간 선택은 좌측 아래 */}
@@ -681,19 +681,37 @@ function NcTile({ label, value, unit }: { label: string; value: string; unit?: s
   return (
     <div className="card !p-4">
       <p className="text-sm text-muted">{label}</p>
-      <p className="mt-1.5">
-        <span className="text-xl md:text-2xl font-extrabold tabular-nums" style={{ color: GREEN }}>{value}</span>
+      {/* 수치는 전체 스트리머 분석(StatTile accent)과 동일한 그린→시안 2톤 그라데이션 */}
+      <p className="mt-1.5 tracking-tight">
+        <span className="text-xl md:text-2xl font-extrabold tabular-nums"><GradText>{value}</GradText></span>
         {unit && <span className="text-sm text-muted font-normal ml-1">{unit}</span>}
       </p>
     </div>
   );
 }
-function InsightCard({ icon, title, children }: { icon: string; title: string; children: React.ReactNode }) {
+function InsightCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-border p-4">
-      <p className="text-sm font-semibold text-fg">{icon} {title}</p>
+      <p className="text-sm font-semibold text-fg">{title}</p>
       <p className="text-xs text-muted mt-1.5 leading-relaxed">{children}</p>
     </div>
+  );
+}
+
+// 표 헤더용 도움말 — 회색 원형 '?'에 마우스를 올리거나 포커스하면 설명이 뜬다.
+function HelpTip({ text }: { text: string }) {
+  return (
+    <span className="relative inline-flex group align-middle ml-1">
+      <span tabIndex={0} role="button" aria-label={text}
+        className="w-4 h-4 rounded-full border border-border bg-bg-hover text-muted
+                   text-[10px] font-bold leading-none flex items-center justify-center
+                   cursor-help select-none focus:outline-none focus:border-accent">?</span>
+      <span role="tooltip"
+        className="pointer-events-none absolute bottom-full right-0 mb-2 z-30 hidden
+                   group-hover:block group-focus-within:block w-60 rounded-lg border border-border
+                   bg-bg-card px-3 py-2 text-[11px] font-normal leading-relaxed text-fg
+                   text-left normal-case shadow-xl">{text}</span>
+    </span>
   );
 }
 
@@ -708,7 +726,12 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
             <th className="text-left font-semibold py-2.5 pl-2 w-8">#</th>
             <th className="text-left font-semibold py-2.5">스트리머</th>
             <th className="text-right font-semibold py-2.5 pr-6">시청자</th>
-            <th className="text-right font-semibold py-2.5">성장률</th>
+            <th className="text-right font-semibold py-2.5">
+              <span className="inline-flex items-center justify-end whitespace-nowrap">
+                성장률
+                <HelpTip text="현재 동시 시청자가 이 채널의 최근 7일 평균 시청자보다 얼마나 높은지를 나타냅니다. 예를 들어 +50%는 평소 평균보다 1.5배 많은 시청자가 보고 있다는 뜻입니다." />
+              </span>
+            </th>
             <th className="text-left font-semibold py-2.5 pl-4 hidden sm:table-cell">카테고리</th>
             <th className="text-right font-semibold py-2.5 pl-6 pr-6 hidden md:table-cell">방송시간</th>
             <th className="text-right font-semibold py-2.5 pl-6 pr-2">팔로워</th>
@@ -792,17 +815,17 @@ function NewcomersAnalysisTab({ data, onRanking }: { data: RisingNewcomers; onRa
         <h3 className="section-title mb-1">신입 라이징 인사이트</h3>
         <p className="text-xs text-muted mb-4">신입/하꼬 그룹 데이터로 뽑은 방송 전략 힌트</p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <InsightCard icon="🌱" title="라이징 인기 카테고리">
+          <InsightCard title="라이징 인기 카테고리">
             {ins?.top_category
               ? <>현재 신입 중 <b className="text-fg">{ins.top_category.name}</b> 카테고리가 방송당 평균 <b className="text-fg">{nf(ins.top_category.avg_viewers)}명</b>으로 유입이 가장 좋습니다.</>
               : "데이터가 아직 부족합니다."}
           </InsightCard>
-          <InsightCard icon="⏰" title="노출 최적 시간대">
+          <InsightCard title="노출 최적 시간대">
             {ins?.golden_hour
               ? <><b className="text-fg">{hourLabel(ins.golden_hour.hour)}</b> 시간대에 신입 채널 방송당 평균 시청자가 가장 높습니다{ins.golden_hour.uplift_pct > 0 ? <> (평소 대비 <b style={{ color: GREEN }}>+{ins.golden_hour.uplift_pct}%</b>)</> : ""}.</>
               : "시간대 분석용 데이터가 아직 부족합니다."}
           </InsightCard>
-          <InsightCard icon="🎯" title="신입 평균 체급 기준선">
+          <InsightCard title="신입 평균 체급 기준선">
             {ins?.baseline
               ? <>현재 신입 그룹 평균은 <b className="text-fg">{nf(ins.baseline.avg_viewers)}명</b>입니다. <b style={{ color: GREEN }}>{nf(ins.baseline.next_target)}명</b> 달성 시 신입 상위권 진입, 상단 노출 기회가 커집니다.</>
               : "데이터가 아직 부족합니다."}
@@ -826,7 +849,7 @@ function NewcomersAnalysisTab({ data, onRanking }: { data: RisingNewcomers; onRa
 }
 
 // 신규 스트리머 랭킹 = 인라인 프로그레스 바 테이블 (top100)
-type NcSort = "growth" | "duration";
+type NcSort = "growth" | "duration" | "viewers";
 function NewcomersRankingTab({ data }: { data: RisingNewcomers }) {
   const [sort, setSort] = useState<NcSort>("growth");
   const [limit, setLimit] = useState(40);
@@ -834,7 +857,8 @@ function NewcomersRankingTab({ data }: { data: RisingNewcomers }) {
     data.streamers.map((s) => ({ ...s, dur: liveDuration(s.open_date) })), [data]);
   const sorted = useMemo(() => {
     const a = [...enriched];
-    if (sort === "duration") a.sort((x, y) => y.dur.ms - x.dur.ms);
+    if (sort === "duration")     a.sort((x, y) => y.dur.ms - x.dur.ms);
+    else if (sort === "viewers") a.sort((x, y) => y.concurrent_viewers - x.concurrent_viewers);
     else a.sort((x, y) => (y.growth_rate ?? -1e9) - (x.growth_rate ?? -1e9));
     return a;
   }, [enriched, sort]);
@@ -846,7 +870,7 @@ function NewcomersRankingTab({ data }: { data: RisingNewcomers }) {
     const active = sort === k;
     return (
       <button onClick={() => setSort(k)}
-        className="text-xs px-2.5 py-1 rounded-md border transition-colors"
+        className="text-sm font-medium px-3.5 py-1.5 rounded-lg border transition-colors"
         style={{ background: active ? "rgba(0,255,163,0.1)" : "transparent",
                  borderColor: active ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
                  color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
@@ -858,9 +882,10 @@ function NewcomersRankingTab({ data }: { data: RisingNewcomers }) {
   return (
     <div className="space-y-5">
       <div className="card !p-4 md:!p-5">
-        <div className="flex items-center gap-1.5 mb-4 flex-wrap">
-          <SortBtn k="growth" label="📈 급성장순" />
-          <SortBtn k="duration" label="⏱️ 열정 방송순" />
+        <div className="flex items-center gap-2 mb-4 flex-wrap">
+          <SortBtn k="growth" label="급성장순" />
+          <SortBtn k="duration" label="방송 시간" />
+          <SortBtn k="viewers" label="시청자 순" />
         </div>
 
         {sorted.length === 0
