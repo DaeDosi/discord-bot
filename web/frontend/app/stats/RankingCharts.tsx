@@ -51,7 +51,16 @@ const signed = (v: number) => (v > 0 ? `+${compact(v)}` : compact(v));
 function BarPanel({ rows, onPick, deltaName }:
   { rows: ChartRow[]; onPick: (id: string) => void; deltaName: string }) {
   const top = rows.slice(0, 10);
-  const max = Math.max(1, ...top.map((r) => r.concurrent_viewers));
+
+  // 막대 길이는 '상위 10명 안에서의 상대 위치'로 그린다.
+  // 0부터 최대값까지 절대 스케일로 그리면 값이 서로 비슷할 때(예: 1위 1800% / 2위 1700%,
+  // 또는 시청자 12,000 / 11,800) 막대가 전부 꽉 찬 것처럼 보여 순위 차이가 안 읽힌다.
+  // 최소값에도 바닥 폭(MIN_W)을 줘서 꼴찌 막대가 사라지지 않게 한다.
+  const MIN_W = 14;
+  const vals = top.map((r) => r.concurrent_viewers);
+  const max = Math.max(...vals, 1), min = Math.min(...vals);
+  const barPct = (v: number) =>
+    max === min ? 100 : MIN_W + ((v - min) / (max - min)) * (100 - MIN_W);
 
   return (
     <div className="space-y-3">
@@ -71,7 +80,7 @@ function BarPanel({ rows, onPick, deltaName }:
 
           <div className="h-3.5 flex-1 overflow-hidden rounded bg-bg-hover">
             <div className="h-full rounded transition-all"
-                 style={{ width: `${(r.concurrent_viewers / max) * 100}%`,
+                 style={{ width: `${barPct(r.concurrent_viewers)}%`,
                           background: `linear-gradient(90deg, ${GREEN}, ${CYAN})` }} />
           </div>
 
@@ -599,7 +608,7 @@ export default function RankingCharts({ rows, y, deltaName = "변동률" }:
            style={{ maxHeight: open ? 1800 : 0 }}>
         <p className="mb-3 mt-1 text-[11px] text-muted">
           {mode === "bar"
-            ? "동시 시청자 상위 10명 · 막대에 마우스를 올리면 방송 시간과 팔로워를 볼 수 있습니다."
+            ? "상위 10명 · 막대는 이 10명 안에서의 상대 길이입니다(1위가 가장 김) · 마우스를 올리면 방송 시간과 팔로워를 볼 수 있습니다."
             : `체급(시청자) 대비 ${y.label}을 한눈에 비교합니다.`}
         </p>
         {rows.length === 0
