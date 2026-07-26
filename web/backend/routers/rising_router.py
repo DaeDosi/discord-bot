@@ -337,6 +337,9 @@ _NEWCOMER_AVG_MAX = 50
 # 인사이트 표본 하한 — 아웃라이어(1~2개 표본)가 대표값이 되는 것을 막는다
 _CAT_MIN_LIVES = 3            # 인기 카테고리: 신입 라이브 최소 개수
 _GOLDEN_HOUR_MIN_SAMPLES = 10  # 최적 시간대: 시간 버킷당 최소 스냅샷 수
+# 팔로워 온디맨드 보강 — 외부 API 호출이라 응답 시간을 좌우한다. 개수와 총 시간을 모두 제한.
+_NEWCOMER_ENRICH_N = 80
+_NEWCOMER_ENRICH_TIMEOUT = 3.0
 _newcomers_cache: dict = {"ts": 0, "data": None}
 
 
@@ -366,17 +369,16 @@ async def newcomers(limit: int = 100):
 
     # 채널별 보관창 평균/최근 7일 평균 — 롤업에서 읽는다(원본은 24시간만 보관하므로
     # 원본으로는 7일 평균을 낼 수 없다). 시간 가중 평균이 되도록 sum/snaps로 재집계한다.
-    agg = {r["chzzk_channel_id"]: r["avg_all"] for r in await (await db.execute(
-        "SELECT chzzk_channel_id, "
-        "       CAST(SUM(sum_viewers) AS REAL) / NULLIF(SUM(snaps),0) AS avg_all "
-        "FROM rising_hourly_rollup GROUP BY chzzk_channel_id"
-    )).fetchall()}
+    # 예전에는 (a) 롤업 '전체'를 GROUP BY 하는 avg_all과 (b) 7일 GROUP BY 하는 avg7을
+    # 따로 실행했다. 롤업 보관이 8일이라 두 결과가 사실상 같은데도 100만 행을 두 번 훑어
+    # 각각 2.5초/2.1초가 걸렸다. 7일 기준 한 번만 계산해 둘 다에 쓴다.
     agg7 = {r["chzzk_channel_id"]: r["avg7"] for r in await (await db.execute(
         "SELECT chzzk_channel_id, "
         "       CAST(SUM(sum_viewers) AS REAL) / NULLIF(SUM(snaps),0) AS avg7 "
         "FROM rising_hourly_rollup WHERE hour_ts >= ? GROUP BY chzzk_channel_id",
         (ts - 7 * 86400,)
     )).fetchall()}
+    agg = agg7
     # 데뷔일(first_seen)은 채널 통계 테이블에서 — 원본 절단과 무관하게 누적 유지된다
     first_map = {r["chzzk_channel_id"]: r["first_seen"] for r in await (await db.execute(
         "SELECT chzzk_channel_id, first_seen FROM rising_channel_stats"
@@ -418,7 +420,7 @@ async def newcomers(limit: int = 100):
 
     # 소형 채널은 팔로워가 0(상위 100만 보강)이라, 상위 후보를 온디맨드로 팔로워 보강 후
     # '팔로워 100명 이하'만 남긴다. (보강 실패=0은 배제하지 않음)
-    enrich = out[:150]
+    enrich = out[:_NEWCOMER_ENRICH_N]
     sem = asyncio.Semaphore(12)
     async with httpx.AsyncClient() as client:
         async def _fill(item):
@@ -426,7 +428,13 @@ async def newcomers(limit: int = 100):
                 fc, _img = await _fetch_channel_meta(client, item["chzzk_channel_id"])
                 if fc is not None:
                     item["follower_count"] = fc
-        await asyncio.gather(*[_fill(x) for x in enrich])
+        # 외부 API가 느리면 응답 전체가 그만큼 끌려간다 — 상한을 두고 초과분은 포기한다
+        # (다음 사이클에 다시 시도되고, 팔로워는 부가 정보라 없어도 목록은 정상이다)
+        try:
+            await asyncio.wait_for(asyncio.gather(*[_fill(x) for x in enrich]),
+                                   timeout=_NEWCOMER_ENRICH_TIMEOUT)
+        except asyncio.TimeoutError:
+            pass
     out = [x for x in enrich if x["follower_count"] <= 100]
 
     # ── KPI 요약 ──────────────────────────────────────────────────────────
@@ -459,19 +467,20 @@ async def newcomers(limit: int = 100):
     # (b) 채널 집합을 '보관창 평균 시청자 50명 미만'(신입/하꼬 기준)으로 잡아 지금 라이브
     # 여부와 무관하게 24시간을 고르게 반영한다. 시간 변환은 KST(UTC+9) 오프셋으로 SQL에서 처리.
     golden_hour = None
-    # 롤업에서 집계한다 — 원본은 24시간만 보관하므로 경계에서 표본이 잘릴 수 있고,
+    # 롤업에서 집계한다 — 원본은 26시간만 보관하므로 경계에서 표본이 잘릴 수 있고,
     # 시간대 버킷은 애초에 시간 단위라 롤업이 정보 손실 없이 정확히 같은 값을 준다.
+    #
+    # 신입 필터를 'IN (채널별 평균<50 서브쿼리)'로 걸면 롤업 전체를 한 번 더 스캔해
+    # 2.7초가 걸렸다. 롤업 행에 그 시간의 avg_viewers가 이미 저장돼 있으므로
+    # 행 단위로 직접 거른다 — 24시간 구간만 스캔하면 되고, '그 시간에 소규모였던 방송'
+    # 이라는 의미도 시간대 분석 목적에는 오히려 더 정확하다.
     hrows = await (await db.execute(
         """SELECT CAST(strftime('%H', hour_ts + 32400, 'unixepoch') AS INTEGER) AS h,
                   SUM(sum_viewers) AS v,
                   SUM(snaps)       AS n,
                   COUNT(DISTINCT chzzk_channel_id) AS ch
            FROM rising_hourly_rollup
-           WHERE hour_ts >= ?
-             AND chzzk_channel_id IN (
-                   SELECT chzzk_channel_id FROM rising_hourly_rollup
-                   GROUP BY chzzk_channel_id
-                   HAVING CAST(SUM(sum_viewers) AS REAL) / NULLIF(SUM(snaps),0) < ?)
+           WHERE hour_ts >= ? AND avg_viewers < ?
            GROUP BY h""",
         (ts - 86400, _NEWCOMER_AVG_MAX)
     )).fetchall()
@@ -1024,6 +1033,10 @@ async def streamer_detail(channel_id: str, days: int = 30):
 
     # ③ 일별 랭킹 추이 — 그날 방송한 전체 채널 중 평균 시청자 순위.
     # 별도 랭킹 이력 테이블 없이 롤업에서 매번 계산한다(윈도우 함수).
+    # 순위는 롤업 전체를 채널×일로 집계한 뒤 윈도우 함수로 매긴다.
+    # 비용이 큰 구간(실측 약 3.5초)이지만, 대상 날짜만 뽑아 HAVING으로 거르는 방식은
+    # GROUP BY 이후에 필터가 걸려 집계량이 줄지 않고 쿼리만 늘어 오히려 느려졌다(5.3초).
+    # 근본 해결은 채널×일 단위 롤업 테이블을 따로 두는 것 — 별도 작업으로 남긴다.
     rrows = await (await db.execute(
         """WITH daily AS (
                SELECT chzzk_channel_id,
@@ -1043,6 +1056,7 @@ async def streamer_detail(channel_id: str, days: int = 30):
            WHERE chzzk_channel_id = ? ORDER BY d ASC""",
         (since, channel_id)
     )).fetchall()
+
     rank_daily = [
         {"date": r["d"], "rank": int(r["rk"]), "total": int(r["total"]),
          "avg_viewers": round(r["avg_v"] or 0),
