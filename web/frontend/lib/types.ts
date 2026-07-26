@@ -381,3 +381,23 @@ export interface RisingPeriodRanking {
   history_hours:  number;
   streamers:      PeriodStreamer[];
 }
+
+// 카테고리별 스트리머 — 시청자 0명 포함 전체(팔로워 온디맨드 보강)
+export interface CategoryStreamer {
+  chzzk_channel_id:   string;
+  channel_name:       string;
+  channel_image_url:  string;
+  concurrent_viewers: number;
+  viewers_prev:       number | null;
+  category_name:      string;
+  open_date:          string;
+  follower_count:     number;
+  live_title:         string;
+  adult:              boolean;
+}
+export interface RisingCategoryStreamers {
+  collected_at: number | null;
+  category:     string;
+  streamers:    CategoryStreamer[];
+  enriched:     number;
+}

@@ -182,6 +182,8 @@ export const api = {
       fetch(`${BASE}/api/rising/search?keyword=${encodeURIComponent(keyword)}`).then(r => r.json()) as Promise<{ results: import("./types").RisingSearchResult[] }>,
     rankingPeriod: (range = "24h", sort = "viewership", limit = 100) =>
       fetch(`${BASE}/api/rising/ranking-period?range=${range}&sort=${sort}&limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingPeriodRanking>,
+    categoryStreamers: (category: string) =>
+      fetch(`${BASE}/api/rising/category-streamers?category=${encodeURIComponent(category)}`).then(r => r.json()) as Promise<import("./types").RisingCategoryStreamers>,
     newcomers: (limit = 80) =>
       fetch(`${BASE}/api/rising/newcomers?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingNewcomers>,
     status: () =>

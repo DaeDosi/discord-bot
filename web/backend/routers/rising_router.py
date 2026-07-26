@@ -821,3 +821,75 @@ async def ranking_period(range: str = "24h", sort: str = "viewership", limit: in
         "history_hours": history_hours,
         "streamers": out[:limit],
     }
+
+
+# ── 카테고리별 스트리머 (전체) ───────────────────────────────────────────────
+# live_ranking(limit=200)을 프론트에서 필터링하던 방식은 두 가지 한계가 있었다:
+#  1) 상위 200명 밖의 저시청자 방송(예: 마인크래프트 1~2명)이 목록에서 통째로 빠진다.
+#     수집기는 최대 MAX_PAGES*PAGE_SIZE(기본 4000)개를 저장하므로 DB엔 있는데 안 보였다.
+#  2) 수집기는 시청자 상위 FOLLOWER_ENRICH_N(기본 100)개만 팔로워를 보강하므로
+#     그 밖의 채널은 follower_count=0으로 저장된다 → 화면에 '-'로 보인다.
+# 그래서 카테고리 하나로 범위를 좁혀 (1) 시청자 하한·상위 N 제한 없이 전부 내려주고
+# (2) 팔로워가 0인 채널만 온디맨드로 보강한다(요청 수가 카테고리 규모로 제한됨).
+_CAT_FOLLOWER_ENRICH_MAX = 120
+
+
+@router.get("/category-streamers")
+async def category_streamers(category: str, enrich: bool = True):
+    """특정 카테고리로 현재 방송 중인 스트리머 전체 — 시청자 0명도 포함."""
+    ts = await _latest_run_ts()
+    if ts is None:
+        return {"collected_at": None, "category": category, "streamers": [], "enriched": 0}
+
+    db = await get_db()
+    last2 = await (await db.execute(
+        "SELECT collected_at FROM rising_collect_runs WHERE ok=1 ORDER BY collected_at DESC LIMIT 2"
+    )).fetchall()
+    prev_ts = int(last2[1]["collected_at"]) if len(last2) > 1 else None
+
+    rows = await (await db.execute(
+        """SELECT n.chzzk_channel_id, n.channel_name, n.concurrent_viewers, n.category_name,
+                  n.open_date, n.follower_count, n.live_title, n.adult,
+                  p.concurrent_viewers AS viewers_prev
+           FROM rising_live_snapshots n
+           LEFT JOIN rising_live_snapshots p
+             ON p.chzzk_channel_id = n.chzzk_channel_id AND p.collected_at = ?
+           WHERE n.collected_at = ? AND n.category_name = ?
+           ORDER BY n.concurrent_viewers DESC""",
+        (prev_ts if prev_ts is not None else -1, ts, category)
+    )).fetchall()
+
+    out = [
+        {
+            "chzzk_channel_id":   r["chzzk_channel_id"],
+            "channel_name":       r["channel_name"],
+            "channel_image_url":  latest_image(r["chzzk_channel_id"]),  # DB 아님 — 메모리 맵
+            "concurrent_viewers": r["concurrent_viewers"],
+            "viewers_prev":       r["viewers_prev"],
+            "category_name":      r["category_name"],
+            "open_date":          r["open_date"],
+            "follower_count":     r["follower_count"],
+            "live_title":         r["live_title"],
+            "adult":              bool(r["adult"]),
+        }
+        for r in rows
+    ]
+
+    # 팔로워가 비어 있는 채널만 보강. 카테고리 하나라 호출 수가 제한적이고, 상한도 둔다.
+    enriched = 0
+    if enrich:
+        todo = [x for x in out if not x["follower_count"]][:_CAT_FOLLOWER_ENRICH_MAX]
+        if todo:
+            sem = asyncio.Semaphore(12)
+            async with httpx.AsyncClient() as client:
+                async def _fill(item):
+                    async with sem:
+                        fc, img = await _fetch_channel_meta(client, item["chzzk_channel_id"])
+                        if fc is not None:
+                            item["follower_count"] = fc
+                        if img and not item["channel_image_url"]:
+                            item["channel_image_url"] = img
+                await asyncio.gather(*[_fill(x) for x in todo])
+            enriched = sum(1 for x in todo if x["follower_count"])
+
+    return {"collected_at": ts, "category": category, "streamers": out, "enriched": enriched}

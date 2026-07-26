@@ -4,13 +4,13 @@ import { createPortal } from "react-dom";
 import Link from "next/link";
 import {
   Bot, BarChart3, LineChart as LineIcon, ListOrdered, Gamepad2, Radio,
-  TrendingUp, Loader2, Search, Circle, Sprout, ChevronDown,
+  TrendingUp, Loader2, Search, Circle, Sprout, ChevronDown, X,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
   RisingOverview, RisingTimeseries, RisingLiveRanking, RisingCategories, RisingCategory,
   RisingStars, TimeRange, CatRange, RisingSearchResult, RisingNewcomers, RisingNewcomer,
-  NewcomerCategory, RisingPeriodRanking, PeriodRange, PeriodSort,
+  NewcomerCategory, RisingPeriodRanking, PeriodRange, PeriodSort, RisingCategoryStreamers,
 } from "@/lib/types";
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
@@ -1211,134 +1211,280 @@ function NewcomersRankingTab({ data }: { data: RisingNewcomers }) {
 // ── 카테고리 탭 ───────────────────────────────────────────────────────────────
 // 선택한 카테고리로 방송 중인 스트리머 목록 — 랭킹 테이블과 동일한 디자인 규격.
 // 별도 API 없이 이미 받아둔 라이브 랭킹 스냅샷을 카테고리로 필터링한다.
-function CategoryStreamerList({ category, cats, rank, onPick }:
-  { category: string | null; cats: RisingCategories | null; rank: RisingLiveRanking | null;
-    onPick: (c: string | null) => void }) {
-  // 라이브 랭킹 스냅샷에 실제로 존재하는 카테고리만 필터 후보로 노출한다 —
-  // cats(1시간 평균)에만 있고 지금은 아무도 방송 안 하는 항목을 고르면 빈 결과가 나온다.
-  const options = useMemo(() => {
-    const live = new Map<string, number>();
-    for (const s of rank?.streamers ?? []) {
-      const c = (s.category_name || "").trim();
-      if (c) live.set(c, (live.get(c) ?? 0) + 1);
-    }
-    const order = (cats?.categories ?? []).map((c) => c.category).filter((c) => live.has(c));
-    for (const c of live.keys()) if (!order.includes(c)) order.push(c);
-    return order.map((c) => ({ name: c, lives: live.get(c) ?? 0 }));
-  }, [cats, rank]);
+// ── 카테고리별 스트리머 (탐색형) ─────────────────────────────────────────────
+// 카테고리 목록은 categories(range=live, 현재 스냅샷)로 카드 그리드를 그리고,
+// 카테고리를 고르면 전용 엔드포인트로 '그 카테고리 전체'를 다시 받아온다.
+// (기존엔 liveRanking(200)을 프론트에서 필터링해 저시청자 방송이 통째로 빠졌다.)
+const CAT_SORT_OPTS: { k: "viewers" | "lives"; label: string }[] = [
+  { k: "viewers", label: "시청자순" },
+  { k: "lives",   label: "방송수순" },
+];
 
-  const items = useMemo(() => {
-    if (!rank || !category) return [];
-    return rank.streamers
-      .filter((s) => (s.category_name || "").trim() === category)
-      .sort((a, b) => b.concurrent_viewers - a.concurrent_viewers)
-      .map((s) => ({ ...s, dur: liveDuration(s.open_date) }));
-  }, [rank, category]);
+// 카테고리 대표 이미지 데이터가 없어서(수집 대상 아님) 카테고리명을 해시해 만든
+// 결정적 그라데이션 타일을 썸네일 자리에 쓴다 — 같은 카테고리는 항상 같은 색이 된다.
+const THUMB_PAIRS: [string, string][] = [
+  ["#00FFA3", "#00C2FF"], ["#A855F7", "#6366F1"], ["#FBBF24", "#F59E0B"],
+  ["#FF4FA3", "#A855F7"], ["#06B6D4", "#00FFA3"], ["#F87171", "#FBBF24"],
+];
+function thumbFor(name: string) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  const [c1, c2] = THUMB_PAIRS[h % THUMB_PAIRS.length];
+  return { background: `linear-gradient(135deg, ${c1}, ${c2})`, initial: name.trim().slice(0, 2) };
+}
 
+function CategoryCard({ c, onPick }: { c: RisingCategory; onPick: () => void }) {
+  const th = thumbFor(c.category);
+  return (
+    <button onClick={onPick} type="button"
+      className="group text-left rounded-xl border border-border bg-bg-card p-3 transition-all
+                 hover:bg-bg-hover hover:border-accent/50">
+      <div className="relative mb-2 aspect-video w-full overflow-hidden rounded-lg">
+        <div className="h-full w-full transition-transform group-hover:scale-105 flex items-center justify-center"
+             style={{ background: th.background }}>
+          <span className="text-xl font-extrabold text-black/45 select-none">{th.initial}</span>
+        </div>
+        <span className="absolute top-2 right-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-bold"
+              style={{ color: GREEN }}>
+          {nf(c.lives)}개 방송
+        </span>
+      </div>
+      <h4 className="truncate text-sm font-bold text-fg transition-colors group-hover:text-accent">{c.category}</h4>
+      <p className="mt-0.5 text-[11px] text-muted">총 시청자 {nf(c.viewers)}명</p>
+    </button>
+  );
+}
+
+function CategoryStreamerList({ category, onPick }:
+  { category: string | null; onPick: (c: string | null) => void }) {
+  const [cats, setCats] = useState<RisingCategory[]>([]);
+  const [catsLoading, setCatsLoading] = useState(true);
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState<"viewers" | "lives">("viewers");
+
+  const [data, setData] = useState<RisingCategoryStreamers | null>(null);
+  const [listLoading, setListLoading] = useState(false);
+
+  // 카드 그리드용 — 현재 스냅샷 기준이라 '지금 방송 중'인 카테고리만 나온다
+  useEffect(() => {
+    let alive = true;
+    setCatsLoading(true);
+    api.rising.categories("live", 200)
+      .then((d) => { if (alive) setCats(d.categories || []); })
+      .catch(() => { if (alive) setCats([]); })
+      .finally(() => { if (alive) setCatsLoading(false); });
+    return () => { alive = false; };
+  }, []);
+
+  // 선택된 카테고리의 스트리머 전체 (시청자 0명 포함, 팔로워 보강)
+  useEffect(() => {
+    if (!category) { setData(null); return; }
+    let alive = true;
+    setListLoading(true);
+    api.rising.categoryStreamers(category)
+      .then((d) => { if (alive) setData(d); })
+      .catch(() => { if (alive) setData(null); })
+      .finally(() => { if (alive) setListLoading(false); });
+    return () => { alive = false; };
+  }, [category]);
+
+  const filtered = useMemo(() => {
+    const kw = q.trim().toLowerCase();
+    const list = kw ? cats.filter((c) => c.category.toLowerCase().includes(kw)) : cats;
+    return [...list].sort((a, b) => (sort === "viewers" ? b.viewers - a.viewers : b.lives - a.lives));
+  }, [cats, q, sort]);
+
+  // 퀵 태그는 시청자 상위 8개
+  const chips = useMemo(() => [...cats].sort((a, b) => b.viewers - a.viewers).slice(0, 8), [cats]);
+
+  const items = useMemo(
+    () => (data?.streamers ?? []).map((s) => ({ ...s, dur: liveDuration(s.open_date) })),
+    [data],
+  );
   const maxViewers  = Math.max(1, ...items.map((s) => s.concurrent_viewers));
   const maxFollower = Math.max(1, ...items.map((s) => s.follower_count));
+  const picked = category ? cats.find((c) => c.category === category) : undefined;
 
   return (
-    <div className="card !p-4 md:!p-5">
-      <h3 className="section-title mb-1">카테고리별 스트리머</h3>
-      <p className="text-xs text-muted mb-4">
-        카테고리를 선택하면 현재 그 카테고리로 방송 중인 스트리머를 시청자 내림차순으로 조회합니다.
-      </p>
+    <div className="space-y-5">
+      <div className="card !p-4 md:!p-5">
+        <h3 className="section-title mb-1">카테고리별 스트리머</h3>
+        <p className="text-xs text-muted mb-4">
+          현재 치지직에서 인기 있는 카테고리를 선택하여 방송 중인 스트리머를 확인하세요.
+        </p>
 
-      {/* 카테고리 필터 */}
-      <div className="mb-4 flex items-center gap-2 flex-wrap">
-        <select value={category ?? ""} onChange={(e) => onPick(e.target.value || null)}
-          className="bg-bg border border-border rounded-lg px-3 py-2 text-sm text-fg
-                     focus:outline-none focus:border-accent max-w-full">
-          <option value="">카테고리 선택…</option>
-          {options.map((o) => (
-            <option key={o.name} value={o.name}>{o.name} ({o.lives}개 방송)</option>
-          ))}
-        </select>
+        {/* 인기 카테고리 퀵 태그 */}
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <button type="button" onClick={() => onPick(null)}
+            className="rounded-full border px-3 py-1 text-xs font-medium transition-colors"
+            style={{ background: !category ? "rgba(0,255,163,0.1)" : "transparent",
+                     borderColor: !category ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
+                     color: !category ? GREEN : "rgb(var(--color-muted-rgb))" }}>
+            전체
+          </button>
+          {chips.map((c) => {
+            const active = category === c.category;
+            return (
+              <button key={c.category} type="button" onClick={() => onPick(c.category)}
+                className="max-w-[190px] truncate rounded-full border px-3 py-1 text-xs font-medium transition-colors"
+                style={{ background: active ? "rgba(0,255,163,0.1)" : "transparent",
+                         borderColor: active ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
+                         color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
+                {c.category}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* 검색 + 정렬 */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="relative flex-1 min-w-[180px] max-w-xs">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="카테고리 검색"
+              className="w-full rounded-lg border border-border bg-bg py-2 pl-9 pr-3 text-sm text-fg
+                         placeholder-muted focus:border-accent focus:outline-none" />
+          </div>
+          <Seg options={CAT_SORT_OPTS} value={sort} onChange={setSort} />
+        </div>
+
+        {/* 선택 상태 요약 */}
         {category && (
-          <button onClick={() => onPick(null)}
-            className="text-xs font-medium text-muted hover:text-fg transition-colors">필터 해제</button>
-        )}
-        {category && (
-          <span className="text-xs text-muted ml-auto">
-            {nf(items.length)}명 조회됨
-          </span>
+          <div className="mt-4 flex items-center gap-2 flex-wrap">
+            <span className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold"
+                  style={{ borderColor: "rgba(0,255,163,0.4)", background: "rgba(0,255,163,0.08)", color: GREEN }}>
+              선택됨: {category}
+              {picked && <span className="font-normal text-muted">({nf(picked.lives)}개 방송)</span>}
+            </span>
+            <button type="button" onClick={() => onPick(null)}
+              className="inline-flex items-center gap-1 text-xs font-medium text-muted hover:text-fg transition-colors">
+              <X size={12} /> 초기화
+            </button>
+          </div>
         )}
       </div>
 
-      {!category ? (
-        <p className="text-sm text-muted text-center py-10">
-          위에서 카테고리를 선택해 주세요. &lsquo;카테고리 분석&rsquo; 탭의 표에서 행을 클릭해도 이 화면으로 넘어옵니다.
-        </p>
-      ) : items.length === 0 ? (
-        <p className="text-sm text-muted text-center py-8">
-          랭킹 상위 목록에 포함된 방송이 없습니다. 수집 시점 차이로 목록에 없을 수 있습니다.
-        </p>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[680px]">
-            <thead>
-              <tr className="text-muted text-xs border-b border-border">
-                <th className="text-left font-medium py-2 pl-2 w-12">#</th>
-                <th className="text-left font-medium py-2">스트리머</th>
-                <th className="text-right font-medium py-2 px-6">전체 시청자</th>
-                <th className="text-right font-medium py-2 px-6 hidden md:table-cell">방송시간</th>
-                <th className="text-right font-medium py-2 px-6">팔로워</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((s, i) => {
-                const vwPct  = (s.concurrent_viewers / maxViewers) * 100;
-                const durPct = s.dur.ms > 0 ? Math.min(100, (s.dur.ms / DAY_MS) * 100) : 0;
-                const folPct = s.follower_count > 0 ? (s.follower_count / maxFollower) * 100 : 0;
-                const medal  = MEDALS[i];
-                return (
-                  <tr key={s.chzzk_channel_id} className="border-b border-border hover:bg-bg-hover/70 transition-colors">
-                    <td className="py-3.5 pl-2 tabular-nums text-sm align-top">
-                      {medal
-                        ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
-                        : <span className="text-muted">{i + 1}</span>}
-                    </td>
-                    <td className="py-3.5 align-top">
-                      <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="flex items-center gap-2 group">
-                        <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0"
-                              style={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined}>
-                          {s.channel_image_url && (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
-                          )}
-                        </span>
-                        <ChzzkMark />
-                        <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[150px] md:max-w-none">
-                          {s.channel_name}
-                        </span>
-                      </Link>
-                    </td>
-                    <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
-                      <CellCol>
-                        <div className="text-right"><StatNum value={s.concurrent_viewers} unit="명" /></div>
-                        <CellBar pct={vwPct} background={YELLOW_GRAD} />
-                      </CellCol>
-                    </td>
-                    <td className="py-3.5 px-6 align-top hidden md:table-cell" style={{ minWidth: 128 }}>
-                      <CellCol>
-                        <div className="text-right tabular-nums text-muted text-sm">{s.dur.label}</div>
-                        <CellBar pct={durPct} background={PURPLE_GRAD} />
-                      </CellCol>
-                    </td>
-                    <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
-                      <CellCol>
-                        <div className="text-right">
-                          {s.follower_count > 0 ? <StatNum value={s.follower_count} unit="명" /> : <span className="text-sm text-muted">-</span>}
-                        </div>
-                        <CellBar pct={folPct} background={CYAN_GRAD} />
-                      </CellCol>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      {/* 미선택 — 인기 카테고리 카드 그리드 */}
+      {!category && (
+        <div className="card !p-4 md:!p-5">
+          {catsLoading ? (
+            <div className="flex items-center justify-center gap-2 py-16 text-muted">
+              <Loader2 size={18} className="animate-spin" /> 카테고리를 불러오는 중...
+            </div>
+          ) : filtered.length === 0 ? (
+            <p className="py-12 text-center text-sm text-muted">
+              {q.trim() ? "검색 결과가 없습니다." : "현재 방송 중인 카테고리가 없습니다."}
+            </p>
+          ) : (
+            <>
+              <p className="mb-3 text-[11px] text-muted">
+                현재 방송 중인 카테고리 {nf(filtered.length)}개 · {sort === "viewers" ? "시청자순" : "방송수순"}
+              </p>
+              <div className="grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-5">
+                {filtered.map((c) => (
+                  <CategoryCard key={c.category} c={c} onPick={() => onPick(c.category)} />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* 선택됨 — 스트리머 목록 */}
+      {category && (
+        <div className="card !p-4 md:!p-5">
+          {listLoading ? (
+            <div className="flex items-center justify-center gap-2 py-16 text-muted">
+              <Loader2 size={18} className="animate-spin" /> 스트리머를 불러오는 중...
+            </div>
+          ) : items.length === 0 ? (
+            <p className="py-12 text-center text-sm text-muted">
+              이 카테고리로 방송 중인 스트리머가 없습니다.
+            </p>
+          ) : (
+            <>
+              <p className="mb-3 text-[11px] text-muted">
+                시청자 {nf(items.length)}개 방송 · 시청자 내림차순 · 시청자 0명 방송도 모두 포함
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm min-w-[820px]">
+                  <thead>
+                    <tr className="border-b border-border text-xs text-muted">
+                      <th className="w-12 py-2 pl-2 text-left font-medium">#</th>
+                      <th className="py-2 text-left font-medium">스트리머</th>
+                      <th className="py-2 px-6 text-left font-medium hidden lg:table-cell">방송 제목</th>
+                      <th className="py-2 px-6 text-right font-medium">전체 시청자</th>
+                      <th className="py-2 px-6 text-right font-medium hidden md:table-cell">방송시간</th>
+                      <th className="py-2 px-6 text-right font-medium">팔로워</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((s, i) => {
+                      const vwPct  = (s.concurrent_viewers / maxViewers) * 100;
+                      const durPct = s.dur.ms > 0 ? Math.min(100, (s.dur.ms / DAY_MS) * 100) : 0;
+                      const folPct = s.follower_count > 0 ? (s.follower_count / maxFollower) * 100 : 0;
+                      const medal  = MEDALS[i];
+                      const vwDelta = s.viewers_prev && s.viewers_prev > 0
+                        ? ((s.concurrent_viewers - s.viewers_prev) / s.viewers_prev) * 100 : null;
+                      return (
+                        <tr key={s.chzzk_channel_id} className="border-b border-border transition-colors hover:bg-bg-hover/70">
+                          <td className="py-3.5 pl-2 align-top text-sm tabular-nums">
+                            {medal
+                              ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
+                              : <span className="text-muted">{i + 1}</span>}
+                          </td>
+                          <td className="py-3.5 align-top">
+                            <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="group flex items-center gap-2">
+                              <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full bg-bg-hover"
+                                    style={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined}>
+                                {s.channel_image_url && (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="h-full w-full object-cover" />
+                                )}
+                              </span>
+                              <ChzzkMark />
+                              <span className="truncate max-w-[150px] text-base font-semibold text-fg transition-colors group-hover:text-accent md:max-w-none">
+                                {s.channel_name}
+                              </span>
+                            </Link>
+                          </td>
+                          <td className="py-3.5 px-6 align-middle hidden lg:table-cell">
+                            <span className="block max-w-[280px] truncate text-xs text-muted" title={s.live_title}>
+                              {s.live_title || "-"}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
+                            <CellCol>
+                              <div className="flex items-center justify-end gap-1.5">
+                                {vwDelta !== null && <span className="text-[11px]"><Delta pct={vwDelta} /></span>}
+                                <StatNum value={s.concurrent_viewers} unit="명" />
+                              </div>
+                              <CellBar pct={vwPct} background={YELLOW_GRAD} />
+                            </CellCol>
+                          </td>
+                          <td className="py-3.5 px-6 align-top hidden md:table-cell" style={{ minWidth: 128 }}>
+                            <CellCol>
+                              <div className="text-right text-sm tabular-nums text-muted">{s.dur.label}</div>
+                              <CellBar pct={durPct} background={PURPLE_GRAD} />
+                            </CellCol>
+                          </td>
+                          <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
+                            <CellCol>
+                              <div className="text-right">
+                                {s.follower_count > 0
+                                  ? <StatNum value={s.follower_count} unit="명" />
+                                  : <span className="text-sm text-muted">-</span>}
+                              </div>
+                              <CellBar pct={folPct} background={CYAN_GRAD} />
+                            </CellCol>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -1555,9 +1701,8 @@ function CategoryTab({ cats, onPick }: { cats: RisingCategories; onPick: (c: str
                     <td className="py-3.5 px-6 text-right align-top hidden sm:table-cell">
                       <StatNum value={c.lives} unit="개" />
                     </td>
-                    <td className="py-3.5 px-6 text-right align-top tabular-nums font-bold">
-                      <GradText>{nf(c.avg_viewers)}</GradText>
-                      <span className="ml-0.5 text-[11px] font-normal text-muted">명</span>
+                    <td className="py-3.5 px-6 text-right align-top">
+                      <StatNum value={c.avg_viewers} unit="명" />
                     </td>
                   </tr>
                 );
@@ -1673,7 +1818,7 @@ export default function StatsPage() {
               {tab === "ranking_period"                && <PeriodRankingTab />}
               {tab === "category"           && cats && <CategoryTab cats={cats} onPick={pickCategory} />}
               {tab === "category_streamers"          && (
-                <CategoryStreamerList category={pickedCat} cats={cats} rank={rank} onPick={setPickedCat} />
+                <CategoryStreamerList category={pickedCat} onPick={setPickedCat} />
               )}
             </div>
           </div>
