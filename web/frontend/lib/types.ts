@@ -428,3 +428,17 @@ export interface TagStreamer {
   open_date: string; follower_count: number; live_title: string; tags: string[]; adult: boolean;
 }
 export interface RisingTagStreamers { collected_at: number | null; tag: string; streamers: TagStreamer[]; }
+
+// 태그 유입 효과 비교
+export interface TagGroupStats {
+  channels: number; avg_viewers: number; avg_hours: number;
+  avg_follower: number; avg_follower_gain: number | null;
+}
+export interface RisingTagEffect {
+  collected_at: number | null;
+  tag: string | null;
+  tagged: TagGroupStats | null;
+  untagged: TagGroupStats | null;
+  lift: { viewers: number | null; hours: number | null;
+          follower: number | null; follower_gain: number | null };
+}

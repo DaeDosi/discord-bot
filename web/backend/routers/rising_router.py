@@ -1190,3 +1190,90 @@ async def tag_streamers(tag: str, exact: bool = False):
             "adult":              bool(r["adult"]),
         })
     return {"collected_at": ts, "tag": tag, "streamers": out}
+
+
+# ── 태그 유입 효과 비교 ──────────────────────────────────────────────────────
+# 태그를 단 방송과 안 단 방송의 지표를 비교한다.
+# 비교 대상을 '같은 카테고리'로 한정하는 이유: 카테고리마다 시청자 규모가 크게 달라
+# 전체와 비교하면 태그 효과가 아니라 카테고리 차이를 재게 된다.
+def _hours_since(open_date: str, now: int) -> float | None:
+    if not open_date:
+        return None
+    try:
+        dt = datetime.strptime(open_date, "%Y-%m-%d %H:%M:%S").replace(tzinfo=_KST)
+    except ValueError:
+        return None
+    h = (now - int(dt.timestamp())) / 3600
+    return h if 0 <= h <= 48 else None
+
+
+def _group_stats(rows: list, now: int) -> dict:
+    n = len(rows)
+    if n == 0:
+        return {"channels": 0, "avg_viewers": 0, "avg_hours": 0.0, "avg_follower": 0, "avg_follower_gain": None}
+    hrs = [h for h in (_hours_since(r["open_date"], now) for r in rows) if h is not None]
+    gains = [int(r["follower_count"]) - int(r["follower_prev24h"])
+             for r in rows if r["follower_prev24h"] is not None and r["follower_count"]]
+    return {
+        "channels": n,
+        "avg_viewers": round(sum(int(r["concurrent_viewers"] or 0) for r in rows) / n, 1),
+        "avg_hours": round(sum(hrs) / len(hrs), 1) if hrs else 0.0,
+        "avg_follower": round(sum(int(r["follower_count"] or 0) for r in rows) / n),
+        "avg_follower_gain": round(sum(gains) / len(gains), 1) if gains else None,
+    }
+
+
+@router.get("/tag-effect")
+async def tag_effect(tag: str | None = None):
+    """태그 사용/미사용 그룹 비교. tag가 없으면 '태그를 하나라도 단 방송' 전체로 비교한다."""
+    ts = await _latest_run_ts()
+    if ts is None:
+        return {"collected_at": None, "tag": tag, "tagged": None, "untagged": None}
+
+    db = await get_db()
+    t24row = await (await db.execute(
+        "SELECT collected_at FROM rising_collect_runs "
+        "WHERE ok=1 AND ABS(collected_at - ?) <= 5400 ORDER BY ABS(collected_at - ?) ASC LIMIT 1",
+        (ts - 86400, ts - 86400)
+    )).fetchone()
+    t24 = int(t24row["collected_at"]) if t24row else -1
+
+    rows = await (await db.execute(
+        """SELECT n.chzzk_channel_id, n.concurrent_viewers, n.category_name, n.open_date,
+                  n.follower_count, n.tags,
+                  f.follower_count AS follower_prev24h
+           FROM rising_live_snapshots n
+           LEFT JOIN rising_live_snapshots f
+             ON f.chzzk_channel_id = n.chzzk_channel_id AND f.collected_at = ?
+           WHERE n.collected_at = ?""",
+        (t24, ts)
+    )).fetchall()
+
+    kw = (tag or "").strip().lower()
+    if kw:
+        tagged = [r for r in rows if any(kw in t.lower() for t in _split_tags(r["tags"]))]
+        # 같은 카테고리 안에서, 그 태그를 안 단 방송이 비교군
+        cats = {r["category_name"] for r in tagged}
+        untagged = [r for r in rows
+                    if r["category_name"] in cats
+                    and not any(kw in t.lower() for t in _split_tags(r["tags"]))]
+    else:
+        tagged = [r for r in rows if _split_tags(r["tags"])]
+        untagged = [r for r in rows if not _split_tags(r["tags"])]
+
+    a, b = _group_stats(tagged, ts), _group_stats(untagged, ts)
+
+    def lift(x, y):
+        return round((x / y - 1) * 100, 1) if y else None
+
+    return {
+        "collected_at": ts, "tag": tag,
+        "tagged": a, "untagged": b,
+        "lift": {
+            "viewers": lift(a["avg_viewers"], b["avg_viewers"]),
+            "hours": lift(a["avg_hours"], b["avg_hours"]),
+            "follower": lift(a["avg_follower"], b["avg_follower"]),
+            "follower_gain": (lift(a["avg_follower_gain"], b["avg_follower_gain"])
+                              if a["avg_follower_gain"] is not None and b["avg_follower_gain"] else None),
+        },
+    }

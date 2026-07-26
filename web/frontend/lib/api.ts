@@ -186,6 +186,8 @@ export const api = {
       fetch(`${BASE}/api/rising/tags?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingTags>,
     tagStreamers: (tag: string) =>
       fetch(`${BASE}/api/rising/tag-streamers?tag=${encodeURIComponent(tag)}`).then(r => r.json()) as Promise<import("./types").RisingTagStreamers>,
+    tagEffect: (tag?: string) =>
+      fetch(`${BASE}/api/rising/tag-effect${tag ? `?tag=${encodeURIComponent(tag)}` : ""}`).then(r => r.json()) as Promise<import("./types").RisingTagEffect>,
     search: (keyword: string) =>
       fetch(`${BASE}/api/rising/search?keyword=${encodeURIComponent(keyword)}`).then(r => r.json()) as Promise<{ results: import("./types").RisingSearchResult[] }>,
     rankingPeriod: (range = "24h", sort = "viewership", limit = 100) =>

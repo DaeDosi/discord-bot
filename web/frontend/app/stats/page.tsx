@@ -1560,7 +1560,7 @@ function PeriodRankingTab() {
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    api.rising.rankingPeriod(range, sort, 300)
+    api.rising.rankingPeriod(range, sort, 100)
       .then((d) => { if (alive) { setData(d); setLimit(50); } })
       .catch(() => { if (alive) setData(null); })
       .finally(() => { if (alive) setLoading(false); });

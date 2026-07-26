@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Search, Loader2, X, Hash } from "lucide-react";
 import { api } from "@/lib/api";
-import type { RisingTag, TagStreamer } from "@/lib/types";
+import type { RisingTag, TagStreamer, RisingTagEffect } from "@/lib/types";
 
 // 태그 검색 — 스트리머가 방송에 붙인 태그로 라이브를 찾는다.
 // 태그는 자유 입력이라 표기가 제각각이므로 기본은 부분 일치로 찾고,
@@ -24,6 +24,87 @@ function dur(openDate: string): { ms: number; label: string } {
   if (ms < 0) return { ms: -1, label: "-" };
   const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
   return { ms, label: h > 0 ? `${h}시간 ${m}분` : `${m}분` };
+}
+
+// ── 태그 유/무 시청자 비교 ──────────────────────────────────────────────────
+const SLATE = "#64748B";
+
+function StatRow({ label, a, b, unit, lift }:
+  { label: string; a: number | null; b: number | null; unit: string; lift: number | null }) {
+  const fmt = (v: number | null) => (v == null ? "-" : `${nf(v)}${unit}`);
+  return (
+    <div className="flex items-center gap-2 border-t border-border py-2 text-xs first:border-t-0">
+      <span className="w-[92px] shrink-0 text-muted">{label}</span>
+      <span className="w-[74px] text-right font-bold tabular-nums" style={{ color: GREEN }}>{fmt(a)}</span>
+      <span className="text-[10px] text-muted/60">vs</span>
+      <span className="w-[74px] text-right font-bold tabular-nums" style={{ color: SLATE }}>{fmt(b)}</span>
+      <span className="ml-auto text-right text-[11px] font-semibold tabular-nums"
+            style={{ color: lift == null ? "rgb(var(--color-muted-rgb))" : lift >= 0 ? GREEN : "#EF4444" }}>
+        {lift == null ? "-" : `${lift >= 0 ? "+" : ""}${lift}%`}
+      </span>
+    </div>
+  );
+}
+
+function TagEffect({ tag }: { tag: string | null }) {
+  const [d, setD] = useState<RisingTagEffect | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    api.rising.tagEffect(tag ?? undefined)
+      .then((r) => { if (alive) setD(r); })
+      .catch(() => { if (alive) setD(null); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [tag]);
+
+  const a = d?.tagged, b = d?.untagged;
+  const enough = a && b && a.channels > 0 && b.channels > 0;
+
+  return (
+    <div className="mt-4 rounded-xl border border-border p-4" style={{ background: "#181A20" }}>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <h4 className="text-sm font-bold text-white">
+          {tag ? <>‘{tag}’ 태그 유입 효과</> : "태그 유입 효과 요약"}
+        </h4>
+        <span className="flex items-center gap-2 text-[10px]">
+          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full" style={{ background: GREEN }} />
+            <span style={{ color: "#9CA3AF" }}>태그 사용{a ? ` ${nf(a.channels)}개` : ""}</span></span>
+          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full" style={{ background: SLATE }} />
+            <span style={{ color: "#9CA3AF" }}>미사용{b ? ` ${nf(b.channels)}개` : ""}</span></span>
+        </span>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center gap-2 py-6 text-sm text-muted">
+          <Loader2 size={15} className="animate-spin" /> 비교 중...
+        </div>
+      ) : !enough ? (
+        <p className="py-6 text-center text-[11px]" style={{ color: "#9CA3AF" }}>
+          비교할 방송이 부족합니다. {tag && "이 태그를 쓴 방송이 적거나, 같은 카테고리에 비교군이 없습니다."}
+        </p>
+      ) : (
+        <div className="mt-3">
+          <StatRow label="평균 동시 시청자" a={a!.avg_viewers} b={b!.avg_viewers} unit="명" lift={d!.lift.viewers} />
+          <StatRow label="평균 방송 시간" a={a!.avg_hours} b={b!.avg_hours} unit="시간" lift={d!.lift.hours} />
+          <StatRow label="채널당 팔로워" a={a!.avg_follower} b={b!.avg_follower} unit="명" lift={d!.lift.follower} />
+          {(a!.avg_follower_gain != null || b!.avg_follower_gain != null) && (
+            <StatRow label="24h 팔로워 유입" a={a!.avg_follower_gain} b={b!.avg_follower_gain}
+                     unit="명" lift={d!.lift.follower_gain} />
+          )}
+        </div>
+      )}
+
+      <p className="mt-3 text-[11px]" style={{ color: "#9CA3AF" }}>
+        * {tag
+            ? "선택한 태그를 쓴 방송과, 같은 카테고리에서 그 태그를 쓰지 않은 방송을 비교합니다."
+            : "태그를 하나라도 단 방송과 태그가 없는 방송을 비교합니다."}
+        {" "}최신 수집 사이클의 라이브 방송 기준이며, 팔로워 유입은 24시간 전 대비입니다.
+      </p>
+    </div>
+  );
 }
 
 export default function TagSearch() {
@@ -119,6 +200,9 @@ export default function TagSearch() {
             </div>
           )}
         </div>
+
+        {/* 태그 유/무 비교 — 선택된 태그가 있으면 그 태그 기준, 없으면 전체 요약 */}
+        <TagEffect tag={applied} />
       </div>
 
       {applied && (
