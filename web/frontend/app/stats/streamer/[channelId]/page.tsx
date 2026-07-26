@@ -124,8 +124,10 @@ export default function StreamerPage() {
   const topCat = s?.categories?.[0];
   const weeklyPoints = (data?.weekly ?? []).map((w) => ({ t: w.t, avg_viewers: w.avg_viewers, viewership: w.viewership })) as unknown as LinePoint[];
 
+  // 셸(min-h-screen / Footer)은 layout.tsx가 소유한다 — 서버에서 렌더하는 SEO 소개
+  // 섹션이 푸터 위에 오도록 하기 위함.
   return (
-    <div className="min-h-screen bg-bg text-fg flex flex-col">
+    <div className="flex-1 flex flex-col">
       <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
         <div className="w-full px-4 md:px-6 flex items-center justify-between" style={{ height: 60 }}>
           <div className="flex items-center gap-2.5">
@@ -294,8 +296,6 @@ export default function StreamerPage() {
           </>
         )}
       </main>
-
-      <Footer />
     </div>
   );
 }
