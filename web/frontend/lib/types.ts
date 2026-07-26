@@ -357,3 +357,27 @@ export interface RisingNewcomers {
   insights?:    NewcomerInsights;
   categories?:  NewcomerCategory[];
 }
+
+// 누적(기간) 랭킹 — 실시간 스냅샷 순위와 달리 기간 전체를 집계한 순위
+export type PeriodRange = "24h" | "7d";
+export type PeriodSort = "viewership" | "avg_viewers" | "peak_viewers" | "broadcast_hours";
+export interface PeriodStreamer {
+  chzzk_channel_id:  string;
+  channel_name:      string;
+  channel_image_url: string;
+  category_name:     string;
+  avg_viewers:       number;
+  peak_viewers:      number;
+  viewership:        number;  // 시청 시간(시간)
+  broadcast_hours:   number;
+  follower_count:    number;
+  snapshots:         number;
+  last_at:           number;
+}
+export interface RisingPeriodRanking {
+  collected_at:   number | null;
+  range:          PeriodRange;
+  sort:           PeriodSort;
+  history_hours:  number;
+  streamers:      PeriodStreamer[];
+}

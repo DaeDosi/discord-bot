@@ -733,3 +733,91 @@ async def rising_stars(limit: int = 20):
         for r in rows
     ]
     return {"collected_at": now_ts, "compared_to": past_ts, "stars": stars}
+
+
+# ── 누적(기간) 랭킹 ──────────────────────────────────────────────────────────
+# 실시간 랭킹(live_ranking)은 '최신 수집 사이클 한 장'의 동시 시청자 순위라, 마침 그 순간
+# 방송 중이었는지에 크게 좌우된다. 이 엔드포인트는 기간 전체를 누적해 순위를 낸다:
+# 잠깐 스파이크가 뜬 방송과 꾸준히 오래 방송한 채널을 구분할 수 있다.
+#
+# 스냅샷 1개 ≈ 라이브 10분으로 보고 방송시간/시청시간(hours watched)을 추정한다 —
+# streamer() 개인 분석과 동일한 근사이므로 두 화면의 수치가 어긋나지 않는다.
+_PERIOD_RANGES = {"24h": 24 * 3600, "7d": 7 * 86400}
+_PERIOD_SORTS = {
+    "viewership":      "viewership",       # 시청 시간(누적) — 기본
+    "avg_viewers":     "avg_viewers",
+    "peak_viewers":    "peak_viewers",
+    "broadcast_hours": "broadcast_hours",
+}
+
+
+@router.get("/ranking-period")
+async def ranking_period(range: str = "24h", sort: str = "viewership", limit: int = 100):
+    """기간 누적 랭킹 — 시청 시간/평균 시청자/최고 동접/방송 시간 기준.
+
+    range=24h|7d, sort=viewership|avg_viewers|peak_viewers|broadcast_hours.
+    """
+    window = _PERIOD_RANGES.get(range, _PERIOD_RANGES["24h"])
+    sort_key = _PERIOD_SORTS.get(sort, "viewership")
+    limit = max(1, min(300, limit))
+    ts = await _latest_run_ts()
+    if ts is None:
+        return {"collected_at": None, "range": range, "sort": sort_key, "streamers": [], "history_hours": 0.0}
+
+    since = ts - window
+    db = await get_db()
+
+    # 채널별 집계. channel_name/category_name은 구간 내 '마지막' 값을 쓴다
+    # (MAX(collected_at)와 함께 뽑으면 SQLite의 bare-column 규칙으로 같은 행 값이 선택된다).
+    rows = await (await db.execute(
+        """SELECT chzzk_channel_id,
+                  channel_name,
+                  category_name,
+                  MAX(collected_at)                      AS last_at,
+                  COUNT(*)                               AS snaps,
+                  AVG(concurrent_viewers)                AS avg_v,
+                  MAX(concurrent_viewers)                AS peak_v,
+                  SUM(concurrent_viewers)                AS sum_v,
+                  MAX(follower_count)                    AS follower
+           FROM rising_live_snapshots
+           WHERE collected_at >= ?
+           GROUP BY chzzk_channel_id""",
+        (since,)
+    )).fetchall()
+
+    snap_min = 10  # 스냅샷 간격(분) — 라이브 1구간 근사
+    out = []
+    for r in rows:
+        snaps = int(r["snaps"] or 0)
+        if snaps <= 0:
+            continue
+        out.append({
+            "chzzk_channel_id":  r["chzzk_channel_id"],
+            "channel_name":      r["channel_name"] or "",
+            "channel_image_url": latest_image(r["chzzk_channel_id"]),  # DB 아님 — 메모리 맵
+            "category_name":     r["category_name"] or "",
+            "avg_viewers":       round(r["avg_v"] or 0),
+            "peak_viewers":      int(r["peak_v"] or 0),
+            "viewership":        round((r["sum_v"] or 0) * snap_min / 60),  # 시청 시간(시간)
+            "broadcast_hours":   round(snaps * snap_min / 60, 1),
+            "follower_count":    int(r["follower"] or 0),
+            "snapshots":         snaps,
+            "last_at":           int(r["last_at"] or 0),
+        })
+
+    out.sort(key=lambda x: x[sort_key], reverse=True)
+
+    # 이 기간 데이터가 실제로 얼마나 쌓였는지 — 프론트에서 '집계 부족' 안내에 쓴다
+    first = await (await db.execute(
+        "SELECT MIN(collected_at) AS f FROM rising_collect_runs WHERE ok=1 AND collected_at >= ?",
+        (since,)
+    )).fetchone()
+    history_hours = round((ts - int(first["f"])) / 3600, 1) if first and first["f"] else 0.0
+
+    return {
+        "collected_at": ts,
+        "range": range if range in _PERIOD_RANGES else "24h",
+        "sort": sort_key,
+        "history_hours": history_hours,
+        "streamers": out[:limit],
+    }

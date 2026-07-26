@@ -10,7 +10,7 @@ import { api } from "@/lib/api";
 import type {
   RisingOverview, RisingTimeseries, RisingLiveRanking, RisingCategories, RisingCategory,
   RisingStars, TimeRange, CatRange, RisingSearchResult, RisingNewcomers, RisingNewcomer,
-  NewcomerCategory,
+  NewcomerCategory, RisingPeriodRanking, PeriodRange, PeriodSort,
 } from "@/lib/types";
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
@@ -1053,7 +1053,11 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
                                        bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{s.category_name}</span>
                     : <span className="text-muted text-sm">-</span>}
                 </td>
-                <td className="py-3.5 px-6 text-right text-[11px] align-top"><Delta pct={s.growth_rate} /></td>
+                {/* 성장률 — 다른 셀은 수치+바 2줄이라 align-top이지만 이 셀은 1줄이라
+                    가운데 정렬해야 행 높이 안에서 위로 붙지 않는다. 크기도 한 단계 키움. */}
+                <td className="py-3.5 px-6 text-right text-sm font-semibold align-middle whitespace-nowrap">
+                  <Delta pct={s.growth_rate} />
+                </td>
                 {/* 시청자 — 바로 아래 골드 바 (1위 대비 %) */}
                 <td className="py-3.5 px-6 align-top" style={{ minWidth: 132 }}>
                   <CellCol>
@@ -1207,10 +1211,24 @@ function NewcomersRankingTab({ data }: { data: RisingNewcomers }) {
 // ── 카테고리 탭 ───────────────────────────────────────────────────────────────
 // 선택한 카테고리로 방송 중인 스트리머 목록 — 랭킹 테이블과 동일한 디자인 규격.
 // 별도 API 없이 이미 받아둔 라이브 랭킹 스냅샷을 카테고리로 필터링한다.
-function CategoryStreamerList({ category, rank, onClose }:
-  { category: string; rank: RisingLiveRanking | null; onClose: () => void }) {
+function CategoryStreamerList({ category, cats, rank, onPick }:
+  { category: string | null; cats: RisingCategories | null; rank: RisingLiveRanking | null;
+    onPick: (c: string | null) => void }) {
+  // 라이브 랭킹 스냅샷에 실제로 존재하는 카테고리만 필터 후보로 노출한다 —
+  // cats(1시간 평균)에만 있고 지금은 아무도 방송 안 하는 항목을 고르면 빈 결과가 나온다.
+  const options = useMemo(() => {
+    const live = new Map<string, number>();
+    for (const s of rank?.streamers ?? []) {
+      const c = (s.category_name || "").trim();
+      if (c) live.set(c, (live.get(c) ?? 0) + 1);
+    }
+    const order = (cats?.categories ?? []).map((c) => c.category).filter((c) => live.has(c));
+    for (const c of live.keys()) if (!order.includes(c)) order.push(c);
+    return order.map((c) => ({ name: c, lives: live.get(c) ?? 0 }));
+  }, [cats, rank]);
+
   const items = useMemo(() => {
-    if (!rank) return [];
+    if (!rank || !category) return [];
     return rank.streamers
       .filter((s) => (s.category_name || "").trim() === category)
       .sort((a, b) => b.concurrent_viewers - a.concurrent_viewers)
@@ -1222,26 +1240,37 @@ function CategoryStreamerList({ category, rank, onClose }:
 
   return (
     <div className="card !p-4 md:!p-5">
-      <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
-        <div>
-          <h3 className="section-title flex items-center gap-2 flex-wrap">
-            <span className="inline-block rounded-full border border-border bg-bg-hover px-3 py-1 text-xs font-medium text-fg">
-              {category}
-            </span>
-            방송 중인 스트리머
-          </h3>
-          <p className="text-xs text-muted mt-1">
-            {items.length > 0
-              ? <>현재 이 카테고리로 방송 중인 스트리머 {nf(items.length)}명 · 시청자 내림차순</>
-              : "이 카테고리로 방송 중인 스트리머를 찾지 못했습니다."}
-          </p>
-        </div>
-        <button onClick={onClose} className="text-xs font-medium text-muted hover:text-fg transition-colors">
-          닫기
-        </button>
+      <h3 className="section-title mb-1">카테고리별 스트리머</h3>
+      <p className="text-xs text-muted mb-4">
+        카테고리를 선택하면 현재 그 카테고리로 방송 중인 스트리머를 시청자 내림차순으로 조회합니다.
+      </p>
+
+      {/* 카테고리 필터 */}
+      <div className="mb-4 flex items-center gap-2 flex-wrap">
+        <select value={category ?? ""} onChange={(e) => onPick(e.target.value || null)}
+          className="bg-bg border border-border rounded-lg px-3 py-2 text-sm text-fg
+                     focus:outline-none focus:border-accent max-w-full">
+          <option value="">카테고리 선택…</option>
+          {options.map((o) => (
+            <option key={o.name} value={o.name}>{o.name} ({o.lives}개 방송)</option>
+          ))}
+        </select>
+        {category && (
+          <button onClick={() => onPick(null)}
+            className="text-xs font-medium text-muted hover:text-fg transition-colors">필터 해제</button>
+        )}
+        {category && (
+          <span className="text-xs text-muted ml-auto">
+            {nf(items.length)}명 조회됨
+          </span>
+        )}
       </div>
 
-      {items.length === 0 ? (
+      {!category ? (
+        <p className="text-sm text-muted text-center py-10">
+          위에서 카테고리를 선택해 주세요. &lsquo;카테고리 분석&rsquo; 탭의 표에서 행을 클릭해도 이 화면으로 넘어옵니다.
+        </p>
+      ) : items.length === 0 ? (
         <p className="text-sm text-muted text-center py-8">
           랭킹 상위 목록에 포함된 방송이 없습니다. 수집 시점 차이로 목록에 없을 수 있습니다.
         </p>
@@ -1316,19 +1345,179 @@ function CategoryStreamerList({ category, rank, onClose }:
   );
 }
 
-// 카테고리 분석 — 표 디자인을 스트리머 랭킹과 동일 규격으로 맞추고,
-// 행을 누르면 해당 카테고리로 방송 중인 스트리머 목록이 아래에 펼쳐진다.
-function CategoryTab({ cats, rank }: { cats: RisingCategories; rank: RisingLiveRanking | null }) {
-  const [picked, setPicked] = useState<string | null>(null);
+// ── 누적(기간) 랭킹 탭 ───────────────────────────────────────────────────────
+// 실시간 랭킹과 성격이 다르다: 최신 스냅샷 한 장이 아니라 기간 전체를 집계해
+// 시청 시간·방송 시간까지 줄 세운다. 자체적으로 기간/정렬을 바꿔 재조회한다.
+const PERIOD_RANGE_OPTS: { k: PeriodRange; label: string }[] = [
+  { k: "24h", label: "최근 24시간" },
+  { k: "7d",  label: "최근 7일" },
+];
+const PERIOD_SORT_OPTS: { k: PeriodSort; label: string; unit: string; help: string }[] = [
+  { k: "viewership",      label: "시청 시간",   unit: "시간", help: "동시 시청자 × 방송 시간의 누적값(hours watched). 규모와 지속성을 함께 반영합니다." },
+  { k: "avg_viewers",     label: "평균 시청자", unit: "명",   help: "기간 내 스냅샷 평균. 방송을 짧게 해도 시청자가 많으면 높습니다." },
+  { k: "peak_viewers",    label: "최고 동접",   unit: "명",   help: "기간 내 최고 동시 시청자." },
+  { k: "broadcast_hours", label: "방송 시간",   unit: "시간", help: "수집된 스냅샷으로 추정한 총 송출 시간. 꾸준함을 봅니다." },
+];
+
+function PeriodRankingTab() {
+  const [range, setRange] = useState<PeriodRange>("24h");
+  const [sort, setSort]   = useState<PeriodSort>("viewership");
+  const [data, setData]   = useState<RisingPeriodRanking | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [limit, setLimit] = useState(50);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    api.rising.rankingPeriod(range, sort, 300)
+      .then((d) => { if (alive) { setData(d); setLimit(50); } })
+      .catch(() => { if (alive) setData(null); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [range, sort]);
+
+  const rows = data?.streamers ?? [];
+  const sortOpt = PERIOD_SORT_OPTS.find((o) => o.k === sort)!;
+  const maxMetric = Math.max(1, ...rows.map((r) => r[sort] as number));
+
+  return (
+    <div className="card !p-4 md:!p-5">
+      <div className="flex items-start justify-between gap-3 mb-1 flex-wrap">
+        <h3 className="section-title">기간별 누적 랭킹</h3>
+        <Seg options={PERIOD_RANGE_OPTS} value={range} onChange={setRange} />
+      </div>
+      <p className="text-xs text-muted mb-4">
+        실시간 랭킹은 &lsquo;지금 이 순간&rsquo;의 동시 시청자 순위라 잠깐 스파이크가 뜬 방송이 위로 올라옵니다.
+        이 표는 선택한 기간 전체를 누적해 정렬하므로 꾸준히 방송한 채널이 드러납니다.
+        {data && data.history_hours > 0 && <> (이 기간 수집 이력 {data.history_hours}시간)</>}
+      </p>
+
+      <div className="mb-4 flex items-center gap-2 flex-wrap">
+        <span className="text-xs text-muted mr-1">정렬 기준</span>
+        {PERIOD_SORT_OPTS.map((o) => {
+          const active = sort === o.k;
+          return (
+            <button key={o.k} onClick={() => setSort(o.k)}
+              className="text-sm font-medium px-3.5 py-1.5 rounded-lg border transition-colors"
+              style={{ background: active ? "rgba(0,255,163,0.1)" : "transparent",
+                       borderColor: active ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
+                       color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
+              {o.label}
+            </button>
+          );
+        })}
+        <span className="inline-flex items-center"><HelpTip>
+          <b className="block text-fg mb-1">{sortOpt.label}</b>
+          {sortOpt.help}
+        </HelpTip></span>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center gap-2 text-muted py-16">
+          <Loader2 size={18} className="animate-spin" /> 집계 중...
+        </div>
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-muted text-center py-10">
+          아직 누적 집계에 쓸 데이터가 부족합니다. 수집이 쌓이면 표시됩니다.
+        </p>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[760px]">
+              <thead>
+                <tr className="text-muted text-xs border-b border-border">
+                  <th className="text-left font-medium py-2 pl-2 w-12">#</th>
+                  <th className="text-left font-medium py-2">스트리머</th>
+                  <th className="text-left font-medium py-2 px-6 hidden sm:table-cell">카테고리</th>
+                  <th className="text-right font-medium py-2 px-6">{sortOpt.label}</th>
+                  <th className="text-right font-medium py-2 px-6 hidden md:table-cell">평균 시청자</th>
+                  <th className="text-right font-medium py-2 px-6 hidden lg:table-cell">최고 동접</th>
+                  <th className="text-right font-medium py-2 px-6 hidden md:table-cell">방송 시간</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.slice(0, limit).map((s, i) => {
+                  const medal = MEDALS[i];
+                  const metric = s[sort] as number;
+                  return (
+                    <tr key={s.chzzk_channel_id} className="border-b border-border hover:bg-bg-hover/70 transition-colors">
+                      <td className="py-3.5 pl-2 tabular-nums text-sm align-top">
+                        {medal
+                          ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
+                          : <span className="text-muted">{i + 1}</span>}
+                      </td>
+                      <td className="py-3.5 align-top">
+                        <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="flex items-center gap-2 group">
+                          <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0"
+                                style={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined}>
+                            {s.channel_image_url && (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
+                            )}
+                          </span>
+                          <ChzzkMark />
+                          <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[150px] md:max-w-none">
+                            {s.channel_name || "(이름 없음)"}
+                          </span>
+                        </Link>
+                      </td>
+                      <td className="py-3.5 px-6 hidden sm:table-cell align-top">
+                        {s.category_name
+                          ? <span className="inline-block max-w-[150px] truncate rounded-full border border-border
+                                             bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{s.category_name}</span>
+                          : <span className="text-muted text-sm">-</span>}
+                      </td>
+                      {/* 현재 정렬 기준 지표 — 1위 대비 비율 바를 함께 보여 준다 */}
+                      <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
+                        <CellCol>
+                          <div className="text-right"><StatNum value={metric} unit={sortOpt.unit} /></div>
+                          <CellBar pct={(metric / maxMetric) * 100} background={YELLOW_GRAD} />
+                        </CellCol>
+                      </td>
+                      <td className="py-3.5 px-6 text-right align-middle hidden md:table-cell tabular-nums text-muted text-sm">
+                        {nf(s.avg_viewers)}명
+                      </td>
+                      <td className="py-3.5 px-6 text-right align-middle hidden lg:table-cell tabular-nums text-muted text-sm">
+                        {nf(s.peak_viewers)}명
+                      </td>
+                      <td className="py-3.5 px-6 text-right align-middle hidden md:table-cell tabular-nums text-muted text-sm">
+                        {s.broadcast_hours}시간
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {rows.length > limit && (
+            <div className="text-center pt-4">
+              <button onClick={() => setLimit((l) => l + 50)} className="btn-secondary text-sm">
+                더 보기 ({nf(rows.length - limit)}개 남음)
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// 카테고리 분석 — 점유율 도넛 + 표(스트리머 랭킹과 동일 규격).
+// 행을 누르면 표 아래에 붙이지 않고 '카테고리별 스트리머' 탭으로 넘겨 조회하게 한다
+// (표가 길면 아래에 펼친 결과가 화면 밖으로 밀려 안 보이는 문제가 있었다).
+function CategoryTab({ cats, onPick }: { cats: RisingCategories; onPick: (c: string) => void }) {
   const maxV = Math.max(1, ...cats.categories.map((c) => c.viewers));
 
   return (
     <div className="space-y-5">
+      {/* 전체/신규 분석 탭과 동일한 카테고리 점유율 도넛 */}
+      <CategoryDonut />
+
       <div className="card !p-4 md:!p-5">
         <h3 className="section-title mb-1">카테고리(게임)별 현황</h3>
         <p className="text-xs text-muted mb-4">
           방송당 평균 = 시청자 ÷ 방송 수. 값이 높을수록 방송 대비 시청 유입(블루오션)이 큽니다.
-          행을 클릭하면 해당 카테고리로 방송 중인 스트리머 목록이 열립니다.
+          행을 클릭하면 '카테고리별 스트리머' 탭에서 해당 카테고리로 방송 중인 목록을 조회합니다.
         </p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[620px]">
@@ -1344,12 +1533,10 @@ function CategoryTab({ cats, rank }: { cats: RisingCategories; rank: RisingLiveR
             <tbody>
               {cats.categories.map((c, i) => {
                 const medal = MEDALS[i];
-                const active = picked === c.category;
                 return (
                   <tr key={c.category}
-                      onClick={() => setPicked(active ? null : c.category)}
-                      className="border-b border-border hover:bg-bg-hover/70 transition-colors cursor-pointer"
-                      style={active ? { background: "rgba(0,255,163,0.06)" } : undefined}>
+                      onClick={() => onPick(c.category)}
+                      className="border-b border-border hover:bg-bg-hover/70 transition-colors cursor-pointer">
                     <td className="py-3.5 pl-2 tabular-nums text-sm align-top">
                       {medal
                         ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
@@ -1383,7 +1570,6 @@ function CategoryTab({ cats, rank }: { cats: RisingCategories; rank: RisingLiveR
         )}
       </div>
 
-      {picked && <CategoryStreamerList category={picked} rank={rank} onClose={() => setPicked(null)} />}
     </div>
   );
 }
@@ -1399,6 +1585,9 @@ export default function StatsPage() {
   // 그룹 접힘 상태는 StatsNav가 소유한다. 여기서는 활성 탭만 관리.
   const [tab, setTab] = useState<Tab>("overview");
   const selectTab = (k: Tab) => setTab(k);
+  // '카테고리 분석' 표에서 행을 누르면 이 값이 정해지고 '카테고리별 스트리머' 탭으로 넘어간다
+  const [pickedCat, setPickedCat] = useState<string | null>(null);
+  const pickCategory = (c: string | null) => { setPickedCat(c); if (c) setTab("category_streamers"); };
 
   useEffect(() => {
     Promise.all([
@@ -1481,7 +1670,11 @@ export default function StatsPage() {
               {tab === "newcomers_analysis" && news && <NewcomersAnalysisTab data={news} onRanking={() => selectTab("newcomers_ranking")} />}
               {tab === "ranking"            && rank && <RankingTab rank={rank} />}
               {tab === "newcomers_ranking"  && news && <NewcomersRankingTab data={news} />}
-              {tab === "category"           && cats && <CategoryTab cats={cats} rank={rank} />}
+              {tab === "ranking_period"                && <PeriodRankingTab />}
+              {tab === "category"           && cats && <CategoryTab cats={cats} onPick={pickCategory} />}
+              {tab === "category_streamers"          && (
+                <CategoryStreamerList category={pickedCat} cats={cats} rank={rank} onPick={setPickedCat} />
+              )}
             </div>
           </div>
         )}
