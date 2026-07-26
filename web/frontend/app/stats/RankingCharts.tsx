@@ -54,7 +54,7 @@ function BarPanel({ rows, onPick, deltaName }:
   const max = Math.max(1, ...top.map((r) => r.concurrent_viewers));
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-3">
       {top.map((r, i) => (
         <div key={r.chzzk_channel_id} className="group relative flex items-center gap-2">
           <span className="w-5 shrink-0 text-right text-[11px] tabular-nums text-muted">{i + 1}</span>
@@ -212,7 +212,9 @@ function ScatterPanel({ rows, onPick, y }:
   // 정규화 좌표 → 화면 좌표 (현재 보이는 도메인 기준)
   const sx = (n: number) => P.l + ((n - view.x0) / (view.x1 - view.x0)) * (W - P.l - P.r);
   const sy = (n: number) => H - P.b - ((n - view.y0) / (view.y1 - view.y0)) * (H - P.t - P.b);
-  const inView = (n: number, a: number, b: number) => n >= a - 0.02 && n <= b + 0.02;
+  // 여유 없이 엄격히 판정한다. 예전엔 ±0.02를 허용해서, 보이는 범위를 살짝 벗어난
+  // 눈금/격자선이 플롯 밖(축 라벨 영역)에 최대 15px까지 그려졌다.
+  const inView = (n: number, a: number, b: number) => n >= a && n <= b;
   // Semantic zoom: 확대할수록(보이는 도메인이 좁아질수록) 지터를 키워
   // 뭉쳐 있던 노드가 자동으로 벌어지게 한다. 기본 배율에서는 겹침 완화 수준으로만 작동.
   const spread = 0.012 * Math.min(1, view.x1 - view.x0) ** 0.6;
@@ -244,13 +246,22 @@ function ScatterPanel({ rows, onPick, y }:
   // 드래그 이동(팬) — 확대한 상태에서 다른 구역을 보기 위해 필요하다
   const drag = useRef<{ mx: number; my: number; v: typeof view } | null>(null);
   const [dragging, setDragging] = useState(false);
-  const onDown = (e: React.MouseEvent) => {
+  // 포인터 이벤트 + setPointerCapture를 쓰는 이유:
+  //  - preventDefault로 텍스트 선택과 <image>의 네이티브 드래그를 막는다.
+  //    이 둘이 브라우저의 자동 스크롤을 유발해 드래그 중 화면이 갑자기 튀었다.
+  //  - 캡처를 걸면 커서가 SVG 밖으로 나가도 이벤트가 계속 들어와, 드래그가 끊긴 채
+  //    dragging 상태만 남는 문제도 사라진다.
+  const onDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
     drag.current = { mx: e.clientX, my: e.clientY, v: view };
     setDragging(true);
   };
-  const onMove = (e: React.MouseEvent) => {
+  const onMove = (e: React.PointerEvent) => {
     const d = drag.current, svg = svgRef.current;
     if (!d || !svg) return;
+    e.preventDefault();
     const rect = svg.getBoundingClientRect();
     const w = d.v.x1 - d.v.x0, h = d.v.y1 - d.v.y0;
     const dx = ((e.clientX - d.mx) / rect.width) * w;
@@ -259,7 +270,14 @@ function ScatterPanel({ rows, onPick, y }:
     const y0 = Math.min(1 - h, Math.max(0, d.v.y0 + dy));
     setView({ x0, x1: x0 + w, y0, y1: y0 + h });
   };
-  const endDrag = () => { drag.current = null; setDragging(false); };
+  const endDrag = (e?: React.PointerEvent) => {
+    if (e) {
+      const el = e.currentTarget as SVGSVGElement;
+      if (el.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    }
+    drag.current = null;
+    setDragging(false);
+  };
 
   const zoomed = view.x0 !== 0 || view.x1 !== 1 || view.y0 !== 0 || view.y1 !== 1;
 
@@ -307,10 +325,12 @@ function ScatterPanel({ rows, onPick, y }:
 
       <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" height={H}
            className="overflow-visible"
-           style={{ display: "block", touchAction: "none",
+           style={{ display: "block", touchAction: "none", userSelect: "none",
+                    WebkitUserSelect: "none",
                     cursor: dragging ? "grabbing" : zoomed ? "grab" : "default" }}
-           onMouseDown={onDown} onMouseMove={onMove} onMouseUp={endDrag}
-           onMouseLeave={() => { endDrag(); setHover(null); }}>
+           onPointerDown={onDown} onPointerMove={onMove}
+           onPointerUp={endDrag} onPointerCancel={endDrag}
+           onMouseLeave={() => setHover(null)}>
         <defs>
           {/* 4분면 미세 배경 — 각 구역 바깥쪽 모서리로 갈수록 옅게 진해진다 */}
           {QUADRANTS.map((q) => {
@@ -364,11 +384,18 @@ function ScatterPanel({ rows, onPick, y }:
                   stroke="rgb(var(--color-border-rgb))" strokeWidth="1" opacity="0.3" />
           ))}
 
-          {/* 4분면 십자 가이드(중앙값) */}
-          <line x1={sx(data.medX)} y1={P.t} x2={sx(data.medX)} y2={H - P.b}
-                stroke="rgb(var(--color-muted-rgb))" strokeWidth="1" strokeDasharray="4 4" opacity="0.55" />
-          <line x1={P.l} y1={sy(data.medY)} x2={W - P.r} y2={sy(data.medY)}
-                stroke="rgb(var(--color-muted-rgb))" strokeWidth="1" strokeDasharray="3 3" opacity="0.55" />
+          {/* 4분면 십자 가이드(중앙값).
+              clip-path를 제거한 뒤로 확대/이동하면 기준선이 플롯 밖(축 라벨·뱃지 영역)까지
+              그려졌다. 기준값이 보이는 범위를 벗어나면 아예 그리지 않는다 — 화면에 없는
+              경계를 선으로 표시할 이유가 없다. */}
+          {inView(data.medX, view.x0, view.x1) && (
+            <line x1={sx(data.medX)} y1={P.t} x2={sx(data.medX)} y2={H - P.b}
+                  stroke="rgb(var(--color-muted-rgb))" strokeWidth="1" strokeDasharray="3 3" opacity="0.55" />
+          )}
+          {inView(data.medY, view.y0, view.y1) && (
+            <line x1={P.l} y1={sy(data.medY)} x2={W - P.r} y2={sy(data.medY)}
+                  stroke="rgb(var(--color-muted-rgb))" strokeWidth="1" strokeDasharray="3 3" opacity="0.55" />
+          )}
 
           {/* 4분면 라벨 뱃지 — 데이터가 아니라 플롯 모서리에 고정한다.
               중앙값 선을 따라 움직이게 하면 확대 시 화면 밖으로 밀려 안 보인다. */}
