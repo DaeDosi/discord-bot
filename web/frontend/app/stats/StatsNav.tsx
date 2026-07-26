@@ -16,8 +16,8 @@ export interface NavItem { key: Tab; label: string; icon: React.ReactNode; live?
 // 크게 좌우되고, 누적 랭킹은 기간 전체를 집계해 꾸준함이 반영된다.
 export const NAV_GROUPS: { header: string | null; items: NavItem[] }[] = [
   { header: "실시간 분석", items: [
-    { key: "overview",           label: "전체 스트리머 분석", icon: <LineIcon size={16} /> },
-    { key: "newcomers_analysis", label: "신규 스트리머 분석", icon: <Sprout size={16} /> },
+    { key: "overview",           label: "전체 스트리머 분석", icon: <LineIcon size={16} />, live: true },
+    { key: "newcomers_analysis", label: "신규 스트리머 분석", icon: <Sprout size={16} />, live: true },
   ] },
   // 실시간/누적을 한 그룹으로 합치고, 실시간 기준인 항목에만 LIVE 표시를 붙인다
   { header: "랭킹", items: [

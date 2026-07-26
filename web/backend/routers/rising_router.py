@@ -363,7 +363,7 @@ async def newcomers(limit: int = 100):
         """SELECT chzzk_channel_id, channel_name, concurrent_viewers, category_name,
                   open_date, follower_count, live_title, tags
            FROM rising_live_snapshots
-           WHERE collected_at=? AND concurrent_viewers >= 3""",
+           WHERE collected_at=?""",
         (ts,)
     )).fetchall()
 
@@ -397,6 +397,7 @@ async def newcomers(limit: int = 100):
         #  섞이는 문제가 있어 필터에서 제외 — 데뷔일은 아래 컬럼/뱃지 정보로만 유지)
         if not (tag_new or (avg_all is not None and avg_all < _NEWCOMER_AVG_MAX)):
             continue
+        # 시청자 하한을 없애면서 avg7이 0인 채널(계속 0명)이 생긴다 — 그 경우 성장률은 None.
         avg7 = agg7.get(cid, avg_all) or avg_all or r["concurrent_viewers"]
         growth = round((r["concurrent_viewers"] - avg7) / avg7 * 100, 1) if avg7 and avg7 > 0 else None
         out.append({
