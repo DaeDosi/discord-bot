@@ -14,8 +14,12 @@ import type {
 } from "@/lib/types";
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
+import CollapsibleAbout from "@/components/CollapsibleAbout";
+import StatsNav, { type Tab } from "./StatsNav";
+
+// /stats가 자체 탭으로 렌더하는 키들(network는 독립 라우트라 제외)
+const VALID_TABS: Tab[] = ["overview", "newcomers_analysis", "ranking", "newcomers_ranking", "category"];
 import LineChart, { type LinePoint, type LineSeries } from "./LineChart";
-import CategoryNetwork from "./CategoryNetwork";
 
 // 2톤 그라데이션(그린 → 시안) — 브랜드 액센트
 const GREEN = "#00FFA3";
@@ -94,24 +98,6 @@ function Delta({ pct }: { pct: number | null | undefined }) {
     </span>
   );
 }
-
-type Tab = "overview" | "newcomers_analysis" | "ranking" | "newcomers_ranking" | "category";
-interface NavItem { key: Tab; label: string; icon: React.ReactNode }
-const NAV_GROUPS: { header: string | null; items: NavItem[] }[] = [
-  { header: "실시간 분석", items: [
-    { key: "overview",           label: "전체 스트리머 분석", icon: <LineIcon size={16} /> },
-    { key: "newcomers_analysis", label: "신규 스트리머 분석", icon: <Sprout size={16} /> },
-  ] },
-  { header: "랭킹", items: [
-    { key: "ranking",           label: "전체 스트리머 랭킹", icon: <ListOrdered size={16} /> },
-    { key: "newcomers_ranking", label: "신규 스트리머 랭킹", icon: <Sprout size={16} /> },
-  ] },
-  { header: "카테고리", items: [
-    { key: "category", label: "카테고리 분석", icon: <Gamepad2 size={16} /> },
-  ] },
-];
-const groupHeaderOf = (k: Tab): string | null =>
-  NAV_GROUPS.find((g) => g.items.some((i) => i.key === k))?.header ?? null;
 
 // 방송시간(KST 문자열 → 경과) 계산
 function liveDuration(openDate: string): { ms: number; label: string } {
@@ -445,11 +431,7 @@ function CategoryDonut() {
 // 분기 밖에 두면 데이터 상태와 무관하게 항상 초기 HTML에 포함된다.
 function StatsAbout() {
   return (
-    <section className="mt-10 border-t border-border pt-8">
-      <h2 className="text-lg md:text-xl font-extrabold tracking-tight mb-4">
-        NEXBOT 치지직 방송 통계 서비스 소개
-      </h2>
-
+    <CollapsibleAbout title="NEXBOT 치지직 방송 통계 서비스 소개">
       <div className="space-y-4 text-sm leading-relaxed text-muted max-w-4xl">
         <p>
           NEXBOT 치지직 통계는 치지직(CHZZK)에서 방송하는 스트리머들이 자신의 방송 성과를
@@ -501,12 +483,12 @@ function StatsAbout() {
           <Link href="/privacy" className="text-accent hover:underline">개인정보처리방침</Link>에서 확인하실 수 있습니다.
         </p>
       </div>
-    </section>
+    </CollapsibleAbout>
   );
 }
 
 // ── 개요 탭 ───────────────────────────────────────────────────────────────────
-function OverviewTab({ ov, stars, rank }: { ov: RisingOverview; stars: RisingStars | null; rank: RisingLiveRanking | null }) {
+function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | null }) {
   const range: TimeRange = "live"; // 기간 옵션 제거 — 롤링 24시간(10분 간격)만 사용
   const [ts, setTs] = useState<RisingTimeseries | null>(null);
   const [tsLoading, setTsLoading] = useState(true);
@@ -631,26 +613,6 @@ function OverviewTab({ ov, stars, rank }: { ov: RisingOverview; stars: RisingSta
 
       {/* 카테고리 점유율 (자체 시간 필터) */}
       <CategoryDonut />
-
-      {/* 연관 관계망 — 카테고리(중앙) ↔ 스트리머(외곽) */}
-      <div className="card">
-        <h3 className="section-title mb-1">연관 관계망</h3>
-        <p className="text-xs text-muted mb-4">
-          상위 카테고리와 그 카테고리를 방송 중인 주요 스트리머의 연결 관계.
-          노드 크기와 선 두께는 시청자 수에 비례하며, 스트리머 노드를 클릭하면 개인 분석으로 이동합니다.
-        </p>
-        {rank
-          ? <CategoryNetwork rank={rank} />
-          : <ChartSkeleton height={460} />}
-        <div className="mt-3 flex items-center justify-end gap-4 text-[11px] text-muted flex-wrap">
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#A855F7" }} />카테고리
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: GREEN }} />스트리머
-          </span>
-        </div>
-      </div>
 
       {/* 급상승 스트리머 */}
       <div className="card">
@@ -1277,17 +1239,17 @@ export default function StatsPage() {
   const [news, setNews]   = useState<RisingNewcomers | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(false);
-  const [tab, setTab]         = useState<Tab>("overview");
-  const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
-    const h = groupHeaderOf("overview"); return new Set(h ? [h] : []);
-  });
-  const selectTab = (k: Tab) => {
-    setTab(k);
-    const h = groupHeaderOf(k);
-    if (h) setOpenGroups((p) => new Set(p).add(h));
-  };
-  const toggleGroup = (h: string) =>
-    setOpenGroups((p) => { const n = new Set(p); if (n.has(h)) n.delete(h); else n.add(h); return n; });
+  // 그룹 접힘 상태는 StatsNav가 소유한다. 여기서는 활성 탭만 관리.
+  const [tab, setTab] = useState<Tab>("overview");
+  const selectTab = (k: Tab) => setTab(k);
+
+  // /stats/network에서 다른 메뉴를 누르면 /stats?tab=<key>로 돌아온다. 그 값을 반영하되,
+  // useSearchParams()는 이 페이지의 정적 프리렌더를 깨서(Suspense 요구) 크롤러가 보는
+  // 서버 HTML이 사라지므로 쓰지 않는다 — 마운트 후 location에서 한 번만 읽는다.
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get("tab");
+    if (t && VALID_TABS.includes(t as Tab)) setTab(t as Tab);
+  }, []);
 
   useEffect(() => {
     Promise.all([
@@ -1355,51 +1317,14 @@ export default function StatsPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-[210px_1fr] gap-5 md:gap-7">
-            {/* 좌측 메뉴 */}
-            <aside className="md:sticky md:top-[76px] md:self-start">
+            {/* 좌측 메뉴 — /stats/network와 공유 */}
+            <StatsNav active={tab} onSelect={selectTab}>
               <StreamerSearch />
-              <nav className="flex flex-col gap-1">
-                {NAV_GROUPS.map((g, gi) => {
-                  const renderItem = (t: NavItem) => {
-                    const active = tab === t.key;
-                    return (
-                      <button key={t.key} onClick={() => selectTab(t.key)}
-                        className="relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors w-full border overflow-hidden"
-                        style={{
-                          background: active ? "rgba(0,255,163,0.08)" : "transparent",
-                          borderColor: active ? "rgba(0,194,255,0.35)" : "transparent",
-                        }}>
-                        {active && <span className="absolute left-0 top-0 bottom-0 w-1 rounded-r" style={{ background: GRAD }} />}
-                        <span style={{ color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>{t.icon}</span>
-                        <span className="block text-sm font-semibold whitespace-nowrap" style={{ color: active ? GREEN : undefined }}>{t.label}</span>
-                      </button>
-                    );
-                  };
-                  if (!g.header) {
-                    return <div key={gi} className="mt-1">{g.items.map(renderItem)}</div>;
-                  }
-                  const open = openGroups.has(g.header);
-                  return (
-                    <div key={gi} className={gi > 0 ? "mt-1" : ""}>
-                      <button onClick={() => toggleGroup(g.header!)}
-                        className="w-full flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-sm font-bold text-fg hover:bg-bg-hover transition-colors">
-                        <ChevronDown size={15} className="transition-transform text-muted"
-                                     style={{ transform: open ? "none" : "rotate(-90deg)" }} />
-                        {g.header}
-                      </button>
-                      {open && <div className="flex flex-col gap-1 mt-1 pl-2.5">{g.items.map(renderItem)}</div>}
-                    </div>
-                  );
-                })}
-              </nav>
-              <p className="hidden md:block text-[11px] text-muted/60 mt-4 px-1 leading-relaxed">
-                약 10분 주기로 치지직 공개 라이브 목록을 수집합니다. 비공식 서비스로 실제 수치와 오차가 있을 수 있습니다.
-              </p>
-            </aside>
+            </StatsNav>
 
             {/* 우측 뷰 */}
             <div className="min-w-0">
-              {tab === "overview"           && ov   && <OverviewTab ov={ov} stars={stars} rank={rank} />}
+              {tab === "overview"           && ov   && <OverviewTab ov={ov} stars={stars} />}
               {tab === "newcomers_analysis" && news && <NewcomersAnalysisTab data={news} onRanking={() => selectTab("newcomers_ranking")} />}
               {tab === "ranking"            && rank && <RankingTab rank={rank} />}
               {tab === "newcomers_ranking"  && news && <NewcomersRankingTab data={news} />}

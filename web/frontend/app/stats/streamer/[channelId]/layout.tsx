@@ -3,6 +3,7 @@ import Link from "next/link";
 import { BASE } from "@/lib/api";
 import type { StreamerDashboard } from "@/lib/types";
 import Footer from "@/components/Footer";
+import CollapsibleAbout from "@/components/CollapsibleAbout";
 
 // 스트리머별 분석 페이지의 서버 사이드 레이어.
 //
@@ -93,11 +94,7 @@ export default async function StreamerLayout(
       {/* 크롤러용 서버 렌더링 본문. page.tsx의 loading 분기 밖(형제)이라 데이터 로딩
           상태와 무관하게 항상 초기 HTML에 포함된다. */}
       <section className="w-full max-w-[1600px] mx-auto px-4 md:px-6 pb-10">
-        <div className="border-t border-border pt-8">
-          <h2 className="text-lg md:text-xl font-extrabold tracking-tight mb-4">
-            {name ? `${name} 치지직 방송 통계 분석` : "치지직 스트리머 방송 통계 분석"}
-          </h2>
-
+        <CollapsibleAbout title={name ? `${name} 치지직 방송 통계 분석` : "치지직 스트리머 방송 통계 분석"}>
           <div className="space-y-4 text-sm leading-relaxed text-muted max-w-4xl">
             {name ? (
               <p>
@@ -151,7 +148,7 @@ export default async function StreamerLayout(
               주시기 바랍니다.
             </p>
           </div>
-        </div>
+        </CollapsibleAbout>
       </section>
 
       <Footer />
