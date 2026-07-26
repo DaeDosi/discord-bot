@@ -1223,35 +1223,66 @@ const CAT_SORT_OPTS: { k: "viewers" | "lives"; label: string }[] = [
 
 // 카테고리 대표 이미지 데이터가 없어서(수집 대상 아님) 카테고리명을 해시해 만든
 // 결정적 그라데이션 타일을 썸네일 자리에 쓴다 — 같은 카테고리는 항상 같은 색이 된다.
-const THUMB_PAIRS: [string, string][] = [
-  ["#00FFA3", "#00C2FF"], ["#A855F7", "#6366F1"], ["#FBBF24", "#F59E0B"],
-  ["#FF4FA3", "#A855F7"], ["#06B6D4", "#00FFA3"], ["#F87171", "#FBBF24"],
-];
-function thumbFor(name: string) {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  const [c1, c2] = THUMB_PAIRS[h % THUMB_PAIRS.length];
-  return { background: `linear-gradient(135deg, ${c1}, ${c2})`, initial: name.trim().slice(0, 2) };
-}
+// 카테고리 카드 — 썸네일 영역은 어두운 미디어 패널로 처리한다.
+// 예전엔 카테고리명을 해시해 만든 원색 그라데이션 타일을 깔았는데, 카드가 쨍한 색 박스로
+// 보여 대시보드 톤과 어긋났다. 치지직은 카테고리 대표 이미지를 수집 대상에 주지 않으므로
+// (rising_live_snapshots에 이미지 URL이 없다) 은은한 다크 네온 그라데이션으로 대체한다.
+// 실제 포스터가 확보되면 이 영역에 <img>를 깔고 opacity 0.2 + 다크 그라데이션만 덮으면 된다.
+const CARD_DARK   = "#181A20";
+const CARD_DARK_2 = "#1E2028";
 
-function CategoryCard({ c, onPick }: { c: RisingCategory; onPick: () => void }) {
-  const th = thumbFor(c.category);
+// TOP 1~3 포인트 테두리(골드/실버/브론즈), 4위 이하는 차분한 다크 테두리
+const CARD_RINGS = [
+  "rgba(251,191,36,0.40)",
+  "rgba(209,213,219,0.30)",
+  "rgba(217,119,6,0.30)",
+] as const;
+
+function CategoryCard({ c, rank, onPick }: { c: RisingCategory; rank: number; onPick: () => void }) {
+  const ring = CARD_RINGS[rank] ?? "rgba(31,41,55,0.80)";
+  // 카테고리명을 해시해 은은한 색조만 흔들어 준다(채도는 낮게 유지 — 원색으로 튀지 않게)
+  let h = 0;
+  for (let i = 0; i < c.category.length; i++) h = (h * 31 + c.category.charCodeAt(i)) >>> 0;
+  const hue = h % 360;
+
   return (
     <button onClick={onPick} type="button"
-      className="group text-left rounded-xl border border-border bg-bg-card p-3 transition-all
-                 hover:bg-bg-hover hover:border-accent/50">
-      <div className="relative mb-2 aspect-video w-full overflow-hidden rounded-lg">
-        <div className="h-full w-full transition-transform group-hover:scale-105 flex items-center justify-center"
-             style={{ background: th.background }}>
-          <span className="text-xl font-extrabold text-black/45 select-none">{th.initial}</span>
-        </div>
-        <span className="absolute top-2 right-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-bold"
-              style={{ color: GREEN }}>
+      className="group overflow-hidden rounded-xl border p-0 text-left transition-all hover:border-accent/50"
+      style={{ borderColor: ring, background: `linear-gradient(180deg, ${CARD_DARK_2}, ${CARD_DARK})` }}>
+      {/* 썸네일 영역 — 어두운 네온 그라데이션 + 미세한 색조 */}
+      <div className="relative aspect-video w-full overflow-hidden">
+        <div className="absolute inset-0 transition-transform duration-300 group-hover:scale-105"
+             style={{
+               background:
+                 `radial-gradient(120% 90% at 20% 0%, hsla(${hue},55%,42%,0.28) 0%, transparent 60%),` +
+                 `linear-gradient(160deg, #111318 0%, ${CARD_DARK} 100%)`,
+             }} />
+        {/* 하단으로 갈수록 더 어둡게 — 텍스트 영역과 자연스럽게 이어지도록 */}
+        <div className="absolute inset-0"
+             style={{ background: `linear-gradient(to bottom, transparent 40%, ${CARD_DARK} 100%)` }} />
+
+        {/* 우측 상단 글래스모피즘 방송 수 뱃지 */}
+        <span className="absolute right-2 top-2 rounded-full border px-2.5 py-1 text-[11px] font-bold
+                         backdrop-blur-md"
+              style={{ background: "rgba(0,0,0,0.5)", color: GREEN, borderColor: "rgba(0,255,163,0.20)" }}>
           {nf(c.lives)}개 방송
         </span>
       </div>
-      <h4 className="truncate text-sm font-bold text-fg transition-colors group-hover:text-accent">{c.category}</h4>
-      <p className="mt-0.5 text-[11px] text-muted">총 시청자 {nf(c.viewers)}명</p>
+
+      {/* 텍스트 영역 — 타이포 계층: 제목 > 수치 > 서브 설명 */}
+      <div className="px-3 pb-3 pt-2">
+        <h4 className="truncate text-base font-bold text-white transition-colors group-hover:text-accent"
+            title={c.category}>
+          {c.category}
+        </h4>
+        <p className="mt-1 tracking-tight">
+          <span className="text-xl font-extrabold tabular-nums text-white">{nf(c.viewers)}</span>
+          <span className="ml-1 text-xs" style={{ color: "#9CA3AF" }}>명</span>
+        </p>
+        <p className="mt-0.5 text-[11px]" style={{ color: "#9CA3AF" }}>
+          {nf(c.lives)}개 채널 · 방송당 {nf(c.avg_viewers)}명
+        </p>
+      </div>
     </button>
   );
 }
@@ -1381,8 +1412,8 @@ function CategoryStreamerList({ category, onPick }:
                 현재 방송 중인 카테고리 {nf(filtered.length)}개 · {sort === "viewers" ? "시청자순" : "방송수순"}
               </p>
               <div className="grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-5">
-                {filtered.map((c) => (
-                  <CategoryCard key={c.category} c={c} onPick={() => onPick(c.category)} />
+                {filtered.map((c, i) => (
+                  <CategoryCard key={c.category} c={c} rank={i} onPick={() => onPick(c.category)} />
                 ))}
               </div>
             </>
