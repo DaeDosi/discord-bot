@@ -15,6 +15,7 @@ import type {
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
 import CollapsibleAbout from "@/components/CollapsibleAbout";
+import CategoryRankCards from "./CategoryRankCards";
 import StatsNav, { type Tab } from "./StatsNav";
 
 import LineChart, { type LinePoint, type LineSeries } from "./LineChart";
@@ -1656,6 +1657,11 @@ function CategoryTab({ cats, onPick }: { cats: RisingCategories; onPick: (c: str
 
   return (
     <div className="space-y-5">
+      {/* 실시간 카테고리 랭킹 카드 (PODIUM 강조 + 가로 캐러셀) */}
+      <div className="card !p-4 md:!p-5">
+        <CategoryRankCards categories={cats.categories} />
+      </div>
+
       {/* 전체/신규 분석 탭과 동일한 카테고리 점유율 도넛 */}
       <CategoryDonut />
 
