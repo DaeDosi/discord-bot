@@ -692,8 +692,8 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
             <tr className="text-muted text-xs border-b border-border">
               <th className="text-left font-medium py-2 pl-2 w-12">#</th>
               <th className="text-left font-medium py-2">스트리머</th>
-              <th className="text-right font-medium py-2 px-6">현재 시청자</th>
               <th className="text-left font-medium py-2 px-6 hidden sm:table-cell">카테고리</th>
+              <th className="text-right font-medium py-2 px-6">전체 시청자</th>
               <th className="text-right font-medium py-2 px-6 hidden md:table-cell">방송시간</th>
               <th className="text-right font-medium py-2 px-6">팔로워</th>
             </tr>
@@ -739,6 +739,14 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                     </Link>
                   </td>
 
+                  {/* 카테고리 — 알약형 뱃지 (테마 토큰 사용, 라이트 모드에서도 대비 유지) */}
+                  <td className="py-3.5 px-6 hidden sm:table-cell align-top">
+                    {s.category_name
+                      ? <span className="inline-block max-w-[150px] truncate rounded-full border border-border
+                                         bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{s.category_name}</span>
+                      : <span className="text-muted text-sm">-</span>}
+                  </td>
+
                   {/* 현재 시청자 — 증감 + 숫자 / 바로 아래 골드 바 (1위 대비 %) */}
                   <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
                     <CellCol>
@@ -748,14 +756,6 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                       </div>
                       <CellBar pct={vwPct} background={YELLOW_GRAD} />
                     </CellCol>
-                  </td>
-
-                  {/* 카테고리 — 알약형 뱃지 (테마 토큰 사용, 라이트 모드에서도 대비 유지) */}
-                  <td className="py-3.5 px-6 hidden sm:table-cell align-top">
-                    {s.category_name
-                      ? <span className="inline-block max-w-[150px] truncate rounded-full border border-border
-                                         bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{s.category_name}</span>
-                      : <span className="text-muted text-sm">-</span>}
                   </td>
 
                   {/* 방송시간 — 퍼플 바 (최대 24시간 대비 비율) */}
@@ -975,7 +975,7 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
           <tr className="text-muted text-xs border-b border-border">
             <th className="text-left font-medium py-2 pl-2 w-12">#</th>
             <th className="text-left font-medium py-2">스트리머</th>
-            <th className="text-right font-medium py-2 px-6">시청자</th>
+            <th className="text-left font-medium py-2 px-6 hidden sm:table-cell">카테고리</th>
             <th className="text-right font-medium py-2 px-6">
               <span className="inline-flex items-center justify-end whitespace-nowrap">
                 성장률
@@ -995,7 +995,7 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
                 </HelpTip>
               </span>
             </th>
-            <th className="text-left font-medium py-2 px-6 hidden sm:table-cell">카테고리</th>
+            <th className="text-right font-medium py-2 px-6">시청자</th>
             <th className="text-right font-medium py-2 px-6 hidden md:table-cell">방송시간</th>
             <th className="text-right font-medium py-2 px-6">팔로워</th>
           </tr>
@@ -1029,19 +1029,19 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
                     <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[130px] md:max-w-none">{s.channel_name}</span>
                   </Link>
                 </td>
+                <td className="py-3.5 px-6 hidden sm:table-cell align-top">
+                  {s.category_name
+                    ? <span className="inline-block max-w-[150px] truncate rounded-full border border-border
+                                       bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{s.category_name}</span>
+                    : <span className="text-muted text-sm">-</span>}
+                </td>
+                <td className="py-3.5 px-6 text-right text-[11px] align-top"><Delta pct={s.growth_rate} /></td>
                 {/* 시청자 — 바로 아래 골드 바 (1위 대비 %) */}
                 <td className="py-3.5 px-6 align-top" style={{ minWidth: 132 }}>
                   <CellCol>
                     <div className="text-right text-base tabular-nums font-bold text-fg">{nf(s.concurrent_viewers)}</div>
                     <CellBar pct={vwPct} background={YELLOW_GRAD} />
                   </CellCol>
-                </td>
-                <td className="py-3.5 px-6 text-right text-[11px] align-top"><Delta pct={s.growth_rate} /></td>
-                <td className="py-3.5 px-6 hidden sm:table-cell align-top">
-                  {s.category_name
-                    ? <span className="inline-block max-w-[150px] truncate rounded-full border border-border
-                                       bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{s.category_name}</span>
-                    : <span className="text-muted text-sm">-</span>}
                 </td>
                 {/* 방송시간 — 퍼플 바 (최대 24시간 대비 비율) */}
                 <td className="py-3.5 px-6 align-top hidden md:table-cell" style={{ minWidth: 128 }}>

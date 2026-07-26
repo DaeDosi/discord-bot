@@ -21,10 +21,14 @@ const PURPLE = "#A855F7";
 const STROKE = "#0F1015"; // 라벨 뒤 어두운 아웃라인
 
 const CAT_COLORS = [PURPLE, CYAN];
-// 이 크기 이하 노드는 기본 상태에서 라벨을 숨기고 호버 시에만 보여 준다(텍스트 겹침 완화)
-const SMALL_NODE_SIZE = 15;
+// 라벨 공통 폰트 — 크기와 무관하게 모든 노드에 같은 정책을 적용한다.
+// 캔버스 렌더링이라 CSS paint-order/stroke가 아니라 vis-network 폰트 옵션으로 아웃라인을 준다.
+const LABEL_FONT = {
+  color: "#FFFFFF", size: 12, face: "inherit", bold: { color: "#FFFFFF", size: 12, face: "inherit" },
+  strokeWidth: 3, strokeColor: STROKE, vadjust: 2,
+} as const;
 
-type Slim = Pick<RisingStreamer, "chzzk_channel_id" | "channel_name" | "concurrent_viewers" | "category_name">;
+type Slim = Pick<RisingStreamer, "chzzk_channel_id" | "channel_name" | "concurrent_viewers" | "category_name" | "channel_image_url">;
 
 export interface CategoryNetworkProps {
   rank: RisingLiveRanking;
@@ -56,6 +60,7 @@ export default function CategoryNetwork({
   const [visible, setVisible] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [selected, setSelected] = useState<Selected | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // 화면에 들어올 때까지 무거운 청크 로드를 미룬다
   useEffect(() => {
@@ -81,6 +86,7 @@ export default function CategoryNetwork({
       (byCat.get(c) ?? byCat.set(c, []).get(c)!).push({
         chzzk_channel_id: s.chzzk_channel_id, channel_name: s.channel_name,
         concurrent_viewers: s.concurrent_viewers, category_name: c,
+        channel_image_url: s.channel_image_url,
       });
     }
 
@@ -109,7 +115,7 @@ export default function CategoryNetwork({
         size: 30 + (c.viewers / maxCatV) * 28,
         shape: "dot",
         color: { background: color, border: color, highlight: { background: color, border: "#fff" } },
-        font: { color: "#fff", size: 16, face: "inherit", strokeWidth: 3, strokeColor: STROKE },
+        font: { ...LABEL_FONT, size: 15 },
         title: `${c.name}\n시청자 ${c.viewers.toLocaleString("ko-KR")}명 · 방송 ${c.list.length}개`,
       });
 
@@ -118,9 +124,14 @@ export default function CategoryNetwork({
         nodes.push({
           id: `st:${s.chzzk_channel_id}`, label: s.channel_name, kind: "streamer",
           channelId: s.chzzk_channel_id, catName: c.name,
-          viewers: s.concurrent_viewers, size, shape: "dot",
+          viewers: s.concurrent_viewers, size,
+          // 프로필 이미지를 원형 크롭해 노드로 쓰고, 테두리는 민트 링(borderWidth는 전역 2px).
+          // 이미지가 없는 채널은 기존 단색 원으로 폴백한다.
+          ...(s.channel_image_url
+            ? { shape: "circularImage", image: s.channel_image_url, brokenImage: undefined }
+            : { shape: "dot" }),
           color: { background: GREEN, border: GREEN, highlight: { background: GREEN, border: "#fff" } },
-          font: { color: "rgba(235,240,245,.95)", size: 13, face: "inherit", strokeWidth: 3, strokeColor: STROKE },
+          font: { ...LABEL_FONT },
           title: `${s.channel_name}\n시청자 ${s.concurrent_viewers.toLocaleString("ko-KR")}명\n클릭하면 상세 정보`,
         });
         edges.push({
@@ -202,21 +213,8 @@ export default function CategoryNetwork({
           }
         });
 
-        // 소형 노드는 호버 시에만 라벨 노출
-        net.on("hoverNode", (p: { node: string }) => {
-          el.style.cursor = "pointer";
-          const n = nodesDS.get(p.node) as any;
-          if (n && (n.size ?? 0) <= SMALL_NODE_SIZE && showLabelsRef.current) {
-            nodesDS.update({ id: p.node, label: labelsRef.current.get(p.node) ?? "" });
-          }
-        });
-        net.on("blurNode", (p: { node: string }) => {
-          el.style.cursor = "default";
-          const n = nodesDS.get(p.node) as any;
-          if (n && (n.size ?? 0) <= SMALL_NODE_SIZE && showLabelsRef.current) {
-            nodesDS.update({ id: p.node, label: undefined });
-          }
-        });
+        net.on("hoverNode", () => { el.style.cursor = "pointer"; });
+        net.on("blurNode",  () => { el.style.cursor = "default"; });
 
         setReady(true);
       } catch {
@@ -233,22 +231,15 @@ export default function CategoryNetwork({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graph, visible]);
 
-  // 토글 최신값을 이벤트 핸들러에서 읽기 위한 ref (핸들러는 생성 시점에 고정됨)
-  const showLabelsRef = useRef(showLabels);
-  useEffect(() => { showLabelsRef.current = showLabels; }, [showLabels]);
-
-  // 라벨 표시 정책 적용: 토글 OFF면 전부 숨김, ON이면 소형 노드만 숨김
+  // 라벨 표시 정책: 토글 ON이면 노드 크기·줌 배율과 무관하게 전부 표시, OFF면 전부 숨김.
+  // (예전엔 소형 노드를 숨겼는데 작은 스트리머 닉네임이 아예 안 보여 토글이 무의미했다.)
   const applyLabels = useCallback((on: boolean) => {
     const ds = dsRef.current?.nodes;
     if (!ds) return;
-    ds.update(
-      (ds.get() as any[]).map((n) => ({
-        id: n.id,
-        label: !on || (n.kind === "streamer" && (n.size ?? 0) <= SMALL_NODE_SIZE)
-          ? undefined
-          : labelsRef.current.get(n.id) ?? "",
-      })),
-    );
+    ds.update((ds.get() as any[]).map((n) => ({
+      id: n.id,
+      label: on ? labelsRef.current.get(n.id) ?? "" : undefined,
+    })));
   }, []);
 
   useEffect(() => { if (ready) applyLabels(showLabels); }, [showLabels, ready, applyLabels]);
@@ -259,8 +250,13 @@ export default function CategoryNetwork({
     if (!ds) return;
     ds.nodes.update((ds.nodes.get() as any[]).map((n) => {
       const keep = !on || keepNodes?.has(n.id);
-      const base = n.kind === "category" ? (n.color?.background ?? PURPLE) : GREEN;
-      return { id: n.id, opacity: keep ? 1 : 0.15, font: { ...n.font, color: keep ? n.font?.color : "rgba(235,240,245,.2)" }, color: { ...n.color, background: base, border: base } };
+      return {
+        id: n.id,
+        opacity: keep ? 1 : 0.15,
+        // 흐리게 할 때 라벨도 같이 죽인다. color는 손대지 않는다 —
+        // circularImage 노드의 color를 덮어쓰면 프로필 이미지 링이 깨진다.
+        font: { ...n.font, color: keep ? LABEL_FONT.color : "rgba(235,240,245,.18)" },
+      };
     }));
     ds.edges.update((ds.edges.get() as any[]).map((e) => ({
       id: e.id,
@@ -303,10 +299,18 @@ export default function CategoryNetwork({
     ctx.fillStyle = STROKE;
     ctx.fillRect(0, 0, out.width, out.height);
     ctx.drawImage(canvas, 0, 0);
-    const a = document.createElement("a");
-    a.href = out.toDataURL("image/png");
-    a.download = `nexbot-network-${new Date().toISOString().slice(0, 10)}.png`;
-    a.click();
+    // 프로필 이미지가 치지직 CDN(외부 도메인)에서 오므로, 그쪽이 CORS 헤더를 주지 않으면
+    // 캔버스가 tainted 상태가 되어 toDataURL이 SecurityError를 던진다. 저장 실패를 조용히
+    // 삼키면 버튼이 고장난 것처럼 보이므로 사용자에게 이유를 알린다.
+    try {
+      const a = document.createElement("a");
+      a.href = out.toDataURL("image/png");
+      a.download = `nexbot-network-${new Date().toISOString().slice(0, 10)}.png`;
+      a.click();
+      setSaveError(null);
+    } catch {
+      setSaveError("프로필 이미지의 보안 정책(CORS) 때문에 이미지 저장이 차단되었습니다. 닉네임 라벨을 끄지 않고도 화면 캡처로 저장할 수 있습니다.");
+    }
   };
 
   if (graph.nodes.length === 0) {
@@ -369,6 +373,18 @@ export default function CategoryNetwork({
             style={{ background: `linear-gradient(135deg, ${GREEN}, ${CYAN})` }}>
             개인 분석 보기 <ArrowRight size={13} />
           </button>
+        </div>
+      )}
+
+      {/* PNG 저장 실패 안내 */}
+      {saveError && (
+        <div className="absolute top-16 right-3 z-20 w-[280px] rounded-lg border border-border
+                        bg-bg-card/95 p-3 text-[11px] leading-relaxed text-muted shadow-2xl backdrop-blur">
+          <div className="flex items-start gap-2">
+            <span className="flex-1">{saveError}</span>
+            <button type="button" onClick={() => setSaveError(null)}
+                    className="shrink-0 text-muted hover:text-fg" title="닫기"><X size={13} /></button>
+          </div>
         </div>
       )}
 
