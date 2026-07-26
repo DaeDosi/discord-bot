@@ -1245,66 +1245,49 @@ const CAT_SORT_OPTS: { k: "viewers" | "lives"; label: string }[] = [
 
 // 카테고리 대표 이미지 데이터가 없어서(수집 대상 아님) 카테고리명을 해시해 만든
 // 결정적 그라데이션 타일을 썸네일 자리에 쓴다 — 같은 카테고리는 항상 같은 색이 된다.
-// 카테고리 카드 — 썸네일 영역은 어두운 미디어 패널로 처리한다.
-// 예전엔 카테고리명을 해시해 만든 원색 그라데이션 타일을 깔았는데, 카드가 쨍한 색 박스로
-// 보여 대시보드 톤과 어긋났다. 치지직은 카테고리 대표 이미지를 수집 대상에 주지 않으므로
-// (rising_live_snapshots에 이미지 URL이 없다) 은은한 다크 네온 그라데이션으로 대체한다.
-// 실제 포스터가 확보되면 이 영역에 <img>를 깔고 opacity 0.2 + 다크 그라데이션만 덮으면 된다.
-const CARD_DARK   = "#181A20";
-const CARD_DARK_2 = "#1E2028";
+// 카테고리 카드 — 매트 다크 단색 패널 + 테두리에만 네온 그라데이션 모션.
+// 카드 안쪽에는 어떤 그라데이션/이미지 오버레이도 깔지 않는다(내부는 완전 단색).
+// 흐르는 테두리는 globals.css의 .nb-neon-border(conic-gradient + mask XOR)가 담당하고,
+// TOP 1~3는 .nb-podium으로 평상시에도 은은하게 고정 노출된다.
+const CARD_DARK = "#181A20";
 
-// TOP 1~3 포인트 테두리(골드/실버/브론즈), 4위 이하는 차분한 다크 테두리
+// TOP 1~3 정적 테두리 색(골드/실버/브론즈), 4위 이하는 차분한 다크
 const CARD_RINGS = [
-  "rgba(251,191,36,0.40)",
-  "rgba(209,213,219,0.30)",
-  "rgba(217,119,6,0.30)",
+  "rgba(251,191,36,0.45)",
+  "rgba(209,213,219,0.35)",
+  "rgba(217,119,6,0.35)",
 ] as const;
+const RANK_TEXT = ["#FBBF24", "#D1D5DB", "#D97706"] as const;
 
 function CategoryCard({ c, rank, onPick }: { c: RisingCategory; rank: number; onPick: () => void }) {
-  const ring = CARD_RINGS[rank] ?? "rgba(31,41,55,0.80)";
-  // 카테고리명을 해시해 은은한 색조만 흔들어 준다(채도는 낮게 유지 — 원색으로 튀지 않게)
-  let h = 0;
-  for (let i = 0; i < c.category.length; i++) h = (h * 31 + c.category.charCodeAt(i)) >>> 0;
-  const hue = h % 360;
-
+  const podium = rank < 3;
   return (
     <button onClick={onPick} type="button"
-      className="group overflow-hidden rounded-xl border p-0 text-left transition-all hover:border-accent/50"
-      style={{ borderColor: ring, background: `linear-gradient(180deg, ${CARD_DARK_2}, ${CARD_DARK})` }}>
-      {/* 썸네일 영역 — 어두운 네온 그라데이션 + 미세한 색조 */}
-      <div className="relative aspect-video w-full overflow-hidden">
-        <div className="absolute inset-0 transition-transform duration-300 group-hover:scale-105"
-             style={{
-               background:
-                 `radial-gradient(120% 90% at 20% 0%, hsla(${hue},55%,42%,0.28) 0%, transparent 60%),` +
-                 `linear-gradient(160deg, #111318 0%, ${CARD_DARK} 100%)`,
-             }} />
-        {/* 하단으로 갈수록 더 어둡게 — 텍스트 영역과 자연스럽게 이어지도록 */}
-        <div className="absolute inset-0"
-             style={{ background: `linear-gradient(to bottom, transparent 40%, ${CARD_DARK} 100%)` }} />
-
-        {/* 우측 상단 글래스모피즘 방송 수 뱃지 */}
-        <span className="absolute right-2 top-2 rounded-full border px-2.5 py-1 text-[11px] font-bold
-                         backdrop-blur-md"
+      className={`nb-neon-border${podium ? " nb-podium" : ""} group rounded-xl border p-3.5 text-left
+                  transition-colors`}
+      style={{ background: CARD_DARK, borderColor: CARD_RINGS[rank] ?? "rgba(31,41,55,0.80)" }}>
+      {/* 헤더: 순위 + 방송 수 글래스 뱃지 */}
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-extrabold tabular-nums"
+              style={{ color: RANK_TEXT[rank] ?? "#6B7280" }}>#{rank + 1}</span>
+        <span className="ml-auto rounded-full border px-2.5 py-1 text-[11px] font-bold backdrop-blur-md"
               style={{ background: "rgba(0,0,0,0.5)", color: GREEN, borderColor: "rgba(0,255,163,0.20)" }}>
           {nf(c.lives)}개 방송
         </span>
       </div>
 
-      {/* 텍스트 영역 — 타이포 계층: 제목 > 수치 > 서브 설명 */}
-      <div className="px-3 pb-3 pt-2">
-        <h4 className="truncate text-base font-bold text-white transition-colors group-hover:text-accent"
-            title={c.category}>
-          {c.category}
-        </h4>
-        <p className="mt-1 tracking-tight">
-          <span className="text-xl font-extrabold tabular-nums text-white">{nf(c.viewers)}</span>
-          <span className="ml-1 text-xs" style={{ color: "#9CA3AF" }}>명</span>
-        </p>
-        <p className="mt-0.5 text-[11px]" style={{ color: "#9CA3AF" }}>
-          {nf(c.lives)}개 채널 · 방송당 {nf(c.avg_viewers)}명
-        </p>
-      </div>
+      {/* 타이포 계층: 카테고리명 > 시청자 수 > 서브 설명 */}
+      <h4 className="mt-2.5 truncate text-base font-bold text-white transition-colors group-hover:text-accent"
+          title={c.category}>
+        {c.category}
+      </h4>
+      <p className="mt-1 tracking-tight">
+        <span className="text-xl font-extrabold tabular-nums text-white">{nf(c.viewers)}</span>
+        <span className="ml-1 text-xs" style={{ color: "#9CA3AF" }}>명</span>
+      </p>
+      <p className="mt-0.5 text-[11px]" style={{ color: "#9CA3AF" }}>
+        {nf(c.lives)}개 채널 · 방송당 {nf(c.avg_viewers)}명
+      </p>
     </button>
   );
 }
