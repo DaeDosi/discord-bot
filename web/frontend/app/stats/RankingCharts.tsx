@@ -102,6 +102,8 @@ function BarPanel({ rows, onPick, deltaName }:
 const W = 900, H = 580, P = { l: 84, r: 60, t: 54, b: 60 };
 const MAX_RAD = 18 * 1.3;   // 버블 최대 반지름(호버 확대 1.3배 포함)
 const EDGE_PAD = 15;        // 원 전체가 박스 안에 들어오도록 강제할 여백
+// 한 화면에 그릴 최대 노드 수 — 누적 랭킹은 300개를 받아오는데 전부 그리면 렉이 걸린다
+const MAX_NODES = 150;
 
 // 4분면 정의 — 중앙값 십자선 기준. 사용자가 스트리머 포지션을 바로 읽을 수 있게
 // 구역마다 이름을 붙인다. X=체급(시청자), Y=유입(팔로워 증가/성장률).
@@ -284,17 +286,27 @@ function ScatterPanel({ rows, onPick, y }:
   // clip-path를 없앴으므로 '잘라내는' 대신 보이는 영역 밖 노드를 아예 '걸러낸다'.
   // 걸러내지 않으면 clampX/Y가 화면 밖 노드를 전부 경계에 밀어붙여 테두리에 쌓인다.
   // 여유(MARGIN)를 둬서 경계에 반쯤 걸친 노드는 그대로 보이게 한다.
-  const MARGIN = 0.02;
-  const visible = data.pts.filter((p) => {
-    const px = p.x + jitX(p), py = p.yn + jitY(p);
-    return px >= view.x0 - MARGIN && px <= view.x1 + MARGIN
-        && py >= view.y0 - MARGIN && py <= view.y1 + MARGIN;
-  });
+  // 보이는 노드 계산은 view/spread에만 의존한다. 예전에는 매 렌더마다 다시 돌았는데,
+  // 호버는 상태 변경이라 렌더를 유발한다 → 마우스를 움직일 때마다 수백 개 노드를
+  // 필터·정렬하고 clipPath까지 새로 만들어 눈에 띄게 버벅였다.
+  const visible = useMemo(() => {
+    const MARGIN = 0.02;
+    const inside = data.pts.filter((p) => {
+      const px = p.x + p.ju * spread, py = p.yn + p.jv * spread;
+      return px >= view.x0 - MARGIN && px <= view.x1 + MARGIN
+          && py >= view.y0 - MARGIN && py <= view.y1 + MARGIN;
+    });
+    // 화면에 수백 개를 한꺼번에 그리면 겹쳐서 읽히지도 않고 렌더 비용만 커진다.
+    // 시청자 규모 상위부터 잘라 낸다(확대하면 그 구역의 노드가 다시 채워진다).
+    return inside.length > MAX_NODES
+      ? [...inside].sort((a, b) => b.r.concurrent_viewers - a.r.concurrent_viewers).slice(0, MAX_NODES)
+      : inside;
+  }, [data, view, spread]);
 
-  // 호버된 버블을 마지막에 그려 z-order 최상단으로 올린다(SVG는 문서 순서대로 페인트)
-  const ordered = [...visible].sort((a, b) =>
-    (a.r.chzzk_channel_id === hover ? 1 : 0) - (b.r.chzzk_channel_id === hover ? 1 : 0));
-  const hp = data.pts.find((p) => p.r.chzzk_channel_id === hover);
+  // z-order: 예전에는 호버할 때마다 배열을 재정렬했는데, 배열 정체성이 바뀌면 React가
+  // 보이는 노드 전부를 다시 렌더해 버벅였다. 이제 목록은 고정 순서로 그리고,
+  // 호버된 노드만 맨 위에 한 번 더 덧그린다(SVG는 문서 순서대로 페인트).
+  const hp = visible.find((p) => p.r.chzzk_channel_id === hover);
 
   return (
     <div className="relative">
@@ -346,10 +358,11 @@ function ScatterPanel({ rows, onPick, y }:
           })}
           {visible.map((p) => (
             <clipPath key={p.r.chzzk_channel_id} id={`c-${p.r.chzzk_channel_id}`}>
-              {(() => {
-                const rr = p.rad * (hover === p.r.chzzk_channel_id ? 1.3 : 1);
-                return <circle cx={clampX(sx(p.x + jitX(p)), rr)} cy={clampY(sy(p.yn + jitY(p)), rr)} r={rr} />;
-              })()}
+              {/* 반지름을 호버 배율(1.3)로 고정한다. 호버마다 defs를 다시 만들면
+                  보이는 노드 전부의 clipPath가 재생성돼 버벅인다. 크게 잡아 두면
+                  평상시엔 원보다 넉넉해 이미지가 잘리지 않는다. */}
+              <circle cx={clampX(sx(p.x + p.ju * spread), p.rad * 1.3)}
+                      cy={clampY(sy(p.yn + p.jv * spread), p.rad * 1.3)} r={p.rad * 1.3} />
             </clipPath>
           ))}
         </defs>
@@ -417,9 +430,9 @@ function ScatterPanel({ rows, onPick, y }:
           })}
 
           {/* 버블 */}
-          {ordered.map((p) => {
+          {visible.map((p) => {
             const on = hover === p.r.chzzk_channel_id;
-            const rr = p.rad * (on ? 1.3 : 1);
+            const rr = p.rad;   // 호버 확대는 아래 오버레이가 담당
             const cxp = clampX(sx(p.x + jitX(p)), rr), cyp = clampY(sy(p.yn + jitY(p)), rr);
             return (
               // onMouseLeave가 없으면 SVG를 완전히 벗어나기 전까지 툴팁이 계속 남는다.
@@ -442,6 +455,24 @@ function ScatterPanel({ rows, onPick, y }:
               </g>
             );
           })}
+
+          {/* 호버 강조 오버레이 — 목록을 재정렬하지 않고 위에 덧그려 최상단으로 올린다 */}
+          {hp && (() => {
+            const rr = hp.rad * 1.3;
+            const cxp = clampX(sx(hp.x + jitX(hp)), rr), cyp = clampY(sy(hp.yn + jitY(hp)), rr);
+            return (
+              <g style={{ pointerEvents: "none" }}>
+                <circle cx={cxp} cy={cyp} r={rr + 2} fill={GREEN} opacity={0.45} />
+                {hp.r.channel_image_url && (
+                  <image href={hp.r.channel_image_url} x={cxp - rr} y={cyp - rr}
+                         width={rr * 2} height={rr * 2}
+                         clipPath={`url(#c-${hp.r.chzzk_channel_id})`}
+                         preserveAspectRatio="xMidYMid slice" />
+                )}
+                <circle cx={cxp} cy={cyp} r={rr} fill="none" stroke="#fff" strokeWidth={2} />
+              </g>
+            );
+          })()}
         </g>
 
         {/* 축 — 클립 밖에 그려 항상 보이게 한다 */}

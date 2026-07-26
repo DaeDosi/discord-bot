@@ -688,7 +688,7 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
 
   const SortBtn = ({ k, label }: { k: SortKey; label: string }) => (
     <button onClick={() => setSort(k)}
-      className="text-xs px-2.5 py-1 rounded-md border transition-colors"
+      className="text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors"
       style={{ background: sort === k ? "rgba(0,255,163,0.1)" : "transparent",
                borderColor: sort === k ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
                color: sort === k ? GREEN : "rgb(var(--color-muted-rgb))" }}>
@@ -712,12 +712,11 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
         deltaName="직전 대비" />
 
       <div className="card !p-4 md:!p-5">
-      {/* 컨트롤 — 정렬만 (검색바는 제거) */}
-      <div className="flex items-center justify-end gap-2 mb-4 flex-wrap">
-        <span className="text-xs text-muted mr-1">정렬</span>
+      {/* 컨트롤 — 정렬만 (검색바는 제거). 신규 스트리머 랭킹과 동일한 배치·크기 */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
         <SortBtn k="viewers" label="시청자" />
         <SortBtn k="followers" label="팔로워" />
-        <SortBtn k="duration" label="방송시간" />
+        <SortBtn k="duration" label="방송 시간" />
       </div>
 
       {/* 테이블 */}
@@ -1203,7 +1202,7 @@ function NewcomersRankingTab({ data }: { data: RisingNewcomers }) {
     const active = sort === k;
     return (
       <button onClick={() => setSort(k)}
-        className="text-sm font-medium px-3.5 py-1.5 rounded-lg border transition-colors"
+        className="text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors"
         style={{ background: active ? "rgba(0,255,163,0.1)" : "transparent",
                  borderColor: active ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
                  color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
