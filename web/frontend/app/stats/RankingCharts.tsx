@@ -101,6 +101,27 @@ function BarPanel({ rows, onPick, deltaName }:
 // ── 컴포넌트 2: 성장성 산점도 ────────────────────────────────────────────────
 const W = 760, H = 380, P = { l: 58, r: 18, t: 16, b: 40 };
 
+// 4분면 정의 — 중앙값 십자선 기준. 사용자가 스트리머 포지션을 바로 읽을 수 있게
+// 구역마다 이름을 붙인다. X=체급(시청자), Y=유입(팔로워 증가/성장률).
+const QUADRANTS = [
+  { key: "q1", text: "🚀 슈퍼 라이징 (대세)",   color: "#00FFA3", at: "tr" },
+  { key: "q2", text: "🌱 라이징 루키 (유망주)", color: "#22D3EE", at: "tl" },
+  { key: "q3", text: "⚓ 초기 탐색 구간",       color: "#9CA3AF", at: "bl" },
+  { key: "q4", text: "🏰 콘크리트 충성층",      color: "#C084FC", at: "br" },
+] as const;
+
+// SVG에는 텍스트 자동 크기 측정이 없어 뱃지 폭을 추정한다.
+// 한글/이모지는 라틴 문자보다 넓어 따로 계산한다(fontSize 10 기준).
+function badgeWidth(text: string) {
+  let w = 0;
+  for (const ch of text) {
+    if (/[가-힣]/.test(ch)) w += 10.5;           // 한글
+    else if (ch.codePointAt(0)! > 0x1000) w += 12;        // 이모지 등
+    else w += 5.4;
+  }
+  return Math.round(w) + 18;
+}
+
 function ScatterPanel({ rows, onPick, y }:
   { rows: ChartRow[]; onPick: (id: string) => void; y: YAxisSpec }) {
   const [hover, setHover] = useState<string | null>(null);
@@ -226,10 +247,18 @@ function ScatterPanel({ rows, onPick, y }:
           <clipPath id="plot-clip">
             <rect x={P.l} y={P.t} width={W - P.l - P.r} height={H - P.t - P.b} />
           </clipPath>
-          <linearGradient id="q1-grad" x1="0" y1="1" x2="1" y2="0">
-            <stop offset="0%" stopColor={GREEN} stopOpacity="0.03" />
-            <stop offset="100%" stopColor={GREEN} stopOpacity="0.16" />
-          </linearGradient>
+          {/* 4분면 미세 배경 — 각 구역 바깥쪽 모서리로 갈수록 옅게 진해진다 */}
+          {QUADRANTS.map((q) => {
+            const [x1, y1, x2, y2] =
+              q.at === "tr" ? [0, 1, 1, 0] : q.at === "tl" ? [1, 1, 0, 0]
+              : q.at === "bl" ? [1, 0, 0, 1] : [0, 0, 1, 1];
+            return (
+              <linearGradient key={q.key} id={`${q.key}-grad`} x1={x1} y1={y1} x2={x2} y2={y2}>
+                <stop offset="0%" stopColor={q.color} stopOpacity="0.02" />
+                <stop offset="100%" stopColor={q.color} stopOpacity={q.key === "q1" ? "0.16" : "0.10"} />
+              </linearGradient>
+            );
+          })}
           {data.pts.map((p) => (
             <clipPath key={p.r.chzzk_channel_id} id={`c-${p.r.chzzk_channel_id}`}>
               <circle cx={sx(p.x)} cy={sy(p.yn)}
@@ -239,10 +268,22 @@ function ScatterPanel({ rows, onPick, y }:
         </defs>
 
         <g clipPath="url(#plot-clip)">
-          {/* 1분면(우상향) 강조 — '슈퍼 라이징 구간' */}
-          <rect x={sx(data.medX)} y={P.t}
-                width={Math.max(0, W - P.r - sx(data.medX))}
-                height={Math.max(0, sy(data.medY) - P.t)} fill="url(#q1-grad)" />
+          {/* 4분면 배경 — 중앙값 십자선을 기준으로 나뉘며 줌/팬을 따라간다 */}
+          {(() => {
+            const mx = Math.min(W - P.r, Math.max(P.l, sx(data.medX)));
+            const my = Math.min(H - P.b, Math.max(P.t, sy(data.medY)));
+            const L = P.l, R = W - P.r, T = P.t, B = H - P.b;
+            const rects = [
+              { k: "q1", x: mx, y: T,  w: R - mx, h: my - T },
+              { k: "q2", x: L,  y: T,  w: mx - L, h: my - T },
+              { k: "q3", x: L,  y: my, w: mx - L, h: B - my },
+              { k: "q4", x: mx, y: my, w: R - mx, h: B - my },
+            ];
+            return rects.map((r) => (
+              <rect key={r.k} x={r.x} y={r.y} width={Math.max(0, r.w)} height={Math.max(0, r.h)}
+                    fill={`url(#${r.k}-grad)`} />
+            ));
+          })()}
 
           {/* 눈금 격자 */}
           {data.yTicks.filter((t) => inView(t.n, view.y0, view.y1)).map((t, i) => (
@@ -258,11 +299,26 @@ function ScatterPanel({ rows, onPick, y }:
           <line x1={sx(data.medX)} y1={P.t} x2={sx(data.medX)} y2={H - P.b}
                 stroke="rgb(var(--color-muted-rgb))" strokeWidth="1" strokeDasharray="4 4" opacity="0.55" />
           <line x1={P.l} y1={sy(data.medY)} x2={W - P.r} y2={sy(data.medY)}
-                stroke="rgb(var(--color-muted-rgb))" strokeWidth="1" strokeDasharray="4 4" opacity="0.55" />
-          <text x={W - P.r - 6} y={P.t + 14} textAnchor="end" fontSize="10"
-                fill={GREEN} opacity="0.75" style={{ pointerEvents: "none" }}>
-            슈퍼 라이징 구간
-          </text>
+                stroke="rgb(var(--color-muted-rgb))" strokeWidth="1" strokeDasharray="3 3" opacity="0.55" />
+
+          {/* 4분면 라벨 뱃지 — 데이터가 아니라 플롯 모서리에 고정한다.
+              중앙값 선을 따라 움직이게 하면 확대 시 화면 밖으로 밀려 안 보인다. */}
+          {QUADRANTS.map((q) => {
+            const bw = badgeWidth(q.text), bh = 20, pad = 8;
+            const x = q.at === "tr" || q.at === "br" ? W - P.r - pad - bw : P.l + pad;
+            const yTop = P.t + pad;
+            const yBot = H - P.b - pad - bh;
+            const yy = q.at === "tr" || q.at === "tl" ? yTop : yBot;
+            return (
+              <g key={q.key} style={{ pointerEvents: "none" }}>
+                <rect x={x} y={yy} width={bw} height={bh} rx={10}
+                      fill={q.color} fillOpacity="0.10"
+                      stroke={q.color} strokeOpacity="0.28" strokeWidth="1" />
+                <text x={x + bw / 2} y={yy + 14} textAnchor="middle" fontSize="10"
+                      fill={q.color} fillOpacity="0.95">{q.text}</text>
+              </g>
+            );
+          })}
 
           {/* 버블 */}
           {ordered.map((p) => {
@@ -344,9 +400,12 @@ function ScatterPanel({ rows, onPick, y }:
       )}
 
       <p className="mt-2 text-[11px] text-muted">
-        * 우상향에 위치할수록 시청자 대비 {y.label} 증가율이 높은 성장세 스트리머입니다.
-        버블이 클수록 방송 시간이 깁니다 · 점선은 중앙값 기준 4분면 · 마우스 휠로 확대,
-        드래그로 이동할 수 있습니다{y.log && " · 값 차이가 커서 두 축 모두 로그 스케일입니다"}.
+        * 1분면(슈퍼 라이징)과 2분면(라이징 루키)에 위치할수록 체급 대비 {y.label}이 높은
+        성장세 스트리머입니다. 4분면(콘크리트 충성층)은 체급은 크지만 신규 유입이 완만한 구간입니다.
+      </p>
+      <p className="mt-1 text-[11px] text-muted/70">
+        점선은 중앙값 기준 4분면 · 버블이 클수록 방송 시간이 깁니다 · 마우스 휠로 확대,
+        드래그로 이동{y.log && " · 값 차이가 커서 두 축 모두 로그 스케일"}.
       </p>
     </div>
   );
