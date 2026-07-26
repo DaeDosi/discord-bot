@@ -31,8 +31,19 @@ HEADERS = {
 # 수집 주기(초). 기본 10분 — 너무 짧으면 원천 테이블이 급팽창하고 API 부담이 커진다.
 COLLECT_INTERVAL = int(os.getenv("RISING_COLLECT_INTERVAL", "600"))
 # 한 사이클에서 순회할 최대 페이지 수(페이지당 PAGE_SIZE개) — 폭주 방지 안전장치.
-MAX_PAGES = int(os.getenv("RISING_MAX_PAGES", "80"))
+#
+# 실측(2026-07-26): 치지직 동시 라이브 총 5,754개 = 117페이지에서 목록 소진.
+# 기존 80페이지(4,000개)는 하위 ~1,750개(전체의 약 30%)를 잘라내고 있었고, 잘린 구간은
+# 대부분 시청자 0~4명대 소규모 방송이라 '하꼬/신입' 분석에서 정확히 필요한 표본이었다.
+# 200페이지(10,000개)로 올려 소진까지 돌 여유를 둔다 — 상한에 걸리면 note에 기록된다.
+MAX_PAGES = int(os.getenv("RISING_MAX_PAGES", "200"))
+# PAGE_SIZE는 API 하드 상한이 50이다(100 이상 요청 시 HTTP 400). 올려도 소용없다.
 PAGE_SIZE = int(os.getenv("RISING_PAGE_SIZE", "50"))
+# 페이지 간 간격(ms). 무간격으로 몰아치면 읽기 타임아웃이 난다(실측: ~17req/s에서 발생,
+# 120ms 간격에서는 117페이지 완주). 페이지 수를 늘린 만큼 페이싱이 필요하다.
+PAGE_DELAY_MS = int(os.getenv("RISING_PAGE_DELAY_MS", "120"))
+# 페이지 단위 재시도 횟수 — 일시적 네트워크 오류로 사이클 전체를 버리지 않기 위함.
+PAGE_RETRIES = int(os.getenv("RISING_PAGE_RETRIES", "3"))
 # 원천 스냅샷 보관 기간(일). 이보다 오래된 행은 매 사이클 정리한다(시간대 히트맵/라이징
 # 24h 비교에 필요한 만큼만 남기면 되므로 기본 14일).
 RAW_RETENTION_DAYS = int(os.getenv("RISING_RAW_RETENTION_DAYS", "14"))
@@ -143,23 +154,51 @@ async def _enrich_top(client: httpx.AsyncClient, lives: list[dict]):
     await asyncio.gather(*[one(l) for l in top])
 
 
-async def _fetch_all_lives(client: httpx.AsyncClient) -> list[dict]:
+async def _fetch_all_lives(client: httpx.AsyncClient) -> tuple[list[dict], str]:
     """커서 페이지네이션으로 현재 라이브 목록 전체(최대 MAX_PAGES*PAGE_SIZE)를 수집한다.
 
     치지직 응답: content.data[](방송 목록), content.page.next(다음 페이지 커서 dict).
     next dict의 키/값을 그대로 다음 요청의 쿼리 파라미터로 넘기면 다음 페이지가 나온다.
+
+    (수집 목록, 종료 사유 메모)를 반환한다. 종료 사유를 남기는 이유: 예전에는 목록이
+    소진돼 끝났는지 MAX_PAGES 상한에 걸려 잘렸는지 구분할 기록이 전혀 없어서, 4,000개에서
+    잘리고 있다는 사실 자체를 알 수 없었다. 이제 rising_collect_runs.note로 확인 가능하다.
+
+    페이지 단위로 재시도하고, 이미 모은 게 있으면 부분 성공으로 반환한다 — 페이지 수가
+    많아진 만큼 한 페이지의 일시적 타임아웃으로 사이클 전체를 버리면 손실이 크다.
     """
     lives: list[dict] = []
     seen: set[str] = set()
     params: dict = {"size": PAGE_SIZE, "sortType": "POPULAR"}
+    note = "page_cap_reached"  # 루프를 다 돌면(=상한 도달) 이 값이 남는다
 
-    for _ in range(MAX_PAGES):
-        resp = await client.get(LIVES_URL, params=params, headers=HEADERS, timeout=10)
+    for page in range(MAX_PAGES):
+        if page and PAGE_DELAY_MS > 0:
+            await asyncio.sleep(PAGE_DELAY_MS / 1000)
+
+        resp = None
+        last_err: Exception | None = None
+        for attempt in range(PAGE_RETRIES):
+            try:
+                resp = await client.get(LIVES_URL, params=params, headers=HEADERS, timeout=15)
+                break
+            except Exception as e:  # 읽기/연결 타임아웃 등 일시적 오류
+                last_err = e
+                await asyncio.sleep(0.8 * (attempt + 1))
+        if resp is None:
+            if lives:  # 부분 성공 — 여기까지 모은 것은 살린다
+                return (lives, f"partial: page {page + 1} 재시도 실패 ({type(last_err).__name__})")
+            raise RuntimeError(f"page {page + 1} 재시도 실패: {last_err}")
+
         if resp.status_code != 200:
+            if lives:
+                return (lives, f"partial: page {page + 1} HTTP {resp.status_code}")
             raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:150]}")
+
         content = (resp.json() or {}).get("content") or {}
         data = content.get("data") or []
         if not data:
+            note = "exhausted: 빈 응답"
             break
 
         for item in data:
@@ -170,11 +209,12 @@ async def _fetch_all_lives(client: httpx.AsyncClient) -> list[dict]:
 
         nxt = (content.get("page") or {}).get("next")
         if not nxt:
+            note = "exhausted: next 커서 없음"
             break
         # 다음 페이지 커서를 그대로 쿼리 파라미터로 승계
         params = {"size": PAGE_SIZE, "sortType": "POPULAR", **nxt}
 
-    return lives
+    return (lives, note)
 
 
 async def _record_run(collected_at: int, live_count: int, total_viewers: int, ok: int, note: str = ""):
@@ -203,7 +243,7 @@ async def collect_once() -> tuple[int, str]:
     now = int(time.time())
     try:
         async with httpx.AsyncClient() as client:
-            lives = await _fetch_all_lives(client)
+            lives, fetch_note = await _fetch_all_lives(client)
             if lives:
                 # 팔로워 수는 목록 API에 없으므로 상위 채널만 상세 API로 보강
                 await _enrich_top(client, lives)
@@ -241,10 +281,14 @@ async def collect_once() -> tuple[int, str]:
         ],
     )
     await db.commit()
-    await _record_run(now, len(lives), total_viewers, ok=1)
+    # 종료 사유를 note에 남긴다 — page_cap_reached면 MAX_PAGES를 더 올려야 한다는 신호다.
+    await _record_run(now, len(lives), total_viewers, ok=1, note=fetch_note)
     await _prune_old(now)
 
-    _log(f"수집 완료: {len(lives)}개 라이브, 총 시청자 {total_viewers:,}명")
+    if fetch_note == "page_cap_reached":
+        _log(f"경고: MAX_PAGES({MAX_PAGES}) 상한에 도달 — 목록이 잘렸을 수 있습니다. "
+             f"RISING_MAX_PAGES를 올리세요.")
+    _log(f"수집 완료: {len(lives)}개 라이브, 총 시청자 {total_viewers:,}명 ({fetch_note})")
     return (len(lives), "ok")
 
 
