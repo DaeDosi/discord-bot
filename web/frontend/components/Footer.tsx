@@ -27,7 +27,9 @@ const COLUMNS: {
     links: [
       { label: "이용약관", href: "/terms" },
       { label: "개인정보처리방침", href: "/privacy" },
-      { label: "쿠키 정책", href: "#" },
+      // 개인정보처리방침 6번 항목이 'Google AdSense 및 쿠키' — 죽은 '#' 링크였던 것을
+      // 실제 해당 섹션으로 연결(애드센스 심사에서 빈 링크는 감점 요인).
+      { label: "쿠키 정책", href: "/privacy#section-6" },
     ],
   },
   {
