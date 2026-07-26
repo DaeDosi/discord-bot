@@ -1,7 +1,7 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { BarChart3, ScatterChart, ChevronDown, RotateCcw } from "lucide-react";
+import { BarChart3, ScatterChart, ChevronDown, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
 
 // 랭킹 테이블 상단 요약 차트. 외부 차트 라이브러리 없이 SVG/div로 그린다
 // (vis-network 도입 때 확인했듯 차트 라이브러리는 번들이 크다).
@@ -221,46 +221,52 @@ function ScatterPanel({ rows, onPick, y }:
 
   // 노드 중심이 경계에 붙어도 원 '전체'가 박스 안에 남도록 강제한다.
   // clip-path를 없앤 대신 이 보정이 잘림을 막는다.
+  // 노드는 '플롯 사각형' 안에만 머문다. 예전엔 SVG 전체(W,H) 기준으로 가둬서
+  // 확대하면 축 라벨과 4분면 뱃지 위로 버블이 삐져나왔다.
   const clampX = (v: number, rad: number) =>
-    Math.min(W - rad - EDGE_PAD, Math.max(rad + EDGE_PAD, v));
+    Math.min(W - P.r - rad, Math.max(P.l + rad, v));
   const clampY = (v: number, rad: number) =>
-    Math.min(H - rad - EDGE_PAD, Math.max(rad + EDGE_PAD, v));
+    Math.min(H - P.b - rad, Math.max(P.t + rad, v));
 
-  // 휠 확대/축소.
-  // React의 onWheel은 root에 passive 리스너로 붙어 preventDefault()가 무시된다
-  // (차트를 확대하면서 페이지도 같이 스크롤되던 원인). 네이티브 리스너를 passive:false로
-  // 직접 붙여야 기본 스크롤을 실제로 막을 수 있다.
-  useEffect(() => {
-    const svg = svgRef.current;
-    if (!svg) return;
-    const handler = (e: WheelEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const rect = svg.getBoundingClientRect();
-      setView((v) => {
-        const fx = v.x0 + ((e.clientX - rect.left) / rect.width * W - P.l) / (W - P.l - P.r) * (v.x1 - v.x0);
-        const fy = v.y0 + (1 - ((e.clientY - rect.top) / rect.height * H - P.t) / (H - P.t - P.b)) * (v.y1 - v.y0);
-        const k = e.deltaY > 0 ? 1.2 : 1 / 1.2;
-        const w = Math.min(1, Math.max(0.05, (v.x1 - v.x0) * k));
-        const h = Math.min(1, Math.max(0.05, (v.y1 - v.y0) * k));
-        let x0 = fx - (fx - v.x0) * (w / (v.x1 - v.x0));
-        let y0 = fy - (fy - v.y0) * (h / (v.y1 - v.y0));
-        // 이동(팬)이 없으므로 보이는 영역이 데이터 도메인 밖으로 나가지 않게 엄격히 가둔다
-        x0 = Math.min(1 - w, Math.max(0, x0));
-        y0 = Math.min(1 - h, Math.max(0, y0));
-        return { x0, x1: x0 + w, y0, y1: y0 + h };
-      });
-    };
-    svg.addEventListener("wheel", handler, { passive: false });
-    return () => svg.removeEventListener("wheel", handler);
-  }, []);
+  // 확대/축소는 버튼으로만 한다.
+  // 휠에 줌을 걸면 두 가지 중 하나를 반드시 잃는다: preventDefault를 하면 차트 위에서
+  // 페이지 스크롤이 막히고(우측 스크롤바로만 이동 가능해짐), 하지 않으면 줌과 스크롤이
+  // 동시에 일어난다. 그래서 휠은 브라우저에 그대로 넘기고 줌은 명시적 버튼으로 분리했다.
+  const zoomBy = (k: number) => setView((v) => {
+    const cx = (v.x0 + v.x1) / 2, cy = (v.y0 + v.y1) / 2;   // 화면 중심 기준 확대/축소
+    const w = Math.min(1, Math.max(0.05, (v.x1 - v.x0) * k));
+    const h = Math.min(1, Math.max(0.05, (v.y1 - v.y0) * k));
+    const x0 = Math.min(1 - w, Math.max(0, cx - w / 2));
+    const y0 = Math.min(1 - h, Math.max(0, cy - h / 2));
+    return { x0, x1: x0 + w, y0, y1: y0 + h };
+  });
+
+  // 드래그 이동(팬) — 확대한 상태에서 다른 구역을 보기 위해 필요하다
+  const drag = useRef<{ mx: number; my: number; v: typeof view } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const onDown = (e: React.MouseEvent) => {
+    drag.current = { mx: e.clientX, my: e.clientY, v: view };
+    setDragging(true);
+  };
+  const onMove = (e: React.MouseEvent) => {
+    const d = drag.current, svg = svgRef.current;
+    if (!d || !svg) return;
+    const rect = svg.getBoundingClientRect();
+    const w = d.v.x1 - d.v.x0, h = d.v.y1 - d.v.y0;
+    const dx = ((e.clientX - d.mx) / rect.width) * w;
+    const dy = ((e.clientY - d.my) / rect.height) * h;
+    const x0 = Math.min(1 - w, Math.max(0, d.v.x0 - dx));
+    const y0 = Math.min(1 - h, Math.max(0, d.v.y0 + dy));
+    setView({ x0, x1: x0 + w, y0, y1: y0 + h });
+  };
+  const endDrag = () => { drag.current = null; setDragging(false); };
 
   const zoomed = view.x0 !== 0 || view.x1 !== 1 || view.y0 !== 0 || view.y1 !== 1;
 
   // clip-path를 없앴으므로 '잘라내는' 대신 보이는 영역 밖 노드를 아예 '걸러낸다'.
   // 걸러내지 않으면 clampX/Y가 화면 밖 노드를 전부 경계에 밀어붙여 테두리에 쌓인다.
   // 여유(MARGIN)를 둬서 경계에 반쯤 걸친 노드는 그대로 보이게 한다.
-  const MARGIN = 0.06;
+  const MARGIN = 0.02;
   const visible = data.pts.filter((p) => {
     const px = p.x + jitX(p), py = p.yn + jitY(p);
     return px >= view.x0 - MARGIN && px <= view.x1 + MARGIN
@@ -274,20 +280,37 @@ function ScatterPanel({ rows, onPick, y }:
 
   return (
     <div className="relative">
-      <div className="mb-1 flex items-center justify-end gap-2">
-        {zoomed && (
-          <button type="button" onClick={() => setView({ x0: 0, x1: 1, y0: 0, y1: 1 })}
-            className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px]
-                       text-muted transition-colors hover:text-fg">
-            <RotateCcw size={11} /> 전체 보기
-          </button>
-        )}
+      {/* 확대 / 축소 / 전체 보기 — 휠 대신 명시적 버튼으로 분리했다 */}
+      <div className="mb-1 flex items-center justify-end gap-1.5">
+        <span className="mr-1 text-[11px] text-muted">
+          {zoomed ? "드래그해서 이동할 수 있습니다" : "확대하면 드래그로 이동할 수 있습니다"}
+        </span>
+        <button type="button" onClick={() => zoomBy(1 / 1.4)} title="확대"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border
+                     text-muted transition-colors hover:text-fg hover:bg-bg-hover">
+          <ZoomIn size={13} />
+        </button>
+        <button type="button" onClick={() => zoomBy(1.4)} title="축소"
+          disabled={!zoomed}
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border
+                     text-muted transition-colors hover:text-fg hover:bg-bg-hover
+                     disabled:opacity-30 disabled:hover:bg-transparent">
+          <ZoomOut size={13} />
+        </button>
+        <button type="button" onClick={() => setView({ x0: 0, x1: 1, y0: 0, y1: 1 })}
+          disabled={!zoomed}
+          className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px]
+                     text-muted transition-colors hover:text-fg disabled:opacity-30">
+          <RotateCcw size={11} /> 전체 보기
+        </button>
       </div>
 
       <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" height={H}
            className="overflow-visible"
-           style={{ display: "block", touchAction: "none" }}
-           onMouseLeave={() => setHover(null)}>
+           style={{ display: "block", touchAction: "none",
+                    cursor: dragging ? "grabbing" : zoomed ? "grab" : "default" }}
+           onMouseDown={onDown} onMouseMove={onMove} onMouseUp={endDrag}
+           onMouseLeave={() => { endDrag(); setHover(null); }}>
         <defs>
           {/* 4분면 미세 배경 — 각 구역 바깥쪽 모서리로 갈수록 옅게 진해진다 */}
           {QUADRANTS.map((q) => {
@@ -452,7 +475,8 @@ function ScatterPanel({ rows, onPick, y }:
       </p>
       <p className="mt-1 text-[11px] text-muted/70">
         점선은 중앙값 기준 4분면 · 버블이 클수록 방송 시간이 깁니다 · 기본 화면에 전체가
-        모두 표시되며, 마우스 휠로 확대하면 뭉친 노드가 자동으로 벌어집니다{y.log && " · 값 차이가 커서 두 축 모두 로그 스케일"}.
+        모두 표시됩니다 · 우측 상단 버튼으로 확대/축소하고, 확대한 뒤에는 드래그로 이동합니다
+        (확대하면 뭉친 노드가 자동으로 벌어집니다){y.log && " · 값 차이가 커서 두 축 모두 로그 스케일"}.
       </p>
     </div>
   );
