@@ -100,8 +100,6 @@ function BarPanel({ rows, onPick, deltaName }:
 
 // ── 컴포넌트 2: 성장성 산점도 ────────────────────────────────────────────────
 const W = 820, H = 420, P = { l: 80, r: 56, t: 50, b: 56 };
-// 팬 오버스크롤 허용 폭(도메인 비율) — 가장자리 노드를 화면 중앙까지 끌어올 수 있게 한다
-const OVER = 0.35;
 // 클립 여유 — 버블 최대 반지름(7+11=18, 호버 시 x1.2 = 약 22px)보다 크게 잡는다
 const CLIP_PAD = 28;
 
@@ -129,9 +127,9 @@ function badgeWidth(text: string) {
 function ScatterPanel({ rows, onPick, y }:
   { rows: ChartRow[]; onPick: (id: string) => void; y: YAxisSpec }) {
   const [hover, setHover] = useState<string | null>(null);
-  // 보이는 영역(정규화 0~1 도메인). 줌/팬은 이 도메인을 바꾸므로 눈금 라벨도 함께 정확해진다.
+  // 보이는 영역(정규화 0~1 도메인). 기본값 0~1 = 전체가 한 화면에 들어온 상태.
+  // 휠 확대/축소가 이 도메인을 바꾸므로 눈금 라벨도 함께 정확해진다.
   const [view, setView] = useState({ x0: 0, x1: 1, y0: 0, y1: 1 });
-  const drag = useRef<{ mx: number; my: number; v: typeof view } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
   const data = useMemo(() => {
@@ -229,25 +227,12 @@ function ScatterPanel({ rows, onPick, y }:
     const h = Math.min(1, Math.max(0.06, (view.y1 - view.y0) * k));
     let x0 = fx - (fx - view.x0) * (w / (view.x1 - view.x0));
     let y0 = fy - (fy - view.y0) * (h / (view.y1 - view.y0));
-    // 오버스크롤 여유(OVER): 최외곽 노드까지 화면 중앙으로 끌어올 수 있게 한다
-    x0 = Math.min(1 - w + OVER, Math.max(-OVER, x0));
-    y0 = Math.min(1 - h + OVER, Math.max(-OVER, y0));
+    // 이동(팬)이 없으므로 보이는 영역이 데이터 도메인 밖으로 나가지 않게 엄격히 가둔다
+    x0 = Math.min(1 - w, Math.max(0, x0));
+    y0 = Math.min(1 - h, Math.max(0, y0));
     setView({ x0, x1: x0 + w, y0, y1: y0 + h });
   };
 
-  const onDown = (e: React.MouseEvent) => { drag.current = { mx: e.clientX, my: e.clientY, v: view }; };
-  const onMove = (e: React.MouseEvent) => {
-    const d = drag.current;
-    if (!d || !svgRef.current) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const dx = ((e.clientX - d.mx) / rect.width) * (d.v.x1 - d.v.x0);
-    const dy = ((e.clientY - d.my) / rect.height) * (d.v.y1 - d.v.y0);
-    const w = d.v.x1 - d.v.x0, h = d.v.y1 - d.v.y0;
-    const x0 = Math.min(1 - w + OVER, Math.max(-OVER, d.v.x0 - dx));
-    const y0 = Math.min(1 - h + OVER, Math.max(-OVER, d.v.y0 + dy));
-    setView({ x0, x1: x0 + w, y0, y1: y0 + h });
-  };
-  const endDrag = () => { drag.current = null; };
   const zoomed = view.x0 !== 0 || view.x1 !== 1 || view.y0 !== 0 || view.y1 !== 1;
 
   // 호버된 버블을 마지막에 그려 z-order 최상단으로 올린다(SVG는 문서 순서대로 페인트)
@@ -262,16 +247,15 @@ function ScatterPanel({ rows, onPick, y }:
           <button type="button" onClick={() => setView({ x0: 0, x1: 1, y0: 0, y1: 1 })}
             className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px]
                        text-muted transition-colors hover:text-fg">
-            <RotateCcw size={11} /> 확대 초기화
+            <RotateCcw size={11} /> 전체 보기
           </button>
         )}
       </div>
 
       <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" height={H}
            className="overflow-visible"
-           style={{ display: "block", cursor: drag.current ? "grabbing" : "grab", touchAction: "none" }}
-           onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove}
-           onMouseUp={endDrag} onMouseLeave={() => { endDrag(); setHover(null); }}>
+           style={{ display: "block", touchAction: "none" }}
+           onWheel={onWheel} onMouseLeave={() => setHover(null)}>
         <defs>
           {/* 버블 최대 반지름(약 22px)보다 넉넉히 넓혀 가장자리 노드가 잘리지 않게 한다.
               줌/팬으로 밀려난 요소는 여전히 이 범위에서 정리된다. */}
@@ -436,8 +420,8 @@ function ScatterPanel({ rows, onPick, y }:
         성장세 스트리머입니다. 4분면(콘크리트 충성층)은 체급은 크지만 신규 유입이 완만한 구간입니다.
       </p>
       <p className="mt-1 text-[11px] text-muted/70">
-        점선은 중앙값 기준 4분면 · 버블이 클수록 방송 시간이 깁니다 · 마우스 휠로 확대,
-        드래그로 이동{y.log && " · 값 차이가 커서 두 축 모두 로그 스케일"}.
+        점선은 중앙값 기준 4분면 · 버블이 클수록 방송 시간이 깁니다 · 기본 화면에 전체가
+        모두 표시되며, 마우스 휠로 확대/축소할 수 있습니다{y.log && " · 값 차이가 커서 두 축 모두 로그 스케일"}.
       </p>
     </div>
   );
