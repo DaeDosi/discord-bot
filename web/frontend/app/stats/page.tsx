@@ -17,8 +17,6 @@ import Footer from "@/components/Footer";
 import CollapsibleAbout from "@/components/CollapsibleAbout";
 import StatsNav, { type Tab } from "./StatsNav";
 
-// /stats가 자체 탭으로 렌더하는 키들(network는 독립 라우트라 제외)
-const VALID_TABS: Tab[] = ["overview", "newcomers_analysis", "ranking", "newcomers_ranking", "category"];
 import LineChart, { type LinePoint, type LineSeries } from "./LineChart";
 
 // 2톤 그라데이션(그린 → 시안) — 브랜드 액센트
@@ -1243,14 +1241,6 @@ export default function StatsPage() {
   const [tab, setTab] = useState<Tab>("overview");
   const selectTab = (k: Tab) => setTab(k);
 
-  // /stats/network에서 다른 메뉴를 누르면 /stats?tab=<key>로 돌아온다. 그 값을 반영하되,
-  // useSearchParams()는 이 페이지의 정적 프리렌더를 깨서(Suspense 요구) 크롤러가 보는
-  // 서버 HTML이 사라지므로 쓰지 않는다 — 마운트 후 location에서 한 번만 읽는다.
-  useEffect(() => {
-    const t = new URLSearchParams(window.location.search).get("tab");
-    if (t && VALID_TABS.includes(t as Tab)) setTab(t as Tab);
-  }, []);
-
   useEffect(() => {
     Promise.all([
       api.rising.overview(), api.rising.liveRanking(200),
@@ -1317,7 +1307,7 @@ export default function StatsPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-[210px_1fr] gap-5 md:gap-7">
-            {/* 좌측 메뉴 — /stats/network와 공유 */}
+            {/* 좌측 메뉴 */}
             <StatsNav active={tab} onSelect={selectTab}>
               <StreamerSearch />
             </StatsNav>
