@@ -1,7 +1,12 @@
 import type { MetadataRoute } from "next";
 
-// 애드센스/검색 크롤러가 공개 페이지를 빠짐없이 찾도록 사이트맵을 제공한다.
+// 정적 공개 페이지 사이트맵.
 // robots.ts에서 차단한 경로(대시보드·로그인·오버레이 등)는 여기에도 넣지 않는다.
+//
+// 스트리머 페이지는 여기 넣지 않는다: 이 함수를 async로 만들어 백엔드에서 채널 목록을
+// 받아오게 했더니 next start에서 /sitemap.xml이 404가 됐다(빌드 산출물은 정상이었지만
+// 런타임에 서빙되지 않았다). 동적 목록은 별도 Route Handler(/streamers-sitemap.xml)로
+// 분리하고, robots.txt에 두 사이트맵을 모두 등록한다.
 const SITE = "https://nexbot.shop";
 
 export default function sitemap(): MetadataRoute.Sitemap {

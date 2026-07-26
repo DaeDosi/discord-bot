@@ -345,6 +345,8 @@ _NEWCOMER_ENRICH_TIMEOUT = 3.0
 _TITLE_KEYWORD_LIST = ["시참", "훈수", "소통", "티어", "뉴비", "초보"]
 _TITLE_KEYWORDS = re.compile("|".join(_TITLE_KEYWORD_LIST))
 _TITLE_MIN_SAMPLES = 5   # 양쪽 그룹이 이보다 적으면 비교하지 않는다
+# 사이트맵에 넣을 최소 스냅샷 수 — 한두 번 잡힌 채널은 페이지가 거의 비어 색인 가치가 없다
+_SITEMAP_MIN_SNAPS = 12
 _newcomers_cache: dict = {"ts": 0, "data": None}
 
 
@@ -1426,3 +1428,29 @@ async def title_keywords(limit: int = 10):
         key=lambda x: x["lives"], reverse=True,
     )
     return {"collected_at": ts, "keywords": items[:max(1, min(50, limit))]}
+
+
+@router.get("/sitemap-channels")
+async def sitemap_channels(limit: int = 2000):
+    """사이트맵에 넣을 채널 목록.
+
+    streamer 페이지는 데이터가 없으면 layout.tsx에서 robots noindex를 내보내므로,
+    빈 페이지를 사이트맵에 넣으면 색인 품질만 떨어진다. 그래서 '롤업에 실제 방송 이력이
+    쌓인 채널'만 고른다. 최근 활동순으로 정렬해 상위 N개만 반환한다.
+    """
+    limit = max(1, min(20000, limit))
+    db = await get_db()
+    rows = await (await db.execute(
+        # HAVING에는 SUM(snaps)를 직접 쓴다. 별칭을 snaps로 두고 'HAVING snaps >= ?'라고
+        # 쓰면 SQLite가 집계값이 아니라 원본 컬럼 snaps로 해석해 조건이 항상 거짓이 된다
+        # (자체 테스트에서 결과가 0행으로 나와 발견).
+        """SELECT chzzk_channel_id, MAX(hour_ts) AS last_at, SUM(snaps) AS total_snaps
+           FROM rising_hourly_rollup
+           GROUP BY chzzk_channel_id
+           HAVING SUM(snaps) >= ?
+           ORDER BY last_at DESC
+           LIMIT ?""",
+        (_SITEMAP_MIN_SNAPS, limit)
+    )).fetchall()
+    return {"channels": [{"id": r["chzzk_channel_id"], "last_at": int(r["last_at"] or 0)}
+                         for r in rows]}

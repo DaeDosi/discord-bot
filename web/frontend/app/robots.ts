@@ -21,5 +21,10 @@ export default function robots(): MetadataRoute.Robots {
         "/status",
       ],
     },
+    // 정적 페이지와 스트리머 페이지 사이트맵을 모두 알린다
+    sitemap: [
+      "https://nexbot.shop/sitemap.xml",
+      "https://nexbot.shop/streamers-sitemap.xml",
+    ],
   };
 }
