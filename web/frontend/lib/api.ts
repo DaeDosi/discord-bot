@@ -188,6 +188,12 @@ export const api = {
       fetch(`${BASE}/api/rising/tag-streamers?tag=${encodeURIComponent(tag)}`).then(r => r.json()) as Promise<import("./types").RisingTagStreamers>,
     tagEffect: (tag?: string) =>
       fetch(`${BASE}/api/rising/tag-effect${tag ? `?tag=${encodeURIComponent(tag)}` : ""}`).then(r => r.json()) as Promise<import("./types").RisingTagEffect>,
+    viewerDistribution: () =>
+      fetch(`${BASE}/api/rising/viewer-distribution`).then(r => r.json()) as Promise<import("./types").RisingViewerDistribution>,
+    trafficHeatmap: (days = 14) =>
+      fetch(`${BASE}/api/rising/traffic-heatmap?days=${days}`).then(r => r.json()) as Promise<import("./types").RisingTrafficHeatmap>,
+    titleKeywords: (limit = 10) =>
+      fetch(`${BASE}/api/rising/title-keywords?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingTitleKeywords>,
     search: (keyword: string) =>
       fetch(`${BASE}/api/rising/search?keyword=${encodeURIComponent(keyword)}`).then(r => r.json()) as Promise<{ results: import("./types").RisingSearchResult[] }>,
     rankingPeriod: (range = "24h", sort = "viewership", limit = 100) =>

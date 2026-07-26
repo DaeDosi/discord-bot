@@ -448,3 +448,11 @@ export interface RisingTagEffect {
   lift: { viewers: number | null; hours: number | null;
           follower: number | null; follower_gain: number | null };
 }
+
+// 전체 분석 탭 시각화 3종
+export interface ViewerBand { label: string; channels: number; share: number; }
+export interface RisingViewerDistribution { collected_at: number | null; total: number; bands: ViewerBand[]; }
+export interface HeatCell { avg_viewers: number; samples: number; }
+export interface RisingTrafficHeatmap { days: number; grid: HeatCell[][]; }
+export interface TitleKeyword { keyword: string; lives: number; viewers: number; avg_viewers: number; }
+export interface RisingTitleKeywords { collected_at: number | null; keywords: TitleKeyword[]; }

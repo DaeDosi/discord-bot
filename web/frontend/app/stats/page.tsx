@@ -18,6 +18,7 @@ import CollapsibleAbout from "@/components/CollapsibleAbout";
 import CategoryRankCards from "./CategoryRankCards";
 import RankingCharts from "./RankingCharts";
 import TagSearch from "./TagSearch";
+import { ViewerDistribution, TrafficHeatmap, TitleKeywordRank } from "./OverviewViz";
 import { GoldenHourHeatmap, BlueOceanCards, TierDistribution, TitleKeywordCard } from "./NewcomerInsightViz";
 import StatsNav, { type Tab } from "./StatsNav";
 
@@ -601,6 +602,9 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
         </div>
       </div>
 
+      {/* 요일·시간대 트래픽 히트맵 */}
+      <TrafficHeatmap />
+
       {/* 스트리머 인사이트 */}
       <div className="card">
         <h3 className="section-title mb-1">스트리머 인사이트</h3>
@@ -634,10 +638,14 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
         )}
       </div>
 
+      {/* 시청자 체급별 분포 */}
+      <ViewerDistribution />
+
       {/* 카테고리 점유율 (자체 시간 필터) */}
       <CategoryDonut />
 
-      {/* 급상승 스트리머 */}
+      {/* 급상승 스트리머 + 인기 제목 키워드 (2열) */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
       <div className="card">
         <h3 className="section-title mb-1">급상승 스트리머</h3>
         <p className="text-xs text-muted mb-4">24시간 전 대비 동시 시청자 성장률 상위</p>
@@ -660,6 +668,10 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
         ) : (
           <RisingSkeleton historyHours={ov.history_hours ?? 0} />
         )}
+      </div>
+
+      {/* 인기 방송 제목 키워드 TOP 10 */}
+      <TitleKeywordRank />
       </div>
     </div>
   );
@@ -1133,14 +1145,20 @@ function NewcomersAnalysisTab({ data, onRanking }: { data: RisingNewcomers; onRa
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <InsightCard title="인기 추천 카테고리">
             {ins?.top_category
-              ? <>현재 신입 스트리머 그룹에서 <b className="text-fg">{ins.top_category.name}</b> 카테고리가 방송당 평균{" "}
+              ? <>현재 신입 스트리머 그룹에서{" "}
+                  <b className="rounded-md px-1.5 py-0.5 font-extrabold"
+                     style={{ color: GREEN, background: "rgba(0,255,163,0.12)" }}>{ins.top_category.name}</b>
+                  {" "}카테고리가 방송당 평균{" "}
                   <b className="text-fg">{nf(ins.top_category.avg_viewers)}명</b>으로 시청자 반응이 가장 좋습니다.{" "}
                   <span className="text-muted/70">(신입 라이브 {nf(ins.top_category.lives)}개 기준)</span></>
               : `신입 라이브가 ${NC_CAT_MIN_LIVES}개 이상인 카테고리가 아직 없습니다. 표본이 쌓이면 표시됩니다.`}
           </InsightCard>
           <InsightCard title="노출 최적 시간대">
             {ins?.golden_hour
-              ? <>최근 24시간 분석 결과, <b className="text-fg">{hourLabel(ins.golden_hour.hour)}</b> 시간대에 신입 채널의
+              ? <>최근 24시간 분석 결과,{" "}
+                  <b className="rounded-md px-1.5 py-0.5 font-extrabold tabular-nums"
+                     style={{ color: GREEN, background: "rgba(0,255,163,0.12)" }}>{hourLabel(ins.golden_hour.hour)}</b>
+                  {" "}시간대에 신입 채널의
                   방송당 평균 시청자가 <b className="text-fg">{nf(ins.golden_hour.avg_viewers)}명</b>으로 가장 높았습니다
                   {ins.golden_hour.uplift_pct > 0 ? <> (평소 대비 <b style={{ color: GREEN }}>+{ins.golden_hour.uplift_pct}%</b>)</> : ""}.</>
               : "시간대 분석용 데이터가 아직 부족합니다."}

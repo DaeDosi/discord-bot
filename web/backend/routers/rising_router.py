@@ -1302,3 +1302,98 @@ async def tag_effect(tag: str | None = None):
                               if a["avg_follower_gain"] is not None and b["avg_follower_gain"] else None),
         },
     }
+
+
+# ── 전체 분석 탭 시각화 3종 ──────────────────────────────────────────────────
+# 체급 구간(개요 탭 TIERS와 별개) — 소규모 구간을 더 잘게 나눠 분포를 본다
+_VIEWER_BANDS = [(0, 5, "0~5명"), (6, 20, "6~20명"), (21, 100, "21~100명"),
+                 (101, 500, "101~500명"), (501, None, "500명+")]
+
+
+@router.get("/viewer-distribution")
+async def viewer_distribution():
+    """시청자 체급 구간별 채널 수 — 최신 수집 사이클 기준."""
+    ts = await _latest_run_ts()
+    if ts is None:
+        return {"collected_at": None, "bands": []}
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT concurrent_viewers FROM rising_live_snapshots WHERE collected_at=?", (ts,)
+    )).fetchall()
+    vs = [int(r["concurrent_viewers"] or 0) for r in rows]
+    total = len(vs) or 1
+    bands = []
+    for lo, hi, label in _VIEWER_BANDS:
+        n = sum(1 for v in vs if v >= lo and (hi is None or v <= hi))
+        bands.append({"label": label, "channels": n, "share": round(n / total * 100, 1)})
+    return {"collected_at": ts, "total": len(vs), "bands": bands}
+
+
+@router.get("/traffic-heatmap")
+async def traffic_heatmap(days: int = 14):
+    """요일×시간대 평균 시청자 — 7x24 히트맵.
+
+    rising_collect_runs(사이클당 1행, 영구 보관)에서 읽으므로 원본 보관 기간과 무관하게
+    이력이 계속 누적된다. KST 기준 요일(월=0)과 시(0~23)로 버킷팅한다.
+    """
+    days = max(1, min(90, days))
+    since = int(time.time()) - days * 86400
+    db = await get_db()
+    rows = await (await db.execute(
+        """SELECT CAST(strftime('%w', collected_at + 32400, 'unixepoch') AS INTEGER) AS dow,
+                  CAST(strftime('%H', collected_at + 32400, 'unixepoch') AS INTEGER) AS h,
+                  AVG(total_viewers) AS v, COUNT(*) AS n
+           FROM rising_collect_runs
+           WHERE ok=1 AND collected_at >= ?
+           GROUP BY dow, h""",
+        (since,)
+    )).fetchall()
+    # strftime %w는 일=0 → 월=0이 되도록 이동(화면에서 월~일 순으로 보이게)
+    cells = {(int(r["dow"]) + 6) % 7: {} for r in rows}
+    for r in rows:
+        cells.setdefault((int(r["dow"]) + 6) % 7, {})[int(r["h"])] = {
+            "avg_viewers": round(r["v"] or 0), "samples": int(r["n"] or 0)}
+    grid = [[(cells.get(d, {}).get(h) or {"avg_viewers": 0, "samples": 0}) for h in range(24)]
+            for d in range(7)]
+    return {"days": days, "grid": grid}
+
+
+# 제목 키워드 추출용 불용어 — 의미 없는 조사/일반어를 걸러 낸다
+_TITLE_STOP = {
+    "방송", "오늘", "지금", "같이", "우리", "그냥", "다시", "진짜", "제발", "이제",
+    "하는", "하고", "해서", "합니다", "해요", "이제부터", "여러분", "안녕하세요",
+    "with", "the", "and", "for", "live", "new",
+}
+_TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9]+")
+
+
+@router.get("/title-keywords")
+async def title_keywords(limit: int = 10):
+    """현재 라이브 방송 제목에서 많이 쓰인 키워드 TOP N."""
+    ts = await _latest_run_ts()
+    if ts is None:
+        return {"collected_at": None, "keywords": []}
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT live_title, concurrent_viewers FROM rising_live_snapshots "
+        "WHERE collected_at=? AND live_title != ''", (ts,)
+    )).fetchall()
+    agg: dict[str, dict] = {}
+    for r in rows:
+        seen = set()
+        for tok in _TOKEN_RE.findall(r["live_title"]):
+            w = tok.lower()
+            # 1글자와 순수 숫자는 노이즈라 제외. 같은 제목에서 중복 집계도 막는다.
+            if len(w) < 2 or w.isdigit() or w in _TITLE_STOP or w in seen:
+                continue
+            seen.add(w)
+            e = agg.setdefault(w, {"lives": 0, "viewers": 0})
+            e["lives"] += 1
+            e["viewers"] += int(r["concurrent_viewers"] or 0)
+    items = sorted(
+        ({"keyword": k, "lives": v["lives"], "viewers": v["viewers"],
+          "avg_viewers": round(v["viewers"] / v["lives"]) if v["lives"] else 0}
+         for k, v in agg.items() if v["lives"] >= 3),
+        key=lambda x: x["lives"], reverse=True,
+    )
+    return {"collected_at": ts, "keywords": items[:max(1, min(50, limit))]}
