@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BarChart3, ScatterChart, ChevronDown, RotateCcw } from "lucide-react";
 
@@ -99,9 +99,9 @@ function BarPanel({ rows, onPick, deltaName }:
 }
 
 // ── 컴포넌트 2: 성장성 산점도 ────────────────────────────────────────────────
-const W = 820, H = 420, P = { l: 80, r: 56, t: 50, b: 56 };
-// 클립 여유 — 버블 최대 반지름(7+11=18, 호버 시 x1.2 = 약 22px)보다 크게 잡는다
-const CLIP_PAD = 28;
+const W = 900, H = 580, P = { l: 84, r: 60, t: 54, b: 60 };
+const MAX_RAD = 18 * 1.3;   // 버블 최대 반지름(호버 확대 1.3배 포함)
+const EDGE_PAD = 15;        // 원 전체가 박스 안에 들어오도록 강제할 여백
 
 // 4분면 정의 — 중앙값 십자선 기준. 사용자가 스트리머 포지션을 바로 읽을 수 있게
 // 구역마다 이름을 붙인다. X=체급(시청자), Y=유입(팔로워 증가/성장률).
@@ -172,12 +172,12 @@ function ScatterPanel({ rows, onPick, y }:
       // 도메인에 20% 여유가 있어 더 이상 0~1로 클램프하지 않는다(클램프가 곧 가장자리 겹침이었다).
       let h = 0;
       for (let k = 0; k < r.chzzk_channel_id.length; k++) h = (h * 31 + r.chzzk_channel_id.charCodeAt(k)) >>> 0;
-      const jx = (((h % 100) / 100) - 0.5) * 0.012;
-      const jy = ((((h >> 7) % 100) / 100) - 0.5) * 0.012;
+      // 지터 방향/세기는 채널별로 고정하고, 실제 적용량은 렌더 시 확대 배율에 맞춰 키운다
+      const ju = ((h % 100) / 100) - 0.5;
+      const jv = (((h >> 7) % 100) / 100) - 0.5;
       return {
         r, yv: r.yValue as number,
-        x: nx(xr[i]) + jx,
-        yn: ny(yr[i]) + jy,
+        x: nx(xr[i]), yn: ny(yr[i]), ju, jv,
         rad: 7 + (Math.min(r.dur.ms, DAY_MS) / Math.min(maxDur, DAY_MS)) * 11,
       };
     });
@@ -213,30 +213,62 @@ function ScatterPanel({ rows, onPick, y }:
   const sx = (n: number) => P.l + ((n - view.x0) / (view.x1 - view.x0)) * (W - P.l - P.r);
   const sy = (n: number) => H - P.b - ((n - view.y0) / (view.y1 - view.y0)) * (H - P.t - P.b);
   const inView = (n: number, a: number, b: number) => n >= a - 0.02 && n <= b + 0.02;
+  // Semantic zoom: 확대할수록(보이는 도메인이 좁아질수록) 지터를 키워
+  // 뭉쳐 있던 노드가 자동으로 벌어지게 한다. 기본 배율에서는 겹침 완화 수준으로만 작동.
+  const spread = 0.012 * Math.min(1, view.x1 - view.x0) ** 0.6;
+  const jitX = (p: { ju: number }) => p.ju * spread;
+  const jitY = (p: { jv: number }) => p.jv * spread;
 
-  const onWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
+  // 노드 중심이 경계에 붙어도 원 '전체'가 박스 안에 남도록 강제한다.
+  // clip-path를 없앤 대신 이 보정이 잘림을 막는다.
+  const clampX = (v: number, rad: number) =>
+    Math.min(W - rad - EDGE_PAD, Math.max(rad + EDGE_PAD, v));
+  const clampY = (v: number, rad: number) =>
+    Math.min(H - rad - EDGE_PAD, Math.max(rad + EDGE_PAD, v));
+
+  // 휠 확대/축소.
+  // React의 onWheel은 root에 passive 리스너로 붙어 preventDefault()가 무시된다
+  // (차트를 확대하면서 페이지도 같이 스크롤되던 원인). 네이티브 리스너를 passive:false로
+  // 직접 붙여야 기본 스크롤을 실제로 막을 수 있다.
+  useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
-    const rect = svg.getBoundingClientRect();
-    // 커서 위치를 도메인 좌표로 환산해 그 점을 고정한 채 확대/축소
-    const fx = view.x0 + ((e.clientX - rect.left) / rect.width * W - P.l) / (W - P.l - P.r) * (view.x1 - view.x0);
-    const fy = view.y0 + (1 - ((e.clientY - rect.top) / rect.height * H - P.t) / (H - P.t - P.b)) * (view.y1 - view.y0);
-    const k = e.deltaY > 0 ? 1.2 : 1 / 1.2;
-    const w = Math.min(1, Math.max(0.06, (view.x1 - view.x0) * k));
-    const h = Math.min(1, Math.max(0.06, (view.y1 - view.y0) * k));
-    let x0 = fx - (fx - view.x0) * (w / (view.x1 - view.x0));
-    let y0 = fy - (fy - view.y0) * (h / (view.y1 - view.y0));
-    // 이동(팬)이 없으므로 보이는 영역이 데이터 도메인 밖으로 나가지 않게 엄격히 가둔다
-    x0 = Math.min(1 - w, Math.max(0, x0));
-    y0 = Math.min(1 - h, Math.max(0, y0));
-    setView({ x0, x1: x0 + w, y0, y1: y0 + h });
-  };
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = svg.getBoundingClientRect();
+      setView((v) => {
+        const fx = v.x0 + ((e.clientX - rect.left) / rect.width * W - P.l) / (W - P.l - P.r) * (v.x1 - v.x0);
+        const fy = v.y0 + (1 - ((e.clientY - rect.top) / rect.height * H - P.t) / (H - P.t - P.b)) * (v.y1 - v.y0);
+        const k = e.deltaY > 0 ? 1.2 : 1 / 1.2;
+        const w = Math.min(1, Math.max(0.05, (v.x1 - v.x0) * k));
+        const h = Math.min(1, Math.max(0.05, (v.y1 - v.y0) * k));
+        let x0 = fx - (fx - v.x0) * (w / (v.x1 - v.x0));
+        let y0 = fy - (fy - v.y0) * (h / (v.y1 - v.y0));
+        // 이동(팬)이 없으므로 보이는 영역이 데이터 도메인 밖으로 나가지 않게 엄격히 가둔다
+        x0 = Math.min(1 - w, Math.max(0, x0));
+        y0 = Math.min(1 - h, Math.max(0, y0));
+        return { x0, x1: x0 + w, y0, y1: y0 + h };
+      });
+    };
+    svg.addEventListener("wheel", handler, { passive: false });
+    return () => svg.removeEventListener("wheel", handler);
+  }, []);
 
   const zoomed = view.x0 !== 0 || view.x1 !== 1 || view.y0 !== 0 || view.y1 !== 1;
 
+  // clip-path를 없앴으므로 '잘라내는' 대신 보이는 영역 밖 노드를 아예 '걸러낸다'.
+  // 걸러내지 않으면 clampX/Y가 화면 밖 노드를 전부 경계에 밀어붙여 테두리에 쌓인다.
+  // 여유(MARGIN)를 둬서 경계에 반쯤 걸친 노드는 그대로 보이게 한다.
+  const MARGIN = 0.06;
+  const visible = data.pts.filter((p) => {
+    const px = p.x + jitX(p), py = p.yn + jitY(p);
+    return px >= view.x0 - MARGIN && px <= view.x1 + MARGIN
+        && py >= view.y0 - MARGIN && py <= view.y1 + MARGIN;
+  });
+
   // 호버된 버블을 마지막에 그려 z-order 최상단으로 올린다(SVG는 문서 순서대로 페인트)
-  const ordered = [...data.pts].sort((a, b) =>
+  const ordered = [...visible].sort((a, b) =>
     (a.r.chzzk_channel_id === hover ? 1 : 0) - (b.r.chzzk_channel_id === hover ? 1 : 0));
   const hp = data.pts.find((p) => p.r.chzzk_channel_id === hover);
 
@@ -255,14 +287,8 @@ function ScatterPanel({ rows, onPick, y }:
       <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" height={H}
            className="overflow-visible"
            style={{ display: "block", touchAction: "none" }}
-           onWheel={onWheel} onMouseLeave={() => setHover(null)}>
+           onMouseLeave={() => setHover(null)}>
         <defs>
-          {/* 버블 최대 반지름(약 22px)보다 넉넉히 넓혀 가장자리 노드가 잘리지 않게 한다.
-              줌/팬으로 밀려난 요소는 여전히 이 범위에서 정리된다. */}
-          <clipPath id="plot-clip">
-            <rect x={P.l - CLIP_PAD} y={P.t - CLIP_PAD}
-                  width={W - P.l - P.r + CLIP_PAD * 2} height={H - P.t - P.b + CLIP_PAD * 2} />
-          </clipPath>
           {/* 4분면 미세 배경 — 각 구역 바깥쪽 모서리로 갈수록 옅게 진해진다 */}
           {QUADRANTS.map((q) => {
             const [x1, y1, x2, y2] =
@@ -275,15 +301,19 @@ function ScatterPanel({ rows, onPick, y }:
               </linearGradient>
             );
           })}
-          {data.pts.map((p) => (
+          {visible.map((p) => (
             <clipPath key={p.r.chzzk_channel_id} id={`c-${p.r.chzzk_channel_id}`}>
-              <circle cx={sx(p.x)} cy={sy(p.yn)}
-                      r={p.rad * (hover === p.r.chzzk_channel_id ? 1.2 : 1)} />
+              {(() => {
+                const rr = p.rad * (hover === p.r.chzzk_channel_id ? 1.3 : 1);
+                return <circle cx={clampX(sx(p.x + jitX(p)), rr)} cy={clampY(sy(p.yn + jitY(p)), rr)} r={rr} />;
+              })()}
             </clipPath>
           ))}
         </defs>
 
-        <g clipPath="url(#plot-clip)">
+        {/* clip-path 없음 — 가장자리 노드가 반쯤 잘리던 원인이라 제거했다.
+            대신 아래 clampXY로 원 전체가 박스 안에 들어오도록 좌표를 보정한다. */}
+        <g>
           {/* 4분면 배경 — 중앙값 십자선을 기준으로 나뉘며 줌/팬을 따라간다 */}
           {(() => {
             const mx = Math.min(W - P.r, Math.max(P.l, sx(data.medX)));
@@ -339,20 +369,21 @@ function ScatterPanel({ rows, onPick, y }:
           {/* 버블 */}
           {ordered.map((p) => {
             const on = hover === p.r.chzzk_channel_id;
-            const rr = p.rad * (on ? 1.2 : 1);
+            const rr = p.rad * (on ? 1.3 : 1);
+            const cxp = clampX(sx(p.x + jitX(p)), rr), cyp = clampY(sy(p.yn + jitY(p)), rr);
             return (
               <g key={p.r.chzzk_channel_id} style={{ cursor: "pointer" }}
                  onMouseEnter={() => setHover(p.r.chzzk_channel_id)}
                  onClick={() => onPick(p.r.chzzk_channel_id)}>
-                <circle cx={sx(p.x)} cy={sy(p.yn)} r={rr + 2}
+                <circle cx={cxp} cy={cyp} r={rr + 2}
                         fill={on ? GREEN : "rgba(0,255,163,0.16)"} opacity={on ? 0.45 : 1} />
                 {p.r.channel_image_url && (
                   <image href={p.r.channel_image_url}
-                         x={sx(p.x) - rr} y={sy(p.yn) - rr} width={rr * 2} height={rr * 2}
+                         x={cxp - rr} y={cyp - rr} width={rr * 2} height={rr * 2}
                          clipPath={`url(#c-${p.r.chzzk_channel_id})`}
                          preserveAspectRatio="xMidYMid slice" />
                 )}
-                <circle cx={sx(p.x)} cy={sy(p.yn)} r={rr} fill="none"
+                <circle cx={cxp} cy={cyp} r={rr} fill="none"
                         stroke={on ? "#fff" : GREEN} strokeWidth={on ? 2 : 1.5} />
               </g>
             );
@@ -385,8 +416,8 @@ function ScatterPanel({ rows, onPick, y }:
       {hp && (
         <div className="pointer-events-none absolute z-40 w-[210px] rounded-xl border border-border
                         bg-bg-card/95 p-3 shadow-2xl backdrop-blur"
-             style={{ left: `min(${(sx(hp.x) / W) * 100}%, calc(100% - 220px))`,
-                      top: Math.min(sy(hp.yn) + 18, H - 40) }}>
+             style={{ left: `min(${(clampX(sx(hp.x + jitX(hp)), hp.rad) / W) * 100}%, calc(100% - 220px))`,
+                      top: Math.min(clampY(sy(hp.yn + jitY(hp)), hp.rad) + 22, H - 40) }}>
           <div className="flex items-center gap-2">
             <span className="h-7 w-7 shrink-0 overflow-hidden rounded-full bg-bg-hover">
               {hp.r.channel_image_url && (
@@ -421,7 +452,7 @@ function ScatterPanel({ rows, onPick, y }:
       </p>
       <p className="mt-1 text-[11px] text-muted/70">
         점선은 중앙값 기준 4분면 · 버블이 클수록 방송 시간이 깁니다 · 기본 화면에 전체가
-        모두 표시되며, 마우스 휠로 확대/축소할 수 있습니다{y.log && " · 값 차이가 커서 두 축 모두 로그 스케일"}.
+        모두 표시되며, 마우스 휠로 확대하면 뭉친 노드가 자동으로 벌어집니다{y.log && " · 값 차이가 커서 두 축 모두 로그 스케일"}.
       </p>
     </div>
   );
@@ -469,7 +500,7 @@ export default function RankingCharts({ rows, y, deltaName = "변동률" }:
       </div>
 
       <div className="overflow-hidden transition-[max-height] duration-300 ease-in-out"
-           style={{ maxHeight: open ? 1400 : 0 }}>
+           style={{ maxHeight: open ? 1800 : 0 }}>
         <p className="mb-3 mt-1 text-[11px] text-muted">
           {mode === "bar"
             ? "동시 시청자 상위 10명 · 막대에 마우스를 올리면 방송 시간과 팔로워를 볼 수 있습니다."
