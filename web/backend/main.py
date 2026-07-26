@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from rate_limit import RateLimitMiddleware
 from fastapi.responses import RedirectResponse
 from dotenv import load_dotenv
 
@@ -39,6 +40,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Discord Bot Dashboard API", lifespan=lifespan)
+
+# 레이트 리밋 — /api/rising/* 는 인증이 없는 공개 API라 남용 방어가 필요하다.
+# CORS보다 먼저 add_middleware 하면 바깥쪽(=나중 실행)이 되므로, 429 응답에도
+# CORS 헤더가 붙도록 CORS를 나중에 추가한다(Starlette는 나중에 추가한 것이 바깥쪽).
+app.add_middleware(RateLimitMiddleware)
 
 # JWT는 Authorization 헤더로 전달하므로 credentials 불필요 → allow_origins=["*"] 사용 가능
 app.add_middleware(
