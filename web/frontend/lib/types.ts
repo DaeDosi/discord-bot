@@ -552,3 +552,51 @@ export interface SingcupRankings {
   };
   rankings: SingcupEntry[];
 }
+
+// ── 싱드컵: 클립 기반 메인/랭킹 ─────────────────────────────────────────────
+// 자유게시판 버프(SingcupRankings)와는 별개 데이터다.
+// 백엔드가 대표 클립·점수·변화량·현재 라이브까지 계산해 내려주므로
+// 프론트에서 다시 그룹화하거나 정렬 기준을 재계산하지 않는다.
+export interface SingcupLive {
+  liveTitle:         string;
+  concurrentViewers: number;
+  categoryName:      string;
+}
+export interface SingcupStreamer {
+  rank:               number;
+  channelId:          string;
+  channelName:        string;
+  channelImageUrl:    string;
+  followerCount:      number;
+  verifiedMark:       boolean;
+  taggedClipCount:    number;
+  clipUid:            string;
+  clipTitle:          string;
+  clipThumbnailUrl:   string;
+  heartCount:         number;
+  viewCount:          number;
+  createdAt:          string;
+  /** 조회수 환산 점수(0~70) */
+  viewScore:          number;
+  /** 하트 환산 점수(0~30) */
+  heartScore:         number;
+  /** 비공식 예상 인기점수(0~100) */
+  score:              number;
+  heartDelta:         number | null;
+  rankDelta:          number | null;
+  heartDelta24h:      number | null;
+  heartChangeRate24h: number | null;
+  isNew:              boolean;
+  live:               SingcupLive | null;
+}
+export interface SingcupMain {
+  event: { id: string; startAt: string; endAt: string; status: SingcupStatus };
+  summary: { taggedClipCount: number; streamerCount: number; liveCount: number };
+  collector: { lastSuccessAt: string | null; stale: boolean };
+  streamers: SingcupStreamer[];
+}
+export interface SingcupClip {
+  clipUid: string; clipTitle: string; clipThumbnailUrl: string;
+  heartCount: number; viewCount: number; duration: number; createdAt: string;
+}
+export interface SingcupStreamerClips { channelId: string; clips: SingcupClip[] }

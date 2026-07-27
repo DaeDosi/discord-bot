@@ -166,8 +166,14 @@ export const api = {
 
   // 싱드컵 이벤트 — 네이버 라운지 수집 결과(백엔드가 정규화한 형태만 내려온다)
   singcup: {
+    // 자유게시판 홍보글(버프) — 보조 화면
     rankings: (limit = 200) =>
       fetch(`${BASE}/api/singcup/rankings?limit=${limit}`).then(r => r.json()) as Promise<import("./types").SingcupRankings>,
+    // #싱드컵 태그 클립 — 메인/랭킹의 근거
+    main: (limit = 200) =>
+      fetch(`${BASE}/api/singcup/main?limit=${limit}`).then(r => r.json()) as Promise<import("./types").SingcupMain>,
+    streamerClips: (channelId: string) =>
+      fetch(`${BASE}/api/singcup/streamers/${encodeURIComponent(channelId)}/clips`).then(r => r.json()) as Promise<import("./types").SingcupStreamerClips>,
   },
 
   // CHZZK Rising — 공개(비로그인) 분석 포털. 인증 불필요라 plain fetch 사용.
