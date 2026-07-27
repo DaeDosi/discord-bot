@@ -330,9 +330,37 @@ GET https://comm-api.game.naver.com/nng_main/v1/community/lounge/chzzk/feed
 curl https://<backend>/api/singcup/rankings          # 순위(공개)
 curl https://<backend>/api/singcup/status            # 수집기 진단(공개)
 
-# 수동 수집 — SINGCUP_ADMIN_SECRET 헤더 필요
-curl -X POST https://<backend>/api/singcup/collect -H 'X-Singcup-Secret: <secret>'
+# 아래는 모두 SINGCUP_ADMIN_SECRET 헤더 필요
+S='-H "X-Singcup-Secret: <secret>"'
+
+# 정기 수집과 동일한 1회 실행
+curl -X POST 'https://<backend>/api/singcup/collect' -H 'X-Singcup-Secret: <secret>'
+
+# DB에 쓰지 않고 몇 건이 잡히는지만 확인
+curl -X POST 'https://<backend>/api/singcup/collect?mode=dry-run' -H 'X-Singcup-Secret: <secret>'
+
+# 과거 구간을 깊게 훑기(이벤트 시작일을 앞당긴 뒤 1회). upsert라 재실행해도 안전
+curl -X POST 'https://<backend>/api/singcup/collect?mode=backfill' -H 'X-Singcup-Secret: <secret>'
+
+# 이벤트 기간 밖 행 확인(기본 dry-run) → 실제 적용
+curl -X POST 'https://<backend>/api/singcup/prune' -H 'X-Singcup-Secret: <secret>'
+curl -X POST 'https://<backend>/api/singcup/prune?dry_run=false' -H 'X-Singcup-Secret: <secret>'
 ```
+
+### 실행 모드
+
+| mode | 동작 |
+| --- | --- |
+| `normal` | 정기 수집(기본). `offset=0`부터 이벤트 시작일 이전 페이지가 나올 때까지 순회 |
+| `backfill` | 같은 순회지만 페이지 상한이 `SINGCUP_BACKFILL_MAX_PAGES`. **이벤트 시작일을 앞당긴 뒤 1회 실행** |
+| `dry-run` | 순회·판별만 하고 **DB에 아무것도 쓰지 않음**(수집 이력도 남기지 않음) |
+
+세 모드 모두 순회 로직은 같습니다 — 최적화를 이유로 페이지를 건너뛰지 않으므로
+이벤트 기간 내 게시글의 버프/조회수 갱신이 누락되지 않습니다.
+
+`POST /prune`은 이벤트 기간을 벗어난 행을 **삭제하지 않고 `active=0`으로만** 내리며,
+기본값이 dry-run이라 대상을 먼저 확인한 뒤 적용하게 되어 있습니다. `singcup_feeds`의
+해당 `event_id` 행만 건드리고 다른 테이블·이벤트는 수정하지 않습니다.
 
 `secret`이 설정되지 않은 배포에서는 수동 수집이 **503으로 아예 막힙니다**(빈 값과 일치해
 열리는 사고 방지). secret은 프론트엔드에 노출하지 않으며 로그에도 남기지 않습니다.
@@ -360,10 +388,11 @@ curl -X POST https://<backend>/api/singcup/collect -H 'X-Singcup-Secret: <secret
 | `SINGCUP_ENABLED` | `true` | `false`면 수집 루프를 띄우지 않음(조회 API는 그대로 동작) |
 | `SINGCUP_EVENT_ID` | `singcup-2026` | 이벤트 식별자(DB 행 구분) |
 | `SINGCUP_EVENT_NAME` | `싱드컵` | 화면 표기명 |
-| `SINGCUP_START_AT` | `2026-07-27T20:00:00+09:00` | 시작(KST) |
+| `SINGCUP_START_AT` | `2026-07-20T00:00:00+09:00` | 시작(KST) |
 | `SINGCUP_END_AT` | `2026-08-09T23:59:59+09:00` | 종료(KST) |
 | `SINGCUP_COLLECT_INTERVAL_MINUTES` | `3` | 진행 중 수집 주기 |
-| `SINGCUP_MAX_PAGES` | `100` | 한 회차 최대 페이지 수 |
+| `SINGCUP_MAX_PAGES` | `100` | 정기 수집 최대 페이지 수 |
+| `SINGCUP_BACKFILL_MAX_PAGES` | `300` | `mode=backfill` 최대 페이지 수 |
 | `SINGCUP_REQUEST_TIMEOUT_MS` | `10000` | 요청 타임아웃 |
 | `SINGCUP_MAX_RETRIES` | `3` | 재시도 가능한 오류의 총 시도 횟수 |
 | `SINGCUP_MAX_RUN_SECONDS` | `300` | 한 회차 최대 실행 시간(= 락 TTL) |

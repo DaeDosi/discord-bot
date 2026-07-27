@@ -5,6 +5,17 @@
 
 ## 2026-07-28 세션 (싱드컵 이벤트 페이지 신설)
 
+### 이벤트 시작일 07-20으로 변경 + 실행 모드 추가 (같은 날 후속)
+- `SINGCUP_START_AT` 기본값을 `2026-07-27T20:00:00+09:00` → `2026-07-20T00:00:00+09:00`.
+  backfill 결과 참가작 32건 → **46건**(07-25~07-27 구간 13건 추가), 참가자 43명.
+- 실행 모드 신설: `normal` / `backfill`(페이지 상한 300) / `dry-run`(DB 미기록).
+  `POST /api/singcup/collect?mode=...`, 그리고 기간 밖 행 정리용 `POST /api/singcup/prune`
+  (기본 dry-run, 삭제가 아니라 active=0).
+- **페이지네이션은 원래부터 정상이었다** — `for offset in range(MAX_PAGES)`로 offset을
+  1씩 늘리며 순회하고 있었고(첫 페이지만 보는 코드가 아니었음), 기존 테스트도 offset이
+  `[0,1,2]`인지 검증하고 있었다. 회귀 방지를 위해 웹 페이지 번호↔offset 대응 테스트를
+  `tests/test_singcup_pagination.py`로 13개 추가.
+
 - 네이버 게임 **치지직 라운지 자유게시판**(비공식 feed API)에서 `[싱드컵]` 말머리 게시글을
   수집해 버프 순위를 보여주는 이벤트 페이지 신설. `/stats` 좌측 메뉴에 `싱드컵 [EVENT]`.
 - 신규: `web/backend/singcup_collector.py`(수집·순위), `routers/singcup_router.py`

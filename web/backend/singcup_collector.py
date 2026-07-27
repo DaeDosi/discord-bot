@@ -52,10 +52,13 @@ def _env_dt(name: str, default: str) -> datetime:
 ENABLED = (os.getenv("SINGCUP_ENABLED", "true").lower() not in ("0", "false", "no"))
 EVENT_ID = os.getenv("SINGCUP_EVENT_ID", "singcup-2026")
 EVENT_NAME = os.getenv("SINGCUP_EVENT_NAME", "싱드컵")
-START_AT = _env_dt("SINGCUP_START_AT", "2026-07-27T20:00:00+09:00")
+# 이벤트 기간은 여기(또는 환경변수) 한 곳에서만 관리한다 — 다른 파일에 하드코딩하지 않는다.
+START_AT = _env_dt("SINGCUP_START_AT", "2026-07-20T00:00:00+09:00")
 END_AT = _env_dt("SINGCUP_END_AT", "2026-08-09T23:59:59+09:00")
 COLLECT_INTERVAL_MINUTES = float(os.getenv("SINGCUP_COLLECT_INTERVAL_MINUTES", "3"))
 MAX_PAGES = int(os.getenv("SINGCUP_MAX_PAGES", "100"))
+# 과거 구간을 한 번에 훑는 backfill 모드용 상한(평소 수집보다 깊게 들어갈 수 있게)
+BACKFILL_MAX_PAGES = int(os.getenv("SINGCUP_BACKFILL_MAX_PAGES", "300"))
 REQUEST_TIMEOUT = float(os.getenv("SINGCUP_REQUEST_TIMEOUT_MS", "10000")) / 1000
 MAX_RETRIES = max(1, int(os.getenv("SINGCUP_MAX_RETRIES", "3")))
 BACKOFF_BASE_SECONDS = float(os.getenv("SINGCUP_BACKOFF_BASE_SECONDS", "1"))
@@ -381,8 +384,15 @@ async def fetch_page(client: httpx.AsyncClient, offset: int) -> list[dict]:
 
 
 # ── DB ──────────────────────────────────────────────────────────────────────
-async def _upsert(entry: dict, now: int):
+async def _upsert(entry: dict, now: int) -> bool:
+    """upsert 하고 '새로 추가된 행인지'를 돌려준다(backfill 보고용).
+
+    feed_id가 PK라 재실행해도 중복 insert가 생기지 않는다.
+    """
     db = await get_db()
+    exists = await (await db.execute(
+        "SELECT 1 FROM singcup_feeds WHERE feed_id=?", (entry["feed_id"],)
+    )).fetchone()
     await db.execute(
         """INSERT INTO singcup_feeds
                (feed_id, event_id, author_id_hash, author_nickname, author_profile_image_url,
@@ -422,6 +432,47 @@ async def _upsert(entry: dict, now: int):
          entry["original_lounge_id"], entry["raw_contents"], entry["hidden_by_clean_bot"],
          entry["pinned"], now, now, now),
     )
+    return exists is None
+
+
+async def prune_out_of_range(*, dry_run: bool = True) -> dict:
+    """이벤트 기간 밖으로 벗어난 행을 정리한다.
+
+    이벤트 시작일을 바꾸면 예전 기준으로 저장된 행이 범위 밖이 될 수 있다.
+    **실제로 지우지 않고 active=0으로만 내린다**(원본은 보존). 기본값이 dry_run=True라
+    무엇이 대상인지 먼저 확인한 뒤 실행하게 되어 있다.
+    이 함수는 singcup_feeds의 이 이벤트(event_id) 행만 건드린다 — 다른 테이블/이벤트는
+    절대 수정하지 않는다.
+    """
+    start_ts = int(START_AT.timestamp())
+    end_ts = int(END_AT.timestamp())
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT feed_id, title, created_at, author_nickname FROM singcup_feeds "
+        "WHERE event_id=? AND active=1 AND (created_at < ? OR created_at > ?)",
+        (EVENT_ID, start_ts, end_ts)
+    )).fetchall()
+    targets = [dict(r) for r in rows]
+
+    if targets and not dry_run:
+        qs = ",".join("?" for _ in targets)
+        await db.execute(
+            f"UPDATE singcup_feeds SET active=0, row_updated_at=? WHERE feed_id IN ({qs})",
+            (int(time.time()), *[t["feed_id"] for t in targets]))
+        await db.commit()
+
+    _log({"event": "prune", "dry_run": dry_run, "count": len(targets),
+          "event_id": EVENT_ID,
+          "window": [START_AT.isoformat(), END_AT.isoformat()],
+          "sample": [t["feed_id"] for t in targets[:10]]})
+    return {"dryRun": dry_run, "count": len(targets),
+            "window": {"startAt": START_AT.isoformat(), "endAt": END_AT.isoformat()},
+            "targets": [
+                {"feedId": t["feed_id"], "title": t["title"][:60],
+                 "createdAt": datetime.fromtimestamp(t["created_at"], _KST).isoformat(),
+                 "authorNickname": t["author_nickname"]}
+                for t in targets[:50]
+            ]}
 
 
 async def _reconcile_missing(seen_ids: set[int], now: int) -> int:
@@ -479,17 +530,36 @@ async def _record_run(started: int, *, ok: bool, full_scan: bool, pages: int,
 
 
 # ── 수집 ────────────────────────────────────────────────────────────────────
-async def collect_once(*, force: bool = False) -> dict:
-    """한 회차 수집. 락을 못 잡으면 아무것도 하지 않고 SKIPPED를 돌려준다."""
+MODES = ("normal", "backfill", "dry-run")
+
+
+async def collect_once(*, force: bool = False, mode: str = "normal") -> dict:
+    """한 회차 수집. 락을 못 잡으면 아무것도 하지 않고 SKIPPED를 돌려준다.
+
+    mode:
+      normal   — 정기 수집. offset 0부터 이벤트 시작일 이전 페이지가 나올 때까지 순회.
+      backfill — 같은 순회지만 페이지 상한을 BACKFILL_MAX_PAGES로 올린다. 이벤트 시작일을
+                 앞당긴 뒤 과거 구간을 한 번에 채울 때 쓴다(upsert라 재실행해도 안전).
+      dry-run  — 순회와 판별만 하고 **DB에 아무것도 쓰지 않는다**. 몇 건이 잡히는지
+                 먼저 확인할 때 쓴다.
+
+    세 모드 모두 순회 로직은 동일하다 — 최적화를 이유로 일부 페이지를 건너뛰지 않으므로
+    이벤트 기간 내 게시글의 버프/조회수 갱신이 누락되지 않는다.
+    """
+    mode = mode if mode in MODES else "normal"
+    dry_run = mode == "dry-run"
+    page_cap = BACKFILL_MAX_PAGES if mode == "backfill" else MAX_PAGES
+
     started = int(time.time())
     token = await _acquire_lock(MAX_RUN_SECONDS)
     if token is None:
-        _log({"event": "skip", "reason": "lock_held"})
-        return {"status": ST_SKIPPED, "note": "다른 수집 작업이 실행 중입니다."}
+        _log({"event": "skip", "reason": "lock_held", "mode": mode})
+        return {"status": ST_SKIPPED, "mode": mode, "note": "다른 수집 작업이 실행 중입니다."}
 
     seen_ids: set[int] = set()
     pages = 0
     matched = 0
+    inserted = 0
     full_scan = False
     repeat_pages = 0
     status = ST_OK
@@ -498,7 +568,7 @@ async def collect_once(*, force: bool = False) -> dict:
     deadline = time.monotonic() + MAX_RUN_SECONDS
 
     try:
-        for offset in range(MAX_PAGES):
+        for offset in range(page_cap):
             if time.monotonic() > deadline:
                 note = "최대 실행 시간 초과"
                 status = ST_FAILED
@@ -524,8 +594,10 @@ async def collect_once(*, force: bool = False) -> dict:
                     new_on_page += 1
                 page_dts.append(parsed["created_dt"])
                 if is_event_entry(parsed, start=START_AT, end=END_AT):
-                    await _upsert(parsed, started)
                     matched += 1
+                    if not dry_run:
+                        if await _upsert(parsed, started):
+                            inserted += 1
 
             # 같은 페이지가 반복되면(=커서가 안 움직이면) 무한 루프이므로 중단
             if new_on_page == 0:
@@ -545,24 +617,29 @@ async def collect_once(*, force: bool = False) -> dict:
 
             await asyncio.sleep(PAGE_DELAY_SECONDS)
         else:
-            note = f"최대 페이지({MAX_PAGES}) 도달 — 이벤트 구간을 다 확인하지 못했습니다."
-            _log({"event": "max_pages", "level": "warning", "pages": pages})
-
-        await (await get_db()).commit()
+            note = f"최대 페이지({page_cap}) 도달 — 이벤트 구간을 다 확인하지 못했습니다."
+            _log({"event": "max_pages", "level": "warning", "pages": pages, "mode": mode})
 
         deactivated = 0
-        if full_scan and status == ST_OK:
-            deactivated = await _reconcile_missing(seen_ids, started)
+        if not dry_run:
             await (await get_db()).commit()
+            if full_scan and status == ST_OK:
+                deactivated = await _reconcile_missing(seen_ids, started)
+                await (await get_db()).commit()
 
         ok = status == ST_OK
-        await _record_run(started, ok=ok, full_scan=full_scan, pages=pages,
-                          feeds_seen=len(seen_ids), matched=matched, status=status, note=note)
-        _log({"event": "run", "status": status, "pages": pages, "feeds": len(seen_ids),
-              "matched": matched, "full_scan": full_scan, "missing": deactivated,
+        if not dry_run:      # dry-run은 이력도 남기지 않는다(순수 조회)
+            await _record_run(started, ok=ok, full_scan=full_scan, pages=pages,
+                              feeds_seen=len(seen_ids), matched=matched,
+                              status=status, note=(f"[{mode}] " + note).strip())
+        _log({"event": "run", "mode": mode, "status": status, "pages": pages,
+              "feeds": len(seen_ids), "matched": matched, "inserted": inserted,
+              "full_scan": full_scan, "missing": deactivated,
               "duration_ms": round((time.time() - started) * 1000)})
-        return {"status": status, "pages": pages, "feeds_seen": len(seen_ids),
-                "matched": matched, "full_scan": full_scan, "note": note}
+        return {"status": status, "mode": mode, "pages": pages,
+                "feeds_seen": len(seen_ids), "matched": matched,
+                "inserted": inserted, "full_scan": full_scan,
+                "deactivated": deactivated, "note": note}
 
     except SchemaError as e:
         # 스키마가 깨지면 '데이터 없음'이 아니라 실패다 — 기존 DB는 그대로 둔다.

@@ -9,7 +9,14 @@
 import hmac
 
 from fastapi import APIRouter, Header, HTTPException
-from singcup_collector import ADMIN_SECRET, collect_once, load_rankings, load_status
+from singcup_collector import (
+    ADMIN_SECRET,
+    MODES,
+    collect_once,
+    load_rankings,
+    load_status,
+    prune_out_of_range,
+)
 
 router = APIRouter(prefix="/api/singcup", tags=["singcup"])
 
@@ -26,19 +33,41 @@ async def status():
     return await load_status()
 
 
-@router.post("/collect")
-async def collect(x_singcup_secret: str | None = Header(default=None)):
-    """수동 수집. SINGCUP_ADMIN_SECRET 헤더가 맞아야 실행된다.
-
-    secret이 설정되지 않은 배포에서는 아예 막는다(빈 값과 일치해 열리는 사고 방지).
-    """
+def _require_secret(secret: str | None):
+    """secret이 설정되지 않은 배포에서는 아예 막는다(빈 값과 일치해 열리는 사고 방지)."""
     if not ADMIN_SECRET:
         raise HTTPException(
             status_code=503,
-            detail="SINGCUP_ADMIN_SECRET이 설정되지 않아 수동 수집을 사용할 수 없습니다.")
-    if not x_singcup_secret or not _consteq(x_singcup_secret, ADMIN_SECRET):
+            detail="SINGCUP_ADMIN_SECRET이 설정되지 않아 관리 기능을 사용할 수 없습니다.")
+    if not secret or not _consteq(secret, ADMIN_SECRET):
         raise HTTPException(status_code=401, detail="인증에 실패했습니다.")
-    return await collect_once(force=True)
+
+
+@router.post("/collect")
+async def collect(mode: str = "normal",
+                  x_singcup_secret: str | None = Header(default=None)):
+    """수동 수집. SINGCUP_ADMIN_SECRET 헤더가 맞아야 실행된다.
+
+    mode=normal   정기 수집과 동일
+    mode=backfill 과거 구간을 깊게 훑는다(이벤트 시작일을 앞당긴 뒤 1회 실행)
+    mode=dry-run  DB에 쓰지 않고 몇 건이 잡히는지만 확인
+    """
+    _require_secret(x_singcup_secret)
+    if mode not in MODES:
+        raise HTTPException(status_code=400,
+                            detail=f"mode는 {', '.join(MODES)} 중 하나여야 합니다.")
+    return await collect_once(force=True, mode=mode)
+
+
+@router.post("/prune")
+async def prune(dry_run: bool = True,
+                x_singcup_secret: str | None = Header(default=None)):
+    """이벤트 기간 밖으로 벗어난 행을 정리(active=0)한다. 기본은 dry-run.
+
+    행을 실제로 삭제하지 않으며 이 이벤트의 singcup_feeds 행만 건드린다.
+    """
+    _require_secret(x_singcup_secret)
+    return await prune_out_of_range(dry_run=dry_run)
 
 
 def _consteq(a: str, b: str) -> bool:

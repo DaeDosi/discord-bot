@@ -9,6 +9,9 @@ import type { SingcupRankings, SingcupEntry } from "@/lib/types";
 
 const GREEN = "#00FFA3";
 const GOLD = "#FACC15";
+const AMBER = "#FB923C";
+// 버프 수치용 2톤 그라데이션 — 노란색 + 앰버(따뜻한 계열끼리라 이벤트 톤과 어울린다)
+const BUFF_GRAD = `linear-gradient(135deg, ${GOLD}, ${AMBER})`;
 const SILVER = "#D1D5DB";
 const BRONZE = "#D97706";
 const MEDAL = [GOLD, SILVER, BRONZE] as const;
@@ -123,9 +126,12 @@ function EntryCard({ e }: { e: SingcupEntry }) {
         </span>
       </span>
 
-      {/* 버프 — 이 페이지에서 가장 중요한 지표라 가장 크게 */}
-      <span className="shrink-0 text-right">
-        <span className="block text-xl font-extrabold tabular-nums md:text-2xl" style={{ color: GOLD }}>
+      {/* 버프 — 이 페이지에서 가장 중요한 지표라 가장 크게 + 골드→앰버 2톤 그라데이션.
+          사이트 기본 포인트(그린→시안)와 겹치지 않게 따뜻한 계열로만 묶었다. */}
+      <span className="shrink-0 pr-1 text-right sm:pr-3">
+        <span className="block text-xl font-extrabold tabular-nums md:text-2xl"
+              style={{ background: BUFF_GRAD, WebkitBackgroundClip: "text",
+                       backgroundClip: "text", color: "transparent" }}>
           {nf(e.buffCount)}
         </span>
         <span className="block text-[11px] text-muted">버프</span>
@@ -206,7 +212,9 @@ export default function Singcup() {
           )}
         </div>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
-          치지직 라운지에서 진행 중인 싱드컵 참가작을 버프 순으로 확인합니다.
+          치지직 라운지에서 진행 중인 싱드컵 참가작을 버프 순으로 확인합니다.{" "}
+          제목이 <b className="text-fg">[싱드컵]</b> 말머리로 시작하는 게시글만 집계하며,
+          말머리가 없으면 본문에 싱드컵 내용이 있어도 <b className="text-fg">포함되지 않습니다.</b>
         </p>
         <p className="mt-1 text-[13px] text-muted/80">
           <span className="tabular-nums">{fmtRange(event.startAt, event.endAt)}</span>
@@ -243,7 +251,8 @@ export default function Singcup() {
       <div className="card">
         <h3 className="section-title">참가작 랭킹</h3>
         <p className="mt-0.5 text-[11px] text-muted">
-          버프 수 내림차순 · 동률이면 조회수 → 등록 시각 순. 같은 참가자는 가장 버프가 높은 한 편만 표시합니다.
+          <b className="text-muted">[싱드컵]</b> 말머리 게시글만 집계 · 버프 수 내림차순 ·
+          동률이면 조회수 → 등록 시각 순. 같은 참가자는 가장 버프가 높은 한 편만 표시합니다.
         </p>
 
         {rankings.length === 0 ? (
@@ -264,9 +273,10 @@ export default function Singcup() {
       </div>
 
       <p className="text-[11px] leading-relaxed text-muted/70">
-        * 네이버 게임 치지직 라운지 자유게시판의 <b className="text-muted">[싱드컵]</b> 말머리 게시글을
-        주기적으로 수집한 결과입니다. 버프·조회수는 수집 시점 기준이라 라운지 실제 수치와
-        약간의 시차가 있을 수 있습니다.
+        * 네이버 게임 치지직 라운지 자유게시판에서 제목이 <b className="text-muted">[싱드컵]</b>으로
+        시작하는 게시글만 주기적으로 수집한 결과입니다. 말머리가 없는 게시글은 집계에서 제외되므로,
+        참가작이 보이지 않는다면 제목 말머리를 확인해 주세요. 버프·조회수는 수집 시점 기준이라
+        라운지 실제 수치와 약간의 시차가 있을 수 있습니다.
       </p>
     </div>
   );
