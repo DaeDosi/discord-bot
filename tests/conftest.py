@@ -57,7 +57,8 @@ def db(request):
         await database.init_db()
         conn = await database.get_db()
         for t in ("chzzk_channel_history", "singcup_feeds", "singcup_collect_runs",
-                  "singcup_clips", "singcup_streamers", "singcup_snapshots"):
+                  "singcup_clips", "singcup_streamers", "singcup_snapshots",
+                  "singcup_clip_scan"):
             await conn.execute(f"DELETE FROM {t}")
         # 락은 지우지 말고 풀어 둔다(행 자체는 id=1 하나만 존재해야 한다)
         await conn.execute("UPDATE singcup_collect_lock SET locked_until=0, owner=''")

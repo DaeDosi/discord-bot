@@ -617,3 +617,384 @@ async def recompute_ranking(now: int, *, client=None) -> list[dict]:
 def event_meta() -> dict:
     return {"id": EVENT_ID, "startAt": START_AT.isoformat(),
             "endAt": END_AT.isoformat(), "status": event_status()}
+
+
+# ── 증분 수집 (카드 API 호출량 제어) ────────────────────────────────────────
+# 카드 API는 클립 1건당 1회다. 태그 클립이 500건을 넘는 상황에서 3~5분마다 전량을
+# 다시 부르면 사이클당 500회 이상이 나간다. 그래서 세 갈래로 나눈다.
+#   ① 처음 보는 클립        -> 반드시 카드 조회(태그 여부를 알아야 한다)
+#   ② 태그 없다고 확인된 클립 -> 다시 부르지 않는다(아주 오래되면 1회 재확인)
+#   ③ 태그 클립            -> 수치가 오래된 것부터 상위 랭킹 우선으로 제한된 개수만 갱신
+# 결과적으로 정상 사이클의 카드 호출은 (신규 클립 + REFRESH_PER_CYCLE) 수준으로 묶인다.
+METRICS_TTL_MINUTES = float(os.getenv("SINGCUP_METRICS_TTL_MINUTES", "20"))
+REFRESH_PER_CYCLE = int(os.getenv("SINGCUP_REFRESH_PER_CYCLE", "60"))
+RESCAN_UNTAGGED_HOURS = float(os.getenv("SINGCUP_RESCAN_UNTAGGED_HOURS", "24"))
+
+
+async def _load_scan_state() -> dict[str, tuple[int, int]]:
+    """clip_uid -> (tagged, checked_at)."""
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT clip_uid, tagged, checked_at FROM singcup_clip_scan")).fetchall()
+    return {r["clip_uid"]: (int(r["tagged"]), int(r["checked_at"])) for r in rows}
+
+
+async def _record_scan(clip_uid: str, tagged: bool, now: int):
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO singcup_clip_scan (clip_uid, tagged, checked_at) VALUES (?,?,?) "
+        "ON CONFLICT(clip_uid) DO UPDATE SET tagged=excluded.tagged, "
+        "checked_at=excluded.checked_at",
+        (clip_uid, 1 if tagged else 0, now))
+
+
+async def _refresh_due(now: int, limit: int) -> list[dict]:
+    """수치 갱신이 필요한 태그 클립. 오래된 것 우선, 같은 조건이면 하트가 높은 쪽 먼저."""
+    cutoff = now - int(METRICS_TTL_MINUTES * 60)
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT clip_uid, video_id, created_at FROM singcup_clips "
+        "WHERE event_id=? AND active=1 AND last_metrics_at < ? "
+        "ORDER BY last_metrics_at ASC, heart_count DESC LIMIT ?",
+        (EVENT_ID, cutoff, max(0, limit))
+    )).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def _apply_metrics(clip_uid: str, heart: int, view: int, ok: bool, now: int):
+    """카드에서 읽은 수치를 반영한다. 못 읽었으면(ok=False) 기존 값을 건드리지 않는다."""
+    db = await get_db()
+    if ok:
+        await db.execute(
+            "UPDATE singcup_clips SET heart_count=?, view_count=?, metrics_ok=1, "
+            "last_metrics_at=?, last_collected_at=?, row_updated_at=? WHERE clip_uid=?",
+            (heart, view, now, now, now, clip_uid))
+    else:
+        await db.execute(
+            "UPDATE singcup_clips SET metrics_ok=0, last_collected_at=?, row_updated_at=? "
+            "WHERE clip_uid=?", (now, now, clip_uid))
+
+
+async def collect_clips_incremental(*, dry_run: bool = False,
+                                    max_pages: int | None = None) -> dict:
+    """정기 수집 — 신규 클립만 카드 조회하고, 기존 태그 클립은 일부만 갱신한다."""
+    started = int(time.time())
+    token = await _acquire_lock(MAX_RUN_SECONDS)
+    if token is None:
+        return {"status": ST_SKIPPED, "note": "다른 수집 작업이 실행 중입니다."}
+
+    cap = max_pages or MAX_PAGES
+    client = _get_client()
+    deadline = time.monotonic() + MAX_RUN_SECONDS
+    scan = await _load_scan_state()
+    untagged_cutoff = started - int(RESCAN_UNTAGGED_HOURS * 3600)
+
+    seen_clips: set = set()
+    seen_cursors: set = set()
+    scanned = 0
+    fresh: list[dict] = []       # 카드 조회가 필요한 신규(또는 재확인 대상) 클립
+    known_tagged: set = set()    # 이번 목록에서 확인된 기존 태그 클립
+    pages = 0
+    full_scan = False
+    status = ST_OK
+    note = ""
+
+    try:
+        cursor = None
+        for _ in range(cap):
+            if time.monotonic() > deadline:
+                status, note = ST_FAILED, "최대 실행 시간 초과"
+                break
+            items, nxt = await fetch_clip_page(client, cursor)
+            pages += 1
+            if not items:
+                full_scan = True
+                break
+            scanned += len(items)
+
+            page_dates: list = []
+            new_on_page = 0
+            for it in items:
+                uid = str(it.get("clipUID") or "")
+                if not uid or uid in seen_clips:
+                    continue
+                seen_clips.add(uid)
+                new_on_page += 1
+                d = parse_clip_date(it.get("createdDate"))
+                if d:
+                    page_dates.append(d)
+                if not is_candidate_clip(it, start=START_AT, end=END_AT):
+                    continue
+                state = scan.get(uid)
+                if state is None:
+                    fresh.append(it)                      # ① 처음 보는 클립
+                elif state[0] == 1:
+                    known_tagged.add(uid)                 # ③ 이미 태그 확인됨
+                elif state[1] < untagged_cutoff:
+                    fresh.append(it)                      # ② 아주 오래된 미태그 -> 1회 재확인
+
+            if nxt is None:
+                full_scan = True
+                break
+            if nxt in seen_cursors or new_on_page == 0:
+                status, note = ST_FAILED, "동일 커서/페이지 반복 감지"
+                _log({"event": "loop_detected", "level": "warning", "cursor": nxt})
+                break
+            seen_cursors.add(nxt)
+            cursor = nxt
+
+            if page_dates and all(d < START_AT for d in page_dates):
+                full_scan = True
+                break
+            await asyncio.sleep(PAGE_DELAY)
+        else:
+            note = f"최대 페이지({cap}) 도달"
+            _log({"event": "max_pages", "level": "warning", "pages": pages})
+
+        sem = asyncio.Semaphore(max(1, CARD_CONCURRENCY))
+        new_tagged: list[dict] = []
+        card_calls = 0
+
+        async def scan_new(it):
+            nonlocal card_calls
+            async with sem:
+                card = await fetch_card(client, it)
+            card_calls += 1
+            uid = str(it["clipUID"])
+            if card is None:
+                return                                   # 실패는 기록하지 않는다(다음에 재시도)
+            tagged = has_singcup_tag(card["description"])
+            if not dry_run:
+                await _record_scan(uid, tagged, started)
+            if not tagged:
+                return
+            d = parse_clip_date(it.get("createdDate"))
+            new_tagged.append({
+                "clip_uid": uid,
+                "owner_channel_id": str(it["ownerChannelId"]),
+                "video_id": str(it.get("videoId") or ""),
+                "clip_title": str(it.get("clipTitle") or ""),
+                "thumbnail_image_url": str(it.get("thumbnailImageUrl") or ""),
+                "description": card["description"],
+                "created_at": int(d.timestamp()),
+                "heart_count": card["heart_count"],
+                "view_count": card["view_count"],
+                "duration": safe_count(it.get("duration")),
+                "adult": 1 if it.get("adult") else 0,
+                "blind_type": str(it.get("blindType") or ""),
+                "metrics_ok": card["metrics_ok"],
+            })
+
+        await asyncio.gather(*[scan_new(it) for it in fresh])
+
+        # ③ 기존 태그 클립 중 수치가 오래된 것 일부만 갱신
+        refreshed = 0
+        if not dry_run:
+            due = await _refresh_due(started, REFRESH_PER_CYCLE)
+
+            async def refresh(rowd):
+                nonlocal card_calls, refreshed
+                item = {"clipUID": rowd["clip_uid"], "videoId": rowd["video_id"], "recId": "{}"}
+                async with sem:
+                    card = await fetch_card(client, item)
+                card_calls += 1
+                if card is None:
+                    await _apply_metrics(rowd["clip_uid"], 0, 0, False, started)
+                    return
+                await _apply_metrics(rowd["clip_uid"], card["heart_count"],
+                                     card["view_count"], card["metrics_ok"], started)
+                refreshed += 1
+
+            await asyncio.gather(*[refresh(r) for r in due])
+
+        if dry_run:
+            return {"status": status, "dryRun": True, "pages": pages, "scanned": scanned,
+                    "newTagged": len(new_tagged), "knownTagged": len(known_tagged),
+                    "cardCalls": card_calls, "note": note}
+
+        inserted = 0
+        for c in new_tagged:
+            if await _upsert_clip(c, started):
+                inserted += 1
+            await _apply_metrics(c["clip_uid"], c["heart_count"], c["view_count"],
+                                 c["metrics_ok"], started)
+        await (await get_db()).commit()
+
+        deactivated = 0
+        if full_scan and status == ST_OK:
+            alive = known_tagged | {c["clip_uid"] for c in new_tagged}
+            deactivated = await _reconcile_missing_clips(alive, started)
+            await (await get_db()).commit()
+
+        ranked = await recompute_ranking(started, client=client)
+
+        _log({"event": "run_incremental", "status": status, "pages": pages,
+              "scanned": scanned, "card_calls": card_calls, "new_tagged": len(new_tagged),
+              "refreshed": refreshed, "streamers": len(ranked),
+              "deactivated": deactivated, "full_scan": full_scan,
+              "duration_ms": round((time.time() - started) * 1000)})
+        return {"status": status, "pages": pages, "scanned": scanned,
+                "cardCalls": card_calls, "newTagged": len(new_tagged),
+                "inserted": inserted, "refreshed": refreshed, "streamers": len(ranked),
+                "full_scan": full_scan, "note": note}
+
+    except SchemaError as e:
+        _log({"event": "run_failed", "level": "warning", "status": ST_SCHEMA,
+              "detail": str(e)[:200]})
+        return {"status": ST_SCHEMA, "note": str(e)}
+    except FetchError as e:
+        _log({"event": "run_failed", "level": "warning", "status": e.status,
+              "detail": e.detail})
+        return {"status": e.status, "note": e.detail}
+    finally:
+        await _release_lock(token)
+
+
+# ── 조회 (API용) ────────────────────────────────────────────────────────────
+async def _delta_maps(now: int) -> tuple[dict, dict]:
+    """(직전 회차 스냅샷, 24시간 전 스냅샷) — owner_channel_id 기준."""
+    db = await get_db()
+    prev_run = await (await db.execute(
+        "SELECT MAX(collected_at) c FROM singcup_snapshots "
+        "WHERE event_id=? AND collected_at < (SELECT MAX(collected_at) "
+        "FROM singcup_snapshots WHERE event_id=?)", (EVENT_ID, EVENT_ID))).fetchone()
+    prev_ts = prev_run["c"] if prev_run else None
+
+    prev: dict = {}
+    if prev_ts:
+        for r in await (await db.execute(
+            "SELECT owner_channel_id, heart_count, rank FROM singcup_snapshots "
+            "WHERE event_id=? AND collected_at=?", (EVENT_ID, prev_ts))).fetchall():
+            prev[r["owner_channel_id"]] = (int(r["heart_count"]), int(r["rank"]))
+
+    day: dict = {}
+    for r in await (await db.execute(
+        "SELECT owner_channel_id, heart_count FROM singcup_snapshots s WHERE event_id=? "
+        "AND collected_at = (SELECT MAX(collected_at) FROM singcup_snapshots "
+        "WHERE event_id=s.event_id AND owner_channel_id=s.owner_channel_id "
+        "AND collected_at <= ?) GROUP BY owner_channel_id",
+        (EVENT_ID, now - 86400))).fetchall():
+        day[r["owner_channel_id"]] = int(r["heart_count"])
+    return prev, day
+
+
+async def load_main(limit: int = 200) -> dict:
+    """메인/랭킹 공용 데이터 — 스트리머별 대표 클립 + 점수 + 변화량 + 현재 라이브."""
+    db = await get_db()
+    rows = [dict(r) for r in await (await db.execute(
+        """SELECT s.channel_id, s.channel_name, s.channel_image_url, s.follower_count,
+                  s.verified_mark, s.tagged_clip_count,
+                  c.clip_uid, c.clip_title, c.thumbnail_image_url, c.heart_count,
+                  c.view_count, c.created_at, c.duration
+           FROM singcup_streamers s
+           JOIN singcup_clips c ON c.clip_uid = s.representative_clip_uid
+           WHERE s.event_id=? AND c.active=1""", (EVENT_ID,))).fetchall()]
+
+    reps = [{**r, "owner_channel_id": r["channel_id"]} for r in rows]
+    ranked = compute_scores(reps)
+
+    now = int(time.time())
+    prev, day = await _delta_maps(now)
+
+    # 현재 라이브 — 기존 수집 데이터(rising_live_snapshots)의 최신 사이클과 연결한다
+    live: dict = {}
+    latest = await (await db.execute(
+        "SELECT collected_at FROM rising_collect_runs WHERE ok=1 "
+        "ORDER BY collected_at DESC LIMIT 1")).fetchone()
+    if latest:
+        for r in await (await db.execute(
+            "SELECT chzzk_channel_id, live_title, concurrent_viewers, category_name "
+            "FROM rising_live_snapshots WHERE collected_at=?", (latest["collected_at"],)
+        )).fetchall():
+            live[r["chzzk_channel_id"]] = {
+                "liveTitle": r["live_title"] or "",
+                "concurrentViewers": int(r["concurrent_viewers"] or 0),
+                "categoryName": r["category_name"] or "",
+            }
+
+    out = []
+    for r in ranked[:max(1, min(500, limit))]:
+        cid = r["channel_id"]
+        p = prev.get(cid)
+        d24 = day.get(cid)
+        out.append({
+            "rank": r["rank"], "channelId": cid,
+            "channelName": r["channel_name"], "channelImageUrl": r["channel_image_url"],
+            "followerCount": r["follower_count"], "verifiedMark": bool(r["verified_mark"]),
+            "taggedClipCount": r["tagged_clip_count"],
+            "clipUid": r["clip_uid"], "clipTitle": r["clip_title"],
+            "clipThumbnailUrl": r["thumbnail_image_url"],
+            "heartCount": r["heart_count"], "viewCount": r["view_count"],
+            "createdAt": datetime.fromtimestamp(r["created_at"], _KST).isoformat(),
+            "viewScore": r["view_score"], "heartScore": r["heart_score"],
+            "score": r["score"],
+            "heartDelta": (r["heart_count"] - p[0]) if p else None,
+            "rankDelta": (p[1] - r["rank"]) if p else None,
+            "heartDelta24h": (r["heart_count"] - d24) if d24 is not None else None,
+            "heartChangeRate24h": heart_change_rate(r["heart_count"], d24)
+                                  if d24 is not None else None,
+            "isNew": p is None,
+            "live": live.get(cid),
+        })
+
+    last_run = await (await db.execute(
+        "SELECT MAX(collected_at) c FROM singcup_snapshots WHERE event_id=?",
+        (EVENT_ID,))).fetchone()
+    last_at = last_run["c"] if last_run and last_run["c"] else None
+    return {
+        "event": event_meta(),
+        "summary": {
+            "taggedClipCount": (await (await db.execute(
+                "SELECT COUNT(*) n FROM singcup_clips WHERE event_id=? AND active=1",
+                (EVENT_ID,))).fetchone())["n"],
+            "streamerCount": len(ranked),
+            "liveCount": sum(1 for r in out if r["live"]),
+        },
+        "collector": {
+            "lastSuccessAt": datetime.fromtimestamp(last_at, _KST).isoformat()
+                             if last_at else None,
+            "stale": last_at is None or (now - last_at) > 30 * 60,
+        },
+        "streamers": out,
+    }
+
+
+async def load_streamer_clips(channel_id: str) -> dict:
+    """카드에서 '싱드컵 태그 클립 N개'를 눌렀을 때 펼칠 목록."""
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT clip_uid, clip_title, thumbnail_image_url, heart_count, view_count, "
+        "created_at, duration FROM singcup_clips "
+        "WHERE event_id=? AND owner_channel_id=? AND active=1 "
+        "ORDER BY heart_count DESC, view_count DESC, created_at ASC, clip_uid ASC",
+        (EVENT_ID, channel_id))).fetchall()
+    return {"channelId": channel_id, "clips": [
+        {"clipUid": r["clip_uid"], "clipTitle": r["clip_title"],
+         "clipThumbnailUrl": r["thumbnail_image_url"], "heartCount": r["heart_count"],
+         "viewCount": r["view_count"], "duration": r["duration"],
+         "createdAt": datetime.fromtimestamp(r["created_at"], _KST).isoformat()}
+        for r in rows]}
+
+
+# ── 스케줄러 ────────────────────────────────────────────────────────────────
+CLIP_INTERVAL_MINUTES = float(os.getenv("SINGCUP_CLIP_INTERVAL_MINUTES", "4"))
+
+
+async def start_clip_collector():
+    """main.py lifespan에서 띄운다. 이벤트 기간에만 돌고 락으로 중복 실행을 막는다."""
+    if os.getenv("SINGCUP_ENABLED", "true").lower() in ("0", "false", "no"):
+        return
+    await asyncio.sleep(float(os.getenv("SINGCUP_CLIP_START_DELAY_SECONDS", "40")))
+    while True:
+        wait = CLIP_INTERVAL_MINUTES
+        try:
+            st = event_status()
+            if st == "LIVE":
+                await collect_clips_incremental()
+            elif st == "UPCOMING":
+                wait = 30.0
+            else:
+                wait = 360.0          # 종료 후에는 사실상 멈춘다
+        except Exception as e:
+            _log({"event": "loop_error", "level": "warning", "detail": str(e)[:200]})
+        await asyncio.sleep(max(60.0, wait * 60))

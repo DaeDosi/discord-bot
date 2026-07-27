@@ -9,6 +9,12 @@
 import hmac
 
 from fastapi import APIRouter, Header, HTTPException
+from singcup_clips import (
+    collect_clips_incremental,
+    collect_clips_once,
+    load_main,
+    load_streamer_clips,
+)
 from singcup_collector import (
     ADMIN_SECRET,
     MODES,
@@ -73,3 +79,33 @@ async def prune(dry_run: bool = True,
 def _consteq(a: str, b: str) -> bool:
     """타이밍 공격 여지를 줄이는 상수시간 비교."""
     return hmac.compare_digest(a.encode(), b.encode())
+
+
+# ── 클립 기반(메인/랭킹) ────────────────────────────────────────────────────
+# 자유게시판 버프(/rankings)와는 별개 데이터다. 메인과 랭킹 화면은 이쪽을 쓴다.
+@router.get("/main")
+async def main(limit: int = 200):
+    """#싱드컵 태그 스트리머 목록 — 대표 클립·비공식 예상 인기점수·변화량·현재 라이브."""
+    return await load_main(limit=limit)
+
+
+@router.get("/streamers/{channel_id}/clips")
+async def streamer_clips(channel_id: str):
+    """카드의 '싱드컵 태그 클립 N개'를 펼칠 때 쓰는 목록."""
+    return await load_streamer_clips(channel_id)
+
+
+@router.post("/clips/collect")
+async def clips_collect(mode: str = "incremental", dry_run: bool = False,
+                        x_singcup_secret: str | None = Header(default=None)):
+    """클립 수동 수집.
+
+    mode=incremental  신규 클립만 카드 조회 + 오래된 수치 일부 갱신(정기 수집과 동일)
+    mode=full         태그 후보 전체를 카드 조회(초기 적재/검산용, 호출량이 크다)
+    """
+    _require_secret(x_singcup_secret)
+    if mode not in ("incremental", "full"):
+        raise HTTPException(status_code=400, detail="mode는 incremental 또는 full 이어야 합니다.")
+    if mode == "full":
+        return await collect_clips_once(dry_run=dry_run)
+    return await collect_clips_incremental(dry_run=dry_run)

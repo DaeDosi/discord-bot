@@ -669,6 +669,18 @@ async def init_db():
         "ON singcup_snapshots(event_id, collected_at)",
         # 자유게시판 게시글 ↔ 클립 연결(홍보글 화면에서 '대표 클립과 연결됨' 배지용)
         "ALTER TABLE singcup_feeds ADD COLUMN clip_uid TEXT",
+        # 증분 수집용 — 카드 API는 클립 1건당 1회라 매 사이클 전량 조회하면 500회를 넘는다.
+        # '이 클립을 카드까지 확인해 봤는가'와 그 결과(태그 여부)를 기록해 두고,
+        # 태그가 없는 클립은 다시 조회하지 않는다(오래되면 한 번 재확인).
+        """CREATE TABLE IF NOT EXISTS singcup_clip_scan (
+               clip_uid   TEXT PRIMARY KEY,
+               tagged     INTEGER NOT NULL DEFAULT 0,
+               checked_at INTEGER NOT NULL
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_scan_tagged "
+        "ON singcup_clip_scan(tagged, checked_at)",
+        # 하트/조회수를 마지막으로 갱신한 시각 — 갱신 대상 선정에 쓴다
+        "ALTER TABLE singcup_clips ADD COLUMN last_metrics_at INTEGER NOT NULL DEFAULT 0",
     ]:
         try:
             await db.execute(sql)

@@ -4,16 +4,18 @@
 익명 트래픽/크롤러가 접근하므로 무거운 재계산은 '최신 수집 사이클' 기준으로만 한다.
 데이터가 쌓이기 전(수집 시작 직후)에는 일부 지표(라이징/히트맵)가 비어 있을 수 있다.
 """
+import asyncio
 import re
 import time
-import asyncio
-import httpx
-from datetime import datetime, timezone, timedelta
 from collections import Counter
-from fastapi import APIRouter, Query
-from database import get_db
-from rising_collector import latest_image, _fetch_channel_meta
+from datetime import datetime, timedelta, timezone
+
+import httpx
 from chzzk_channel_history import get_channel_history
+from fastapi import APIRouter, Query
+from rising_collector import _fetch_channel_meta, latest_image
+
+from database import get_db
 
 _CHZZK_API = "https://api.chzzk.naver.com"
 _CHZZK_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}

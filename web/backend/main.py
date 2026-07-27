@@ -1,14 +1,15 @@
+import asyncio
 import os
 import sys
-import asyncio
 from contextlib import asynccontextmanager
+
+from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from rate_limit import RateLimitMiddleware
 from security import IS_PROD, SecurityHeadersMiddleware, allowed_origins
 from timing import ServerTimingMiddleware, stats_snapshot
-from fastapi.responses import RedirectResponse
-from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -16,25 +17,28 @@ load_dotenv()
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from urllib.parse import quote
-from database import init_db
-from auth import exchange_code, get_discord_user, create_jwt, FRONTEND_URL, verify_oauth_state
+
+from auth import FRONTEND_URL, create_jwt, exchange_code, get_discord_user, verify_oauth_state
+from chzzk_channel_history import start_history_backfill
 from chzzk_monitor import start_monitor
 from rising_collector import start_collector
-from chzzk_channel_history import start_history_backfill
-from singcup_collector import ADMIN_SECRET, start_singcup_collector
-from routers.auth_router       import router as auth_router
-from routers.guilds_router     import router as guilds_router
-from routers.settings_router   import router as settings_router
-from routers.chzzk_router      import router as chzzk_router
-from routers.chzzk_history_router import router as chzzk_history_router
-from routers.stats_router      import router as stats_router
-from routers.verify_router     import router as verify_router
+from routers.admin_router import router as admin_router
+from routers.auth_router import router as auth_router
 from routers.chzzk_auth_router import router as chzzk_auth_router
-from routers.admin_router      import router as admin_router
-from routers.points_router     import router as points_router
-from routers.mc_event_router   import router as mc_event_router
-from routers.rising_router      import router as rising_router
-from routers.singcup_router     import router as singcup_router
+from routers.chzzk_history_router import router as chzzk_history_router
+from routers.chzzk_router import router as chzzk_router
+from routers.guilds_router import router as guilds_router
+from routers.mc_event_router import router as mc_event_router
+from routers.points_router import router as points_router
+from routers.rising_router import router as rising_router
+from routers.settings_router import router as settings_router
+from routers.singcup_router import router as singcup_router
+from routers.stats_router import router as stats_router
+from routers.verify_router import router as verify_router
+from singcup_clips import start_clip_collector
+from singcup_collector import ADMIN_SECRET, start_singcup_collector
+
+from database import init_db
 
 
 @asynccontextmanager
@@ -48,6 +52,8 @@ async def lifespan(app: FastAPI):
     # 싱드컵 이벤트 수집 — 이벤트 기간에만 돌고, 여러 replica가 떠도 DB 락으로
     # 한 번에 하나만 실행된다. 실패해도 메인 통계 서비스에는 영향이 없다.
     asyncio.create_task(start_singcup_collector())
+    # 싱드컵 클립(메인/랭킹) — 신규 클립만 카드 조회하는 증분 수집
+    asyncio.create_task(start_clip_collector())
     yield
 
 
