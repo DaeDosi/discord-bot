@@ -571,7 +571,7 @@ async def newcomers(limit: int = 100, group: str = "new"):
     # 행 단위로 직접 거른다 — 24시간 구간만 스캔하면 되고, '그 시간에 소규모였던 방송'
     # 이라는 의미도 시간대 분석 목적에는 오히려 더 정확하다.
     hrows = await (await db.execute(
-        """SELECT CAST(strftime('%H', hour_ts + 32400, 'unixepoch') AS INTEGER) AS h,
+        """SELECT ((hour_ts + 32400) / 3600) % 24 AS h,
                   SUM(sum_viewers) AS v,
                   SUM(snaps)       AS n,
                   COUNT(DISTINCT chzzk_channel_id) AS ch
@@ -673,11 +673,11 @@ async def newcomers(limit: int = 100, group: str = "new"):
     vacancy_best = None
     if is_small:
         vrows = await (await db.execute(
-            """SELECT CAST(strftime('%H', hour_ts + 32400, 'unixepoch') AS INTEGER) AS h,
+            """SELECT ((hour_ts + 32400) / 3600) % 24 AS h,
                       SUM(CASE WHEN avg_viewers >= ? THEN 1 ELSE 0 END)          AS big_rows,
                       SUM(CASE WHEN avg_viewers <= ? THEN sum_viewers ELSE 0 END) AS small_v,
                       SUM(CASE WHEN avg_viewers <= ? THEN snaps ELSE 0 END)       AS small_n,
-                      COUNT(DISTINCT strftime('%Y-%m-%d', hour_ts + 32400, 'unixepoch')) AS days
+                      COUNT(DISTINCT (hour_ts + 32400) / 86400) AS days
                FROM rising_hourly_rollup
                WHERE hour_ts >= ?
                GROUP BY h""",
@@ -1042,6 +1042,13 @@ _PERIOD_SORTS = {
 }
 
 
+# 기간 누적 랭킹 캐시 — 스테이징 실측에서 매 요청 약 3.0초(P95 3.2초)로 이 서비스에서
+# 가장 느린 공개 엔드포인트였는데 캐시가 없었다(newcomers/detail에는 있었다).
+# 수집 주기가 10분이라 60초 캐시는 신선도 손실이 사실상 없다.
+_period_cache: dict = {}
+_PERIOD_TTL = 60
+
+
 @router.get("/ranking-period")
 async def ranking_period(range: str = "24h", sort: str = "viewership", limit: int = 100):
     """기간 누적 랭킹 — 시청 시간/평균 시청자/최고 동접/방송 시간 기준.
@@ -1051,6 +1058,12 @@ async def ranking_period(range: str = "24h", sort: str = "viewership", limit: in
     window = _PERIOD_RANGES.get(range, _PERIOD_RANGES["24h"])
     sort_key = _PERIOD_SORTS.get(sort, "viewership")
     limit = max(1, min(300, limit))
+    # 캐시 키는 정규화된 값만 쓴다 — 사용자 입력을 그대로 키에 넣으면 캐시가 무한히 늘어난다
+    ck = (range if range in _PERIOD_RANGES else "24h", sort_key, limit)
+    hit = _period_cache.get(ck)
+    now_s = time.time()
+    if hit and now_s - hit[0] < _PERIOD_TTL:
+        return hit[1]
     ts = await _latest_run_ts()
     if ts is None:
         return {"collected_at": None, "range": range, "sort": sort_key, "streamers": [], "history_hours": 0.0}
@@ -1106,13 +1119,18 @@ async def ranking_period(range: str = "24h", sort: str = "viewership", limit: in
     )).fetchone()
     history_hours = round((ts - int(first["f"])) / 3600, 1) if first and first["f"] else 0.0
 
-    return {
+    result = {
         "collected_at": ts,
         "range": range if range in _PERIOD_RANGES else "24h",
         "sort": sort_key,
         "history_hours": history_hours,
         "streamers": out[:limit],
     }
+    # range x sort x limit 조합은 유한하지만(limit이 1~300) 상한을 둬 메모리 폭주를 막는다
+    if len(_period_cache) > 100:
+        _period_cache.clear()
+    _period_cache[ck] = (now_s, result)
+    return result
 
 
 # ── 카테고리별 스트리머 (전체) ───────────────────────────────────────────────
@@ -1214,7 +1232,7 @@ async def streamer_detail(channel_id: str, days: int = 30):
 
     # ① 시간대별 유입 — KST 시각별 평균 시청자(그 시간에 방송을 켰을 때의 성과)
     hrows = await (await db.execute(
-        """SELECT CAST(strftime('%H', hour_ts + 32400, 'unixepoch') AS INTEGER) AS h,
+        """SELECT ((hour_ts + 32400) / 3600) % 24 AS h,
                   SUM(snaps) AS n, SUM(sum_viewers) AS v, MAX(peak_viewers) AS p
            FROM rising_hourly_rollup
            WHERE chzzk_channel_id=? AND hour_ts >= ?
@@ -1280,7 +1298,7 @@ async def streamer_detail(channel_id: str, days: int = 30):
     rrows = await (await db.execute(
         """WITH daily AS (
                SELECT chzzk_channel_id,
-                      strftime('%Y-%m-%d', hour_ts + 32400, 'unixepoch') AS d,
+                      (hour_ts + 32400) / 86400 AS d,
                       CAST(SUM(sum_viewers) AS REAL) / NULLIF(SUM(snaps),0) AS avg_v,
                       SUM(snaps) AS snaps
                FROM rising_hourly_rollup
@@ -1292,7 +1310,8 @@ async def streamer_detail(channel_id: str, days: int = 30):
                       COUNT(*) OVER (PARTITION BY d) AS total
                FROM daily
            )
-           SELECT d, rk, total, avg_v, snaps FROM ranked
+           SELECT strftime('%Y-%m-%d', d * 86400, 'unixepoch') AS d,
+                  rk, total, avg_v, snaps FROM ranked
            WHERE chzzk_channel_id = ? ORDER BY d ASC""",
         (since, channel_id)
     )).fetchall()
@@ -1559,8 +1578,8 @@ async def traffic_heatmap(days: int = 14):
     since = int(time.time()) - days * 86400
     db = await get_db()
     rows = await (await db.execute(
-        """SELECT CAST(strftime('%w', collected_at + 32400, 'unixepoch') AS INTEGER) AS dow,
-                  CAST(strftime('%H', collected_at + 32400, 'unixepoch') AS INTEGER) AS h,
+        """SELECT ((collected_at + 32400) / 86400 + 4) % 7 AS dow,
+                  ((collected_at + 32400) / 3600) % 24 AS h,
                   AVG(total_viewers) AS v, COUNT(*) AS n
            FROM rising_collect_runs
            WHERE ok=1 AND collected_at >= ?

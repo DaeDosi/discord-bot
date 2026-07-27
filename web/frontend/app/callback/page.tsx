@@ -26,9 +26,13 @@ function CallbackInner() {
     }
 
     // 백엔드가 직접 token을 전달한 경우 (GET /auth/callback 경유)
-    // 서버 접근 로그/Referer에 남지 않도록 쿼리스트링이 아닌 URL 프래그먼트(#token=...)로 전달됨
+    // 서버 접근 로그/Referer에 남지 않도록 쿼리스트링이 아닌 URL 프래그먼트(#token=...)로 전달됨.
+    //
+    // ?token= 쿼리스트링은 더 이상 받지 않는다. 백엔드는 프래그먼트로만 보내는데,
+    // 쿼리 폴백을 남겨 두면 (a) 서버 접근 로그·Referer·브라우저 히스토리에 토큰이 남고
+    // (b) 링크 한 방으로 임의 토큰을 심을 수 있는 경로가 열린다.
     const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-    const token = hashParams.get("token") || params.get("token");
+    const token = hashParams.get("token");
     if (token) {
       // 프래그먼트를 주소창에서 즉시 제거 — 브라우저 히스토리에 남지 않도록
       if (window.location.hash) {

@@ -2,9 +2,11 @@ import os
 import sys
 import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from rate_limit import RateLimitMiddleware
+from security import IS_PROD, SecurityHeadersMiddleware, allowed_origins
+from timing import ServerTimingMiddleware, stats_snapshot
 from fastapi.responses import RedirectResponse
 from dotenv import load_dotenv
 
@@ -19,7 +21,7 @@ from auth import exchange_code, get_discord_user, create_jwt, FRONTEND_URL, veri
 from chzzk_monitor import start_monitor
 from rising_collector import start_collector
 from chzzk_channel_history import start_history_backfill
-from singcup_collector import start_singcup_collector
+from singcup_collector import ADMIN_SECRET, start_singcup_collector
 from routers.auth_router       import router as auth_router
 from routers.guilds_router     import router as guilds_router
 from routers.settings_router   import router as settings_router
@@ -49,21 +51,50 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Discord Bot Dashboard API", lifespan=lifespan)
+# 프로덕션에서는 API 문서를 노출하지 않는다 — 전체 엔드포인트 목록과 스키마가
+# 그대로 공개되면 공격 표면 파악이 쉬워진다. 개발 환경에서는 그대로 쓴다.
+app = FastAPI(
+    title="Discord Bot Dashboard API",
+    lifespan=lifespan,
+    docs_url=None if IS_PROD else "/docs",
+    redoc_url=None if IS_PROD else "/redoc",
+    openapi_url=None if IS_PROD else "/openapi.json",
+)
 
 # 레이트 리밋 — /api/rising/* 는 인증이 없는 공개 API라 남용 방어가 필요하다.
 # CORS보다 먼저 add_middleware 하면 바깥쪽(=나중 실행)이 되므로, 429 응답에도
 # CORS 헤더가 붙도록 CORS를 나중에 추가한다(Starlette는 나중에 추가한 것이 바깥쪽).
 app.add_middleware(RateLimitMiddleware)
 
-# JWT는 Authorization 헤더로 전달하므로 credentials 불필요 → allow_origins=["*"] 사용 가능
+# CORS — 예전에는 allow_origins=["*"] 였다. JWT를 헤더로 보내므로 브라우저가 남의
+# 쿠키를 실어 보내지는 않지만, 임의 사이트가 사용자의 토큰을 탈취했을 때 그대로
+# 우리 API를 부를 수 있고 관리자 API까지 열려 있었다. 정확한 Origin allowlist로 좁힌다.
+# (부분 일치·정규식·null origin은 쓰지 않는다. security.allowed_origins 참고)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins(),
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type", "X-Singcup-Secret"],
+    max_age=600,
 )
+
+# 보안 헤더는 가장 바깥에 둬서 CORS/레이트리밋이 만든 응답에도 붙게 한다
+app.add_middleware(SecurityHeadersMiddleware)
+# 계측은 최외곽 — 미들웨어 체인 전체를 포함한 실제 응답 시간을 재야 한다
+app.add_middleware(ServerTimingMiddleware)
+
+
+@app.get("/api/internal/timing")
+async def internal_timing(x_singcup_secret: str | None = Header(default=None)):
+    """경로별 P50/P95/P99. secret으로 보호한다(운영 진단용)."""
+    import hmac
+    if not ADMIN_SECRET:
+        raise HTTPException(status_code=503, detail="ADMIN secret이 설정되지 않았습니다.")
+    if not x_singcup_secret or not hmac.compare_digest(
+            x_singcup_secret.encode(), ADMIN_SECRET.encode()):
+        raise HTTPException(status_code=401, detail="인증에 실패했습니다.")
+    return stats_snapshot()
 
 app.include_router(auth_router)
 app.include_router(guilds_router)

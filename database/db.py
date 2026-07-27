@@ -600,6 +600,15 @@ async def init_db():
                owner        TEXT    NOT NULL DEFAULT ''
            )""",
         "INSERT OR IGNORE INTO singcup_collect_lock (id, locked_until, owner) VALUES (1, 0, '')",
+        # 롤업 시간구간 집계용 커버링 인덱스.
+        # 근거(롤업 47.9만 행 스테이징 실측): 시간대/빈집 집계는 idx_rising_roll_time으로
+        # hour_ts 범위만 찾고 행마다 테이블을 다시 읽어야 했다. 필요한 컬럼을 인덱스에
+        # 모두 담으면 테이블 접근 없이 인덱스만으로 끝난다.
+        #   빈집 타임(7일) 2878ms -> 392ms (-86%)
+        # 채널별 집계(agg7/rank_daily)는 기존 idx_rising_roll_channel을 쓰므로 영향 없음.
+        # 쓰기 비용: 수집 1회당 롤업 upsert 약 3천 행에 인덱스 1개가 추가된다.
+        "CREATE INDEX IF NOT EXISTS idx_rising_roll_cover ON rising_hourly_rollup"
+        "(hour_ts, avg_viewers, snaps, sum_viewers, chzzk_channel_id)",
     ]:
         try:
             await db.execute(sql)

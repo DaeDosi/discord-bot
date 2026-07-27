@@ -420,3 +420,95 @@ curl -X POST 'https://<backend>/api/singcup/prune?dry_run=false' -H 'X-Singcup-S
 pytest tests/test_singcup.py                                    # mock (외부 호출 없음)
 SINGCUP_LIVE_TESTS=1 pytest tests/integration -m integration     # 실제 라운지 API
 ```
+
+---
+
+## 성능 · 보안 (2026-07-28)
+
+### 측정 환경
+
+프로덕션 부하 테스트는 하지 않는다. 로컬에 **운영 규모 스테이징 데이터셋**을 만들어 잰다
+(채널 3,000 / 롤업 478,877행 / 스냅샷 315,619행 — 코드 주석의 QA 기준 "롤업 50만 행"에 맞춤).
+
+관측 장치:
+
+- `timing.py` — 모든 응답에 `Server-Timing: total;dur=..` 헤더. 느린 요청(`SLOW_REQUEST_MS`,
+  기본 1000ms)은 `[slow]` 로그로 남는다.
+- `GET /api/internal/timing` — 경로별 P50/P95/P99 (secret 필요).
+
+### 측정으로 확인한 병목과 조치
+
+| 구간 | 조치 전 | 조치 후 | 조치 |
+| --- | --- | --- | --- |
+| 빈집 타임 집계(7일) | 2,977ms | **392ms** | strftime→정수 연산 + 커버링 인덱스 |
+| rank_daily 윈도우 함수(30일) | 1,266ms | **795ms** | 날짜 GROUP BY를 정수 일련번호로 |
+| 시간대 히트맵(24h) | 442ms | 421ms | strftime→정수 연산 |
+| `newcomers?group=small` (cold) | 3,866ms | **1,562ms** | 위 두 가지 |
+| `ranking-period` (warm P95) | 3,156ms | **0ms** | 60초 TTL 캐시 신설 |
+| `streamer` (warm P50) | 969ms | 739ms | 위 쿼리 개선 파급 |
+
+**strftime → 정수 연산**: `strftime('%H', ts+32400,'unixepoch')`는 행마다 문자열 포맷팅을
+하고 그 문자열로 GROUP BY 해시를 만든다. KST 시/일은 정수로 정확히 같은 값이 나온다.
+
+```sql
+시  = ((ts + 32400) / 3600) % 24      -- SQLite에서 / 는 정수 나눗셈
+일  = (ts + 32400) / 86400
+요일 = ((ts + 32400) / 86400 + 4) % 7  -- 1970-01-01 = 목요일
+```
+
+교체 전후가 동일함을 **794,496행 전체에 대해 검증**했다(불일치 0건).
+
+**커버링 인덱스** `idx_rising_roll_cover(hour_ts, avg_viewers, snaps, sum_viewers, chzzk_channel_id)`:
+시간 구간 집계가 인덱스만으로 끝나 테이블 접근이 사라진다. 채널별 집계는 기존
+`idx_rising_roll_channel`을 계속 쓰므로 영향이 없다. 쓰기 비용은 수집 1회당 롤업 약 3천 행에
+인덱스 1개가 추가되는 정도다.
+
+### DB 구조에 대한 사실 정정
+
+이 프로젝트의 DB는 **네트워크 DB가 아니라 같은 컨테이너의 SQLite 파일**(`aiosqlite`, WAL)이다.
+따라서 다음 항목은 해당 사항이 없다.
+
+- 백엔드↔DB 리전 차이로 인한 왕복 지연 — **없음**(같은 디스크)
+- connection pool 크기/max overflow/replica×pool — **없음**(모듈 전역 단일 커넥션)
+- materialized view — SQLite 미지원
+
+대신 SQLite 고유의 제약이 있다: `database/db.py`가 **커넥션 하나를 공유**하므로 모든 쿼리가
+aiosqlite의 단일 워커 스레드에서 직렬화된다. 무거운 쿼리 하나가 다른 요청을 막으므로,
+위처럼 쿼리 자체를 줄이고 캐시로 실행 횟수를 줄이는 것이 유일하게 유효한 방향이다.
+
+### 보안 조치
+
+| 항목 | 상태 | 내용 |
+| --- | --- | --- |
+| API 문서 노출 | ✅ | 프로덕션에서 `/docs`·`/redoc`·`/openapi.json` 404 |
+| CORS | ✅ | `*` → 정확한 Origin allowlist (부분 일치·null 차단) |
+| 보안 헤더 | ✅ | `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `X-Frame-Options: DENY`, HSTS |
+| CSP | ⚠️ 부분 | **Report-Only로 시작**. AdSense 도메인만 allowlist. 보고 확인 후 `CSP_ENFORCE=1` |
+| 인증 상태코드 | ✅ | 인증 누락이 422 → **401** |
+| `?token=` 수용 | ✅ | 콜백에서 쿼리스트링 토큰 폴백 제거(프래그먼트만) |
+| 방문자 조작 | ✅ | `POST /api/stats/visit` 분당 5회 제한(`RATE_LIMIT_VISIT`) |
+| **localStorage 토큰** | ❌ **미완료** | 아래 참조 |
+
+**localStorage → HttpOnly 쿠키 전환은 하지 않았다.** OAuth 콜백·JWT 발급·프론트 전 API 호출·
+대시보드·관리자 페이지를 동시에 바꿔야 하고, 이 저장소에는 E2E 테스트가 없어 Discord 로그인
+회귀를 검증할 수단이 없다. 검증 없이 인증을 바꾸면 로그인이 통째로 깨질 위험이 실제 이득보다
+크다고 판단했다. 단계적 전환 계획은 `CHANGELOG.md` 참조.
+
+### 추가 환경변수
+
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `PRODUCTION` / `ENV` | (없음) | `1`/`production`이면 문서 비공개 + HSTS |
+| `CORS_ALLOW_ORIGINS` | `FRONTEND_URL`, `https://nexbot.shop`, `https://www.nexbot.shop` | 쉼표 구분 allowlist |
+| `CSP_ENFORCE` | `0` | `1`이면 CSP를 Report-Only가 아닌 강제로 |
+| `RATE_LIMIT_VISIT` | `5` | 방문 집계 분당 상한 |
+| `SERVER_TIMING` | `1` | `Server-Timing` 헤더 노출 |
+| `SLOW_REQUEST_MS` | `1000` | 느린 요청 로그 임계값 |
+
+### 롤백
+
+- 인덱스: `DROP INDEX idx_rising_roll_cover;` (읽기만 느려지고 데이터는 그대로)
+- 캐시: `_PERIOD_TTL = 0`
+- 보안 헤더/CORS: `CORS_ALLOW_ORIGINS`에 필요한 Origin 추가, `SecurityHeadersMiddleware`
+  `add_middleware` 한 줄 제거
+- 쿼리 정수 연산: 되돌릴 필요가 없다(결과가 794,496행 전체에서 동일함을 검증)

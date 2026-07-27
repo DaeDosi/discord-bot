@@ -3,6 +3,28 @@
 세션 단위로 주요 작업을 정리합니다. 커밋 메시지가 더 자세하니, 특정 항목의 정확한 diff가
 필요하면 `git log --oneline`으로 관련 커밋 해시를 찾아 `git show <hash>`로 확인하세요.
 
+## 2026-07-28 세션 (성능 측정·개선 + 보안 조치)
+
+- **측정 먼저**: 운영 규모 스테이징 데이터셋(롤업 478,877행 / 스냅샷 315,619행)을 만들어
+  EXPLAIN QUERY PLAN + 실측. `timing.py`로 `Server-Timing` 헤더와 경로별 P50/P95/P99
+  (`GET /api/internal/timing`, secret 보호) 추가.
+- **쿼리**: `strftime` 시간/날짜 버킷을 정수 연산으로 교체(794,496행 전체에서 결과 동일 검증).
+  빈집 타임 2,977→2,213ms, rank_daily 1,266→795ms.
+- **인덱스**: `idx_rising_roll_cover` 커버링 인덱스 추가 → 빈집 타임 2,878→392ms(-86%).
+  채널별 집계는 기존 인덱스를 그대로 쓰므로 영향 없음.
+- **캐시**: `ranking-period`에 60초 TTL 캐시 신설(매 요청 3.0초였는데 캐시가 없었다).
+- **사실 정정**: 이 프로젝트 DB는 네트워크 DB가 아니라 같은 컨테이너의 SQLite다.
+  리전 왕복·connection pool·materialized view 항목은 해당 없음. 대신 단일 커넥션이라
+  모든 쿼리가 직렬화된다는 제약이 있다.
+- **보안**: 프로덕션 API 문서 비공개 / CORS `*`→Origin allowlist / 보안 헤더 5종 +
+  CSP Report-Only(AdSense 고려) / 인증 누락 422→401 / 콜백 `?token=` 폴백 제거 /
+  방문 집계 레이트 리밋. 회귀 테스트 21개 추가.
+- **미완료**: localStorage 토큰 → HttpOnly 쿠키 전환. OAuth·JWT·프론트 전 호출·대시보드를
+  동시에 바꿔야 하는데 E2E 테스트가 없어 Discord 로그인 회귀를 검증할 수단이 없다.
+  단계적 계획: ①백엔드에 쿠키 세션 발급 병행 추가(기존 Bearer도 계속 수용)
+  ②프론트를 `credentials: 'include'`로 전환 ③E2E로 로그인/로그아웃/만료 검증
+  ④Bearer 경로와 localStorage 제거.
+
 ## 2026-07-28 세션 (싱드컵 이벤트 페이지 신설)
 
 ### 이벤트 시작일 07-20으로 변경 + 실행 모드 추가 (같은 날 후속)

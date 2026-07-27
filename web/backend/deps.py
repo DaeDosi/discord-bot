@@ -7,8 +7,10 @@ from auth import decode_jwt
 
 # ── 기본 인증 ──────────────────────────────────────────────────────────────────
 
-async def get_current_user(authorization: str = Header(...)) -> dict:
-    if not authorization.startswith("Bearer "):
+async def get_current_user(authorization: str | None = Header(default=None)) -> dict:
+    # Header(...)로 두면 헤더가 아예 없을 때 FastAPI가 422(검증 오류)를 준다.
+    # 인증 누락은 401이어야 한다 — 클라이언트가 '재로그인'과 '요청 형식 오류'를 구분할 수 있어야 한다.
+    if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="인증이 필요합니다.")
     token = authorization[7:]
     try:

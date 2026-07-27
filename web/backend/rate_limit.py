@@ -45,6 +45,12 @@ _HEAVY_MARKERS = (
     "/api/chzzk/channel-history",
 )
 
+# 방문자 집계는 무인증 POST라 자동화로 부풀리기 쉽다. 하루 단위 중복은 DB의
+# PRIMARY KEY(date, ip_hash)가 막지만, 그 앞단에서 요청 자체를 촘촘히 제한한다.
+# 정상 사용자는 페이지 진입 시 1회만 호출하므로 분당 5회면 충분하다.
+_VISIT_PATH = "/api/stats/visit"
+VISIT_LIMIT = int(os.getenv("RATE_LIMIT_VISIT", "5"))
+
 
 def _is_heavy(path: str) -> bool:
     if path.startswith(_HEAVY_MARKERS):
@@ -95,10 +101,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._sweep(now)
 
         ip = _client_ip(request)
-        heavy = _is_heavy(request.url.path)
+        path = request.url.path
+        heavy = _is_heavy(path)
+        visit = path == _VISIT_PATH
         buckets = self._hits.setdefault(ip, (deque(), deque()))
-        q = buckets[1] if heavy else buckets[0]
-        limit = HEAVY_LIMIT if heavy else DEFAULT_LIMIT
+        # 방문 집계는 '비싼 경로' 버킷을 공유하되 훨씬 낮은 상한을 쓴다
+        q = buckets[1] if (heavy or visit) else buckets[0]
+        limit = VISIT_LIMIT if visit else (HEAVY_LIMIT if heavy else DEFAULT_LIMIT)
 
         cutoff = now - WINDOW
         while q and q[0] < cutoff:
