@@ -27,6 +27,7 @@ import random
 import re
 import time
 import unicodedata
+import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -41,8 +42,6 @@ from singcup_collector import (
     ST_SKIPPED,
     START_AT,
     SchemaError,
-    _acquire_lock,
-    _release_lock,
     event_status,
 )
 
@@ -357,12 +356,14 @@ async def _upsert_clip(c: dict, now: int) -> bool:
         "SELECT 1 FROM singcup_clips WHERE clip_uid=?", (c["clip_uid"],))).fetchone()
     await db.execute(
         """INSERT INTO singcup_clips
-               (clip_uid, event_id, owner_channel_id, video_id, clip_title,
+               (clip_uid, event_id, owner_channel_id, video_id, rec_id, clip_title,
                 thumbnail_image_url, description, created_at, heart_count, view_count,
                 duration, adult, blind_type, metrics_ok, active, missing_scan_count,
                 first_collected_at, last_collected_at, row_updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?)
            ON CONFLICT(clip_uid) DO UPDATE SET
+               rec_id              = CASE WHEN excluded.rec_id != '' THEN excluded.rec_id
+                                          ELSE rec_id END,
                clip_title          = excluded.clip_title,
                thumbnail_image_url = excluded.thumbnail_image_url,
                description         = excluded.description,
@@ -377,7 +378,8 @@ async def _upsert_clip(c: dict, now: int) -> bool:
                missing_scan_count = 0,
                last_collected_at  = excluded.last_collected_at,
                row_updated_at     = excluded.row_updated_at""",
-        (c["clip_uid"], EVENT_ID, c["owner_channel_id"], c["video_id"], c["clip_title"],
+        (c["clip_uid"], EVENT_ID, c["owner_channel_id"], c["video_id"],
+         c.get("rec_id", ""), c["clip_title"],
          c["thumbnail_image_url"], c["description"], c["created_at"], c["heart_count"],
          c["view_count"], c["duration"], c["adult"], c["blind_type"],
          1 if c["metrics_ok"] else 0, now, now, now))
@@ -455,139 +457,8 @@ def _build_reps(tagged: list[dict]) -> list[dict]:
     return reps
 
 
-# ── 수집 ────────────────────────────────────────────────────────────────────
-async def collect_clips_once(*, dry_run: bool = False, max_pages: int | None = None) -> dict:
-    """클립 목록을 커서로 순회하며 #싱드컵 태그 클립을 모으고 점수를 다시 계산한다."""
-    started = int(time.time())
-    token = await _acquire_lock(MAX_RUN_SECONDS)
-    if token is None:
-        return {"status": ST_SKIPPED, "note": "다른 수집 작업이 실행 중입니다."}
-
-    cap = max_pages or MAX_PAGES
-    client = _get_client()
-    deadline = time.monotonic() + MAX_RUN_SECONDS
-    seen_clips: set = set()
-    seen_cursors: set = set()
-    scanned = 0
-    candidates: list[dict] = []
-    pages = 0
-    full_scan = False
-    status = ST_OK
-    note = ""
-
-    try:
-        cursor = None
-        for _ in range(cap):
-            if time.monotonic() > deadline:
-                status, note = ST_FAILED, "최대 실행 시간 초과"
-                break
-            items, nxt = await fetch_clip_page(client, cursor)
-            pages += 1
-            if not items:
-                full_scan = True
-                break
-            scanned += len(items)
-
-            page_dates: list = []
-            new_on_page = 0
-            for it in items:
-                uid = str(it.get("clipUID") or "")
-                if not uid or uid in seen_clips:
-                    continue
-                seen_clips.add(uid)
-                new_on_page += 1
-                d = parse_clip_date(it.get("createdDate"))
-                if d:
-                    page_dates.append(d)
-                if is_candidate_clip(it, start=START_AT, end=END_AT):
-                    candidates.append(it)
-
-            if nxt is None:
-                full_scan = True
-                break
-            # 커서가 안 움직이거나 새 클립이 하나도 없으면 무한 루프다
-            if nxt in seen_cursors or new_on_page == 0:
-                status, note = ST_FAILED, "동일 커서/페이지 반복 감지"
-                _log({"event": "loop_detected", "level": "warning", "cursor": nxt})
-                break
-            seen_cursors.add(nxt)
-            cursor = nxt
-
-            # RECENT 정렬이라 페이지 전체가 시작 이전이면 더 볼 것이 없다
-            if page_dates and all(d < START_AT for d in page_dates):
-                full_scan = True
-                break
-            await asyncio.sleep(PAGE_DELAY)
-        else:
-            note = f"최대 페이지({cap}) 도달"
-            _log({"event": "max_pages", "level": "warning", "pages": pages})
-
-        # ── 카드 조회로 태그/하트/조회수 확인(동시성 제한) ──────────────────
-        sem = asyncio.Semaphore(max(1, CARD_CONCURRENCY))
-        tagged: list[dict] = []
-
-        async def one(it):
-            async with sem:
-                card = await fetch_card(client, it)
-            if card is None or not has_singcup_tag(card["description"]):
-                return
-            d = parse_clip_date(it.get("createdDate"))
-            tagged.append({
-                "clip_uid": str(it["clipUID"]),
-                "owner_channel_id": str(it["ownerChannelId"]),
-                "video_id": str(it.get("videoId") or ""),
-                "clip_title": str(it.get("clipTitle") or ""),
-                "thumbnail_image_url": str(it.get("thumbnailImageUrl") or ""),
-                "description": card["description"],
-                "created_at": int(d.timestamp()),
-                "heart_count": card["heart_count"],
-                "view_count": card["view_count"],
-                "duration": safe_count(it.get("duration")),
-                "adult": 1 if it.get("adult") else 0,
-                "blind_type": str(it.get("blindType") or ""),
-                "metrics_ok": card["metrics_ok"],
-            })
-
-        await asyncio.gather(*[one(it) for it in candidates])
-
-        if dry_run:
-            ranked = compute_scores(_build_reps(tagged))
-            return {"status": status, "dryRun": True, "pages": pages, "scanned": scanned,
-                    "tagged": len(tagged), "streamers": len(ranked), "note": note}
-
-        inserted = 0
-        for c in tagged:
-            if await _upsert_clip(c, started):
-                inserted += 1
-        await (await get_db()).commit()
-
-        deactivated = 0
-        if full_scan and status == ST_OK:
-            deactivated = await _reconcile_missing_clips(
-                {c["clip_uid"] for c in tagged}, started)
-            await (await get_db()).commit()
-
-        ranked = await recompute_ranking(started, client=client)
-
-        _log({"event": "run", "status": status, "pages": pages, "scanned": scanned,
-              "tagged": len(tagged), "inserted": inserted, "streamers": len(ranked),
-              "deactivated": deactivated, "full_scan": full_scan,
-              "duration_ms": round((time.time() - started) * 1000)})
-        return {"status": status, "pages": pages, "scanned": scanned, "tagged": len(tagged),
-                "inserted": inserted, "streamers": len(ranked), "full_scan": full_scan,
-                "note": note}
-
-    except SchemaError as e:
-        _log({"event": "run_failed", "level": "warning", "status": ST_SCHEMA,
-              "detail": str(e)[:200]})
-        return {"status": ST_SCHEMA, "note": str(e)}
-    except FetchError as e:
-        _log({"event": "run_failed", "level": "warning", "status": e.status,
-              "detail": e.detail})
-        return {"status": e.status, "note": e.detail}
-    finally:
-        await _release_lock(token)
-
+# (예전의 collect_clips_once는 백필 워커(run_backfill)로 대체됐다 —
+#  과거 적재와 신규 탐색을 한 작업으로 처리하던 구조를 분리했다.)
 
 async def recompute_ranking(now: int, *, client=None) -> list[dict]:
     """DB의 활성 클립으로 대표 클립·점수·순위를 다시 계산하고 스냅샷을 남긴다."""
@@ -621,29 +492,81 @@ def event_meta() -> dict:
             "endAt": END_AT.isoformat(), "status": event_status()}
 
 
-# ── 증분 수집 (카드 API 호출량 제어) ────────────────────────────────────────
-# 카드 API는 클립 1건당 1회다. 태그 클립이 500건을 넘는 상황에서 3~5분마다 전량을
-# 다시 부르면 사이클당 500회 이상이 나간다. 그래서 세 갈래로 나눈다.
-#   ① 처음 보는 클립        -> 반드시 카드 조회(태그 여부를 알아야 한다)
-#   ② 태그 없다고 확인된 클립 -> 다시 부르지 않는다(아주 오래되면 1회 재확인)
-#   ③ 태그 클립            -> 수치가 오래된 것부터 상위 랭킹 우선으로 제한된 개수만 갱신
-# 결과적으로 정상 사이클의 카드 호출은 (신규 클립 + REFRESH_PER_CYCLE) 수준으로 묶인다.
-METRICS_TTL_MINUTES = float(os.getenv("SINGCUP_METRICS_TTL_MINUTES", "20"))
-REFRESH_PER_CYCLE = int(os.getenv("SINGCUP_REFRESH_PER_CYCLE", "60"))
+# ── 수집 파이프라인 ─────────────────────────────────────────────────────────
+# 세 작업의 성격이 달라 완전히 분리한다. 예전에는 '신규 탐색'과 '과거 적재'를 한
+# 작업으로 처리해서, 초기 적재가 4분 주기에 묶여 수 시간씩 걸리는 구조적 지연이 있었다.
+#
+#   ① 백필   이벤트 시작일까지 거슬러 가는 1회성 적재.
+#            완료될 때까지 배치를 연속 처리하고, 커서를 DB에 저장해 재시작 후에도 잇는다.
+#   ② 신규   최신 페이지만 훑다가 '이미 아는 클립만 있는 페이지'를 만나면 즉시 종료.
+#            정상 상태에서는 1~2페이지로 끝난다.
+#   ③ 지표   이미 발견한 클립의 하트/조회수만 갱신. 목록을 다시 훑지 않고
+#            저장해 둔 videoId/recId로 카드 API만 부른다. 대표 클립을 우선한다.
+BATCH_SIZE = int(os.getenv("SINGCUP_BACKFILL_BATCH", "300"))
+BATCH_PAUSE_SECONDS = float(os.getenv("SINGCUP_BACKFILL_BATCH_PAUSE", "3"))
+BACKFILL_LOCK_TTL = int(os.getenv("SINGCUP_BACKFILL_LOCK_TTL", "300"))
+# 신규 탐색: 안전장치용 상한(정상적으로는 1~2페이지에서 끝난다)
+DISCOVER_MAX_PAGES = int(os.getenv("SINGCUP_DISCOVER_MAX_PAGES", "20"))
+# 지표 갱신 — 대표 클립은 자주, 나머지는 느리게
+REP_METRICS_TTL_MINUTES = float(os.getenv("SINGCUP_REP_METRICS_TTL_MINUTES", "5"))
+METRICS_TTL_MINUTES = float(os.getenv("SINGCUP_METRICS_TTL_MINUTES", "45"))
+REFRESH_PER_CYCLE = int(os.getenv("SINGCUP_REFRESH_PER_CYCLE", "80"))
 RESCAN_UNTAGGED_HOURS = float(os.getenv("SINGCUP_RESCAN_UNTAGGED_HOURS", "24"))
-# 신규 클립 카드 조회도 사이클당 상한을 둔다.
-# 이벤트 시작을 07-20으로 넓히면 첫 수집에 후보가 5,500건이 넘는데, 이걸 한 번에
-# 훑으면 한 사이클이 수 분씩 걸리고 락 TTL(MAX_RUN_SECONDS)을 넘겨 다음 사이클과
-# 겹칠 수 있다. 목록은 최신순이라 못 훑은 클립은 scan 기록이 남지 않아 다음 사이클에
-# 자연히 이어서 처리된다(몇 사이클에 걸쳐 backlog가 빠진다).
-NEW_SCAN_PER_CYCLE = int(os.getenv("SINGCUP_NEW_SCAN_PER_CYCLE", "400"))
+RETRY_MAX_ATTEMPTS = int(os.getenv("SINGCUP_RETRY_MAX_ATTEMPTS", "3"))
+
+BF_IDLE, BF_RUNNING, BF_PAUSED, BF_DONE, BF_FAILED = (
+    "idle", "running", "paused", "completed", "failed")
 
 
-async def _load_scan_state() -> dict[str, tuple[int, int]]:
-    """clip_uid -> (tagged, checked_at)."""
+# ── 이름 있는 분산 락 ───────────────────────────────────────────────────────
+async def acquire_named_lock(name: str, ttl: int) -> str | None:
+    """조건부 UPDATE의 rowcount로 획득을 판정한다(check-then-set 경합 방지)."""
+    now = int(time.time())
+    token = uuid.uuid4().hex[:12]
     db = await get_db()
+    await db.execute(
+        "INSERT OR IGNORE INTO singcup_locks (name, locked_until, owner) VALUES (?,0,'')",
+        (name,))
+    cur = await db.execute(
+        "UPDATE singcup_locks SET locked_until=?, owner=? WHERE name=? AND locked_until < ?",
+        (now + ttl, token, name, now))
+    await db.commit()
+    return token if cur.rowcount == 1 else None
+
+
+async def renew_named_lock(name: str, token: str, ttl: int) -> bool:
+    """장시간 작업이 TTL을 넘겨 다른 워커와 겹치지 않게 주기적으로 연장한다."""
+    db = await get_db()
+    cur = await db.execute(
+        "UPDATE singcup_locks SET locked_until=? WHERE name=? AND owner=?",
+        (int(time.time()) + ttl, name, token))
+    await db.commit()
+    return cur.rowcount == 1
+
+
+async def release_named_lock(name: str, token: str):
+    db = await get_db()
+    await db.execute(
+        "UPDATE singcup_locks SET locked_until=0, owner='' WHERE name=? AND owner=?",
+        (name, token))
+    await db.commit()
+
+
+# ── scan / retry 상태 ───────────────────────────────────────────────────────
+async def _scanned_uids() -> set[str]:
+    db = await get_db()
+    rows = await (await db.execute("SELECT clip_uid FROM singcup_clip_scan")).fetchall()
+    return {r["clip_uid"] for r in rows}
+
+
+async def _scan_state_of(uids: list[str]) -> dict[str, tuple[int, int]]:
+    if not uids:
+        return {}
+    db = await get_db()
+    qs = ",".join("?" for _ in uids)
     rows = await (await db.execute(
-        "SELECT clip_uid, tagged, checked_at FROM singcup_clip_scan")).fetchall()
+        f"SELECT clip_uid, tagged, checked_at FROM singcup_clip_scan WHERE clip_uid IN ({qs})",
+        tuple(uids))).fetchall()
     return {r["clip_uid"]: (int(r["tagged"]), int(r["checked_at"])) for r in rows}
 
 
@@ -652,21 +575,7 @@ async def _record_scan(clip_uid: str, tagged: bool, now: int):
     await db.execute(
         "INSERT INTO singcup_clip_scan (clip_uid, tagged, checked_at) VALUES (?,?,?) "
         "ON CONFLICT(clip_uid) DO UPDATE SET tagged=excluded.tagged, "
-        "checked_at=excluded.checked_at",
-        (clip_uid, 1 if tagged else 0, now))
-
-
-async def _refresh_due(now: int, limit: int) -> list[dict]:
-    """수치 갱신이 필요한 태그 클립. 오래된 것 우선, 같은 조건이면 하트가 높은 쪽 먼저."""
-    cutoff = now - int(METRICS_TTL_MINUTES * 60)
-    db = await get_db()
-    rows = await (await db.execute(
-        "SELECT clip_uid, video_id, created_at FROM singcup_clips "
-        "WHERE event_id=? AND active=1 AND last_metrics_at < ? "
-        "ORDER BY last_metrics_at ASC, heart_count DESC LIMIT ?",
-        (EVENT_ID, cutoff, max(0, limit))
-    )).fetchall()
-    return [dict(r) for r in rows]
+        "checked_at=excluded.checked_at", (clip_uid, 1 if tagged else 0, now))
 
 
 async def _apply_metrics(clip_uid: str, heart: int, view: int, ok: bool, now: int):
@@ -678,188 +587,441 @@ async def _apply_metrics(clip_uid: str, heart: int, view: int, ok: bool, now: in
             "last_metrics_at=?, last_collected_at=?, row_updated_at=? WHERE clip_uid=?",
             (heart, view, now, now, now, clip_uid))
     else:
+        # 실패한 회차도 last_metrics_at은 올려 같은 클립만 계속 재시도하지 않게 한다
         await db.execute(
-            "UPDATE singcup_clips SET metrics_ok=0, last_collected_at=?, row_updated_at=? "
-            "WHERE clip_uid=?", (now, now, clip_uid))
+            "UPDATE singcup_clips SET metrics_ok=0, last_metrics_at=?, "
+            "last_collected_at=?, row_updated_at=? WHERE clip_uid=?",
+            (now, now, now, clip_uid))
 
 
-async def collect_clips_incremental(*, dry_run: bool = False,
-                                    max_pages: int | None = None) -> dict:
-    """정기 수집 — 신규 클립만 카드 조회하고, 기존 태그 클립은 일부만 갱신한다."""
-    started = int(time.time())
-    token = await _acquire_lock(MAX_RUN_SECONDS)
+async def _queue_retry(item: dict, err: str, now: int):
+    """카드 조회 실패는 실패한 클립만 큐에 남긴다(지수 백오프로 재시도)."""
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT attempts FROM singcup_clip_retry WHERE clip_uid=?",
+        (str(item.get("clipUID")),))).fetchone()
+    attempts = (int(row["attempts"]) if row else 0) + 1
+    delay = min(3600, int(60 * (2 ** (attempts - 1))))
+    d = parse_clip_date(item.get("createdDate"))
+    await db.execute(
+        """INSERT INTO singcup_clip_retry
+               (clip_uid, video_id, rec_id, created_at, attempts, next_try_at,
+                last_error, item_json)
+           VALUES (?,?,?,?,?,?,?,?)
+           ON CONFLICT(clip_uid) DO UPDATE SET
+               attempts=excluded.attempts, next_try_at=excluded.next_try_at,
+               last_error=excluded.last_error, item_json=excluded.item_json""",
+        (str(item.get("clipUID")), str(item.get("videoId") or ""),
+         str(item.get("recId") or ""), int(d.timestamp()) if d else None,
+         attempts, now + delay, err[:200], json.dumps(item, ensure_ascii=False)))
+
+
+async def _clear_retry(clip_uid: str):
+    db = await get_db()
+    await db.execute("DELETE FROM singcup_clip_retry WHERE clip_uid=?", (clip_uid,))
+
+
+def _to_clip_row(item: dict, card: dict) -> dict:
+    d = parse_clip_date(item.get("createdDate"))
+    return {
+        "clip_uid": str(item["clipUID"]),
+        "owner_channel_id": str(item["ownerChannelId"]),
+        "video_id": str(item.get("videoId") or ""),
+        "rec_id": str(item.get("recId") or ""),
+        "clip_title": str(item.get("clipTitle") or ""),
+        "thumbnail_image_url": str(item.get("thumbnailImageUrl") or ""),
+        "description": card["description"],
+        "created_at": int(d.timestamp()),
+        "heart_count": card["heart_count"],
+        "view_count": card["view_count"],
+        "duration": safe_count(item.get("duration")),
+        "adult": 1 if item.get("adult") else 0,
+        "blind_type": str(item.get("blindType") or ""),
+        "metrics_ok": card["metrics_ok"],
+    }
+
+
+async def _scan_batch(client, items: list[dict], now: int) -> tuple[int, int, int]:
+    """후보 묶음을 카드 조회해 저장한다. (태그된 수, 신규 저장 수, 실패 수)."""
+    sem = asyncio.Semaphore(max(1, CARD_CONCURRENCY))
+    results: list[tuple[dict, dict | None]] = []
+
+    async def one(it):
+        async with sem:
+            card = await fetch_card(client, it)
+        results.append((it, card))
+
+    await asyncio.gather(*[one(it) for it in items])
+
+    tagged = inserted = failed = 0
+    for it, card in results:
+        uid = str(it["clipUID"])
+        if card is None:
+            failed += 1
+            await _queue_retry(it, "card fetch failed", now)
+            continue
+        await _clear_retry(uid)
+        is_tag = has_singcup_tag(card["description"])
+        await _record_scan(uid, is_tag, now)
+        if not is_tag:
+            continue
+        tagged += 1
+        row = _to_clip_row(it, card)
+        if await _upsert_clip(row, now):
+            inserted += 1
+        await _apply_metrics(uid, row["heart_count"], row["view_count"],
+                             row["metrics_ok"], now)
+    await (await get_db()).commit()
+    return tagged, inserted, failed
+
+
+# ── ① 백필 ─────────────────────────────────────────────────────────────────
+async def get_backfill_state() -> dict:
+    db = await get_db()
+    await db.execute(
+        "INSERT OR IGNORE INTO singcup_backfill_state (event_id, status, updated_at) "
+        "VALUES (?,?,?)", (EVENT_ID, BF_IDLE, int(time.time())))
+    await db.commit()
+    row = await (await db.execute(
+        "SELECT * FROM singcup_backfill_state WHERE event_id=?", (EVENT_ID,))).fetchone()
+    return dict(row)
+
+
+async def _save_backfill(**fields):
+    if not fields:
+        return
+    fields["updated_at"] = int(time.time())
+    sets = ", ".join(f"{k}=?" for k in fields)
+    db = await get_db()
+    await db.execute(f"UPDATE singcup_backfill_state SET {sets} WHERE event_id=?",
+                     (*fields.values(), EVENT_ID))
+    await db.commit()
+
+
+async def reset_backfill() -> dict:
+    """처음부터 다시 훑는다(커서·수치 초기화)."""
+    await get_backfill_state()
+    await _save_backfill(status=BF_IDLE, next_cursor=None, scanned_count=0,
+                         tagged_count=0, failed_count=0, pages_done=0,
+                         oldest_scanned_created_at=None, started_at=None,
+                         completed_at=None, last_error=None)
+    return await get_backfill_state()
+
+
+async def run_backfill() -> dict:
+    """이벤트 시작일까지 연속으로 적재한다. 완료될 때까지 배치를 이어서 처리한다.
+
+    - 커서(next_cursor)를 배치마다 DB에 저장하므로 재배포/재시작 후 이어서 진행한다
+    - 이미 확인한 clipUID는 건너뛴다(중복 방지)
+    - 락을 주기적으로 연장해 여러 워커가 겹치지 않게 한다
+    """
+    state = await get_backfill_state()
+    if state["status"] == BF_DONE:
+        return {"status": BF_DONE, "note": "이미 완료됨", **_bf_public(state)}
+
+    token = await acquire_named_lock("singcup_backfill", BACKFILL_LOCK_TTL)
     if token is None:
-        return {"status": ST_SKIPPED, "note": "다른 수집 작업이 실행 중입니다."}
+        return {"status": state["status"], "note": "다른 백필 작업이 실행 중입니다."}
 
-    cap = max_pages or MAX_PAGES
     client = _get_client()
-    deadline = time.monotonic() + MAX_RUN_SECONDS
-    scan = await _load_scan_state()
-    untagged_cutoff = started - int(RESCAN_UNTAGGED_HOURS * 3600)
-
-    seen_clips: set = set()
-    seen_cursors: set = set()
-    scanned = 0
-    fresh: list[dict] = []       # 카드 조회가 필요한 신규(또는 재확인 대상) 클립
-    known_tagged: set = set()    # 이번 목록에서 확인된 기존 태그 클립
-    pages = 0
-    full_scan = False
-    status = ST_OK
+    cursor = state["next_cursor"]
+    scanned = int(state["scanned_count"] or 0)
+    tagged_n = int(state["tagged_count"] or 0)
+    failed_n = int(state["failed_count"] or 0)
+    pages = int(state["pages_done"] or 0)
+    oldest = state["oldest_scanned_created_at"]
+    seen_cursors: set[str] = set()
+    batch: list[dict] = []
+    status = BF_RUNNING
     note = ""
 
+    await _save_backfill(status=BF_RUNNING, last_error=None,
+                         started_at=state["started_at"] or int(time.time()))
+    _log({"event": "backfill_start", "cursor": cursor, "scanned": scanned})
+
     try:
-        cursor = None
-        for _ in range(cap):
-            if time.monotonic() > deadline:
-                status, note = ST_FAILED, "최대 실행 시간 초과"
+        known = await _scanned_uids()
+        while True:
+            if not await renew_named_lock("singcup_backfill", token, BACKFILL_LOCK_TTL):
+                note = "락을 잃었습니다(다른 워커가 실행 중일 수 있음)"
+                status = BF_PAUSED
                 break
+
             items, nxt = await fetch_clip_page(client, cursor)
             pages += 1
             if not items:
-                full_scan = True
+                status = BF_DONE
                 break
-            scanned += len(items)
 
-            page_dates: list = []
-            new_on_page = 0
+            page_dates = []
             for it in items:
-                uid = str(it.get("clipUID") or "")
-                if not uid or uid in seen_clips:
-                    continue
-                seen_clips.add(uid)
-                new_on_page += 1
+                scanned += 1
                 d = parse_clip_date(it.get("createdDate"))
                 if d:
                     page_dates.append(d)
-                if not is_candidate_clip(it, start=START_AT, end=END_AT):
+                    ts = int(d.timestamp())
+                    oldest = ts if oldest is None else min(int(oldest), ts)
+                uid = str(it.get("clipUID") or "")
+                if not uid or uid in known:
                     continue
-                state = scan.get(uid)
-                if state is None:
-                    fresh.append(it)                      # ① 처음 보는 클립
-                elif state[0] == 1:
-                    known_tagged.add(uid)                 # ③ 이미 태그 확인됨
-                elif state[1] < untagged_cutoff:
-                    fresh.append(it)                      # ② 아주 오래된 미태그 -> 1회 재확인
+                if is_candidate_clip(it, start=START_AT, end=END_AT):
+                    known.add(uid)
+                    batch.append(it)
 
-            if nxt is None:
-                full_scan = True
+            now = int(time.time())
+            if len(batch) >= BATCH_SIZE:
+                t, _ins, f = await _scan_batch(client, batch, now)
+                tagged_n += t
+                failed_n += f
+                batch = []
+                await _save_backfill(next_cursor=nxt, scanned_count=scanned,
+                                     tagged_count=tagged_n, failed_count=failed_n,
+                                     pages_done=pages, oldest_scanned_created_at=oldest)
+                await asyncio.sleep(BATCH_PAUSE_SECONDS)
+
+            # 종료: 페이지 전체가 시작일 이전이거나 커서가 끝났을 때
+            if page_dates and all(d < START_AT for d in page_dates):
+                status = BF_DONE
                 break
-            if nxt in seen_cursors or new_on_page == 0:
-                status, note = ST_FAILED, "동일 커서/페이지 반복 감지"
-                _log({"event": "loop_detected", "level": "warning", "cursor": nxt})
+            if nxt is None:
+                status = BF_DONE
+                break
+            if nxt in seen_cursors:
+                note = "동일 커서 반복 감지"
+                status = BF_FAILED
                 break
             seen_cursors.add(nxt)
             cursor = nxt
-
-            if page_dates and all(d < START_AT for d in page_dates):
-                full_scan = True
-                break
             await asyncio.sleep(PAGE_DELAY)
-        else:
-            note = f"최대 페이지({cap}) 도달"
-            _log({"event": "max_pages", "level": "warning", "pages": pages})
+
+        # 남은 묶음 처리
+        if batch:
+            now = int(time.time())
+            t, _ins, f = await _scan_batch(client, batch, now)
+            tagged_n += t
+            failed_n += f
+
+        await _save_backfill(status=status, next_cursor=(None if status == BF_DONE else cursor),
+                             scanned_count=scanned, tagged_count=tagged_n,
+                             failed_count=failed_n, pages_done=pages,
+                             oldest_scanned_created_at=oldest, last_error=note or None,
+                             completed_at=int(time.time()) if status == BF_DONE else None)
+        if status == BF_DONE:
+            await recompute_ranking(int(time.time()), client=client)
+        _log({"event": "backfill_end", "status": status, "pages": pages,
+              "scanned": scanned, "tagged": tagged_n, "failed": failed_n, "note": note})
+        return {"status": status, "pages": pages, "scanned": scanned,
+                "tagged": tagged_n, "failed": failed_n, "note": note}
+
+    except (FetchError, SchemaError) as e:
+        # 실패해도 커서를 남겨 다음 실행에서 이어서 처리한다
+        await _save_backfill(status=BF_PAUSED, next_cursor=cursor, scanned_count=scanned,
+                             tagged_count=tagged_n, failed_count=failed_n,
+                             pages_done=pages, oldest_scanned_created_at=oldest,
+                             last_error=str(e)[:300])
+        _log({"event": "backfill_failed", "level": "warning", "detail": str(e)[:200]})
+        return {"status": BF_PAUSED, "note": str(e)[:200], "scanned": scanned}
+    finally:
+        await release_named_lock("singcup_backfill", token)
+
+
+def _bf_public(s: dict) -> dict:
+    oldest = s.get("oldest_scanned_created_at")
+    return {
+        "scannedCount": s.get("scanned_count") or 0,
+        "taggedCount": s.get("tagged_count") or 0,
+        "failedCount": s.get("failed_count") or 0,
+        "pagesDone": s.get("pages_done") or 0,
+        "nextCursor": s.get("next_cursor"),
+        "oldestScannedCreatedAt": (datetime.fromtimestamp(int(oldest), _KST).isoformat()
+                                   if oldest else None),
+        "startedAt": (datetime.fromtimestamp(int(s["started_at"]), _KST).isoformat()
+                      if s.get("started_at") else None),
+        "updatedAt": (datetime.fromtimestamp(int(s["updated_at"]), _KST).isoformat()
+                      if s.get("updated_at") else None),
+        "completedAt": (datetime.fromtimestamp(int(s["completed_at"]), _KST).isoformat()
+                        if s.get("completed_at") else None),
+        "lastError": s.get("last_error"),
+    }
+
+
+async def backfill_status() -> dict:
+    s = await get_backfill_state()
+    return {"eventId": EVENT_ID, "status": s["status"],
+            "targetStartAt": START_AT.isoformat(), **_bf_public(s)}
+
+
+async def start_backfill_worker():
+    """부팅 시 미완료 백필을 자동으로 이어서 돌린다."""
+    if os.getenv("SINGCUP_ENABLED", "true").lower() in ("0", "false", "no"):
+        return
+    await asyncio.sleep(float(os.getenv("SINGCUP_BACKFILL_START_DELAY", "25")))
+    while True:
+        try:
+            s = await get_backfill_state()
+            if s["status"] in (BF_DONE,):
+                return                       # 끝났으면 더 돌 필요가 없다
+            if event_status() == "UPCOMING":
+                await asyncio.sleep(600)
+                continue
+            res = await run_backfill()
+            if res.get("status") == BF_DONE:
+                return
+        except Exception as e:
+            _log({"event": "backfill_worker_error", "level": "warning",
+                  "detail": str(e)[:200]})
+        # 중단·일시정지 상태면 잠시 뒤 이어서 재시도한다
+        await asyncio.sleep(float(os.getenv("SINGCUP_BACKFILL_RETRY_SECONDS", "60")))
+
+
+# ── ② 신규 탐색 (가볍게) ────────────────────────────────────────────────────
+async def discover_new_clips() -> dict:
+    """최신 페이지만 훑어 새 클립을 찾는다.
+
+    이미 아는 클립만 있는 페이지를 만나면 즉시 종료한다 — 정상 상태에서는 1~2페이지로
+    끝나므로, 매번 수천 건을 다시 내려가던 예전 방식과 달리 부담이 거의 없다.
+    """
+    token = await acquire_named_lock("singcup_discover", 180)
+    if token is None:
+        return {"status": ST_SKIPPED, "note": "다른 탐색 작업이 실행 중입니다."}
+
+    client = _get_client()
+    pages = scanned = 0
+    fresh: list[dict] = []
+    status = ST_OK
+    note = ""
+    cursor = None
+    try:
+        for _ in range(DISCOVER_MAX_PAGES):
+            items, nxt = await fetch_clip_page(client, cursor)
+            pages += 1
+            if not items:
+                break
+            scanned += len(items)
+            uids = [str(it.get("clipUID") or "") for it in items if it.get("clipUID")]
+            state = await _scan_state_of(uids)
+            new_here = 0
+            for it in items:
+                uid = str(it.get("clipUID") or "")
+                if not uid or uid in state:
+                    continue
+                if is_candidate_clip(it, start=START_AT, end=END_AT):
+                    fresh.append(it)
+                new_here += 1
+            # 이 페이지가 전부 '아는 클립'이면 그 뒤는 볼 필요가 없다
+            if new_here == 0:
+                break
+            if nxt is None:
+                break
+            cursor = nxt
+            await asyncio.sleep(PAGE_DELAY)
+
+        tagged = inserted = failed = 0
+        if fresh:
+            now = int(time.time())
+            tagged, inserted, failed = await _scan_batch(client, fresh, now)
+            if tagged:
+                # 새 참가자가 생겼으므로 대표 클립·점수·순위를 다시 계산한다
+                await recompute_ranking(now, client=client)
+        _log({"event": "discover", "pages": pages, "scanned": scanned,
+              "candidates": len(fresh), "tagged": tagged, "failed": failed})
+        return {"status": status, "pages": pages, "scanned": scanned,
+                "candidates": len(fresh), "tagged": tagged, "inserted": inserted,
+                "failed": failed, "note": note}
+    except (FetchError, SchemaError) as e:
+        _log({"event": "discover_failed", "level": "warning", "detail": str(e)[:200]})
+        return {"status": getattr(e, "status", ST_FAILED), "note": str(e)[:200]}
+    finally:
+        await release_named_lock("singcup_discover", token)
+
+
+# ── ③ 지표 갱신 (목록을 훑지 않는다) ────────────────────────────────────────
+async def _metrics_due(now: int, limit: int) -> list[dict]:
+    """갱신 대상 — 대표 클립을 먼저, 그다음 하트가 많은 것, 오래된 것 순.
+
+    대표 클립은 순위를 직접 좌우하므로 짧은 주기(REP_METRICS_TTL)로,
+    나머지는 긴 주기(METRICS_TTL)로 돌린다.
+    """
+    db = await get_db()
+    rows = await (await db.execute(
+        """SELECT c.clip_uid, c.video_id, c.rec_id,
+                  (s.representative_clip_uid IS NOT NULL) AS is_rep
+           FROM singcup_clips c
+           LEFT JOIN singcup_streamers s ON s.representative_clip_uid = c.clip_uid
+           WHERE c.event_id=? AND c.active=1
+             AND c.last_metrics_at < (CASE WHEN s.representative_clip_uid IS NOT NULL
+                                           THEN ? ELSE ? END)
+           ORDER BY is_rep DESC, c.heart_count DESC, c.last_metrics_at ASC
+           LIMIT ?""",
+        (EVENT_ID, now - int(REP_METRICS_TTL_MINUTES * 60),
+         now - int(METRICS_TTL_MINUTES * 60), max(0, limit))
+    )).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def refresh_metrics(limit: int | None = None) -> dict:
+    """저장해 둔 videoId/recId로 카드 API만 불러 하트·조회수를 갱신한다."""
+    token = await acquire_named_lock("singcup_metrics", 300)
+    if token is None:
+        return {"status": ST_SKIPPED, "note": "다른 갱신 작업이 실행 중입니다."}
+
+    now = int(time.time())
+    client = _get_client()
+    try:
+        due = await _metrics_due(now, limit or REFRESH_PER_CYCLE)
+        if not due:
+            return {"status": ST_OK, "refreshed": 0, "failed": 0}
 
         sem = asyncio.Semaphore(max(1, CARD_CONCURRENCY))
-        new_tagged: list[dict] = []
-        card_calls = 0
+        ok = fail = 0
 
-        async def scan_new(it):
-            nonlocal card_calls
+        async def one(r):
+            nonlocal ok, fail
+            item = {"clipUID": r["clip_uid"], "videoId": r["video_id"],
+                    "recId": r["rec_id"] or "{}"}
             async with sem:
-                card = await fetch_card(client, it)
-            card_calls += 1
-            uid = str(it["clipUID"])
+                card = await fetch_card(client, item)
             if card is None:
-                return                                   # 실패는 기록하지 않는다(다음에 재시도)
-            tagged = has_singcup_tag(card["description"])
-            if not dry_run:
-                await _record_scan(uid, tagged, started)
-            if not tagged:
+                fail += 1
+                await _apply_metrics(r["clip_uid"], 0, 0, False, now)
                 return
-            d = parse_clip_date(it.get("createdDate"))
-            new_tagged.append({
-                "clip_uid": uid,
-                "owner_channel_id": str(it["ownerChannelId"]),
-                "video_id": str(it.get("videoId") or ""),
-                "clip_title": str(it.get("clipTitle") or ""),
-                "thumbnail_image_url": str(it.get("thumbnailImageUrl") or ""),
-                "description": card["description"],
-                "created_at": int(d.timestamp()),
-                "heart_count": card["heart_count"],
-                "view_count": card["view_count"],
-                "duration": safe_count(it.get("duration")),
-                "adult": 1 if it.get("adult") else 0,
-                "blind_type": str(it.get("blindType") or ""),
-                "metrics_ok": card["metrics_ok"],
-            })
+            await _apply_metrics(r["clip_uid"], card["heart_count"],
+                                 card["view_count"], card["metrics_ok"], now)
+            ok += 1
 
-        # 신규 후보는 최신순이라 앞에서부터 상한만큼만 훑는다(나머지는 다음 사이클)
-        pending_new = max(0, len(fresh) - NEW_SCAN_PER_CYCLE)
-        await asyncio.gather(*[scan_new(it) for it in fresh[:NEW_SCAN_PER_CYCLE]])
-
-        # ③ 기존 태그 클립 중 수치가 오래된 것 일부만 갱신
-        refreshed = 0
-        if not dry_run:
-            due = await _refresh_due(started, REFRESH_PER_CYCLE)
-
-            async def refresh(rowd):
-                nonlocal card_calls, refreshed
-                item = {"clipUID": rowd["clip_uid"], "videoId": rowd["video_id"], "recId": "{}"}
-                async with sem:
-                    card = await fetch_card(client, item)
-                card_calls += 1
-                if card is None:
-                    await _apply_metrics(rowd["clip_uid"], 0, 0, False, started)
-                    return
-                await _apply_metrics(rowd["clip_uid"], card["heart_count"],
-                                     card["view_count"], card["metrics_ok"], started)
-                refreshed += 1
-
-            await asyncio.gather(*[refresh(r) for r in due])
-
-        if dry_run:
-            return {"status": status, "dryRun": True, "pages": pages, "scanned": scanned,
-                    "newTagged": len(new_tagged), "knownTagged": len(known_tagged),
-                    "cardCalls": card_calls, "pendingNew": pending_new, "note": note}
-
-        inserted = 0
-        for c in new_tagged:
-            if await _upsert_clip(c, started):
-                inserted += 1
-            await _apply_metrics(c["clip_uid"], c["heart_count"], c["view_count"],
-                                 c["metrics_ok"], started)
+        await asyncio.gather(*[one(r) for r in due])
         await (await get_db()).commit()
-
-        deactivated = 0
-        # 아직 못 훑은 신규 후보가 남아 있으면 '전체를 확인했다'고 볼 수 없다 —
-        # 이 상태로 비활성 처리를 하면 멀쩡한 클립이 사라진다.
-        if full_scan and status == ST_OK and pending_new == 0:
-            alive = known_tagged | {c["clip_uid"] for c in new_tagged}
-            deactivated = await _reconcile_missing_clips(alive, started)
-            await (await get_db()).commit()
-
-        ranked = await recompute_ranking(started, client=client)
-
-        _log({"event": "run_incremental", "status": status, "pages": pages,
-              "scanned": scanned, "card_calls": card_calls, "new_tagged": len(new_tagged),
-              "pending_new": pending_new, "refreshed": refreshed, "streamers": len(ranked),
-              "deactivated": deactivated, "full_scan": full_scan,
-              "duration_ms": round((time.time() - started) * 1000)})
-        return {"status": status, "pages": pages, "scanned": scanned,
-                "cardCalls": card_calls, "newTagged": len(new_tagged),
-                "pendingNew": pending_new, "inserted": inserted, "refreshed": refreshed,
-                "streamers": len(ranked), "full_scan": full_scan, "note": note}
-
-    except SchemaError as e:
-        _log({"event": "run_failed", "level": "warning", "status": ST_SCHEMA,
-              "detail": str(e)[:200]})
-        return {"status": ST_SCHEMA, "note": str(e)}
-    except FetchError as e:
-        _log({"event": "run_failed", "level": "warning", "status": e.status,
-              "detail": e.detail})
-        return {"status": e.status, "note": e.detail}
+        await recompute_ranking(now, client=client)
+        _log({"event": "refresh_metrics", "due": len(due), "ok": ok, "failed": fail})
+        return {"status": ST_OK, "refreshed": ok, "failed": fail, "due": len(due)}
+    except (FetchError, SchemaError) as e:
+        _log({"event": "refresh_failed", "level": "warning", "detail": str(e)[:200]})
+        return {"status": ST_FAILED, "note": str(e)[:200]}
     finally:
-        await _release_lock(token)
+        await release_named_lock("singcup_metrics", token)
+
+
+async def retry_failed_clips(limit: int = 50) -> dict:
+    """카드 조회에 실패해 큐에 남은 클립만 다시 시도한다."""
+    now = int(time.time())
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT clip_uid, item_json FROM singcup_clip_retry "
+        "WHERE next_try_at <= ? AND attempts < ? ORDER BY next_try_at LIMIT ?",
+        (now, RETRY_MAX_ATTEMPTS, max(1, limit)))).fetchall()
+    if not rows:
+        return {"retried": 0}
+    items = []
+    for r in rows:
+        try:
+            items.append(json.loads(r["item_json"]))
+        except (TypeError, ValueError):
+            # 원본이 없으면 재구성이 불가능하다 — 큐에서 빼고 다음 탐색에 맡긴다
+            await _clear_retry(r["clip_uid"])
+    if not items:
+        return {"retried": 0}
+    tagged, _ins, failed = await _scan_batch(_get_client(), items, now)
+    return {"retried": len(items), "tagged": tagged, "failed": failed}
 
 
 # ── 조회 (API용) ────────────────────────────────────────────────────────────
@@ -993,7 +1155,11 @@ CLIP_INTERVAL_MINUTES = float(os.getenv("SINGCUP_CLIP_INTERVAL_MINUTES", "4"))
 
 
 async def start_clip_collector():
-    """main.py lifespan에서 띄운다. 이벤트 기간에만 돌고 락으로 중복 실행을 막는다."""
+    """정기 루프 — 신규 탐색 + 지표 갱신 + 실패 재시도.
+
+    과거 적재(백필)는 여기서 하지 않는다. 성격이 달라 별도 워커
+    (start_backfill_worker)가 완료될 때까지 연속으로 처리한다.
+    """
     if os.getenv("SINGCUP_ENABLED", "true").lower() in ("0", "false", "no"):
         return
     await asyncio.sleep(float(os.getenv("SINGCUP_CLIP_START_DELAY_SECONDS", "40")))
@@ -1002,7 +1168,9 @@ async def start_clip_collector():
         try:
             st = event_status()
             if st == "LIVE":
-                await collect_clips_incremental()
+                await discover_new_clips()
+                await refresh_metrics()
+                await retry_failed_clips()
             elif st == "UPCOMING":
                 wait = 30.0
             else:

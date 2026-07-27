@@ -6,14 +6,18 @@
 원본(네이버 라운지) 응답 구조에 의존하는 코드는 전부 singcup_collector 안에 있다.
 여기서는 정규화된 dict만 다룬다.
 """
+import asyncio
 import hmac
 
 from fastapi import APIRouter, Header, HTTPException
 from singcup_clips import (
-    collect_clips_incremental,
-    collect_clips_once,
+    backfill_status,
+    discover_new_clips,
     load_main,
     load_streamer_clips,
+    refresh_metrics,
+    reset_backfill,
+    run_backfill,
 )
 from singcup_collector import (
     ADMIN_SECRET,
@@ -95,17 +99,45 @@ async def streamer_clips(channel_id: str):
     return await load_streamer_clips(channel_id)
 
 
-@router.post("/clips/collect")
-async def clips_collect(mode: str = "incremental", dry_run: bool = False,
-                        x_singcup_secret: str | None = Header(default=None)):
-    """클립 수동 수집.
+# ── 관리 작업 ───────────────────────────────────────────────────────────────
+# 백필은 완료까지 수 분~수십 분이 걸릴 수 있다. 요청을 붙잡고 기다리면 Railway
+# 요청 제한 시간에 걸리고 중간 실패 시 어디까지 처리했는지도 알 수 없다.
+# 그래서 작업을 백그라운드로 띄우고 즉시 202로 응답한 뒤, 진행 상황은 status로 본다.
+@router.post("/clips/backfill", status_code=202)
+async def clips_backfill(restart: bool = False,
+                         x_singcup_secret: str | None = Header(default=None)):
+    """과거 데이터 백필을 시작한다(이미 실행 중이면 락에 막혀 그대로 둔다).
 
-    mode=incremental  신규 클립만 카드 조회 + 오래된 수치 일부 갱신(정기 수집과 동일)
-    mode=full         태그 후보 전체를 카드 조회(초기 적재/검산용, 호출량이 크다)
+    restart=true 면 커서·수치를 초기화하고 처음부터 다시 훑는다.
+
+    BackgroundTasks가 아니라 create_task로 완전히 떼어 낸다 — BackgroundTasks는
+    응답을 보낸 뒤에도 그 요청의 처리 흐름 안에서 실행돼, 수 분짜리 작업이면
+    워커를 그동안 붙잡는다. 진행 상황은 /clips/backfill/status 로 확인한다.
     """
     _require_secret(x_singcup_secret)
-    if mode not in ("incremental", "full"):
-        raise HTTPException(status_code=400, detail="mode는 incremental 또는 full 이어야 합니다.")
-    if mode == "full":
-        return await collect_clips_once(dry_run=dry_run)
-    return await collect_clips_incremental(dry_run=dry_run)
+    if restart:
+        await reset_backfill()
+    asyncio.create_task(run_backfill())
+    return {"accepted": True, "state": await backfill_status()}
+
+
+@router.get("/clips/backfill/status")
+async def clips_backfill_status(x_singcup_secret: str | None = Header(default=None)):
+    """백필 진행 상황 — 처리 건수·현재 커서·도달 날짜·실패 수·완료 여부."""
+    _require_secret(x_singcup_secret)
+    return await backfill_status()
+
+
+@router.post("/clips/discover")
+async def clips_discover(x_singcup_secret: str | None = Header(default=None)):
+    """신규 클립 탐색 1회(정기 루프와 동일). 최신 페이지만 훑는다."""
+    _require_secret(x_singcup_secret)
+    return await discover_new_clips()
+
+
+@router.post("/clips/refresh")
+async def clips_refresh(limit: int | None = None,
+                        x_singcup_secret: str | None = Header(default=None)):
+    """기존 클립의 하트·조회수 갱신 1회. 목록은 훑지 않는다."""
+    _require_secret(x_singcup_secret)
+    return await refresh_metrics(limit=limit)

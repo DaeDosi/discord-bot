@@ -35,7 +35,7 @@ from routers.settings_router import router as settings_router
 from routers.singcup_router import router as singcup_router
 from routers.stats_router import router as stats_router
 from routers.verify_router import router as verify_router
-from singcup_clips import start_clip_collector
+from singcup_clips import start_backfill_worker, start_clip_collector
 from singcup_collector import ADMIN_SECRET, start_singcup_collector
 
 from database import init_db
@@ -52,8 +52,10 @@ async def lifespan(app: FastAPI):
     # 싱드컵 이벤트 수집 — 이벤트 기간에만 돌고, 여러 replica가 떠도 DB 락으로
     # 한 번에 하나만 실행된다. 실패해도 메인 통계 서비스에는 영향이 없다.
     asyncio.create_task(start_singcup_collector())
-    # 싱드컵 클립(메인/랭킹) — 신규 클립만 카드 조회하는 증분 수집
+    # 싱드컵 클립(메인/랭킹) — 신규 탐색 + 지표 갱신(가벼운 정기 루프)
     asyncio.create_task(start_clip_collector())
+    # 과거 적재는 성격이 달라 별도 워커가 완료될 때까지 연속 처리한다(커서는 DB에 저장)
+    asyncio.create_task(start_backfill_worker())
     yield
 
 

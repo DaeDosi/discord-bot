@@ -1,8 +1,10 @@
-"""싱드컵 증분 수집 — 카드 API 호출량 제어 검증.
+"""싱드컵 수집 파이프라인 — 백필 / 신규 탐색 / 지표 갱신 분리 검증.
 
-카드 API는 클립 1건당 1회다. 매 사이클 전량 조회하면 태그 클립 500건 기준 500회를
-넘기므로, 신규 클립만 조회하고 기존 태그 클립은 일부만 갱신해야 한다.
+카드 API는 클립 1건당 1회다. 세 작업을 한 덩어리로 돌리면 과거 적재가 정기 주기에
+묶여 몇 시간씩 걸리므로, 역할을 나눠 각자 필요한 만큼만 호출하게 한다.
 """
+import time
+
 import httpx
 import singcup_clips as sc
 from test_singcup_clips import BEFORE, card, clip
@@ -26,7 +28,6 @@ def _handler(clips_by_cursor, *, tagged_uids, calls, card_status=200):
                                              "content": {"data": items, "page": page}})
         if "/service/v1/channels/" in url:
             return httpx.Response(200, json=CHANNEL_JSON)
-        # 카드 API
         uid = request.url.params.get("referer", "").rsplit("/", 1)[-1]
         calls.append(uid)
         if card_status != 200:
@@ -40,106 +41,226 @@ def _install(h):
     sc._client = httpx.AsyncClient(transport=httpx.MockTransport(h))
 
 
+# 3페이지: 마지막 페이지는 전부 이벤트 시작 이전 → 백필 종료 지점
 PAGES = {
     None: ([clip("t1"), clip("t2", owner="o2"), clip("plain", owner="o3")], "c1"),
-    "c1": ([clip("old", created=BEFORE)], None),
+    "c1": ([clip("t3", owner="o4")], "c2"),
+    "c2": ([clip("old", created=BEFORE)], None),
 }
-TAGGED = {"t1", "t2"}
+TAGGED = {"t1", "t2", "t3"}
 
 
-def test_first_cycle_scans_all_new_clips(db):
+async def _age_metrics(uids=None):
+    c = await database.get_db()
+    if uids is None:
+        await c.execute("UPDATE singcup_clips SET last_metrics_at=0")
+    else:
+        qs = ",".join("?" for _ in uids)
+        await c.execute(
+            f"UPDATE singcup_clips SET last_metrics_at=0 WHERE clip_uid IN ({qs})",
+            tuple(uids))
+    await c.commit()
+
+
+# ── ① 백필 ─────────────────────────────────────────────────────────────────
+def test_backfill_runs_to_completion_in_one_go(db):
+    """정기 주기를 기다리지 않고 시작일에 닿을 때까지 연속 처리한다."""
     calls = []
     _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
-    res = db(sc.collect_clips_incremental())
-    assert res["status"] == "OK"
-    assert sorted(calls) == ["plain", "t1", "t2"]     # 후보 3건 모두 카드 조회
-    assert res["newTagged"] == 2 and res["streamers"] == 2
+    res = db(sc.run_backfill())
+
+    assert res["status"] == "completed"
+    assert res["pages"] == 3                      # 시작일 이전 페이지에서 종료
+    assert res["tagged"] == 3
+    assert sorted(calls) == ["plain", "t1", "t2", "t3"]
+    assert db(sc.load_main())["summary"]["streamerCount"] == 3
 
 
-def test_second_cycle_makes_no_card_calls(db):
+def test_backfill_state_is_persisted(db):
     calls = []
     _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
-    db(sc.collect_clips_incremental())
+    db(sc.run_backfill())
+    st = db(sc.backfill_status())
+
+    assert st["status"] == "completed"
+    assert st["scannedCount"] == 5                # 전체 훑은 클립 수
+    assert st["taggedCount"] == 3
+    assert st["failedCount"] == 0
+    assert st["completedAt"] and st["oldestScannedCreatedAt"]
+    assert st["nextCursor"] is None               # 완료되면 커서를 비운다
+
+
+def test_completed_backfill_is_not_rerun(db):
+    calls = []
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
+    db(sc.run_backfill())
     calls.clear()
 
-    # 같은 목록으로 즉시 재실행 — 신규도 없고 수치도 아직 신선하다
     _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
-    res = db(sc.collect_clips_incremental())
-    assert res["status"] == "OK"
-    assert calls == [], "신규가 없으면 카드 API를 호출하지 않아야 한다"
-    assert res["cardCalls"] == 0
-    assert res["streamers"] == 2                      # 순위는 그대로 유지
+    res = db(sc.run_backfill())
+    assert res["status"] == "completed" and calls == []
 
 
-def test_untagged_clip_is_not_rescanned(db):
+def test_backfill_resumes_from_saved_cursor(db):
+    """중단된 백필은 저장된 커서부터 이어서 처리한다(재배포 시나리오)."""
+    calls = []
+
+    def flaky(request):
+        url = str(request.url)
+        if "/categories/" in url:
+            cur = request.url.params.get("clipUID")
+            if cur == "c1":                        # 2페이지에서 실패
+                return httpx.Response(503, json={"code": 503})
+            items, nxt = PAGES.get(cur, ([], None))
+            page = {"next": {"clipUID": nxt}} if nxt else {}
+            return httpx.Response(200, json={"code": 200,
+                                             "content": {"data": items, "page": page}})
+        if "/service/v1/channels/" in url:
+            return httpx.Response(200, json=CHANNEL_JSON)
+        uid = request.url.params.get("referer", "").rsplit("/", 1)[-1]
+        calls.append(uid)
+        return httpx.Response(200, json=card(
+            "#싱드컵" if uid in TAGGED else "#노래", likes=3, views=10))
+
+    _install(flaky)
+    first = db(sc.run_backfill())
+    assert first["status"] == "paused"
+    st = db(sc.backfill_status())
+    assert st["nextCursor"] == "c1"                # 여기서부터 다시
+    assert st["lastError"]
+
+    # 정상 응답으로 복구하면 이어서 완료된다
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
+    second = db(sc.run_backfill())
+    assert second["status"] == "completed"
+    assert db(sc.backfill_status())["nextCursor"] is None
+
+
+def test_backfill_reset_starts_over(db):
     calls = []
     _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
-    db(sc.collect_clips_incremental())
-    calls.clear()
-
-    # 태그 없는 'plain'만 남기고 다시 돌려도 카드를 부르지 않는다
-    _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
-    db(sc.collect_clips_incremental())
-    assert "plain" not in calls
+    db(sc.run_backfill())
+    db(sc.reset_backfill())
+    st = db(sc.backfill_status())
+    assert st["status"] == "idle" and st["scannedCount"] == 0
 
 
-def test_new_clip_appearing_later_is_scanned(db):
+def test_backfill_lock_blocks_second_worker(db):
+    async def go():
+        import asyncio
+        _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+        return await asyncio.gather(sc.run_backfill(), sc.run_backfill())
+
+    a, b = db(go())
+    # 하나만 실제로 돌고 다른 하나는 락에 막힌다
+    assert sum(1 for r in (a, b) if r["status"] == "completed") == 1
+
+
+# ── ② 신규 탐색 ────────────────────────────────────────────────────────────
+def test_discover_stops_at_first_fully_known_page(db):
+    """이미 아는 클립만 있는 페이지를 만나면 즉시 멈춘다 — 수천 건을 다시 안 내려간다."""
     calls = []
     _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
-    db(sc.collect_clips_incremental())
+    db(sc.run_backfill())                          # 전부 알고 있는 상태로 만든다
     calls.clear()
 
-    pages2 = {
-        None: ([clip("fresh", owner="o9")] + PAGES[None][0], "c1"),
-        "c1": PAGES["c1"],
-    }
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
+    res = db(sc.discover_new_clips())
+    assert res["pages"] == 1                       # 1페이지에서 종료
+    assert res["candidates"] == 0 and calls == []
+
+
+def test_discover_picks_up_only_new_clips(db):
+    calls = []
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
+    db(sc.run_backfill())
+    calls.clear()
+
+    pages2 = dict(PAGES)
+    pages2[None] = ([clip("fresh", owner="o9")] + PAGES[None][0], "c1")
     _install(_handler(pages2, tagged_uids=TAGGED | {"fresh"}, calls=calls))
-    res = db(sc.collect_clips_incremental())
-    assert calls == ["fresh"], "새로 올라온 클립만 카드 조회해야 한다"
-    assert res["newTagged"] == 1
-    assert res["streamers"] == 3
+    res = db(sc.discover_new_clips())
+
+    assert calls == ["fresh"]                      # 새 클립만 카드 조회
+    assert res["tagged"] == 1
+    assert db(sc.load_main())["summary"]["streamerCount"] == 4
 
 
-def test_stale_metrics_are_refreshed(db):
+def test_discover_ignores_clips_outside_event_window(db):
+    calls = []
+    pages = {None: ([clip("old2", created=BEFORE)], None)}
+    _install(_handler(pages, tagged_uids={"old2"}, calls=calls))
+    res = db(sc.discover_new_clips())
+    assert res["candidates"] == 0 and calls == []
+
+
+# ── ③ 지표 갱신 ────────────────────────────────────────────────────────────
+def test_refresh_updates_metrics_without_listing(db):
     calls = []
     _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
-    db(sc.collect_clips_incremental())
+    db(sc.run_backfill())
     calls.clear()
+    db(_age_metrics())
 
-    async def age_metrics():
-        c = await database.get_db()
-        await c.execute("UPDATE singcup_clips SET last_metrics_at=0")
-        await c.commit()
-    db(age_metrics())
+    # 목록 API는 부르지 않고 카드만 부른다
+    def cards_only(request):
+        url = str(request.url)
+        if "/categories/" in url:
+            raise AssertionError("지표 갱신은 목록을 훑지 않아야 한다")
+        if "/service/v1/channels/" in url:
+            return httpx.Response(200, json=CHANNEL_JSON)
+        uid = request.url.params.get("referer", "").rsplit("/", 1)[-1]
+        calls.append(uid)
+        return httpx.Response(200, json=card("#싱드컵", likes=99, views=10))
 
-    _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
-    res = db(sc.collect_clips_incremental())
-    assert sorted(calls) == ["t1", "t2"]              # 태그 클립만 갱신, plain은 제외
-    assert res["refreshed"] == 2
+    _install(cards_only)
+    res = db(sc.refresh_metrics())
+    assert res["refreshed"] == 3 and sorted(calls) == ["t1", "t2", "t3"]
+    assert db(sc.load_main())["streamers"][0]["heartCount"] == 99
 
 
-def test_refresh_is_capped_per_cycle(db, monkeypatch):
+def test_refresh_prefers_representative_clips(db):
+    """대표 클립은 짧은 주기로, 나머지는 긴 주기로 갱신한다."""
     calls = []
-    _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
-    db(sc.collect_clips_incremental())
+    # 같은 스트리머의 클립 2개 — 하트가 높은 rep이 대표가 된다
+    pages = {None: ([clip("rep"), clip("sub")], None)}
+
+    def handler(request):
+        url = str(request.url)
+        if "/categories/" in url:
+            cur = request.url.params.get("clipUID")
+            items, nxt = pages.get(cur, ([], None))
+            page = {"next": {"clipUID": nxt}} if nxt else {}
+            return httpx.Response(200, json={"code": 200,
+                                             "content": {"data": items, "page": page}})
+        if "/service/v1/channels/" in url:
+            return httpx.Response(200, json=CHANNEL_JSON)
+        uid = request.url.params.get("referer", "").rsplit("/", 1)[-1]
+        calls.append(uid)
+        likes = 50 if uid == "rep" else 1
+        return httpx.Response(200, json=card("#싱드컵", likes=likes, views=10))
+
+    _install(handler)
+    db(sc.run_backfill())
     calls.clear()
 
-    async def age_metrics():
+    async def stale_between_ttls():
+        # 대표 TTL(5분)은 넘고 일반 TTL(45분)은 안 넘은 시점으로 맞춘다
         c = await database.get_db()
-        await c.execute("UPDATE singcup_clips SET last_metrics_at=0")
+        await c.execute("UPDATE singcup_clips SET last_metrics_at=?",
+                        (int(time.time()) - 10 * 60,))
         await c.commit()
-    db(age_metrics())
+    db(stale_between_ttls())
 
-    monkeypatch.setattr(sc, "REFRESH_PER_CYCLE", 1)
-    _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
-    res = db(sc.collect_clips_incremental())
-    assert len(calls) == 1 and res["refreshed"] == 1   # 사이클당 상한이 지켜진다
+    _install(handler)
+    res = db(sc.refresh_metrics())
+    assert res["refreshed"] == 1 and calls == ["rep"]   # 대표만 갱신
 
 
 def test_card_failure_keeps_previous_metrics(db):
     calls = []
     _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
-    db(sc.collect_clips_incremental())
+    db(sc.run_backfill())
 
     async def read(uid):
         c = await database.get_db()
@@ -150,118 +271,50 @@ def test_card_failure_keeps_previous_metrics(db):
     before = db(read("t1"))
     assert before == (3, 10)
 
-    async def age_metrics():
-        c = await database.get_db()
-        await c.execute("UPDATE singcup_clips SET last_metrics_at=0")
-        await c.commit()
-    db(age_metrics())
-
-    # 카드 API가 5xx로 죽어도 기존 수치를 0으로 덮지 않는다
+    db(_age_metrics())
     _install(_handler(PAGES, tagged_uids=TAGGED, calls=[], card_status=503))
-    db(sc.collect_clips_incremental())
-    assert db(read("t1")) == before
+    db(sc.refresh_metrics())
+    assert db(read("t1")) == before                # 0으로 덮지 않는다
+
+
+# ── 실패 재시도 큐 ─────────────────────────────────────────────────────────
+def test_failed_cards_are_queued_and_retried(db):
+    calls = []
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls, card_status=503))
+    res = db(sc.run_backfill())
+    assert res["failed"] == 4                      # 후보 4건 모두 카드 실패
+
+    async def queued():
+        c = await database.get_db()
+        r = await (await c.execute(
+            "SELECT clip_uid, attempts FROM singcup_clip_retry ORDER BY clip_uid")).fetchall()
+        return [(x["clip_uid"], x["attempts"]) for x in r]
+    q = db(queued())
+    assert len(q) == 4 and all(a == 1 for _, a in q)
+
+    # 재시도 시각을 당기고 정상 응답으로 바꾸면 큐가 비워진다
+    async def make_due():
+        c = await database.get_db()
+        await c.execute("UPDATE singcup_clip_retry SET next_try_at=0")
+        await c.commit()
+    db(make_due())
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    r = db(sc.retry_failed_clips())
+    assert r["retried"] == 4 and r["tagged"] == 3
+    assert db(queued()) == []
 
 
 def test_load_main_shape(db):
     calls = []
     _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
-    db(sc.collect_clips_incremental())
+    db(sc.run_backfill())
     d = db(sc.load_main())
 
     assert set(d) == {"event", "summary", "collector", "streamers"}
-    assert d["summary"]["streamerCount"] == 2
-    assert d["summary"]["taggedClipCount"] == 2
+    assert d["summary"]["streamerCount"] == 3
     top = d["streamers"][0]
     for key in ("rank", "channelId", "channelName", "clipUid", "clipThumbnailUrl",
                 "heartCount", "viewCount", "viewScore", "heartScore", "score",
                 "taggedClipCount", "heartDelta", "rankDelta", "isNew", "live"):
         assert key in top
     assert 0 <= top["score"] <= 100
-
-
-def test_rank_and_heart_delta_between_cycles(db):
-    calls = []
-    _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
-    db(sc.collect_clips_incremental())
-    first = db(sc.load_main())
-    assert first["streamers"][0]["isNew"] is True       # 직전 스냅샷이 없다
-
-    async def age_and_bump():
-        c = await database.get_db()
-        await c.execute("UPDATE singcup_clips SET last_metrics_at=0")
-        # 두 회차가 같은 초에 끝나면 '직전 스냅샷'이 구분되지 않는다.
-        # 실제 운영은 4분 주기라 생기지 않는 상황이지만, 테스트에서는 명시적으로 벌린다.
-        await c.execute("UPDATE singcup_snapshots SET collected_at = collected_at - 600")
-        await c.commit()
-    db(age_and_bump())
-
-    # t2의 하트를 크게 올려 순위를 뒤집는다
-    def bumped(request):
-        url = str(request.url)
-        if "/categories/" in url:
-            cur = request.url.params.get("clipUID")
-            items, nxt = PAGES.get(cur, ([], None))
-            page = {"next": {"clipUID": nxt}} if nxt else {}
-            return httpx.Response(200, json={"code": 200,
-                                             "content": {"data": items, "page": page}})
-        if "/service/v1/channels/" in url:
-            return httpx.Response(200, json=CHANNEL_JSON)
-        uid = request.url.params.get("referer", "").rsplit("/", 1)[-1]
-        likes = 99 if uid == "t2" else 3
-        return httpx.Response(200, json=card("#싱드컵", likes=likes, views=10))
-    _install(bumped)
-    db(sc.collect_clips_incremental())
-
-    d = db(sc.load_main())
-    top = d["streamers"][0]
-    assert top["clipUid"] == "t2"
-    assert top["heartDelta"] == 96                      # 3 -> 99
-    assert top["isNew"] is False
-    assert top["rankDelta"] is not None
-
-
-def test_new_scan_is_capped_and_resumes_next_cycle(db, monkeypatch):
-    """신규 후보가 많아도 사이클당 상한만 훑고, 나머지는 다음 사이클에 이어서 처리한다."""
-    calls = []
-    pages = {
-        None: ([clip(f"n{i}", owner=f"o{i}") for i in range(5)], None),
-    }
-    tagged = {f"n{i}" for i in range(5)}
-
-    monkeypatch.setattr(sc, "NEW_SCAN_PER_CYCLE", 2)
-    _install(_handler(pages, tagged_uids=tagged, calls=calls))
-    first = db(sc.collect_clips_incremental())
-    assert len(calls) == 2 and first["pendingNew"] == 3
-    assert first["newTagged"] == 2
-
-    calls.clear()
-    _install(_handler(pages, tagged_uids=tagged, calls=calls))
-    second = db(sc.collect_clips_incremental())
-    assert len(calls) == 2 and second["pendingNew"] == 1
-
-    calls.clear()
-    _install(_handler(pages, tagged_uids=tagged, calls=calls))
-    third = db(sc.collect_clips_incremental())
-    assert len(calls) == 1 and third["pendingNew"] == 0
-    assert db(sc.load_main())["summary"]["streamerCount"] == 5   # 결국 전부 수집된다
-
-
-def test_no_deactivation_while_backlog_remains(db, monkeypatch):
-    """아직 못 훑은 신규가 남아 있으면 '전체 확인'이 아니므로 비활성 처리를 하지 않는다."""
-    calls = []
-    pages = {None: ([clip("keep"), clip("a", owner="o2"), clip("b", owner="o3")], None)}
-    _install(_handler(pages, tagged_uids={"keep", "a", "b"}, calls=calls))
-    monkeypatch.setattr(sc, "NEW_SCAN_PER_CYCLE", 3)
-    db(sc.collect_clips_incremental())
-    assert db(sc.load_main())["summary"]["streamerCount"] == 3
-
-    # 목록에서 전부 사라졌지만 새 후보가 대량으로 들어와 backlog가 남은 상황
-    pages2 = {None: ([clip(f"new{i}", owner=f"x{i}") for i in range(5)], None)}
-    monkeypatch.setattr(sc, "NEW_SCAN_PER_CYCLE", 1)
-    for _ in range(2):
-        _install(_handler(pages2, tagged_uids={f"new{i}" for i in range(5)}, calls=[]))
-        res = db(sc.collect_clips_incremental())
-        assert res["pendingNew"] > 0
-    # 기존 3명이 그대로 살아 있어야 한다(backlog 중에는 비활성화 금지)
-    names = {s["clipUid"] for s in db(sc.load_main())["streamers"]}
-    assert {"keep", "a", "b"} <= names

@@ -212,8 +212,8 @@ def test_cursor_pagination_and_stop_before_event(db):
         return httpx.Response(200, json=card("#싱드컵", 1, 1))
 
     _install(handler)
-    res = db(sc.collect_clips_once(dry_run=True))
-    assert res["status"] == "OK"
+    res = db(sc.run_backfill())
+    assert res["status"] == "completed"
     assert seen_cursors == [None, "cur1"]          # 커서로 이동, 기간 밖 페이지에서 종료
     assert res["tagged"] == 2                       # a1, a2 만
 
@@ -226,8 +226,8 @@ def test_repeated_cursor_is_detected(db):
         return httpx.Response(200, json=card())
 
     _install(handler)
-    res = db(sc.collect_clips_once(dry_run=True))
-    assert res["status"] == "FAILED" and "반복" in res["note"]
+    res = db(sc.run_backfill())
+    assert res["status"] == "failed" and "반복" in res["note"]
 
 
 def test_untagged_clips_are_excluded(db):
@@ -243,8 +243,9 @@ def test_untagged_clips_are_excluded(db):
         return httpx.Response(200, json=card(desc, 1, 1))
 
     _install(handler)
-    res = db(sc.collect_clips_once(dry_run=True))
-    assert res["tagged"] == 1 and res["streamers"] == 1
+    res = db(sc.run_backfill())
+    assert res["tagged"] == 1
+    assert db(sc.load_main())["summary"]["streamerCount"] == 1
 
 
 # ── 24. 수집 실패가 기존 데이터를 비우지 않는다 ─────────────────────────────
@@ -259,12 +260,15 @@ def test_failure_keeps_existing_clips(db):
         return httpx.Response(200, json=card("#싱드컵", 5, 5))
 
     _install(ok_handler)
-    first = db(sc.collect_clips_once())
-    assert first["tagged"] == 1 and first["streamers"] == 1
+    first = db(sc.run_backfill())
+    assert first["tagged"] == 1
+    assert db(sc.load_main())["summary"]["streamerCount"] == 1
 
+    # 완료된 백필은 다시 돌지 않으므로, 재적재 상황을 만들어 실패를 재현한다
+    db(sc.reset_backfill())
     _install(lambda r: httpx.Response(500, json={"code": 500}))
-    res = db(sc.collect_clips_once())
-    assert res["status"] == "FAILED"
+    res = db(sc.run_backfill())
+    assert res["status"] == "paused"        # 커서를 남기고 멈춘다(데이터는 지우지 않는다)
 
     async def count():
         import database

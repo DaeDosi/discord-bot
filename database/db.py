@@ -681,6 +681,45 @@ async def init_db():
         "ON singcup_clip_scan(tagged, checked_at)",
         # 하트/조회수를 마지막으로 갱신한 시각 — 갱신 대상 선정에 쓴다
         "ALTER TABLE singcup_clips ADD COLUMN last_metrics_at INTEGER NOT NULL DEFAULT 0",
+        # 카드 API 재조회에 필요한 값 — 지표 갱신 때 목록을 다시 훑지 않기 위해 저장한다
+        "ALTER TABLE singcup_clips ADD COLUMN rec_id TEXT NOT NULL DEFAULT ''",
+        # ── 과거 데이터 백필 상태 ──────────────────────────────────────────
+        # 초기 적재(이벤트 시작일까지 거슬러 가기)는 정기 수집과 성격이 다르다.
+        # 커서와 진행 수치를 DB에 두어 재배포/재시작 후에도 이어서 처리한다.
+        """CREATE TABLE IF NOT EXISTS singcup_backfill_state (
+               event_id                  TEXT PRIMARY KEY,
+               status                    TEXT    NOT NULL DEFAULT 'idle',
+               next_cursor               TEXT,
+               scanned_count             INTEGER NOT NULL DEFAULT 0,
+               tagged_count              INTEGER NOT NULL DEFAULT 0,
+               failed_count              INTEGER NOT NULL DEFAULT 0,
+               pages_done                INTEGER NOT NULL DEFAULT 0,
+               oldest_scanned_created_at INTEGER,
+               started_at                INTEGER,
+               updated_at                INTEGER,
+               completed_at              INTEGER,
+               last_error                TEXT
+           )""",
+        # 카드 조회에 실패한 클립만 따로 큐에 남겨 나중에 재시도한다
+        """CREATE TABLE IF NOT EXISTS singcup_clip_retry (
+               clip_uid    TEXT PRIMARY KEY,
+               video_id    TEXT NOT NULL DEFAULT '',
+               rec_id      TEXT NOT NULL DEFAULT '',
+               created_at  INTEGER,
+               attempts    INTEGER NOT NULL DEFAULT 0,
+               next_try_at INTEGER NOT NULL DEFAULT 0,
+               last_error  TEXT,
+               -- 목록 응답 원본. 재시도할 때 제목·썸네일·채널ID를 다시 조회하지 않아도 된다
+               item_json   TEXT
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_retry_due ON singcup_clip_retry(next_try_at)",
+        # 이름 있는 분산 락 — 백필/신규탐색/지표갱신이 서로를 막지 않도록 키를 나눈다
+        # (기존 singcup_collect_lock은 자유게시판 수집기 전용으로 그대로 둔다)
+        """CREATE TABLE IF NOT EXISTS singcup_locks (
+               name         TEXT PRIMARY KEY,
+               locked_until INTEGER NOT NULL DEFAULT 0,
+               owner        TEXT    NOT NULL DEFAULT ''
+           )""",
     ]:
         try:
             await db.execute(sql)
