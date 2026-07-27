@@ -141,15 +141,16 @@ function KpiDelta({ pct, cur, unit }: { pct?: number | null; cur?: number; unit?
   );
 }
 
-function StatTile({ label, value, unit, sub, accent, deltaPrev, rawValue }:
-  { label: string; value: string; unit?: string; sub?: string; accent?: boolean;
+// 카드 규격(!p-4 + 수치 타이포)은 신규 스트리머 분석의 NcTile과 동일하게 맞춘다.
+function StatTile({ label, value, unit, sub, deltaPrev, rawValue }:
+  { label: string; value: string; unit?: string; sub?: string;
     deltaPrev?: number | null; rawValue?: number }) {
   return (
-    <div className="card !p-5">
+    <div className="card !p-4">
       <p className="text-sm text-muted">{label}</p>
       <p className="mt-1.5 tracking-tight">
-        <span className="text-xl md:text-2xl font-extrabold tabular-nums">
-          {accent ? <GradText>{value}</GradText> : value}
+        <span className="text-xl md:text-2xl font-extrabold tabular-nums text-white">
+          {value}
         </span>
         {unit && <span className="text-sm text-muted font-normal ml-1">{unit}</span>}
       </p>
@@ -576,7 +577,7 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatTile label="현재 라이브 방송" value={nf(liveCount)} unit="채널"
           rawValue={liveCount} deltaPrev={dv?.live_count.prev} />
-        <StatTile label="전체 동시 시청자" value={nf(totalV)} unit="명" accent
+        <StatTile label="전체 동시 시청자" value={nf(totalV)} unit="명"
           rawValue={totalV} deltaPrev={dv?.total_viewers.prev} />
         <StatTile label="방송당 평균 시청자" value={nf(avgV)} unit="명" sub="총 시청자 ÷ 방송 수" />
         <StatTile label="뷰어쉽" value={nf(viewership)} unit="시간"
@@ -851,13 +852,17 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
 // ── 신규/라이징 탭 ────────────────────────────────────────────────────────────
 // 백엔드 _CAT_MIN_LIVES와 동일 — 표본 부족 안내 문구용
 const NC_CAT_MIN_LIVES = 3;
-function NcTile({ label, value, unit }: { label: string; value: string; unit?: string }) {
+// accent=true인 카드만 그린→시안 2톤 그라데이션을 쓴다. 나머지 KPI 수치는(전체 스트리머
+// 분석의 StatTile도 동일하게) 흰색 — 강조가 전부에 걸리면 강조가 아니게 되므로 1장만 남겼다.
+function NcTile({ label, value, unit, accent }:
+  { label: string; value: string; unit?: string; accent?: boolean }) {
   return (
     <div className="card !p-4">
       <p className="text-sm text-muted">{label}</p>
-      {/* 수치는 전체 스트리머 분석(StatTile accent)과 동일한 그린→시안 2톤 그라데이션 */}
       <p className="mt-1.5 tracking-tight">
-        <span className="text-xl md:text-2xl font-extrabold tabular-nums"><GradText>{value}</GradText></span>
+        <span className="text-xl md:text-2xl font-extrabold tabular-nums text-white">
+          {accent ? <GradText>{value}</GradText> : value}
+        </span>
         {unit && <span className="text-sm text-muted font-normal ml-1">{unit}</span>}
       </p>
     </div>
@@ -1135,7 +1140,7 @@ function NewcomersAnalysisTab({ data, onRanking }: { data: RisingNewcomers; onRa
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <NcTile label="현재 라이브 신입" value={nf(sm?.count ?? 0)} unit="채널" />
         <NcTile label="신입 총 시청자" value={nf(sm?.total_viewers ?? 0)} unit="명" />
-        <NcTile label="신입 평균 시청자" value={nf(sm?.avg_viewers ?? 0)} unit="명" />
+        <NcTile label="신입 평균 시청자" value={nf(sm?.avg_viewers ?? 0)} unit="명" accent />
         <NcTile label="신입 최고 동접" value={nf(sm?.peak_viewers ?? 0)} unit="명" />
       </div>
 
