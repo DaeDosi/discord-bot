@@ -13,12 +13,11 @@ import {
   fmtDateTime, fmtRange, hideBrokenImage, nf,
 } from "../../singcupShared";
 
-// 싱드컵 라이브 — #싱드컵 태그 스트리머를 방송 썸네일 카드로 둘러보는 화면.
-// 순위표는 싱드컵 메인(/stats 의 싱드컵 탭)에 있고, 여기는 '발견' 용도다.
-
-type SortKey = "live" | "heart" | "recent" | "follower";
+// 싱드컵 라이브 — #싱드컵 태그 참가자 중 **지금 방송 중인 채널만** 보여주는 화면.
+// 오프라인 참가자와 전체 순위는 싱드컵 메인(/stats 의 싱드컵 탭 = 랭킹)에서 본다.
+type SortKey = "viewers" | "heart" | "recent" | "follower";
 const SORTS: { k: SortKey; label: string }[] = [
-  { k: "live",     label: "현재 라이브 우선" },
+  { k: "viewers",  label: "시청자 많은 순" },
   { k: "heart",    label: "하트 많은 순" },
   { k: "recent",   label: "최근 클립" },
   { k: "follower", label: "팔로워 많은 순" },
@@ -40,7 +39,8 @@ function GridSkeleton() {
   );
 }
 
-// 스트리머 카드 — 라이브면 방송 정보, 아니면 대표 클립 정보를 보여준다.
+// 스트리머 카드 — 이 화면은 라이브만 넘어오지만, 데이터가 비는 경우를 대비해
+// 오프라인 표시도 남겨 둔다(대표 클립 정보로 대체).
 function StreamerCard({ s }: { s: SingcupStreamer }) {
   const [open, setOpen] = useState(false);
   const [clips, setClips] = useState<SingcupClip[] | null>(null);
@@ -203,7 +203,7 @@ function StreamerCard({ s }: { s: SingcupStreamer }) {
 export default function SingcupLivePage() {
   const [data, setData] = useState<SingcupMain | null>(null);
   const [loading, setLoading] = useState(true);
-  const [sort, setSort] = useState<SortKey>("live");
+  const [sort, setSort] = useState<SortKey>("viewers");
 
   useEffect(() => {
     let alive = true;
@@ -217,12 +217,13 @@ export default function SingcupLivePage() {
   }, []);
 
   const sorted = useMemo(() => {
-    const list = [...(data?.streamers ?? [])];
+    // 방송 중인 참가자만 남긴다
+    const list = (data?.streamers ?? []).filter((s) => s.live);
     if (sort === "heart") list.sort((a, b) => b.heartCount - a.heartCount);
     else if (sort === "recent") list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     else if (sort === "follower") list.sort((a, b) => b.followerCount - a.followerCount);
     else list.sort((a, b) =>
-      (Number(!!b.live) - Number(!!a.live)) || (b.heartCount - a.heartCount));
+      (b.live?.concurrentViewers ?? 0) - (a.live?.concurrentViewers ?? 0));
     return list;
   }, [data, sort]);
 
@@ -262,8 +263,11 @@ export default function SingcupLivePage() {
               {data?.collector.stale && ev?.status !== "ENDED" && <StaleBadge />}
             </div>
             <p className="mt-2 text-sm leading-relaxed text-muted">
-              치지직 음악/노래 카테고리에서 <b className="text-fg">#싱드컵</b> 태그가 확인된
-              스트리머입니다. 지금 방송 중이면 라이브 정보가, 아니면 대표 클립이 표시됩니다.
+              <b className="text-fg">#싱드컵</b> 태그가 확인된 스트리머 중{" "}
+              <b className="text-fg">지금 방송 중인 채널만</b> 보여드립니다.
+              방송을 켜지 않은 참가자와 전체 순위는{" "}
+              <Link href="/stats" className="underline hover:text-fg">싱드컵 랭킹</Link>에서
+              확인하세요.
             </p>
             {ev && (
               <p className="mt-1 text-[13px] text-muted/80">
@@ -285,24 +289,24 @@ export default function SingcupLivePage() {
 
         <div className="grid grid-cols-3 gap-3">
           <div className="card !p-4">
-            <p className="text-sm text-muted">태그 클립</p>
-            <p className="mt-1.5 text-xl font-extrabold tabular-nums md:text-2xl">
-              {nf(data?.summary.taggedClipCount ?? 0)}
-              <span className="ml-1 text-sm font-normal text-muted">개</span>
-            </p>
-          </div>
-          <div className="card !p-4">
-            <p className="text-sm text-muted">참가 스트리머</p>
-            <p className="mt-1.5 text-xl font-extrabold tabular-nums md:text-2xl">
-              {nf(data?.summary.streamerCount ?? 0)}
+            <p className="text-sm text-muted">지금 방송 중</p>
+            <p className="mt-1.5 text-xl font-extrabold tabular-nums md:text-2xl"
+               style={{ color: "#FF4D4D" }}>
+              {nf(sorted.length)}
               <span className="ml-1 text-sm font-normal text-muted">명</span>
             </p>
           </div>
           <div className="card !p-4">
-            <p className="text-sm text-muted">현재 라이브</p>
-            <p className="mt-1.5 text-xl font-extrabold tabular-nums md:text-2xl"
-               style={{ color: "#FF4D4D" }}>
-              {nf(data?.summary.liveCount ?? 0)}
+            <p className="text-sm text-muted">총 시청자</p>
+            <p className="mt-1.5 text-xl font-extrabold tabular-nums md:text-2xl">
+              {nf(sorted.reduce((a, s) => a + (s.live?.concurrentViewers ?? 0), 0))}
+              <span className="ml-1 text-sm font-normal text-muted">명</span>
+            </p>
+          </div>
+          <div className="card !p-4">
+            <p className="text-sm text-muted">전체 참가 스트리머</p>
+            <p className="mt-1.5 text-xl font-extrabold tabular-nums md:text-2xl">
+              {nf(data?.summary.streamerCount ?? 0)}
               <span className="ml-1 text-sm font-normal text-muted">명</span>
             </p>
           </div>
@@ -326,13 +330,18 @@ export default function SingcupLivePage() {
         {loading && !data ? <GridSkeleton />
           : sorted.length === 0 ? (
             <div className="card py-16 text-center">
-              <Trophy size={30} className="mx-auto mb-3 opacity-25" style={{ color: GOLD }} />
-              <p className="font-medium text-fg">아직 확인된 #싱드컵 태그 클립이 없습니다.</p>
-              {ev?.status === "UPCOMING" && (
-                <p className="mt-1 text-sm text-muted">
-                  이벤트 시작 예정: <span className="tabular-nums">{fmtDateTime(ev.startAt)}</span>
-                </p>
-              )}
+              <Radio size={30} className="mx-auto mb-3 opacity-25" style={{ color: GOLD }} />
+              <p className="font-medium text-fg">지금 방송 중인 참가 스트리머가 없습니다.</p>
+              <p className="mt-1 text-sm text-muted">
+                {ev?.status === "UPCOMING"
+                  ? `이벤트 시작 예정: ${fmtDateTime(ev.startAt)}`
+                  : "참가자가 방송을 켜면 여기에 표시됩니다."}
+              </p>
+              <Link href="/stats" className="mt-4 inline-flex items-center gap-1.5 rounded-lg
+                                             px-3 py-2 text-sm font-bold text-[#1a1400]"
+                    style={{ background: GOLD }}>
+                <Trophy size={15} /> 전체 순위 보기
+              </Link>
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
