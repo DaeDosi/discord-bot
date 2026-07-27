@@ -113,16 +113,17 @@ function Row({ s, index }: { s: SingcupStreamer; index: number }) {
         </span>
       </span>
 
-      {/* 변화량 — 세로로 겹쳐 두면 '직전 -' / '24시간 NEW'가 좁게 눌려 읽기 어려웠다.
-          라벨 위 / 값 아래의 작은 블록 두 개를 가로로 나란히 두고 최소 폭을 확보한다. */}
-      <span className="flex shrink-0 items-center justify-end gap-4 sm:min-w-[132px]">
-        <span className="text-center">
+      {/* 하트 변화량 — 점수와 버튼 사이의 독립된 칸으로 읽히도록 좌우에 구분선을 두고
+          여백을 넉넉히 준다. 구분선이 없으면 버튼 쪽에 붙어 보인다. */}
+      <span className="flex shrink-0 items-center justify-center gap-5 border-border
+                       px-4 sm:min-w-[150px] sm:border-x">
+        <span className="text-center" title="직전 수집 회차와 비교한 하트 증감입니다. '-'는 변화가 없거나 비교할 직전 기록이 아직 없다는 뜻입니다.">
           <span className="block whitespace-nowrap text-[10px] text-muted">직전</span>
           <span className="mt-0.5 block whitespace-nowrap text-xs">
             <Delta value={s.heartDelta} />
           </span>
         </span>
-        <span className="text-center">
+        <span className="text-center" title="24시간 전 대비 하트 증가율입니다. 'NEW'는 24시간 전 기록이 없거나 그때 하트가 0이라 증가율을 낼 수 없다는 뜻입니다.">
           <span className="block whitespace-nowrap text-[10px] text-muted">24시간</span>
           <span className="mt-0.5 block whitespace-nowrap text-xs">
             {s.heartChangeRate24h === null
@@ -132,7 +133,7 @@ function Row({ s, index }: { s: SingcupStreamer; index: number }) {
         </span>
       </span>
 
-      <span className="flex shrink-0 items-center gap-1.5">
+      <span className="flex shrink-0 items-center gap-1.5 sm:pl-1">
         <a href={`https://chzzk.naver.com/clips/${s.clipUid}`} target="_blank"
            rel="noopener noreferrer"
            className="flex items-center gap-1 rounded-lg px-2.5 py-2 text-xs font-bold text-[#04140d]"
@@ -382,6 +383,15 @@ export default function Singcup() {
           );
         })}
       </div>
+
+      {/* 표기 안내 — '직전 -' / '24시간 NEW'가 무슨 뜻인지 화면에서 바로 알 수 있게 */}
+      <p className="text-[11px] leading-relaxed text-muted/80">
+        <b className="text-muted">직전</b>은 마지막 수집 회차와 비교한 하트 증감,{" "}
+        <b className="text-muted">24시간</b>은 하루 전 대비 하트 증가율입니다.{" "}
+        <span className="text-muted">-</span> 는 변화가 없거나 비교할 기록이 아직 없다는 뜻이고,{" "}
+        <b style={{ color: GOLD }}>NEW</b> 는 24시간 전 기록이 없어(또는 그때 하트가 0이라)
+        증가율을 낼 수 없다는 뜻입니다. 수집을 막 시작한 동안에는 대부분 이렇게 표시됩니다.
+      </p>
 
       {/* 랭킹 */}
       {loading && !data ? (
