@@ -1156,18 +1156,22 @@ const NC_GROUP_TABS = [
   { k: "small" as NewcomerGroup, label: "소형 스트리머", hint: "평균 시청자 10명 이하" },
 ];
 
+// 패널/비활성 텍스트는 테마 변수를 쓴다 — 예전엔 bg-[#181A20]/text-gray-400 같은
+// 고정 다크 색이라 라이트 모드에서 이 컨트롤만 검은 패널로 남았다.
+// 활성 탭의 네온 그린 + 검은 글씨는 두 테마에서 모두 대비가 충분해 그대로 둔다.
 function NcGroupToggle({ value, onChange }:
   { value: NewcomerGroup; onChange: (g: NewcomerGroup) => void }) {
   return (
-    <div className="inline-flex gap-1 rounded-xl border border-gray-800 bg-[#181A20] p-1">
+    <div className="inline-flex gap-1 rounded-xl border border-border bg-bg-hover p-1">
       {NC_GROUP_TABS.map((t) => {
         const active = value === t.k;
         return (
           <button key={t.k} onClick={() => onChange(t.k)} aria-pressed={active}
             className={`rounded-lg px-3 py-2 text-left text-sm transition-colors whitespace-nowrap ${
-              active ? "bg-[#00FFA3] font-bold text-black" : "text-gray-400 hover:text-white"}`}>
+              active ? "font-bold text-black" : "text-muted hover:text-fg"}`}
+            style={active ? { background: GREEN } : undefined}>
             {t.label}
-            <span className={`ml-1.5 text-[11px] font-normal ${active ? "text-black/60" : "text-gray-500"}`}>
+            <span className={`ml-1.5 text-[11px] font-normal ${active ? "text-black/60" : "text-muted/70"}`}>
               ({t.hint})
             </span>
           </button>
@@ -1212,7 +1216,7 @@ function SmallCategoryTop10({ cats }: { cats: NewcomerCategory[] }) {
   const top = useMemo(() => [...cats].sort((a, b) => b.lives - a.lives).slice(0, 10), [cats]);
   const max = Math.max(1, ...top.map((c) => c.lives));
   return (
-    <div className="card h-full">
+    <div className="card flex h-full flex-col">
       <h3 className="section-title">소형 채널이 많이 켜는 카테고리 TOP 10</h3>
       <p className="mt-0.5 text-[11px] text-muted">
         방송 수 기준 — 사람이 몰려 있는 만큼 경쟁도 센 구간입니다.
@@ -1220,19 +1224,21 @@ function SmallCategoryTop10({ cats }: { cats: NewcomerCategory[] }) {
       {top.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted">카테고리 데이터가 아직 없습니다.</p>
       ) : (
-        <div className="mt-4 space-y-3">
+        // flex-1 + justify-between: 옆 칼럼(성장률 리스트)이 더 길어 아래가 비던 것을
+        // 행 간격을 늘려 채운다. 행 수가 같아도 리스트 쪽 행이 더 높기 때문.
+        <div className="mt-4 flex flex-1 flex-col justify-between gap-3">
           {top.map((c, i) => (
             <div key={c.category}>
               <div className="flex items-baseline justify-between gap-2">
                 <span className="flex min-w-0 items-center gap-2">
-                  <span className="w-4 shrink-0 text-xs tabular-nums text-muted">{i + 1}</span>
-                  <span className="truncate text-sm font-semibold text-fg">{c.category}</span>
+                  <span className="w-4 shrink-0 text-sm tabular-nums text-muted">{i + 1}</span>
+                  <span className="truncate text-[15px] font-semibold text-fg">{c.category}</span>
                 </span>
-                <span className="shrink-0 text-xs tabular-nums text-muted">
+                <span className="shrink-0 text-sm tabular-nums text-muted">
                   방송 <b className="text-fg">{nf(c.lives)}</b>개 · 평균 {nf(c.avg_viewers)}명
                 </span>
               </div>
-              <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-bg-hover">
+              <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-bg-hover">
                 <div className="h-full rounded-full"
                      style={{ width: `${(c.lives / max) * 100}%`, background: GRAD }} />
               </div>
@@ -1389,7 +1395,7 @@ function NewStreamerView({ data, onRanking }: { data: RisingNewcomers; onRanking
       <div className="card">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
           <h3 className="section-title flex items-center gap-1.5">
-            <Sprout size={16} style={{ color: GREEN }} /> 신입 라이징 TOP 10
+            <Sprout size={16} style={{ color: GREEN }} /> 신입 TOP 10
           </h3>
           <button onClick={onRanking} className="text-xs font-medium hover:underline" style={{ color: GREEN }}>
             전체 순위 보기 →

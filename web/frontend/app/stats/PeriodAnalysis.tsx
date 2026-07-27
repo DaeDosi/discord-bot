@@ -91,13 +91,20 @@ function FilterPanel({
       : draft.tags.length >= 8 ? draft.tags : [...draft.tags, t] });
 
   return (
-    <aside className="w-full shrink-0 self-start rounded-2xl border border-gray-800/80 md:sticky md:top-[76px] md:w-[280px]"
+    // 데스크톱에서 사이드바는 sticky다. 필터가 길어지면서 '분석 적용' 버튼이 화면
+    // 아래로 밀려, 우측 '카테고리별 상세 데이터'(100행)를 끝까지 스크롤해야 버튼이
+    // 보이는 상태였다. 사이드바 높이를 뷰포트로 제한하고 가운데 필터 영역만
+    // 스크롤시켜, 헤더와 버튼은 항상 보이게 한다.
+    <aside className="w-full shrink-0 self-start rounded-2xl border border-gray-800/80
+                      md:sticky md:top-[76px] md:flex md:max-h-[calc(100vh-92px)] md:w-[280px] md:flex-col"
            style={{ background: PANEL }}>
-      <div className="flex items-center gap-2 px-4 py-3.5">
+      <div className="flex shrink-0 items-center gap-2 px-4 py-3.5">
         <Filter size={15} style={{ color: GREEN }} />
         <span className="text-sm font-bold text-fg">분석 필터</span>
       </div>
 
+      {/* min-h-0: flex 아이템의 기본 min-height:auto 때문에 overflow-y가 먹지 않는 것을 푼다 */}
+      <div className="md:min-h-0 md:flex-1 md:overflow-y-auto">
       <Section title="기간">
         <div className="grid grid-cols-2 gap-1.5">
           {RANGES.map((r) => {
@@ -226,8 +233,9 @@ function FilterPanel({
           선택한 기간의 채널 평균 동시 시청자를 기준으로 나눕니다.
         </p>
       </Section>
+      </div>
 
-      <div className="border-t border-gray-800/80 p-4">
+      <div className="shrink-0 border-t border-gray-800/80 p-4">
         <button onClick={onApply} disabled={busy}
                 className="flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition-opacity disabled:opacity-60"
                 style={{ background: GREEN, color: "#000" }}>

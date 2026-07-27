@@ -1,5 +1,5 @@
 "use client";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { NewcomerInsights, NewcomerCategory, NewcomerSummary } from "@/lib/types";
 import { CARD_BORDER, CARD_DARK, CARD_SUB_TEXT } from "./cardStyle";
 
@@ -150,6 +150,14 @@ export function VacancyHours({ hourly, best }: {
   }), [hourly]);
   const p2 = (n: number) => String(n).padStart(2, "0");
 
+  // 값은 떠다니는 툴팁 대신 차트 위 '고정 판독 줄'에 쓴다.
+  // 막대가 커지면서 툴팁을 절대 위치로 띄우는 방식은 위치가 계속 어긋나고, 24칸 중
+  // 가장자리 칸에서는 카드 밖으로 넘쳤다. 자리를 고정해 두면 어느 칸을 가리켜도
+  // 같은 곳에서 읽을 수 있고, 마우스를 떼면 '빈집 타임'이 기본으로 표시된다.
+  const [hoverHour, setHoverHour] = useState<number | null>(null);
+  const shownHour = hoverHour ?? best?.hour ?? null;
+  const shown = shownHour === null ? null : hourly.find((h) => h.hour === shownHour) ?? null;
+
   return (
     <div className="card flex h-full flex-col">
       <div className="mb-3 flex items-center justify-between gap-2 flex-wrap">
@@ -182,37 +190,73 @@ export function VacancyHours({ hourly, best }: {
             </p>
           )}
 
+          {/* 고정 판독 줄 — 가리킨 시간대(없으면 빈집 타임)의 값을 항상 같은 자리에 쓴다 */}
+          <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border border-border px-3.5 py-2.5">
+            {shown ? (
+              <>
+                <span className="text-base font-extrabold tabular-nums text-fg">
+                  {p2(shown.hour)}:00 ~ {p2((shown.hour + 1) % 24)}:00
+                </span>
+                {shown.hour === best?.hour && (
+                  <span className="rounded-full px-2 py-0.5 text-[11px] font-bold"
+                        style={{ color: GREEN, background: "rgba(0,255,163,0.12)" }}>빈집 타임</span>
+                )}
+                <span className="flex items-center gap-1.5 text-sm text-muted">
+                  <span className="h-2.5 w-4 rounded-sm" style={{ background: "rgba(148,163,184,0.35)" }} />
+                  대형 <b className="tabular-nums text-fg">{shown.big_lives}개</b>
+                </span>
+                <span className="flex items-center gap-1.5 text-sm text-muted">
+                  <span className="h-2.5 w-4 rounded-sm" style={{ background: GREEN }} />
+                  소형 평균 <b className="tabular-nums text-fg">{nf(shown.small_avg_viewers)}명</b>
+                </span>
+                <span className="ml-auto text-[11px] text-muted/70">
+                  {hoverHour === null ? "그래프에 마우스를 올리면 그 시간대 값이 표시됩니다" : ""}
+                </span>
+              </>
+            ) : (
+              <span className="text-sm text-muted">그래프에 마우스를 올리면 시간대별 값이 표시됩니다.</span>
+            )}
+          </div>
+
           {/* 막대 높이는 트랙의 최대 BAR_MAX_PCT까지만 쓴다. 100%를 쓰면 최고값 막대가
               트랙 위/아래 경계에 정확히 닿아 잘려 보였다. 0이 아닌 아주 작은 값은
               BAR_MIN_PCT 바닥을 줘서 아예 사라지지 않게 한다. */}
-          <div className="mt-4 grid grid-cols-12 gap-1 md:grid-cols-[repeat(24,minmax(0,1fr))]">
+          <div className="mt-3 grid grid-cols-12 gap-1 md:grid-cols-[repeat(24,minmax(0,1fr))]"
+               onMouseLeave={() => setHoverHour(null)}>
             {hourly.map((h) => {
               const bigPct = h.big_lives > 0
                 ? Math.max(BAR_MIN_PCT, (h.big_lives / maxBig) * BAR_MAX_PCT) : 0;
               const smallPct = h.small_avg_viewers > 0
                 ? Math.max(BAR_MIN_PCT, (h.small_avg_viewers / maxSmall) * BAR_MAX_PCT) : 0;
+              const on = shownHour === h.hour;
               return (
-                <div key={h.hour} className="group relative flex flex-col justify-end">
+                <div key={h.hour} tabIndex={0}
+                     onMouseEnter={() => setHoverHour(h.hour)}
+                     onFocus={() => setHoverHour(h.hour)}
+                     aria-label={`${p2(h.hour)}시 대형 ${h.big_lives}개 소형 평균 ${h.small_avg_viewers}명`}
+                     className="flex cursor-pointer flex-col justify-end rounded-sm outline-none
+                                transition-colors focus-visible:ring-1"
+                     style={{ background: on ? "rgba(255,255,255,0.05)" : undefined }}>
                   {/* 위: 대형 채널 동시 라이브 수(회색) / 아래: 소형 평균 시청자(네온) */}
                   <div className="flex h-28 items-end justify-center">
-                    <div className="w-full rounded-sm"
-                         style={{ height: `${bigPct}%`, background: "rgba(148,163,184,0.35)" }} />
+                    <div className="w-full rounded-sm transition-opacity"
+                         style={{ height: `${bigPct}%`, background: "rgba(148,163,184,0.35)",
+                                  opacity: hoverHour !== null && !on ? 0.45 : 1 }} />
                   </div>
                   {/* 두 트랙 사이 기준선 — 위/아래 막대가 어디서 갈라지는지 보이게 */}
                   <div className="my-1 h-px w-full" style={{ background: "rgb(var(--color-border-rgb))" }} />
                   <div className="flex h-28 items-start justify-center">
-                    <div className="w-full rounded-sm"
+                    <div className="w-full rounded-sm transition-opacity"
                          style={{ height: `${smallPct}%`,
-                                  background: h.hour === best?.hour ? GREEN : "rgba(0,255,163,0.45)" }} />
+                                  background: h.hour === best?.hour ? GREEN : "rgba(0,255,163,0.45)",
+                                  opacity: hoverHour !== null && !on ? 0.45 : 1 }} />
                   </div>
-                  <span className="mt-1 block whitespace-nowrap text-center text-[9px] tabular-nums text-muted/70">
-                    {h.hour % 3 === 0 ? `${h.hour}시` : ""}
+                  <span className="mt-1 block whitespace-nowrap text-center text-[9px] tabular-nums"
+                        style={{ color: on ? "rgb(var(--color-fg-rgb))" : undefined }}>
+                    <span className={on ? "" : "text-muted/70"}>
+                      {on ? `${h.hour}시` : h.hour % 3 === 0 ? `${h.hour}시` : ""}
+                    </span>
                   </span>
-                  <div className="pointer-events-none absolute bottom-[15rem] left-1/2 z-20 hidden -translate-x-1/2
-                                  whitespace-nowrap rounded-lg border border-border bg-bg-card px-2.5 py-1.5
-                                  text-[10px] text-fg shadow-2xl group-hover:block">
-                    {p2(h.hour)}시: 대형 <b>{h.big_lives}개</b> · 소형 평균 <b>{nf(h.small_avg_viewers)}명</b>
-                  </div>
                 </div>
               );
             })}
