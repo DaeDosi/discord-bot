@@ -23,7 +23,7 @@ import PeriodAnalysis from "./PeriodAnalysis";
 import Singcup from "./Singcup";
 import { ViewerDistribution, TrafficHeatmap, TitleKeywordRank } from "./OverviewViz";
 import { GoldenHourHeatmap, BlueOceanCards, TierDistribution, TitleKeywordCard, VacancyHours } from "./NewcomerInsightViz";
-import StatsNav, { type Tab } from "./StatsNav";
+import StatsNav, { isTab, type Tab } from "./StatsNav";
 import { CARD_BORDER, CARD_DARK } from "./cardStyle";
 
 import LineChart, { type LinePoint, type LineSeries } from "./LineChart";
@@ -2079,10 +2079,28 @@ export default function StatsPage() {
   const [error, setError]     = useState(false);
   // 그룹 접힘 상태는 StatsNav가 소유한다. 여기서는 활성 탭만 관리.
   const [tab, setTab] = useState<Tab>("overview");
-  const selectTab = (k: Tab) => setTab(k);
+
+  // 탭은 state로 전환되지만 ?tab= 으로 URL에도 남긴다.
+  // 그래야 다른 페이지(예: /stats/singcup/live)에서 '랭킹 보기'로 돌아왔을 때
+  // 기본 탭(전체 스트리머 분석)이 아니라 원래 보던 탭으로 복귀한다.
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get("tab");
+    if (isTab(t)) setTab(t);
+  }, []);
+
+  const selectTab = (k: Tab) => {
+    setTab(k);
+    const url = new URL(window.location.href);
+    if (k === "overview") url.searchParams.delete("tab");
+    else url.searchParams.set("tab", k);
+    // 싱드컵을 떠나면 게시판 드로어 상태(?view=board)는 의미가 없다
+    if (k !== "singcup") url.searchParams.delete("view");
+    window.history.replaceState(null, "", url.toString());
+  };
   // '카테고리 분석' 표에서 행을 누르면 이 값이 정해지고 '카테고리별 스트리머' 탭으로 넘어간다
   const [pickedCat, setPickedCat] = useState<string | null>(null);
-  const pickCategory = (c: string | null) => { setPickedCat(c); if (c) setTab("category_streamers"); };
+  // selectTab을 쓴다 — setTab을 직접 부르면 URL의 ?tab= 이 갱신되지 않는다
+  const pickCategory = (c: string | null) => { setPickedCat(c); if (c) selectTab("category_streamers"); };
 
   useEffect(() => {
     Promise.all([

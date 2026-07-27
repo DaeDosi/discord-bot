@@ -266,7 +266,7 @@ export default function SingcupLivePage() {
               <b className="text-fg">#싱드컵</b> 태그가 확인된 스트리머 중{" "}
               <b className="text-fg">지금 방송 중인 채널만</b> 보여드립니다.
               방송을 켜지 않은 참가자와 전체 순위는{" "}
-              <Link href="/stats" className="underline hover:text-fg">싱드컵 랭킹</Link>에서
+              <Link href="/stats?tab=singcup" className="underline hover:text-fg">싱드컵 랭킹</Link>에서
               확인하세요.
             </p>
             {ev && (
@@ -280,7 +280,7 @@ export default function SingcupLivePage() {
               </p>
             )}
           </div>
-          <Link href="/stats" className="flex items-center gap-1.5 rounded-lg px-3 py-2
+          <Link href="/stats?tab=singcup" className="flex items-center gap-1.5 rounded-lg px-3 py-2
                                          text-sm font-bold text-[#1a1400]"
                 style={{ background: GOLD }}>
             <Trophy size={15} /> 랭킹 보기
@@ -337,7 +337,7 @@ export default function SingcupLivePage() {
                   ? `이벤트 시작 예정: ${fmtDateTime(ev.startAt)}`
                   : "참가자가 방송을 켜면 여기에 표시됩니다."}
               </p>
-              <Link href="/stats" className="mt-4 inline-flex items-center gap-1.5 rounded-lg
+              <Link href="/stats?tab=singcup" className="mt-4 inline-flex items-center gap-1.5 rounded-lg
                                              px-3 py-2 text-sm font-bold text-[#1a1400]"
                     style={{ background: GOLD }}>
                 <Trophy size={15} /> 전체 순위 보기

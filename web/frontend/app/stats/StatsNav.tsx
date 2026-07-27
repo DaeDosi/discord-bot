@@ -49,6 +49,14 @@ export const NAV_GROUPS: { header: string | null; items: NavItem[] }[] = [
 export const groupHeaderOf = (k: Tab): string | null =>
   NAV_GROUPS.find((g) => g.items.some((i) => i.key === k))?.header ?? null;
 
+// 유효한 탭 키 전체 — ?tab= 로 들어온 값을 검증할 때 쓴다
+export const ALL_TABS: Tab[] = [
+  ...NAV_GROUPS.flatMap((g) => g.items.map((i) => i.key)),
+  EVENT_ITEM.key,
+];
+export const isTab = (v: string | null): v is Tab =>
+  !!v && (ALL_TABS as string[]).includes(v);
+
 const GREEN = "#00FFA3";
 const GRAD  = `linear-gradient(135deg, ${GREEN}, #00C2FF)`;
 // 이벤트 포인트 — 사이트 기본 포인트(청록)와 충돌하지 않게 골드 계열을 쓴다
