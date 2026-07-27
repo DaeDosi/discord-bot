@@ -355,6 +355,10 @@ _SITEMAP_MIN_SNAPS = 12
 # 두 축이 서로 독립이라 한 채널이 양쪽에 다 나올 수 있고, 그게 의도된 동작이다.
 _NEW_DEBUT_MAX_DAYS = 60
 _SMALL_AVG_MAX = 10
+# 성장률 분모 하한 / 표본 하한 — 하꼬 채널의 0.x명 평균이 만드는 +1600% 잡음 방지.
+# 스냅샷 간격이 10분이므로 6개 = 최근 7일 중 최소 1시간은 방송한 이력.
+_GROWTH_MIN_BASE = 1.0
+_GROWTH_MIN_SNAPS = 6
 # 빈집 타임 분석에서 '대기업'으로 볼 시간당 평균 시청자 하한과 집계 창
 _BIG_AVG_MIN = 1000
 _VACANCY_WINDOW_DAYS = 7
@@ -420,12 +424,17 @@ async def newcomers(limit: int = 100, group: str = "new"):
     # 예전에는 (a) 롤업 '전체'를 GROUP BY 하는 avg_all과 (b) 7일 GROUP BY 하는 avg7을
     # 따로 실행했다. 롤업 보관이 8일이라 두 결과가 사실상 같은데도 100만 행을 두 번 훑어
     # 각각 2.5초/2.1초가 걸렸다. 7일 기준 한 번만 계산해 둘 다에 쓴다.
-    agg7 = {r["chzzk_channel_id"]: r["avg7"] for r in await (await db.execute(
+    # snaps7(성장률 표본 하한 판정용)도 같은 쿼리에서 함께 뽑는다 — 이걸 위해 롤업을
+    # 한 번 더 스캔하면 위에서 없앤 중복 스캔을 그대로 되살리는 셈이 된다.
+    _agg7_rows = await (await db.execute(
         "SELECT chzzk_channel_id, "
-        "       CAST(SUM(sum_viewers) AS REAL) / NULLIF(SUM(snaps),0) AS avg7 "
+        "       CAST(SUM(sum_viewers) AS REAL) / NULLIF(SUM(snaps),0) AS avg7, "
+        "       SUM(snaps) AS snaps7 "
         "FROM rising_hourly_rollup WHERE hour_ts >= ? GROUP BY chzzk_channel_id",
         (ts - 7 * 86400,)
-    )).fetchall()}
+    )).fetchall()
+    agg7 = {r["chzzk_channel_id"]: r["avg7"] for r in _agg7_rows}
+    snaps7_map = {r["chzzk_channel_id"]: int(r["snaps7"] or 0) for r in _agg7_rows}
     agg = agg7
     # 데뷔일 소스 두 가지:
     #  ① chzzk_channel_history.first_live_date — 치지직이 주는 정확한 첫 방송일(우선)
@@ -456,9 +465,21 @@ async def newcomers(limit: int = 100, group: str = "new"):
             if debut_days > _NEW_DEBUT_MAX_DAYS:
                 continue
 
-        # 시청자 하한을 없애면서 avg7이 0인 채널(계속 0명)이 생긴다 — 그 경우 성장률은 None.
+        # 성장률 = (현재 시청자 - 최근 7일 평균) / 최근 7일 평균.
+        #
+        # 분모에 하한(_GROWTH_MIN_BASE)을 둔다. 하꼬 채널은 7일 평균이 0.4명 같은 값이
+        # 나오는데, 그대로 나누면 지금 7명일 때 +1650% 처럼 사실상 무한대에 가까운 수치가
+        # 찍힌다(수식은 맞지만 분모가 0에 가까워 생기는 잡음이라 순위로 못 쓴다).
+        # 하한을 걸면 최대치가 (현재 시청자-1)*100% 로 묶이고, 평균 1명 이상인 채널은
+        # 값이 전혀 달라지지 않는다.
+        # 표본(_GROWTH_MIN_SNAPS)도 요구한다 — 어제 처음 켠 채널의 몇 개 스냅샷으로
+        # 만든 평균은 '평소'가 아니다.
         avg7 = agg7.get(cid, avg_all) or avg_all or r["concurrent_viewers"]
-        growth = round((r["concurrent_viewers"] - avg7) / avg7 * 100, 1) if avg7 and avg7 > 0 else None
+        if avg7 and avg7 > 0 and snaps7_map.get(cid, 0) >= _GROWTH_MIN_SNAPS:
+            base = max(float(avg7), _GROWTH_MIN_BASE)
+            growth = round((r["concurrent_viewers"] - base) / base * 100, 1)
+        else:
+            growth = None
         out.append({
             "chzzk_channel_id":   cid,
             "channel_name":       r["channel_name"],

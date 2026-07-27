@@ -194,13 +194,13 @@ export function VacancyHours({ hourly, best }: {
               return (
                 <div key={h.hour} className="group relative flex flex-col justify-end">
                   {/* 위: 대형 채널 동시 라이브 수(회색) / 아래: 소형 평균 시청자(네온) */}
-                  <div className="flex h-16 items-end justify-center">
+                  <div className="flex h-28 items-end justify-center">
                     <div className="w-full rounded-sm"
                          style={{ height: `${bigPct}%`, background: "rgba(148,163,184,0.35)" }} />
                   </div>
                   {/* 두 트랙 사이 기준선 — 위/아래 막대가 어디서 갈라지는지 보이게 */}
                   <div className="my-1 h-px w-full" style={{ background: "rgb(var(--color-border-rgb))" }} />
-                  <div className="flex h-16 items-start justify-center">
+                  <div className="flex h-28 items-start justify-center">
                     <div className="w-full rounded-sm"
                          style={{ height: `${smallPct}%`,
                                   background: h.hour === best?.hour ? GREEN : "rgba(0,255,163,0.45)" }} />
@@ -208,7 +208,7 @@ export function VacancyHours({ hourly, best }: {
                   <span className="mt-1 block whitespace-nowrap text-center text-[9px] tabular-nums text-muted/70">
                     {h.hour % 3 === 0 ? `${h.hour}시` : ""}
                   </span>
-                  <div className="pointer-events-none absolute bottom-[9rem] left-1/2 z-20 hidden -translate-x-1/2
+                  <div className="pointer-events-none absolute bottom-[15rem] left-1/2 z-20 hidden -translate-x-1/2
                                   whitespace-nowrap rounded-lg border border-border bg-bg-card px-2.5 py-1.5
                                   text-[10px] text-fg shadow-2xl group-hover:block">
                     {p2(h.hour)}시: 대형 <b>{h.big_lives}개</b> · 소형 평균 <b>{nf(h.small_avg_viewers)}명</b>
@@ -318,11 +318,11 @@ export function BlueOceanCards({ cats, summary, label = "신입" }:
 
       {/* 카드 룩은 '카테고리별 스트리머' 탭의 CategoryCard와 동일한 매트 다크 패널.
           다만 이 카드는 클릭 대상이 아니라 호버 유도가 의미 없어서, 테두리 네온을
-          nb-neon-always 로 상시 흐르게 한다. */}
+          nb-neon-glow 로 상시 노출한다(회전이 아니라 밝기만 은은하게 오르내린다). */}
       <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
         {top.map((c) => (
           <div key={c.category}
-               className="nb-neon-border nb-neon-always rounded-xl border p-3.5"
+               className="nb-neon-border nb-neon-glow rounded-xl border p-3.5"
                style={{ background: CARD_DARK, borderColor: CARD_BORDER }}>
             <p className="truncate text-xs font-bold text-white" title={c.category}>{c.category}</p>
             <p className="mt-1.5 tracking-tight">

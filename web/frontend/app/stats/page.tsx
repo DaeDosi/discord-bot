@@ -1063,6 +1063,12 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
                   <span className="block mt-1.5 text-muted">
                     절대 시청자 수가 아니라 <b className="text-fg">자기 자신 대비</b> 변화라, 소규모 채널도 상위권에 오를 수 있습니다.
                   </span>
+                  <span className="block mt-1.5 text-muted">
+                    다만 7일 평균이 <b className="text-fg">1명 미만</b>이면 1명으로 계산합니다.
+                    0.3명 같은 값을 그대로 나누면 +1600% 처럼 분모 때문에 생기는 수치가
+                    나와 순위가 의미를 잃기 때문입니다. 최근 7일 방송 이력이 1시간 미만이면
+                    표본이 부족해 성장률을 내지 않습니다.
+                  </span>
                 </HelpTip>
               </span>
             </th>
@@ -1200,14 +1206,14 @@ function BaselineCard({ ins, label }: { ins?: NewcomerInsights; label: string })
   );
 }
 
-// 소형 탭 Row 3 좌측 — 방송 '수'가 많은 카테고리 TOP 5.
+// 소형 탭 Row 3 좌측 — 방송 '수'가 많은 카테고리 TOP 10.
 // 블루오션(시청자 효율)과 반대로, 소형이 실제로 어디에 몰려 있는지(=경쟁이 센 곳)를 본다.
-function SmallCategoryTop5({ cats }: { cats: NewcomerCategory[] }) {
-  const top = useMemo(() => [...cats].sort((a, b) => b.lives - a.lives).slice(0, 5), [cats]);
+function SmallCategoryTop10({ cats }: { cats: NewcomerCategory[] }) {
+  const top = useMemo(() => [...cats].sort((a, b) => b.lives - a.lives).slice(0, 10), [cats]);
   const max = Math.max(1, ...top.map((c) => c.lives));
   return (
     <div className="card h-full">
-      <h3 className="section-title">소형 채널이 많이 켜는 카테고리 TOP 5</h3>
+      <h3 className="section-title">소형 채널이 많이 켜는 카테고리 TOP 10</h3>
       <p className="mt-0.5 text-[11px] text-muted">
         방송 수 기준 — 사람이 몰려 있는 만큼 경쟁도 센 구간입니다.
       </p>
@@ -1240,8 +1246,9 @@ function SmallCategoryTop5({ cats }: { cats: NewcomerCategory[] }) {
 
 // 소형 탭 Row 3 우측 — 성장률 상위 소형 채널. 좁은 칼럼이라 표 대신 압축 리스트.
 function SmallGrowthList({ items }: { items: RisingNewcomer[] }) {
+  // 옆 칼럼(카테고리 TOP 10)과 행 수를 맞춰 2열 높이가 어긋나지 않게 한다
   const top = useMemo(() =>
-    [...items].sort((a, b) => (b.growth_rate ?? -1e9) - (a.growth_rate ?? -1e9)).slice(0, 8),
+    [...items].sort((a, b) => (b.growth_rate ?? -1e9) - (a.growth_rate ?? -1e9)).slice(0, 10),
     [items]);
   return (
     <div className="card h-full">
@@ -1435,7 +1442,7 @@ function SmallStreamerView({ data }: { data: RisingNewcomers }) {
 
       {/* 카테고리 TOP 5 / 성장률 상위 소형 채널 — 둘 다 5~8행 리스트라 높이가 비슷하다 */}
       <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-2">
-        <SmallCategoryTop5 cats={data.categories ?? []} />
+        <SmallCategoryTop10 cats={data.categories ?? []} />
         <SmallGrowthList items={data.streamers} />
       </div>
     </div>
