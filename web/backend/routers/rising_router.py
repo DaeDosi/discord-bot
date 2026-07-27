@@ -585,15 +585,25 @@ async def newcomers(limit: int = 100, group: str = "new"):
     # 3) 체급 기준선 — 신입 평균 + 상위 20%/10% 컷오프(구체적 목표 수치)
     baseline = None
     if count:
-        sv = sorted(x["concurrent_viewers"] for x in out)  # 오름차순
+        # '상위 p%에 들려면 최소 몇 명이어야 하는가' = 내림차순 정렬에서 상위 k등의 시청자 수.
+        #
+        # 예전에는 오름차순 백분위 값에 max(..., avg+1)을 씌웠는데, 신입 그룹은 0~2명에
+        # 표본이 몰려 있어 80/90 분위가 같은 값이 되고 거기에 하한까지 걸리면서
+        # "N명 상위 20% / N명 상위 10%"로 두 문구가 똑같이 나오는 일이 잦았다.
+        # 하한 보정을 걷어내고 실제 컷을 그대로 준다. 동률이라 두 값이 같아질 수는 있는데,
+        # 그건 실제로 같은 것이므로 프론트가 문장을 하나로 합쳐 보여 준다.
+        sv_desc = sorted((x["concurrent_viewers"] for x in out), reverse=True)
+
         def _cut(p: float) -> int:
-            return int(sv[min(int(count * p), count - 1)])
-        top20, top10 = _cut(0.80), _cut(0.90)
+            k = max(1, min(count, round(count * p)))   # 상위 k등
+            return int(sv_desc[k - 1])
+
+        top20, top10 = _cut(0.20), _cut(0.10)   # 정렬상 항상 top10 >= top20
         baseline = {
             "avg_viewers": avg_v,
-            "top20_cut":   max(top20, avg_v + 1),
-            "top10_cut":   max(top10, top20, avg_v + 1),
-            "next_target": max(top20, avg_v + 1),  # 하위호환
+            "top20_cut":   top20,
+            "top10_cut":   top10,
+            "next_target": top20,  # 하위호환
         }
 
     # 체급 구간 분포 — 신입이 지금 어느 단계에 몰려 있는지. summary와 같이

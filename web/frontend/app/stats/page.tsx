@@ -143,15 +143,16 @@ function KpiDelta({ pct, cur, unit }: { pct?: number | null; cur?: number; unit?
 }
 
 // 카드 규격(!p-4 + 수치 타이포)은 신규 스트리머 분석의 NcTile과 동일하게 맞춘다.
-function StatTile({ label, value, unit, sub, deltaPrev, rawValue }:
-  { label: string; value: string; unit?: string; sub?: string;
+// accent=true인 한 장만 그린→시안 2톤 그라데이션, 나머지 수치는 흰색.
+function StatTile({ label, value, unit, sub, accent, deltaPrev, rawValue }:
+  { label: string; value: string; unit?: string; sub?: string; accent?: boolean;
     deltaPrev?: number | null; rawValue?: number }) {
   return (
     <div className="card !p-4">
       <p className="text-sm text-muted">{label}</p>
       <p className="mt-1.5 tracking-tight">
         <span className="text-xl md:text-2xl font-extrabold tabular-nums text-white">
-          {value}
+          {accent ? <GradText>{value}</GradText> : value}
         </span>
         {unit && <span className="text-sm text-muted font-normal ml-1">{unit}</span>}
       </p>
@@ -565,10 +566,16 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
     const peak   = withAvg.reduce((a, b) => (b.total_viewers > a.total_viewers ? b : a));
     const golden = withAvg.reduce((a, b) => (b.avg > a.avg ? b : a));
     const hm = (t: number) => new Date(t * 1000).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
-    const hour = (t: number) => new Date(t * 1000).toLocaleTimeString("ko-KR", { hour: "2-digit", hour12: false });
+    // 골든타임은 '한 시간 구간'이라 시작 시각만 쓰면("00시경") 범위가 안 보인다 →
+    // 신규 분석 탭의 시간대 표기와 같은 "00:00 ~ 01:00" 형식으로 맞춘다.
+    const hourRange = (t: number) => {
+      const h = new Date(t * 1000).getHours();
+      const p2 = (n: number) => String(n).padStart(2, "0");
+      return `${p2(h)}:00 ~ ${p2((h + 1) % 24)}:00`;
+    };
     return {
       peakTime: hm(peak.t), peakViewers: peak.total_viewers,
-      goldenHour: hour(golden.t), goldenAvg: Math.round(golden.avg),
+      goldenHour: hourRange(golden.t), goldenAvg: Math.round(golden.avg),
     };
   })();
 
@@ -578,7 +585,7 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatTile label="현재 라이브 방송" value={nf(liveCount)} unit="채널"
           rawValue={liveCount} deltaPrev={dv?.live_count.prev} />
-        <StatTile label="전체 동시 시청자" value={nf(totalV)} unit="명"
+        <StatTile label="전체 동시 시청자" value={nf(totalV)} unit="명" accent
           rawValue={totalV} deltaPrev={dv?.total_viewers.prev} />
         <StatTile label="방송당 평균 시청자" value={nf(avgV)} unit="명" sub="총 시청자 ÷ 방송 수" />
         <StatTile label="뷰어쉽" value={nf(viewership)} unit="시간"
@@ -614,24 +621,25 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
         <p className="text-xs text-muted mb-4">선택 기간의 트래픽 패턴에서 뽑은 방송 전략 힌트</p>
         {insights ? (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {/* 세부 설명은 text-[11px]이 너무 작아 읽히지 않아 text-sm으로 키웠다 */}
             <div className="rounded-xl border border-border p-4">
               <p className="text-xs text-muted">유입 골든타임 (빈집)</p>
-              <p className="text-xl font-extrabold mt-1"><GradText>{insights.goldenHour}경</GradText></p>
-              <p className="text-[11px] text-muted mt-1 leading-relaxed">
+              <p className="text-xl font-extrabold mt-1 tabular-nums"><GradText>{insights.goldenHour}</GradText></p>
+              <p className="text-sm text-muted mt-1.5 leading-relaxed">
                 방송당 평균 <b className="text-fg">{nf(insights.goldenAvg)}명</b> — 경쟁 방송이 적어 노출·유입 기회가 큰 구간
               </p>
             </div>
             <div className="rounded-xl border border-border p-4">
               <p className="text-xs text-muted">피크 타임</p>
-              <p className="text-xl font-extrabold mt-1"><GradText grad={PEAK_GRAD}>{insights.peakTime}</GradText></p>
-              <p className="text-[11px] text-muted mt-1 leading-relaxed">
+              <p className="text-xl font-extrabold mt-1 tabular-nums"><GradText grad={PEAK_GRAD}>{insights.peakTime}</GradText></p>
+              <p className="text-sm text-muted mt-1.5 leading-relaxed">
                 최고 동시 시청자 <b className="text-fg">{nf(insights.peakViewers)}명</b> — 플랫폼 트래픽이 가장 몰리는 시간
               </p>
             </div>
             <div className="rounded-xl border border-border p-4">
               <p className="text-xs text-muted">전체 방송당 평균 (체급 기준선)</p>
-              <p className="text-xl font-extrabold mt-1"><GradText>{nf(avgV)}명</GradText></p>
-              <p className="text-[11px] text-muted mt-1 leading-relaxed">
+              <p className="text-xl font-extrabold mt-1 tabular-nums"><GradText>{nf(avgV)}명</GradText></p>
+              <p className="text-sm text-muted mt-1.5 leading-relaxed">
                 내 평균 시청자가 이보다 높으면 플랫폼 평균 이상 체급
               </p>
             </div>
@@ -962,11 +970,12 @@ function NewcomerCategoryDonut({ cats, dense = false, label = "신입" }:
   { cats: NewcomerCategory[]; dense?: boolean; label?: string }) {
   const [hover, setHover] = useState<number | null>(null);
   const slices = toSlices(cats, 5, (c) => c.category, (c) => c.viewers);
-  const legendRows = cats.slice(0, dense ? 5 : 8);
+  // dense에서도 TOP 8까지 — 좌측(블루오션 3열 2행) 높이에 맞춰 하단 여백을 채운다
+  const legendRows = cats.slice(0, 8);
   const totalLives = cats.reduce((s, c) => s + c.lives, 0);
 
   return (
-    <div className="card">
+    <div className="card flex h-full flex-col">
       <div className="flex items-start justify-between mb-4 flex-wrap gap-2">
         <div>
           <h3 className="section-title">카테고리 점유율 ({label})</h3>
@@ -979,10 +988,14 @@ function NewcomerCategoryDonut({ cats, dense = false, label = "신입" }:
       {cats.length === 0 ? (
         <p className="text-sm text-muted py-6 text-center">{label} 카테고리 데이터가 아직 없습니다.</p>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
+        // flex-1 + items-center: 카드가 h-full로 늘어나도 내용이 위로 붙지 않고
+        // 남는 높이 안에서 가운데 정렬된다(하단에 까맣게 남던 공간 제거).
+        <div className="grid flex-1 grid-cols-1 items-center gap-5 md:grid-cols-12">
+          {/* dense에서 도넛:테이블 1:1 — 좁은 칼럼에서도 도넛을 줄이지 않고 오히려 키워
+              좌측 카드 높이를 따라간다(스펙: "도넛 차트 크기 확대 + 수평 1:1 맞춤"). */}
           <div className={`${dense ? "md:col-span-6" : "md:col-span-5"} flex justify-center`}>
             <DonutChart slices={slices} hover={hover} onHover={setHover}
-                        centerLabel={`${label} 총 시청자`} size={dense ? 160 : 190} />
+                        centerLabel={`${label} 총 시청자`} size={dense ? 210 : 190} />
           </div>
 
           <div className={`${dense ? "md:col-span-6" : "md:col-span-7"} overflow-x-auto`}>
@@ -1159,8 +1172,8 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
 // 한 메뉴 안의 세그먼티드 컨트롤로 전환한다. 데이터는 그룹마다 다른 필터를 거친
 // 별도 응답이므로(newcomers?group=), 전환할 때 한 번만 받아서 캐시해 둔다.
 const NC_GROUP_TABS = [
-  { k: "new"   as NewcomerGroup, label: "🌱 신규 스트리머", hint: "첫 방송 60일 이내" },
-  { k: "small" as NewcomerGroup, label: "📊 소형 스트리머", hint: "평균 시청자 10명 이하" },
+  { k: "new"   as NewcomerGroup, label: "신규 스트리머", hint: "첫 방송 60일 이내" },
+  { k: "small" as NewcomerGroup, label: "소형 스트리머", hint: "평균 시청자 10명 이하" },
 ];
 
 function NcGroupToggle({ value, onChange }:
@@ -1186,18 +1199,29 @@ function NcGroupToggle({ value, onChange }:
 
 // 신입 평균 체급 기준선 + 체급 구간 분포 (Row 2 우측 40%)
 function BaselineCard({ ins, label }: { ins?: NewcomerInsights; label: string }) {
+  const b = ins?.baseline;
+  // 신입 그룹은 0~2명에 표본이 몰려 있어 상위 20%와 10% 컷이 실제로 같은 값이 되는 일이
+  // 잦다. 그때 같은 수치를 두 번 쓰면 오류처럼 보이므로 문장을 하나로 합친다.
+  const sameCut = !!b && b.top20_cut === b.top10_cut;
   return (
-    <div className="card h-full">
+    <div className="card flex h-full flex-col">
       <h3 className="section-title">{label} 평균 체급 기준선</h3>
       <p className="mt-2 text-sm leading-relaxed text-muted">
-        {ins?.baseline
-          ? <>현재 {label} 그룹 평균은 <b className="text-fg">{nf(ins.baseline.avg_viewers)}명</b>입니다.{" "}
-              <b style={{ color: GREEN }}>{nf(ins.baseline.top20_cut)}명</b> 달성 시 상위 20%,{" "}
-              <b style={{ color: GREEN }}>{nf(ins.baseline.top10_cut)}명</b> 달성 시 상위 10%권에 진입하여
-              메인 노출 기회가 대폭 늘어납니다.</>
+        {b
+          ? <>현재 {label} 그룹 평균은 <b className="text-fg">{nf(b.avg_viewers)}명</b>입니다.{" "}
+              {sameCut
+                ? <>동시 시청자 <b style={{ color: GREEN }}>{nf(b.top10_cut)}명</b>이면 이미 상위 10%권입니다 —
+                    이 구간은 표본이 몰려 있어 한 명 차이로 순위가 크게 움직입니다.</>
+                : <><b style={{ color: GREEN }}>{nf(b.top20_cut)}명</b> 달성 시 상위 20%,{" "}
+                    <b style={{ color: GREEN }}>{nf(b.top10_cut)}명</b> 달성 시 상위 10%권에 진입하여
+                    메인 노출 기회가 대폭 늘어납니다.</>}
+            </>
           : "데이터가 아직 부족합니다."}
       </p>
-      {ins?.tiers && ins.tiers.length > 0 && <TierDistribution tiers={ins.tiers} label={label} />}
+      {/* mt-auto: 좌측 히트맵 카드와 높이를 맞출 때 분포 바가 카드 하단에 붙도록 */}
+      {ins?.tiers && ins.tiers.length > 0 && (
+        <div className="mt-auto"><TierDistribution tiers={ins.tiers} label={label} /></div>
+      )}
     </div>
   );
 }
@@ -1307,19 +1331,21 @@ function NewcomersAnalysisTab({ initial, onRanking }:
 
   return (
     <div className="space-y-5">
-      {/* 상단 — 메뉴 타이틀 + 서브 토글 탭 */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
+      {/* 상단 — 위: 제목 ↔ 토글(수평 분리) / 아래: 서브 설명글 전체 폭.
+          설명글을 제목과 같은 블록에 두면 문장이 길어질수록 토글이 오른쪽 끝으로
+          밀려 제목과 멀어졌다. 설명글을 아래 줄로 내려 제목과 토글만 마주보게 한다. */}
+      <div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="flex items-center gap-2 text-xl font-extrabold tracking-tight md:text-2xl">
             <Sprout size={20} style={{ color: GREEN }} /> 신규 &amp; 초기 스트리머 분석
           </h2>
-          <p className="mt-1 text-sm text-muted">
-            {isSmall
-              ? `방송 경력과 무관하게 최근 평균 동시 시청자 ${data?.criteria?.small_avg_max ?? 10}명 이하인 채널입니다.`
-              : `첫 방송 후 ${data?.criteria?.debut_max_days ?? 60}일 이내인 채널입니다. 첫 방송일은 치지직 채널 정보 기준이며, 아직 수집되지 않은 채널은 NexBot 최초 트랙킹 일자로 보완합니다.`}
-          </p>
+          <NcGroupToggle value={group} onChange={setGroup} />
         </div>
-        <NcGroupToggle value={group} onChange={setGroup} />
+        <p className="mt-2 text-sm leading-relaxed text-muted">
+          {isSmall
+            ? `방송 경력과 무관하게 최근 평균 동시 시청자 ${data?.criteria?.small_avg_max ?? 10}명 이하인 채널입니다.`
+            : `첫 방송 후 ${data?.criteria?.debut_max_days ?? 60}일 이내인 채널입니다. 첫 방송일은 치지직 채널 정보 기준이며, 아직 수집되지 않은 채널은 NexBot 최초 트랙킹 일자로 보완합니다.`}
+        </p>
       </div>
 
       {!data ? (
@@ -1358,19 +1384,22 @@ function NewStreamerView({ data, onRanking }: { data: RisingNewcomers; onRanking
         <NcTile label="신입 최고 동접" value={nf(sm?.peak_viewers ?? 0)} unit="명" />
       </div>
 
-      {/* Row 2 — 6:4 : 골든타임 히트맵 / 체급 기준선 */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-10">
+      {/* Row 2 — 6:4 : 골든타임 히트맵 / 체급 기준선.
+          items-stretch(그리드 기본) + 각 카드 h-full 로 좌우 바깥 테두리 높이를 맞춘다. */}
+      <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-10">
         <div className="lg:col-span-6">
           {ins?.hourly && ins.hourly.length > 0
             ? <GoldenHourHeatmap hourly={ins.hourly} />
-            : <div className="card"><h3 className="section-title">24시간 신입 노출 골든타임 분석</h3>
+            : <div className="card h-full"><h3 className="section-title">24시간 신입 노출 골든타임 분석</h3>
                 <p className="py-8 text-center text-sm text-muted">시간대 데이터가 아직 부족합니다.</p></div>}
         </div>
         <div className="lg:col-span-4"><BaselineCard ins={ins} label="신입" /></div>
       </div>
 
-      {/* Row 3 — 5:5 : 블루오션 / 카테고리 점유율 */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+      {/* Row 3 — 5:5 : 블루오션 / 카테고리 점유율.
+          블루오션은 3열 2행으로 접어 세로 길이를 줄이고, 점유율 쪽은 도넛을 키우고
+          순위 리스트를 TOP 8까지 늘려 남던 하단 여백을 채운다. */}
+      <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-2">
         <BlueOceanCards cats={data.categories ?? []} summary={sm} dense label="신입" />
         <NewcomerCategoryDonut cats={data.categories ?? []} dense label="신입" />
       </div>
@@ -1411,12 +1440,12 @@ function SmallStreamerView({ data }: { data: RisingNewcomers }) {
         <NcTile label="시청자 3명 초과 비중" value={`${sm?.over3_share ?? 0}`} unit="%" />
       </div>
 
-      {/* Row 2 — 6:4 : 빈집 타임 / 제목 키워드 효율 */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-10">
+      {/* Row 2 — 6:4 : 빈집 타임 / 제목 키워드 효율 (좌우 높이 1:1) */}
+      <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-10">
         <div className="lg:col-span-6">
           {ins?.vacancy_hourly && ins.vacancy_hourly.length > 0
             ? <VacancyHours hourly={ins.vacancy_hourly} best={ins.vacancy_best} />
-            : <div className="card"><h3 className="section-title">대기업 방종 빈집 타임</h3>
+            : <div className="card h-full"><h3 className="section-title">대기업 방종 빈집 타임</h3>
                 <p className="py-8 text-center text-sm text-muted">
                   빈집 타임 분석용 데이터가 아직 부족합니다.
                 </p></div>}
@@ -1431,8 +1460,8 @@ function SmallStreamerView({ data }: { data: RisingNewcomers }) {
         </div>
       </div>
 
-      {/* Row 3 — 카테고리 TOP 5 / 성장률 상위 소형 채널 */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+      {/* Row 3 — 카테고리 TOP 5 / 성장률 상위 소형 채널 (좌우 높이 1:1) */}
+      <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-2">
         <SmallCategoryTop5 cats={data.categories ?? []} />
         <SmallGrowthList items={data.streamers} />
       </div>

@@ -38,7 +38,7 @@ export function GoldenHourHeatmap({ hourly }: { hourly: NonNullable<NewcomerInsi
   const hasData = hourly.some((h) => h.snaps > 0);
 
   return (
-    <div className="card">
+    <div className="card flex h-full flex-col">
       <div className="mb-3 flex items-center justify-between gap-2 flex-wrap">
         <h3 className="section-title">24시간 신입 노출 골든타임 분석</h3>
         {peakLabel && (
@@ -96,7 +96,7 @@ export function GoldenHourHeatmap({ hourly }: { hourly: NonNullable<NewcomerInsi
 // 겹쳐 보여 준다. 대형이 적은데 소형 평균이 높은 시간이 노려볼 만한 '빈집'이다.
 export function VacancyHours({ hourly, best }: {
   hourly: NonNullable<NewcomerInsights["vacancy_hourly"]>;
-  best: NonNullable<NewcomerInsights["vacancy_best"]>  | null | undefined;
+  best: NonNullable<NewcomerInsights["vacancy_best"]> | null | undefined;
 }) {
   const { maxBig, maxSmall, hasData } = useMemo(() => ({
     maxBig:   Math.max(1, ...hourly.map((h) => h.big_lives)),
@@ -106,7 +106,7 @@ export function VacancyHours({ hourly, best }: {
   const p2 = (n: number) => String(n).padStart(2, "0");
 
   return (
-    <div className="card">
+    <div className="card flex h-full flex-col">
       <div className="mb-3 flex items-center justify-between gap-2 flex-wrap">
         <h3 className="section-title">대기업 방종 빈집 타임</h3>
         {best && (
@@ -189,7 +189,7 @@ export function TitleKeywordCard({ tk, label = "신입" }:
   { tk: NonNullable<NewcomerInsights["title_keyword"]>; label?: string }) {
   const up = (tk.lift_pct ?? 0) >= 0;
   return (
-    <div className="card">
+    <div className="card flex h-full flex-col">
       <h3 className="section-title">방송 제목 키워드 유입 효율</h3>
       <p className="mt-1 text-sm text-muted">
         방송 제목에 유입 키워드({tk.keywords.join(", ")})가 있는 {label}과 없는 {label}의 평균 시청자 비교입니다.
@@ -220,10 +220,12 @@ export function TitleKeywordCard({ tk, label = "신입" }:
         </div>
       </div>
 
-      <Sub>
-        * 키워드를 넣으면 시청자가 는다는 인과가 아니라, 그런 제목을 쓰는 방송이 평균적으로
-        어떤 성과를 냈는지를 보여 주는 상관 지표입니다. 양쪽 그룹이 각각 5개 이상일 때만 계산합니다.
-      </Sub>
+      <div className="mt-auto">
+        <Sub>
+          * 키워드를 넣으면 시청자가 는다는 인과가 아니라, 그런 제목을 쓰는 방송이 평균적으로
+          어떤 성과를 냈는지를 보여 주는 상관 지표입니다. 양쪽 그룹이 각각 5개 이상일 때만 계산합니다.
+        </Sub>
+      </div>
     </div>
   );
 }
@@ -244,7 +246,7 @@ export function BlueOceanCards({ cats, summary, dense = false, label = "신입" 
 
   if (top.length === 0) {
     return (
-      <div className="card">
+      <div className="card h-full">
         <h3 className="section-title">블루오션 카테고리 TOP 5</h3>
         <p className="py-8 text-center text-sm text-muted">
           {label} 방송이 3개 이상인 카테고리가 아직 없습니다.
@@ -254,34 +256,45 @@ export function BlueOceanCards({ cats, summary, dense = false, label = "신입" 
   }
 
   return (
-    <div className="card">
+    <div className="card flex h-full flex-col">
       <h3 className="section-title">블루오션 카테고리 TOP 5</h3>
       <p className="mt-0.5 text-[11px] text-muted">
         {label} 방송 수 대비 시청자가 많은 카테고리 — 경쟁이 적고 노출 효율이 좋은 구간입니다.
       </p>
 
-      <div className={`mt-4 grid gap-3 ${dense ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-2 md:grid-cols-5"}`}>
+      {/* dense(2열 레이아웃의 좁은 칼럼)에서는 카드가 세로로 5칸 쌓이면서 우측 패널보다
+          훨씬 길어져 아래에 큰 빈 공간을 만들었다 → 3열 2행으로 접고 패딩/폰트를 줄인다. */}
+      <div className={`mt-4 grid gap-2 ${dense ? "grid-cols-2 sm:grid-cols-3" : "grid-cols-2 md:grid-cols-5"}`}>
         {top.map((c, i) => (
           <div key={c.category}
-               className="rounded-xl border p-3"
+               className={`rounded-xl border ${dense ? "p-2.5" : "p-3"}`}
                style={{ background: "rgba(0,255,163,0.04)",
                         borderColor: i === 0 ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))" }}>
-            <p className="truncate text-xs font-bold text-fg" title={c.category}>{c.category}</p>
-            <p className="mt-1.5 tracking-tight">
-              <span className="text-lg font-extrabold tabular-nums" style={{ color: GREEN }}>
+            <p className={`truncate font-bold text-fg ${dense ? "text-[11px]" : "text-xs"}`}
+               title={c.category}>{c.category}</p>
+            <p className="mt-1 tracking-tight">
+              <span className={`font-extrabold tabular-nums ${dense ? "text-base" : "text-lg"}`}
+                    style={{ color: GREEN }}>
                 {c.index.toFixed(1)}x
               </span>
             </p>
-            <p className="mt-0.5 text-[11px] text-muted">채널당 {nf(c.avg_viewers)}명</p>
-            <p className="text-[11px] text-muted/70">방송 {nf(c.lives)}개</p>
+            <p className={`mt-0.5 text-muted ${dense ? "text-[10px]" : "text-[11px]"}`}>
+              채널당 {nf(c.avg_viewers)}명
+            </p>
+            <p className={`text-muted/70 ${dense ? "text-[10px]" : "text-[11px]"}`}>
+              방송 {nf(c.lives)}개
+            </p>
           </div>
         ))}
       </div>
-      <Sub>
-        * 블루오션 지수 = 카테고리 채널당 평균 시청자 ÷ {label} 전체 평균({nf(base)}명).
-        2.0x면 같은 방송을 켜도 평균보다 2배 많은 시청자가 들어온다는 뜻입니다.
-        표본 왜곡을 막기 위해 {label} 방송 3개 이상인 카테고리만 집계합니다.
-      </Sub>
+      {/* mt-auto: 카드가 h-full로 늘어날 때 각주가 하단에 붙어 여백이 위로 흡수된다 */}
+      <div className="mt-auto">
+        <Sub>
+          * 블루오션 지수 = 카테고리 채널당 평균 시청자 ÷ {label} 전체 평균({nf(base)}명).
+          2.0x면 같은 방송을 켜도 평균보다 2배 많은 시청자가 들어온다는 뜻입니다.
+          표본 왜곡을 막기 위해 {label} 방송 3개 이상인 카테고리만 집계합니다.
+        </Sub>
+      </div>
     </div>
   );
 }
