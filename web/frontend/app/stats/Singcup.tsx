@@ -297,12 +297,13 @@ export default function Singcup() {
   }, []);
 
   // 검색은 이미 받아온 참가자 목록 안에서만 한다 — 싱드컵에 등록된 사람만 찾아진다.
+  // 대상은 치지직 닉네임(channelName) 하나뿐이다. 클립 제목까지 넣으면 노래 제목이
+  // 걸려서 "이 사람을 찾는" 검색이 아니게 된다.
   const matched = useMemo(() => {
     const all = data?.streamers ?? [];
     const q = query.trim().toLowerCase();
     if (!q) return all;
-    return all.filter((s) =>
-      s.channelName.toLowerCase().includes(q) || s.clipTitle.toLowerCase().includes(q));
+    return all.filter((s) => s.channelName.toLowerCase().includes(q));
   }, [data, query]);
 
   const rows = useMemo(() => {
@@ -390,8 +391,8 @@ export default function Singcup() {
                   className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
           <input
             value={query} onChange={(e) => setQuery(e.target.value)}
-            placeholder="참가 스트리머 검색"
-            aria-label="싱드컵 참가 스트리머 검색"
+            placeholder="치지직 닉네임 검색"
+            aria-label="싱드컵 참가 스트리머 닉네임 검색"
             className="w-full rounded-lg border border-border bg-bg py-2 pl-9 pr-8 text-sm
                        text-fg placeholder-muted focus:border-accent focus:outline-none" />
           {query && (
@@ -462,10 +463,10 @@ export default function Singcup() {
           {query ? (
             <>
               <p className="font-medium text-fg">
-                &lsquo;{query}&rsquo; 와 일치하는 참가 스트리머가 없습니다.
+                닉네임에 &lsquo;{query}&rsquo; 가 들어가는 참가 스트리머가 없습니다.
               </p>
               <p className="mt-1 text-sm text-muted">
-                싱드컵에 등록된 참가자만 검색됩니다.
+                싱드컵에 등록된 참가자의 <b className="text-muted">치지직 닉네임</b>만 검색됩니다.
               </p>
               <button onClick={() => setQuery("")}
                       className="btn-secondary mt-4 text-sm">검색 초기화</button>
