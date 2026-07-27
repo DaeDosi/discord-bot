@@ -116,16 +116,16 @@ function Row({ s, index }: { s: SingcupStreamer; index: number }) {
       {/* 하트 변화량 — 점수와 버튼 사이의 독립된 칸으로 읽히도록 좌우에 구분선을 두고
           여백을 넉넉히 준다. 구분선이 없으면 버튼 쪽에 붙어 보인다. */}
       <span className="flex shrink-0 items-center justify-center gap-5 border-border
-                       px-4 sm:min-w-[150px] sm:border-x">
+                       px-4 sm:min-w-[172px] sm:border-x">
         <span className="text-center" title="직전 수집 회차와 비교한 하트 증감입니다. '-'는 변화가 없거나 비교할 직전 기록이 아직 없다는 뜻입니다.">
-          <span className="block whitespace-nowrap text-[10px] text-muted">직전</span>
-          <span className="mt-0.5 block whitespace-nowrap text-xs">
+          <span className="block whitespace-nowrap text-xs text-muted">직전</span>
+          <span className="mt-0.5 block whitespace-nowrap text-[15px]">
             <Delta value={s.heartDelta} />
           </span>
         </span>
         <span className="text-center" title="24시간 전 대비 하트 증가율입니다. 'NEW'는 24시간 전 기록이 없거나 그때 하트가 0이라 증가율을 낼 수 없다는 뜻입니다.">
-          <span className="block whitespace-nowrap text-[10px] text-muted">24시간</span>
-          <span className="mt-0.5 block whitespace-nowrap text-xs">
+          <span className="block whitespace-nowrap text-xs text-muted">24시간</span>
+          <span className="mt-0.5 block whitespace-nowrap text-[15px]">
             {s.heartChangeRate24h === null
               ? <span className="font-bold" style={{ color: GOLD }}>NEW</span>
               : <Delta value={s.heartChangeRate24h} suffix="%" />}
