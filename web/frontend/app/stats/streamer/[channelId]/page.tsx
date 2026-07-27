@@ -6,7 +6,9 @@ import {
   Bot, BarChart3, ArrowLeft, ExternalLink, Loader2, Radio, Heart, Clock, Users, TrendingUp,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { StreamerDashboard, StreamerDetail, StreamerSessionSeries } from "@/lib/types";
+import type {
+  StreamerDashboard, StreamerDetail, StreamerSessionSeries, StreamerDaily, StreamerHourly,
+} from "@/lib/types";
 import ThemeToggle from "@/components/ThemeToggle";
 import LineChart, { type LinePoint } from "../../LineChart";
 import Heatmap, { HEAT_METRICS, type HeatMetric } from "./Heatmap";
@@ -70,27 +72,151 @@ function Kpi({ icon, label, value, unit, sub }:
   );
 }
 
-// 수직 막대 그래프 (일별 최고/평균 시청자)
-function BarPair({ rows }: { rows: { label: string; peak: number; avg: number }[] }) {
-  const max = Math.max(1, ...rows.map((r) => r.peak));
+// 차트 위 고정 판독 줄 — 어느 막대를 가리켜도 같은 자리에서 값을 읽는다.
+// (막대에 붙여 띄우는 툴팁은 막대가 얇을수록 조준이 어렵고 위치도 계속 어긋난다.)
+function Readout({ title, badge, items, hint }: {
+  title: string; badge?: string;
+  items: { label: string; value: string; color?: string }[];
+  hint?: string;
+}) {
   return (
-    <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-      <div className="flex items-end gap-2" style={{ minWidth: rows.length * 26, height: 190 }}>
-        {rows.map((r) => (
-          <div key={r.label} className="group relative flex w-5 shrink-0 flex-col items-center justify-end gap-1" style={{ height: "100%" }}>
-            <div className="relative flex h-full w-full items-end justify-center gap-[2px]">
-              <div className="w-[7px] rounded-t-[2px]" style={{ height: `${(r.peak / max) * 100}%`, background: PURPLE, opacity: 0.75 }} />
-              <div className="w-[7px] rounded-t-[2px]" style={{ height: `${(r.avg / max) * 100}%`, background: GRAD }} />
-            </div>
-            <span className="text-[9px] text-muted">{r.label}</span>
-            <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1 hidden -translate-x-1/2 whitespace-nowrap
-                            rounded border border-border bg-bg-card px-2 py-1 text-[10px] text-fg shadow-xl group-hover:block">
-              최고 {nf(r.peak)}명 · 평균 {nf(r.avg)}명
-            </div>
-          </div>
-        ))}
-      </div>
+    <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border border-border px-3.5 py-2.5">
+      <span className="text-base font-extrabold tabular-nums text-fg">{title}</span>
+      {badge && (
+        <span className="rounded-full px-2 py-0.5 text-[11px] font-bold"
+              style={{ color: GREEN, background: "rgba(0,255,163,0.12)" }}>{badge}</span>
+      )}
+      {items.map((it) => (
+        <span key={it.label} className="flex items-center gap-1.5 text-sm text-muted">
+          {it.color && <span className="h-2.5 w-4 rounded-sm" style={{ background: it.color }} />}
+          {it.label} <b className="tabular-nums text-fg">{it.value}</b>
+        </span>
+      ))}
+      {hint && <span className="ml-auto text-[11px] text-muted/70">{hint}</span>}
     </div>
+  );
+}
+
+// 일별 최고/평균 시청자 — 수직 2색 막대.
+// 막대 자체가 아니라 '칼럼 전체'가 호버 영역이라 얇은 막대를 정확히 조준할 필요가 없다.
+function DailyChart({ rows }: { rows: StreamerDaily[] }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const max = Math.max(1, ...rows.map((r) => r.peak));
+  // 기본 표시는 최고 동시시청자를 찍은 날 — 마우스를 떼도 판독 줄이 비지 않는다
+  const bestIdx = rows.reduce((b, r, i) => (r.peak > rows[b].peak ? i : b), 0);
+  const idx = hover ?? bestIdx;
+  const cur = rows[idx];
+  // 날짜 라벨이 겹치지 않을 만큼만 남긴다(30일이면 3일 간격)
+  const step = Math.max(1, Math.ceil(rows.length / 12));
+
+  return (
+    <>
+      {cur && (
+        <Readout
+          title={cur.date}
+          badge={idx === bestIdx ? "최고 기록일" : undefined}
+          items={[
+            { label: "최고", value: `${nf(cur.peak)}명`, color: PURPLE },
+            { label: "평균", value: `${nf(cur.avg_viewers)}명`, color: GREEN },
+            { label: "방송", value: `${(cur.minutes / 60).toFixed(1)}시간` },
+            { label: "뷰어쉽", value: `${nf(cur.viewership)}명·시간` },
+          ]}
+          hint={hover === null ? "막대에 마우스를 올리면 그날 값이 표시됩니다" : undefined}
+        />
+      )}
+      <div className="mt-3 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="flex items-end gap-1.5" style={{ minWidth: rows.length * 34 }}
+             onMouseLeave={() => setHover(null)}>
+          {rows.map((r, i) => {
+            const on = idx === i;
+            return (
+              <div key={r.date} tabIndex={0}
+                   onMouseEnter={() => setHover(i)} onFocus={() => setHover(i)}
+                   aria-label={`${r.date} 최고 ${r.peak}명 평균 ${r.avg_viewers}명`}
+                   className="flex w-7 shrink-0 cursor-pointer flex-col items-center justify-end gap-1
+                              rounded-md outline-none transition-colors"
+                   style={{ height: 240, background: on ? "rgb(var(--color-bg-hover-rgb))" : undefined }}>
+                <div className="flex h-full w-full items-end justify-center gap-[3px] px-1"
+                     style={{ opacity: hover !== null && !on ? 0.4 : 1 }}>
+                  <div className="w-[9px] rounded-t-[3px]"
+                       style={{ height: `${(r.peak / max) * 100}%`, background: PURPLE, opacity: 0.8 }} />
+                  <div className="w-[9px] rounded-t-[3px]"
+                       style={{ height: `${(r.avg_viewers / max) * 100}%`, background: GRAD }} />
+                </div>
+                <span className="h-4 whitespace-nowrap text-[11px] tabular-nums"
+                      style={{ color: on ? "rgb(var(--color-fg-rgb))" : "rgb(var(--color-muted-rgb))" }}>
+                  {on || i % step === 0 ? r.date.slice(5) : ""}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// 시간대별 유입 — 0~23시 고정 축의 수직 막대.
+// 가로 막대 목록은 '몇 시가 좋은가'를 시간 순서로 비교하기 어려웠다. 시간축을 가로로
+// 두면 하루의 흐름이 그대로 보인다. 꺾은선은 방송하지 않은 시간대를 이어 버려
+// 없는 데이터를 있는 것처럼 만들기 때문에 쓰지 않는다(빈 시간은 빈칸으로 남긴다).
+function HourlyChart({ rows }: { rows: StreamerHourly[] }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const byHour = useMemo(() => {
+    const m = new Map<number, StreamerHourly>();
+    rows.forEach((r) => m.set(r.hour, r));
+    return m;
+  }, [rows]);
+  const max = Math.max(1, ...rows.map((r) => r.avg_viewers));
+  const bestHour = rows.reduce((b, r) => (r.avg_viewers > b.avg_viewers ? r : b), rows[0])?.hour;
+  const shownHour = hover ?? bestHour ?? null;
+  const cur = shownHour === null ? undefined : byHour.get(shownHour);
+  const p2 = (n: number) => String(n).padStart(2, "0");
+
+  return (
+    <>
+      {cur ? (
+        <Readout
+          title={`${p2(cur.hour)}:00 ~ ${p2((cur.hour + 1) % 24)}:00`}
+          badge={cur.hour === bestHour ? "가장 잘 나온 시간대" : undefined}
+          items={[
+            { label: "평균", value: `${nf(cur.avg_viewers)}명`, color: GREEN },
+            { label: "최고", value: `${nf(cur.peak_viewers)}명`, color: PURPLE },
+            { label: "방송", value: `${cur.hours}시간` },
+          ]}
+          hint={hover === null ? "막대에 마우스를 올리면 그 시간대 값이 표시됩니다" : undefined}
+        />
+      ) : (
+        <Readout title="—" items={[{ label: "방송 이력", value: "없음" }]} />
+      )}
+      <div className="mt-3 grid grid-cols-12 gap-1 md:grid-cols-[repeat(24,minmax(0,1fr))]"
+           onMouseLeave={() => setHover(null)}>
+        {Array.from({ length: 24 }, (_, h) => {
+          const r = byHour.get(h);
+          const on = shownHour === h;
+          return (
+            <div key={h} tabIndex={0}
+                 onMouseEnter={() => setHover(r ? h : null)} onFocus={() => setHover(r ? h : null)}
+                 aria-label={r ? `${p2(h)}시 평균 ${r.avg_viewers}명` : `${p2(h)}시 방송 없음`}
+                 className="flex flex-col justify-end rounded-md outline-none transition-colors"
+                 style={{ cursor: r ? "pointer" : "default",
+                          background: on ? "rgb(var(--color-bg-hover-rgb))" : undefined }}>
+              <div className="flex h-40 items-end justify-center px-0.5">
+                <div className="w-full rounded-t-[3px] transition-opacity"
+                     style={{ height: r ? `${Math.max(3, (r.avg_viewers / max) * 92)}%` : "2px",
+                              background: r ? GRAD : "rgb(var(--color-bg-hover-rgb))",
+                              opacity: hover !== null && !on ? 0.4 : 1 }} />
+              </div>
+              <span className="mt-1 block h-4 whitespace-nowrap text-center text-[11px] tabular-nums"
+                    style={{ color: on ? "rgb(var(--color-fg-rgb))" : "rgb(var(--color-muted-rgb))" }}>
+                {on || h % 3 === 0 ? `${h}시` : ""}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <Sub>* 회색 빈칸은 그 시간대에 방송한 이력이 없다는 뜻입니다.</Sub>
+    </>
   );
 }
 
@@ -165,7 +291,6 @@ export default function StreamerPage() {
   const fmtT = (t: number) => new Date(t * 1000).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
 
   const hourly = detail?.hourly ?? [];
-  const maxHourAvg = Math.max(1, ...hourly.map((h) => h.avg_viewers));
   const sessions = detail?.sessions ?? [];
   const rankDaily = detail?.rank_daily ?? [];
 
@@ -335,34 +460,32 @@ export default function StreamerPage() {
               <>
                 <div className="card">
                   <h3 className="section-title">일별 시청자 추이</h3>
-                  <Sub>보라 막대 = 최고 시청자, 그린 막대 = 평균 시청자. 방송이 있던 날만 표시됩니다.</Sub>
-                  {daily.length === 0 ? <p className="py-10 text-center text-sm text-muted">데이터가 아직 없습니다.</p> : (
-                    <div className="mt-4">
-                      <BarPair rows={daily.map((d) => ({ label: d.date.slice(5), peak: d.peak, avg: d.avg_viewers }))} />
-                    </div>
-                  )}
+                  <p className="mt-1 text-sm leading-relaxed text-muted">
+                    <span className="inline-flex items-center gap-1.5 align-middle">
+                      <span className="h-2.5 w-4 rounded-sm" style={{ background: PURPLE, opacity: 0.8 }} />
+                      최고 시청자
+                    </span>
+                    <span className="mx-2 text-border">·</span>
+                    <span className="inline-flex items-center gap-1.5 align-middle">
+                      <span className="h-2.5 w-4 rounded-sm" style={{ background: GRAD }} />
+                      평균 시청자
+                    </span>
+                    <span className="ml-2">— 방송이 있던 날만 표시됩니다.</span>
+                  </p>
+                  {daily.length === 0
+                    ? <p className="py-10 text-center text-sm text-muted">데이터가 아직 없습니다.</p>
+                    : <DailyChart rows={daily} />}
                 </div>
 
                 <div className="card">
                   <h3 className="section-title">시간대별 유입 분석</h3>
-                  <Sub>그 시간대에 방송을 켰을 때의 평균 시청자입니다. 방송한 시간대만 나옵니다.</Sub>
-                  {hourly.length === 0 ? <p className="py-10 text-center text-sm text-muted">시간대 데이터가 아직 없습니다.</p> : (
-                    <div className="mt-4 space-y-1.5">
-                      {hourly.map((h) => (
-                        <div key={h.hour} className="flex items-center gap-2">
-                          <span className="w-12 shrink-0 text-right text-[11px] tabular-nums text-muted">
-                            {String(h.hour).padStart(2, "0")}시
-                          </span>
-                          <div className="h-3 flex-1 overflow-hidden rounded bg-bg-hover">
-                            <div className="h-full rounded" style={{ width: `${(h.avg_viewers / maxHourAvg) * 100}%`, background: GRAD }} />
-                          </div>
-                          <span className="w-24 shrink-0 text-right text-[11px] tabular-nums text-muted">
-                            {nf(h.avg_viewers)}명 · {h.hours}h
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <p className="mt-1 text-sm leading-relaxed text-muted">
+                    그 시간대에 방송을 켰을 때의 평균 시청자입니다. 하루 24시간을 가로축에 두어
+                    어느 시간대가 잘 나오는지 한눈에 비교할 수 있습니다.
+                  </p>
+                  {hourly.length === 0
+                    ? <p className="py-10 text-center text-sm text-muted">시간대 데이터가 아직 없습니다.</p>
+                    : <HourlyChart rows={hourly} />}
                 </div>
 
                 {weekly.length > 1 && (
