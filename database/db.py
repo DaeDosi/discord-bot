@@ -609,6 +609,66 @@ async def init_db():
         # 쓰기 비용: 수집 1회당 롤업 upsert 약 3천 행에 인덱스 1개가 추가된다.
         "CREATE INDEX IF NOT EXISTS idx_rising_roll_cover ON rising_hourly_rollup"
         "(hour_ts, avg_viewers, snaps, sum_viewers, chzzk_channel_id)",
+        # ── 싱드컵: 음악/노래 카테고리 클립 기반 (자유게시판 버프와는 별개 데이터) ──
+        # 자유게시판(singcup_feeds)은 '홍보글' 보조 화면으로 남기고, 메인/랭킹은 아래
+        # #싱드컵 태그 클립을 기준으로 한다.
+        """CREATE TABLE IF NOT EXISTS singcup_clips (
+               clip_uid            TEXT PRIMARY KEY,
+               event_id            TEXT    NOT NULL,
+               owner_channel_id    TEXT    NOT NULL,
+               video_id            TEXT    NOT NULL DEFAULT '',
+               clip_title          TEXT    NOT NULL DEFAULT '',
+               thumbnail_image_url TEXT    NOT NULL DEFAULT '',
+               description         TEXT    NOT NULL DEFAULT '',
+               created_at          INTEGER NOT NULL,          -- epoch (KST 파싱)
+               heart_count         INTEGER NOT NULL DEFAULT 0,-- card.interaction.emotion like
+               view_count          INTEGER NOT NULL DEFAULT 0,-- card.content.vod.count
+               duration            INTEGER NOT NULL DEFAULT 0,
+               adult               INTEGER NOT NULL DEFAULT 0,
+               blind_type          TEXT,
+               -- 하트/조회수를 '실제 0'과 'API 오류로 못 읽음'으로 구분하기 위한 플래그
+               metrics_ok          INTEGER NOT NULL DEFAULT 0,
+               active              INTEGER NOT NULL DEFAULT 1,
+               missing_scan_count  INTEGER NOT NULL DEFAULT 0,
+               first_collected_at  INTEGER NOT NULL,
+               last_collected_at   INTEGER NOT NULL,
+               row_updated_at      INTEGER NOT NULL
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_clips_owner "
+        "ON singcup_clips(event_id, owner_channel_id, active, heart_count DESC, view_count DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_clips_created "
+        "ON singcup_clips(event_id, created_at)",
+        """CREATE TABLE IF NOT EXISTS singcup_streamers (
+               channel_id                TEXT PRIMARY KEY,
+               event_id                  TEXT    NOT NULL,
+               channel_name              TEXT    NOT NULL DEFAULT '',
+               channel_image_url         TEXT    NOT NULL DEFAULT '',
+               follower_count            INTEGER NOT NULL DEFAULT 0,
+               verified_mark             INTEGER NOT NULL DEFAULT 0,
+               representative_clip_uid   TEXT,
+               tagged_clip_count         INTEGER NOT NULL DEFAULT 0,
+               last_channel_updated_at   INTEGER NOT NULL DEFAULT 0,
+               row_updated_at            INTEGER NOT NULL
+           )""",
+        # 하트/순위 변화량 계산용 시계열. 수집 회차마다 대표 클립 기준으로 1행씩 쌓인다.
+        """CREATE TABLE IF NOT EXISTS singcup_snapshots (
+               id               INTEGER PRIMARY KEY AUTOINCREMENT,
+               event_id         TEXT    NOT NULL,
+               clip_uid         TEXT    NOT NULL,
+               owner_channel_id TEXT    NOT NULL,
+               heart_count      INTEGER NOT NULL DEFAULT 0,
+               view_count       INTEGER NOT NULL DEFAULT 0,
+               follower_count   INTEGER NOT NULL DEFAULT 0,
+               score            REAL    NOT NULL DEFAULT 0,
+               rank             INTEGER NOT NULL DEFAULT 0,
+               collected_at     INTEGER NOT NULL
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_snap_owner "
+        "ON singcup_snapshots(event_id, owner_channel_id, collected_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_snap_time "
+        "ON singcup_snapshots(event_id, collected_at)",
+        # 자유게시판 게시글 ↔ 클립 연결(홍보글 화면에서 '대표 클립과 연결됨' 배지용)
+        "ALTER TABLE singcup_feeds ADD COLUMN clip_uid TEXT",
     ]:
         try:
             await db.execute(sql)

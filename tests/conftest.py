@@ -23,7 +23,7 @@ os.environ.setdefault("CHZZK_BACKOFF_BASE_SECONDS", "0")
 os.environ.setdefault("CHZZK_REQUESTS_PER_SECOND", "0")   # 0 = 속도 제한 비활성
 # 싱드컵 — 이벤트 기간과 지연을 테스트용 고정값으로. 모듈이 import 시점에 읽으므로
 # 반드시 import 전에 세팅돼야 한다.
-os.environ.setdefault("SINGCUP_START_AT", "2026-07-20T00:00:00+09:00")
+os.environ.setdefault("SINGCUP_START_AT", "2026-07-27T20:00:00+09:00")
 os.environ.setdefault("SINGCUP_END_AT", "2026-08-09T23:59:59+09:00")
 os.environ.setdefault("SINGCUP_BACKOFF_BASE_SECONDS", "0")
 os.environ.setdefault("SINGCUP_PAGE_DELAY_SECONDS", "0")
@@ -48,6 +48,7 @@ def anyio_backend():
 def db(request):
     """매 테스트마다 스키마를 초기화하고 chzzk_channel_history를 비운다."""
     from chzzk_channel_history import reset_state
+    from singcup_clips import reset_state as clips_reset
     from singcup_collector import reset_state as singcup_reset
 
     import database
@@ -55,17 +56,20 @@ def db(request):
     async def _setup():
         await database.init_db()
         conn = await database.get_db()
-        for t in ("chzzk_channel_history", "singcup_feeds", "singcup_collect_runs"):
+        for t in ("chzzk_channel_history", "singcup_feeds", "singcup_collect_runs",
+                  "singcup_clips", "singcup_streamers", "singcup_snapshots"):
             await conn.execute(f"DELETE FROM {t}")
         # 락은 지우지 말고 풀어 둔다(행 자체는 id=1 하나만 존재해야 한다)
         await conn.execute("UPDATE singcup_collect_lock SET locked_until=0, owner=''")
         await conn.commit()
         await reset_state()
         await singcup_reset()
+        await clips_reset()
 
     async def _teardown():
         await reset_state()
         await singcup_reset()
+        await clips_reset()
         await database.close_db()
 
     loop = asyncio.new_event_loop()

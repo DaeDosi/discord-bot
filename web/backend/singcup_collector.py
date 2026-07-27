@@ -53,7 +53,8 @@ ENABLED = (os.getenv("SINGCUP_ENABLED", "true").lower() not in ("0", "false", "n
 EVENT_ID = os.getenv("SINGCUP_EVENT_ID", "singcup-2026")
 EVENT_NAME = os.getenv("SINGCUP_EVENT_NAME", "싱드컵")
 # 이벤트 기간은 여기(또는 환경변수) 한 곳에서만 관리한다 — 다른 파일에 하드코딩하지 않는다.
-START_AT = _env_dt("SINGCUP_START_AT", "2026-07-20T00:00:00+09:00")
+# 시작일은 07-20이 아니라 **07-27 20:00 KST**다(운영자 확인). 07-20으로 넓혔다가 되돌렸다.
+START_AT = _env_dt("SINGCUP_START_AT", "2026-07-27T20:00:00+09:00")
 END_AT = _env_dt("SINGCUP_END_AT", "2026-08-09T23:59:59+09:00")
 COLLECT_INTERVAL_MINUTES = float(os.getenv("SINGCUP_COLLECT_INTERVAL_MINUTES", "3"))
 MAX_PAGES = int(os.getenv("SINGCUP_MAX_PAGES", "100"))
