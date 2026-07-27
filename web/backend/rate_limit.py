@@ -38,6 +38,8 @@ _HEAVY_MARKERS = (
     "/api/rising/newcomers",
     "/api/rising/ranking-period",
     "/api/rising/category-streamers",
+    # 태그별 스트리머도 팔로워 온디맨드 보강으로 외부 API를 호출한다
+    "/api/rising/tag-streamers",
     "/api/rising/search",
     # 기간별 상세 분석: 롤업 전 구간 스캔 + 체급 판정 서브쿼리라 무겁다
     "/api/rising/period-analysis",

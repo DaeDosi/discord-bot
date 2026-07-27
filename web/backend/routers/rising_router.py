@@ -1407,9 +1407,19 @@ async def tags(limit: int = 60):
     return {"collected_at": ts, "tags": items[:max(1, min(300, limit))]}
 
 
+# 태그 목록의 팔로워 온디맨드 보강 상한 — 카테고리별 스트리머와 같은 방식/이유다.
+_TAG_FOLLOWER_ENRICH_MAX = 120
+
+
 @router.get("/tag-streamers")
-async def tag_streamers(tag: str, exact: bool = False):
-    """특정 태그를 단 방송 전체. exact=false면 부분 일치(대소문자 무시)."""
+async def tag_streamers(tag: str, exact: bool = False, enrich: bool = True):
+    """특정 태그를 단 방송 전체. exact=false면 부분 일치(대소문자 무시).
+
+    팔로워는 스냅샷에 0으로 저장돼 있는 채널이 많다 — 수집기가 시청자 상위
+    FOLLOWER_ENRICH_N(기본 100)개만 보강하기 때문이다. 태그로 걸러진 목록은
+    대부분 그 밖의 소형 채널이라 화면에서 팔로워가 통째로 '-'로 보였다.
+    카테고리별 스트리머와 동일하게, 0인 채널만 골라 온디맨드로 채운다.
+    """
     ts = await _latest_run_ts()
     if ts is None:
         return {"collected_at": None, "tag": tag, "streamers": []}
@@ -1454,7 +1464,32 @@ async def tag_streamers(tag: str, exact: bool = False):
             "tags":               tl,
             "adult":              bool(r["adult"]),
         })
-    return {"collected_at": ts, "tag": tag, "streamers": out}
+
+    # 팔로워가 0인 채널만 채널 상세 API로 보강한다(요청 수는 상한으로 묶는다).
+    # 이미지 URL도 비어 있으면 함께 채운다 — 같은 응답에서 얻을 수 있다.
+    enriched = 0
+    if enrich:
+        todo = [x for x in out if not x["follower_count"]][:_TAG_FOLLOWER_ENRICH_MAX]
+        if todo:
+            sem = asyncio.Semaphore(12)
+            async with httpx.AsyncClient() as client:
+                async def _fill(item):
+                    async with sem:
+                        fc, img = await _fetch_channel_meta(client, item["chzzk_channel_id"])
+                        if fc is not None:
+                            item["follower_count"] = fc
+                        if img and not item["channel_image_url"]:
+                            item["channel_image_url"] = img
+                # 외부 API가 느리면 응답 전체가 끌려간다 — 상한을 두고 초과분은 포기한다
+                # (팔로워는 부가 정보라 없어도 목록 자체는 정상이다)
+                try:
+                    await asyncio.wait_for(asyncio.gather(*[_fill(x) for x in todo]),
+                                           timeout=_NEWCOMER_ENRICH_TIMEOUT)
+                except asyncio.TimeoutError:
+                    pass
+            enriched = sum(1 for x in todo if x["follower_count"])
+
+    return {"collected_at": ts, "tag": tag, "streamers": out, "enriched": enriched}
 
 
 # ── 태그 유입 효과 비교 ──────────────────────────────────────────────────────
