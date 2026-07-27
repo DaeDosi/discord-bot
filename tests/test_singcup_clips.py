@@ -7,8 +7,8 @@ import singcup_clips as sc
 
 KST = timezone(timedelta(hours=9))
 IN = "2026-07-28 12:00:00"
-AT_START = "2026-07-27 20:00:00"
-BEFORE = "2026-07-27 19:59:59"
+AT_START = "2026-07-20 00:00:00"
+BEFORE = "2026-07-19 23:59:59"
 AFTER = "2026-08-10 00:00:01"
 
 
@@ -71,8 +71,8 @@ def test_event_window(created, ok):
                                 start=sc.START_AT, end=sc.END_AT) is ok
 
 
-def test_event_start_is_july_27_20h():
-    assert sc.START_AT.isoformat() == "2026-07-27T20:00:00+09:00"
+def test_event_start_is_july_20():
+    assert sc.START_AT.isoformat() == "2026-07-20T00:00:00+09:00"
 
 
 @pytest.mark.parametrize("kw", [

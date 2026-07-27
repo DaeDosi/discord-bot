@@ -1,4 +1,4 @@
-"""싱드컵 — 페이지 순회 / 이벤트 시작일(2026-07-27 20:00) / backfill·dry-run·prune 테스트.
+"""싱드컵 — 페이지 순회 / 이벤트 시작일(2026-07-20) / backfill·dry-run·prune 테스트.
 
 응답 생성 헬퍼는 test_singcup.py 것을 그대로 쓴다(같은 mock 규약을 두 벌 두지 않기 위해).
 """
@@ -74,8 +74,8 @@ def test_start_boundary_included_and_one_second_before_excluded(db):
         off = int(request.url.params["offset"])
         if off == 0:
             return httpx.Response(200, json=page([
-                feed_item(1, created=AT_START, user_hash="a"),        # 07-27 20:00:00 포함
-                feed_item(2, created=BEFORE_EVENT, user_hash="b"),   # 07-27 19:59:59 제외
+                feed_item(1, created=AT_START, user_hash="a"),        # 07-20 00:00:00 포함
+                feed_item(2, created=BEFORE_EVENT, user_hash="b"),   # 07-19 23:59:59 제외
             ]))
         return httpx.Response(200, json=page([feed_item(9, created=BEFORE_EVENT)]))
 
@@ -133,7 +133,7 @@ def test_singcup_title_before_start_is_excluded(db):
     def handler(request):
         off = int(request.url.params["offset"])
         if off == 0:
-            # 제목은 [싱드컵]이지만 07-27 20시 이전 → 제외돼야 한다
+            # 제목은 [싱드컵]이지만 07-20 이전 → 제외돼야 한다
             return httpx.Response(200, json=page([feed_item(1, created=BEFORE_EVENT)]))
         return httpx.Response(200, json=page([]))
 
@@ -229,6 +229,6 @@ def test_prune_dry_run_then_apply(db):
     assert [e["feedId"] for e in remaining] == [2]     # 삭제가 아니라 비활성
 
 
-def test_event_window_default_is_july_27_20h():
-    assert sc.START_AT.isoformat() == "2026-07-27T20:00:00+09:00"
+def test_event_window_default_is_july_20():
+    assert sc.START_AT.isoformat() == "2026-07-20T00:00:00+09:00"
     assert sc.END_AT.isoformat() == "2026-08-09T23:59:59+09:00"

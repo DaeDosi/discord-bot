@@ -23,7 +23,7 @@ os.environ.setdefault("CHZZK_BACKOFF_BASE_SECONDS", "0")
 os.environ.setdefault("CHZZK_REQUESTS_PER_SECOND", "0")   # 0 = 속도 제한 비활성
 # 싱드컵 — 이벤트 기간과 지연을 테스트용 고정값으로. 모듈이 import 시점에 읽으므로
 # 반드시 import 전에 세팅돼야 한다.
-os.environ.setdefault("SINGCUP_START_AT", "2026-07-27T20:00:00+09:00")
+os.environ.setdefault("SINGCUP_START_AT", "2026-07-20T00:00:00+09:00")
 os.environ.setdefault("SINGCUP_END_AT", "2026-08-09T23:59:59+09:00")
 os.environ.setdefault("SINGCUP_BACKOFF_BASE_SECONDS", "0")
 os.environ.setdefault("SINGCUP_PAGE_DELAY_SECONDS", "0")

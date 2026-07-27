@@ -55,7 +55,9 @@ CHANNEL_API = "https://api.chzzk.naver.com/service/v1/channels"
 _KST = timezone(timedelta(hours=9))
 
 PAGE_SIZE = int(os.getenv("SINGCUP_CLIP_PAGE_SIZE", "50"))
-MAX_PAGES = int(os.getenv("SINGCUP_CLIP_MAX_PAGES", "60"))
+# 이벤트 시작(07-20)까지 거슬러 가려면 실측 113페이지가 필요했다(클립 5,650건).
+# 여유를 두고 200으로 잡는다 — 목록 조회는 카드와 달리 페이지당 1회라 비용이 작다.
+MAX_PAGES = int(os.getenv("SINGCUP_CLIP_MAX_PAGES", "200"))
 CARD_CONCURRENCY = int(os.getenv("SINGCUP_CARD_CONCURRENCY", "4"))
 REQUEST_TIMEOUT = float(os.getenv("SINGCUP_REQUEST_TIMEOUT_MS", "10000")) / 1000
 MAX_RETRIES = max(1, int(os.getenv("SINGCUP_MAX_RETRIES", "3")))
@@ -629,6 +631,12 @@ def event_meta() -> dict:
 METRICS_TTL_MINUTES = float(os.getenv("SINGCUP_METRICS_TTL_MINUTES", "20"))
 REFRESH_PER_CYCLE = int(os.getenv("SINGCUP_REFRESH_PER_CYCLE", "60"))
 RESCAN_UNTAGGED_HOURS = float(os.getenv("SINGCUP_RESCAN_UNTAGGED_HOURS", "24"))
+# 신규 클립 카드 조회도 사이클당 상한을 둔다.
+# 이벤트 시작을 07-20으로 넓히면 첫 수집에 후보가 5,500건이 넘는데, 이걸 한 번에
+# 훑으면 한 사이클이 수 분씩 걸리고 락 TTL(MAX_RUN_SECONDS)을 넘겨 다음 사이클과
+# 겹칠 수 있다. 목록은 최신순이라 못 훑은 클립은 scan 기록이 남지 않아 다음 사이클에
+# 자연히 이어서 처리된다(몇 사이클에 걸쳐 backlog가 빠진다).
+NEW_SCAN_PER_CYCLE = int(os.getenv("SINGCUP_NEW_SCAN_PER_CYCLE", "400"))
 
 
 async def _load_scan_state() -> dict[str, tuple[int, int]]:
@@ -785,7 +793,9 @@ async def collect_clips_incremental(*, dry_run: bool = False,
                 "metrics_ok": card["metrics_ok"],
             })
 
-        await asyncio.gather(*[scan_new(it) for it in fresh])
+        # 신규 후보는 최신순이라 앞에서부터 상한만큼만 훑는다(나머지는 다음 사이클)
+        pending_new = max(0, len(fresh) - NEW_SCAN_PER_CYCLE)
+        await asyncio.gather(*[scan_new(it) for it in fresh[:NEW_SCAN_PER_CYCLE]])
 
         # ③ 기존 태그 클립 중 수치가 오래된 것 일부만 갱신
         refreshed = 0
@@ -810,7 +820,7 @@ async def collect_clips_incremental(*, dry_run: bool = False,
         if dry_run:
             return {"status": status, "dryRun": True, "pages": pages, "scanned": scanned,
                     "newTagged": len(new_tagged), "knownTagged": len(known_tagged),
-                    "cardCalls": card_calls, "note": note}
+                    "cardCalls": card_calls, "pendingNew": pending_new, "note": note}
 
         inserted = 0
         for c in new_tagged:
@@ -821,7 +831,9 @@ async def collect_clips_incremental(*, dry_run: bool = False,
         await (await get_db()).commit()
 
         deactivated = 0
-        if full_scan and status == ST_OK:
+        # 아직 못 훑은 신규 후보가 남아 있으면 '전체를 확인했다'고 볼 수 없다 —
+        # 이 상태로 비활성 처리를 하면 멀쩡한 클립이 사라진다.
+        if full_scan and status == ST_OK and pending_new == 0:
             alive = known_tagged | {c["clip_uid"] for c in new_tagged}
             deactivated = await _reconcile_missing_clips(alive, started)
             await (await get_db()).commit()
@@ -830,13 +842,13 @@ async def collect_clips_incremental(*, dry_run: bool = False,
 
         _log({"event": "run_incremental", "status": status, "pages": pages,
               "scanned": scanned, "card_calls": card_calls, "new_tagged": len(new_tagged),
-              "refreshed": refreshed, "streamers": len(ranked),
+              "pending_new": pending_new, "refreshed": refreshed, "streamers": len(ranked),
               "deactivated": deactivated, "full_scan": full_scan,
               "duration_ms": round((time.time() - started) * 1000)})
         return {"status": status, "pages": pages, "scanned": scanned,
                 "cardCalls": card_calls, "newTagged": len(new_tagged),
-                "inserted": inserted, "refreshed": refreshed, "streamers": len(ranked),
-                "full_scan": full_scan, "note": note}
+                "pendingNew": pending_new, "inserted": inserted, "refreshed": refreshed,
+                "streamers": len(ranked), "full_scan": full_scan, "note": note}
 
     except SchemaError as e:
         _log({"event": "run_failed", "level": "warning", "status": ST_SCHEMA,

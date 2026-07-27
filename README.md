@@ -401,6 +401,25 @@ curl -X POST 'https://<backend>/api/singcup/prune?dry_run=false' -H 'X-Singcup-S
 | `SINGCUP_POST_EVENT_HOURS` | `24` | 종료 후 최종 검산 기간 |
 | `SINGCUP_ADMIN_SECRET` | (없음) | 수동 수집 인증. **비워두면 수동 수집이 막힙니다** |
 
+#### 클립 수집(메인/랭킹) 전용
+
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `SINGCUP_CLIP_INTERVAL_MINUTES` | `4` | 클립 수집 주기 |
+| `SINGCUP_CLIP_MAX_PAGES` | `200` | 클립 목록 최대 페이지(07-20까지 실측 113페이지) |
+| `SINGCUP_NEW_SCAN_PER_CYCLE` | `400` | 사이클당 **신규** 클립 카드 조회 상한 |
+| `SINGCUP_REFRESH_PER_CYCLE` | `60` | 사이클당 기존 클립 수치 갱신 상한 |
+| `SINGCUP_METRICS_TTL_MINUTES` | `20` | 하트/조회수 갱신 주기 |
+| `SINGCUP_RESCAN_UNTAGGED_HOURS` | `24` | 태그 없던 클립 재확인 주기 |
+| `SINGCUP_CARD_CONCURRENCY` | `4` | 카드 API 동시 요청 수 |
+| `SINGCUP_CHANNEL_TTL_MINUTES` | `20` | 채널(팔로워) 캐시 |
+
+**카드 API는 클립 1건당 1회**라 호출량 제어가 핵심입니다. 이벤트 시작을 07-20으로 두면
+후보가 5,500건이 넘으므로, 첫 적재는 사이클당 400건씩 나눠 처리합니다(약 14사이클 ≈ 1시간).
+못 훑은 클립은 scan 기록이 남지 않아 다음 사이클에 자연히 이어집니다. **backlog가 남아
+있는 동안에는 클립 비활성화(missing 처리)를 하지 않습니다** — 전체를 확인한 상태가
+아니어서 멀쩡한 클립이 사라질 수 있기 때문입니다.
+
 이벤트 기간은 코드에 흩어 두지 않고 위 두 환경변수(또는 `singcup_collector`의 기본값)
 한 곳에서만 관리합니다.
 

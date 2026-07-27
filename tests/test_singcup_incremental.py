@@ -218,3 +218,50 @@ def test_rank_and_heart_delta_between_cycles(db):
     assert top["heartDelta"] == 96                      # 3 -> 99
     assert top["isNew"] is False
     assert top["rankDelta"] is not None
+
+
+def test_new_scan_is_capped_and_resumes_next_cycle(db, monkeypatch):
+    """신규 후보가 많아도 사이클당 상한만 훑고, 나머지는 다음 사이클에 이어서 처리한다."""
+    calls = []
+    pages = {
+        None: ([clip(f"n{i}", owner=f"o{i}") for i in range(5)], None),
+    }
+    tagged = {f"n{i}" for i in range(5)}
+
+    monkeypatch.setattr(sc, "NEW_SCAN_PER_CYCLE", 2)
+    _install(_handler(pages, tagged_uids=tagged, calls=calls))
+    first = db(sc.collect_clips_incremental())
+    assert len(calls) == 2 and first["pendingNew"] == 3
+    assert first["newTagged"] == 2
+
+    calls.clear()
+    _install(_handler(pages, tagged_uids=tagged, calls=calls))
+    second = db(sc.collect_clips_incremental())
+    assert len(calls) == 2 and second["pendingNew"] == 1
+
+    calls.clear()
+    _install(_handler(pages, tagged_uids=tagged, calls=calls))
+    third = db(sc.collect_clips_incremental())
+    assert len(calls) == 1 and third["pendingNew"] == 0
+    assert db(sc.load_main())["summary"]["streamerCount"] == 5   # 결국 전부 수집된다
+
+
+def test_no_deactivation_while_backlog_remains(db, monkeypatch):
+    """아직 못 훑은 신규가 남아 있으면 '전체 확인'이 아니므로 비활성 처리를 하지 않는다."""
+    calls = []
+    pages = {None: ([clip("keep"), clip("a", owner="o2"), clip("b", owner="o3")], None)}
+    _install(_handler(pages, tagged_uids={"keep", "a", "b"}, calls=calls))
+    monkeypatch.setattr(sc, "NEW_SCAN_PER_CYCLE", 3)
+    db(sc.collect_clips_incremental())
+    assert db(sc.load_main())["summary"]["streamerCount"] == 3
+
+    # 목록에서 전부 사라졌지만 새 후보가 대량으로 들어와 backlog가 남은 상황
+    pages2 = {None: ([clip(f"new{i}", owner=f"x{i}") for i in range(5)], None)}
+    monkeypatch.setattr(sc, "NEW_SCAN_PER_CYCLE", 1)
+    for _ in range(2):
+        _install(_handler(pages2, tagged_uids={f"new{i}" for i in range(5)}, calls=[]))
+        res = db(sc.collect_clips_incremental())
+        assert res["pendingNew"] > 0
+    # 기존 3명이 그대로 살아 있어야 한다(backlog 중에는 비활성화 금지)
+    names = {s["clipUid"] for s in db(sc.load_main())["streamers"]}
+    assert {"keep", "a", "b"} <= names
