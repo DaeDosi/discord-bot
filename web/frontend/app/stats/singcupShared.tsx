@@ -4,12 +4,23 @@ import type { SingcupStatus } from "@/lib/types";
 
 // 싱드컵 메인/랭킹이 함께 쓰는 조각들. 두 화면에서 문구와 색이 갈리지 않게 한 곳에 둔다.
 
+// 골드는 이벤트 아이덴티티(배지·버튼·메달)에만 쓰고, 점수 강조는 다홍(vermilion)→앰버
+// 2톤으로 따로 둔다. 사이트 기본 포인트(그린→시안)와도, 골드 UI와도 확실히 구분된다.
 export const GOLD = "#FACC15";
-export const AMBER = "#FB923C";
+export const VERMILION = "#FF6B4A";
+export const AMBER = "#FFC24D";
 export const GREEN = "#00FFA3";
-/** 하트/점수 강조용 2톤 그라데이션 — 사이트 기본 포인트(그린→시안)와 겹치지 않게 따뜻한 계열 */
-export const HEAT_GRAD = `linear-gradient(135deg, ${GOLD}, ${AMBER})`;
+/** 비공식 예상 인기점수 강조용 2톤 그라데이션 */
+export const SCORE_GRAD = `linear-gradient(135deg, ${VERMILION}, ${AMBER})`;
 export const MEDAL = [GOLD, "#D1D5DB", "#D97706"] as const;
+
+/** 점수 그라데이션을 입힌 인라인 텍스트 — 본문에서 '비공식 예상 인기점수'를 강조할 때 */
+export function ScoreText({ children }: { children: React.ReactNode }) {
+  return (
+    <b style={{ background: SCORE_GRAD, WebkitBackgroundClip: "text",
+                backgroundClip: "text", color: "transparent" }}>{children}</b>
+  );
+}
 
 export const nf = (n: number) => n.toLocaleString("ko-KR");
 

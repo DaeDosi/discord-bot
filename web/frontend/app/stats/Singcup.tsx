@@ -7,8 +7,8 @@ import {
 import { api } from "@/lib/api";
 import type { SingcupMain, SingcupStreamer, SingcupRankings } from "@/lib/types";
 import {
-  Delta, Disclaimer, EventBadge, GOLD, GREEN, HEAT_GRAD, MEDAL, RankDelta, ScoreFormula,
-  StaleBadge, StatusChip, fmtDateTime, fmtRange, hideBrokenImage, nf,
+  Delta, Disclaimer, EventBadge, GOLD, GREEN, MEDAL, RankDelta, SCORE_GRAD, ScoreFormula,
+  ScoreText, StaleBadge, StatusChip, fmtDateTime, fmtRange, hideBrokenImage, nf,
 } from "./singcupShared";
 
 // 싱드컵 메인 = 랭킹 화면.
@@ -32,7 +32,7 @@ function Tile({ label, value, unit, accent }:
       <p className="mt-1.5 tracking-tight">
         <span className="text-xl font-extrabold tabular-nums md:text-2xl"
               style={accent
-                ? { background: HEAT_GRAD, WebkitBackgroundClip: "text",
+                ? { background: SCORE_GRAD, WebkitBackgroundClip: "text",
                     backgroundClip: "text", color: "transparent" }
                 : { color: "rgb(var(--color-fg-rgb))" }}>
           {value}
@@ -103,23 +103,32 @@ function Row({ s, index }: { s: SingcupStreamer; index: number }) {
 
       <span className="shrink-0 text-right">
         <span className="block text-xl font-extrabold tabular-nums md:text-2xl"
-              style={{ background: HEAT_GRAD, WebkitBackgroundClip: "text",
+              style={{ background: SCORE_GRAD, WebkitBackgroundClip: "text",
                        backgroundClip: "text", color: "transparent" }}>
           {s.score.toFixed(2)}
         </span>
         <span className="block text-[10px] text-muted">비공식 예상 인기점수</span>
-        <span className="mt-0.5 block text-[10px] tabular-nums text-muted/80">
+        <span className="mt-0.5 block whitespace-nowrap text-[10px] tabular-nums text-muted/80">
           조회 {s.viewScore.toFixed(1)}/70 · 하트 {s.heartScore.toFixed(1)}/30
         </span>
       </span>
 
-      <span className="shrink-0 text-right text-[11px]">
-        <span className="block text-muted">직전 <Delta value={s.heartDelta} /></span>
-        <span className="block text-muted">
-          24시간{" "}
-          {s.heartChangeRate24h === null
-            ? <span className="font-bold" style={{ color: GOLD }}>NEW</span>
-            : <Delta value={s.heartChangeRate24h} suffix="%" />}
+      {/* 변화량 — 세로로 겹쳐 두면 '직전 -' / '24시간 NEW'가 좁게 눌려 읽기 어려웠다.
+          라벨 위 / 값 아래의 작은 블록 두 개를 가로로 나란히 두고 최소 폭을 확보한다. */}
+      <span className="flex shrink-0 items-center justify-end gap-4 sm:min-w-[132px]">
+        <span className="text-center">
+          <span className="block whitespace-nowrap text-[10px] text-muted">직전</span>
+          <span className="mt-0.5 block whitespace-nowrap text-xs">
+            <Delta value={s.heartDelta} />
+          </span>
+        </span>
+        <span className="text-center">
+          <span className="block whitespace-nowrap text-[10px] text-muted">24시간</span>
+          <span className="mt-0.5 block whitespace-nowrap text-xs">
+            {s.heartChangeRate24h === null
+              ? <span className="font-bold" style={{ color: GOLD }}>NEW</span>
+              : <Delta value={s.heartChangeRate24h} suffix="%" />}
+          </span>
         </span>
       </span>
 
@@ -312,7 +321,7 @@ export default function Singcup() {
           </div>
           <p className="mt-2 text-sm leading-relaxed text-muted">
             치지직 음악/노래 카테고리에서 <b className="text-fg">#싱드컵</b> 태그가 확인된 클립을
-            공개 조회수와 하트 수로 계산한 <b className="text-fg">비공식 예상 인기점수</b> 순위입니다.
+            공개 조회수와 하트 수로 계산한 <ScoreText>비공식 예상 인기점수</ScoreText> 순위입니다.
             스트리머마다 가장 높은 하트를 받은 클립 하나만 집계합니다.
           </p>
           <div className="mt-1"><ScoreFormula /></div>
