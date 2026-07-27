@@ -18,6 +18,7 @@ from database import init_db
 from auth import exchange_code, get_discord_user, create_jwt, FRONTEND_URL, verify_oauth_state
 from chzzk_monitor import start_monitor
 from rising_collector import start_collector
+from chzzk_channel_history import start_history_backfill
 from routers.auth_router       import router as auth_router
 from routers.guilds_router     import router as guilds_router
 from routers.settings_router   import router as settings_router
@@ -37,6 +38,9 @@ async def lifespan(app: FastAPI):
     await init_db()
     asyncio.create_task(start_monitor())
     asyncio.create_task(start_collector())
+    # 첫 방송일 백필 — '신규 & 초기 분석'의 60일 필터가 성립하려면 채널마다 한 번씩
+    # first_live_date를 채워 둬야 한다. 요청 경로에서 모으면 첫 방문자가 다 기다린다.
+    asyncio.create_task(start_history_backfill())
     yield
 
 

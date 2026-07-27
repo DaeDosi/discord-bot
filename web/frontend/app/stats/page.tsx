@@ -10,7 +10,8 @@ import { api } from "@/lib/api";
 import type {
   RisingOverview, RisingTimeseries, RisingLiveRanking, RisingCategories, RisingCategory,
   RisingStars, TimeRange, CatRange, RisingSearchResult, RisingNewcomers, RisingNewcomer,
-  NewcomerCategory, RisingPeriodRanking, PeriodRange, PeriodSort, RisingCategoryStreamers,
+  NewcomerCategory, NewcomerGroup, NewcomerInsights,
+  RisingPeriodRanking, PeriodRange, PeriodSort, RisingCategoryStreamers,
 } from "@/lib/types";
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
@@ -20,7 +21,7 @@ import RankingCharts from "./RankingCharts";
 import TagSearch from "./TagSearch";
 import PeriodAnalysis from "./PeriodAnalysis";
 import { ViewerDistribution, TrafficHeatmap, TitleKeywordRank } from "./OverviewViz";
-import { GoldenHourHeatmap, BlueOceanCards, TierDistribution, TitleKeywordCard } from "./NewcomerInsightViz";
+import { GoldenHourHeatmap, BlueOceanCards, TierDistribution, TitleKeywordCard, VacancyHours } from "./NewcomerInsightViz";
 import StatsNav, { type Tab } from "./StatsNav";
 
 import LineChart, { type LinePoint, type LineSeries } from "./LineChart";
@@ -955,39 +956,43 @@ function HelpTip({ children }: { children: React.ReactNode }) {
 
 // 카테고리 점유율(신입 기준) — 전체 스트리머 분석의 CategoryDonut과 같은 구성.
 // 데이터는 newcomers 응답에 함께 실려오므로 별도 요청/기간 필터가 없다.
-function NewcomerCategoryDonut({ cats }: { cats: NewcomerCategory[] }) {
+// dense: 2열 레이아웃의 좁은 칼럼에 들어갈 때 — 도넛:테이블을 5:7이 아닌 1:1로 맞추고
+// 도넛을 줄인다(스펙: "도넛 차트 + 테이블 수평 1:1 맞춤").
+function NewcomerCategoryDonut({ cats, dense = false, label = "신입" }:
+  { cats: NewcomerCategory[]; dense?: boolean; label?: string }) {
   const [hover, setHover] = useState<number | null>(null);
   const slices = toSlices(cats, 5, (c) => c.category, (c) => c.viewers);
-  const legendRows = cats.slice(0, 8);
+  const legendRows = cats.slice(0, dense ? 5 : 8);
   const totalLives = cats.reduce((s, c) => s + c.lives, 0);
 
   return (
     <div className="card">
       <div className="flex items-start justify-between mb-4 flex-wrap gap-2">
         <div>
-          <h3 className="section-title">카테고리 점유율 (신입)</h3>
+          <h3 className="section-title">카테고리 점유율 ({label})</h3>
           <p className="text-xs text-muted mt-0.5">
-            현재 신입/라이징 방송의 시청자가 어떤 카테고리에 몰려 있는지 — 라이브 {nf(totalLives)}개 기준
+            현재 {label} 방송의 시청자가 어떤 카테고리에 몰려 있는지 — 라이브 {nf(totalLives)}개 기준
           </p>
         </div>
       </div>
 
       {cats.length === 0 ? (
-        <p className="text-sm text-muted py-6 text-center">신입 카테고리 데이터가 아직 없습니다.</p>
+        <p className="text-sm text-muted py-6 text-center">{label} 카테고리 데이터가 아직 없습니다.</p>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
-          <div className="md:col-span-5 flex justify-center">
-            <DonutChart slices={slices} hover={hover} onHover={setHover} centerLabel="신입 총 시청자" />
+          <div className={`${dense ? "md:col-span-6" : "md:col-span-5"} flex justify-center`}>
+            <DonutChart slices={slices} hover={hover} onHover={setHover}
+                        centerLabel={`${label} 총 시청자`} size={dense ? 160 : 190} />
           </div>
 
-          <div className="md:col-span-7 overflow-x-auto">
-            <table className="w-full text-sm min-w-[360px]">
+          <div className={`${dense ? "md:col-span-6" : "md:col-span-7"} overflow-x-auto`}>
+            <table className={`w-full text-sm ${dense ? "min-w-[260px]" : "min-w-[360px]"}`}>
               <thead>
                 <tr className="text-muted text-xs border-b border-border">
                   <th className="text-left font-medium py-1.5 w-7">#</th>
                   <th className="text-left font-medium py-1.5">카테고리</th>
                   <th className="text-right font-medium py-1.5">점유율</th>
-                  <th className="text-right font-medium py-1.5 hidden sm:table-cell">방송 수</th>
+                  <th className={`text-right font-medium py-1.5 ${dense ? "hidden" : "hidden sm:table-cell"}`}>방송 수</th>
                   <th className="text-right font-medium py-1.5 pr-1">방송당 평균</th>
                 </tr>
               </thead>
@@ -1006,7 +1011,7 @@ function NewcomerCategoryDonut({ cats }: { cats: NewcomerCategory[] }) {
                       </span>
                     </td>
                     <td className="py-1.5 text-right font-semibold tabular-nums text-fg">{c.share.toFixed(1)}%</td>
-                    <td className="py-1.5 text-right tabular-nums text-muted hidden sm:table-cell">{nf(c.lives)}개</td>
+                    <td className={`py-1.5 text-right tabular-nums text-muted ${dense ? "hidden" : "hidden sm:table-cell"}`}>{nf(c.lives)}개</td>
                     <td className="py-1.5 text-right pr-1 tabular-nums font-semibold"><GradText>{nf(c.avg_viewers)}</GradText></td>
                   </tr>
                 ))}
@@ -1016,6 +1021,27 @@ function NewcomerCategoryDonut({ cats }: { cats: NewcomerCategory[] }) {
         </div>
       )}
     </div>
+  );
+}
+
+// 첫 방송일 뱃지 — 치지직이 준 정확한 첫 방송일이면 실선, NexBot 트랙킹 보완값이면
+// 점선 + '추적' 표기로 구분한다(보완값은 수집 시작 이후만 알 수 있어 실제보다 짧다).
+function DebutBadge({ s }: { s: RisingNewcomer }) {
+  if (!s.first_stream_date) return null;
+  const exact = s.first_stream_source === "CHZZK";
+  const days = Math.max(0, Math.floor(s.debut_days ?? s.first_seen_days ?? 0));
+  return (
+    <span
+      className={`mt-0.5 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums
+                  ${exact ? "border" : "border border-dashed"}`}
+      style={exact
+        ? { color: GREEN, borderColor: "rgba(0,255,163,0.35)", background: "rgba(0,255,163,0.08)" }
+        : { color: "rgb(var(--color-muted-rgb))", borderColor: "rgb(var(--color-border-rgb))" }}
+      title={exact
+        ? `첫 방송 ${s.first_stream_date} (치지직 채널 정보 기준)`
+        : `NexBot이 이 채널을 처음 본 날 ${s.first_stream_date} — 실제 첫 방송은 더 이전일 수 있습니다`}>
+      {exact ? `첫 방송 ${s.first_stream_date} · ${nf(days)}일차` : `추적 ${nf(days)}일차`}
+    </span>
   );
 }
 
@@ -1081,7 +1107,10 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
                       )}
                     </span>
                     <ChzzkMark />
-                    <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[130px] md:max-w-none">{s.channel_name}</span>
+                    <span className="min-w-0">
+                      <span className="block text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[130px] md:max-w-none">{s.channel_name}</span>
+                      <DebutBadge s={s} />
+                    </span>
                   </Link>
                 </td>
                 <td className="py-3.5 px-6 hidden sm:table-cell align-top">
@@ -1125,84 +1154,287 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
   );
 }
 
-// 신규 스트리머 분석 = KPI + 인사이트 + 상위 미리보기(10) → 전체 순위 버튼
-function NewcomersAnalysisTab({ data, onRanking }: { data: RisingNewcomers; onRanking: () => void }) {
+// ── 신규 & 초기 스트리머 분석 ────────────────────────────────────────────────
+// '신규(첫 방송 60일 이내)'와 '소형(평균 시청자 10명 이하)'은 서로 독립된 축이라
+// 한 메뉴 안의 세그먼티드 컨트롤로 전환한다. 데이터는 그룹마다 다른 필터를 거친
+// 별도 응답이므로(newcomers?group=), 전환할 때 한 번만 받아서 캐시해 둔다.
+const NC_GROUP_TABS = [
+  { k: "new"   as NewcomerGroup, label: "🌱 신규 스트리머", hint: "첫 방송 60일 이내" },
+  { k: "small" as NewcomerGroup, label: "📊 소형 스트리머", hint: "평균 시청자 10명 이하" },
+];
+
+function NcGroupToggle({ value, onChange }:
+  { value: NewcomerGroup; onChange: (g: NewcomerGroup) => void }) {
+  return (
+    <div className="inline-flex gap-1 rounded-xl border border-gray-800 bg-[#181A20] p-1">
+      {NC_GROUP_TABS.map((t) => {
+        const active = value === t.k;
+        return (
+          <button key={t.k} onClick={() => onChange(t.k)} aria-pressed={active}
+            className={`rounded-lg px-3 py-2 text-left text-sm transition-colors whitespace-nowrap ${
+              active ? "bg-[#00FFA3] font-bold text-black" : "text-gray-400 hover:text-white"}`}>
+            {t.label}
+            <span className={`ml-1.5 text-[11px] font-normal ${active ? "text-black/60" : "text-gray-500"}`}>
+              ({t.hint})
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// 신입 평균 체급 기준선 + 체급 구간 분포 (Row 2 우측 40%)
+function BaselineCard({ ins, label }: { ins?: NewcomerInsights; label: string }) {
+  return (
+    <div className="card h-full">
+      <h3 className="section-title">{label} 평균 체급 기준선</h3>
+      <p className="mt-2 text-sm leading-relaxed text-muted">
+        {ins?.baseline
+          ? <>현재 {label} 그룹 평균은 <b className="text-fg">{nf(ins.baseline.avg_viewers)}명</b>입니다.{" "}
+              <b style={{ color: GREEN }}>{nf(ins.baseline.top20_cut)}명</b> 달성 시 상위 20%,{" "}
+              <b style={{ color: GREEN }}>{nf(ins.baseline.top10_cut)}명</b> 달성 시 상위 10%권에 진입하여
+              메인 노출 기회가 대폭 늘어납니다.</>
+          : "데이터가 아직 부족합니다."}
+      </p>
+      {ins?.tiers && ins.tiers.length > 0 && <TierDistribution tiers={ins.tiers} label={label} />}
+    </div>
+  );
+}
+
+// 소형 탭 Row 3 좌측 — 방송 '수'가 많은 카테고리 TOP 5.
+// 블루오션(시청자 효율)과 반대로, 소형이 실제로 어디에 몰려 있는지(=경쟁이 센 곳)를 본다.
+function SmallCategoryTop5({ cats }: { cats: NewcomerCategory[] }) {
+  const top = useMemo(() => [...cats].sort((a, b) => b.lives - a.lives).slice(0, 5), [cats]);
+  const max = Math.max(1, ...top.map((c) => c.lives));
+  return (
+    <div className="card h-full">
+      <h3 className="section-title">소형 채널이 많이 켜는 카테고리 TOP 5</h3>
+      <p className="mt-0.5 text-[11px] text-muted">
+        방송 수 기준 — 사람이 몰려 있는 만큼 경쟁도 센 구간입니다.
+      </p>
+      {top.length === 0 ? (
+        <p className="py-8 text-center text-sm text-muted">카테고리 데이터가 아직 없습니다.</p>
+      ) : (
+        <div className="mt-4 space-y-3">
+          {top.map((c, i) => (
+            <div key={c.category}>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="w-4 shrink-0 text-xs tabular-nums text-muted">{i + 1}</span>
+                  <span className="truncate text-sm font-semibold text-fg">{c.category}</span>
+                </span>
+                <span className="shrink-0 text-xs tabular-nums text-muted">
+                  방송 <b className="text-fg">{nf(c.lives)}</b>개 · 평균 {nf(c.avg_viewers)}명
+                </span>
+              </div>
+              <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-bg-hover">
+                <div className="h-full rounded-full"
+                     style={{ width: `${(c.lives / max) * 100}%`, background: GRAD }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 소형 탭 Row 3 우측 — 성장률 상위 소형 채널. 좁은 칼럼이라 표 대신 압축 리스트.
+function SmallGrowthList({ items }: { items: RisingNewcomer[] }) {
+  const top = useMemo(() =>
+    [...items].sort((a, b) => (b.growth_rate ?? -1e9) - (a.growth_rate ?? -1e9)).slice(0, 8),
+    [items]);
+  return (
+    <div className="card h-full">
+      <h3 className="section-title">성장률 상위 소형 채널</h3>
+      <p className="mt-0.5 text-[11px] text-muted">현재 시청자 vs 최근 7일 평균</p>
+      {top.length === 0 ? (
+        <p className="py-8 text-center text-sm text-muted">조건에 맞는 소형 방송이 아직 없습니다.</p>
+      ) : (
+        <ul className="mt-3 divide-y divide-border">
+          {top.map((s, i) => (
+            <li key={s.chzzk_channel_id}>
+              <Link href={`/stats/streamer/${s.chzzk_channel_id}`}
+                    className="group flex items-center gap-2 py-2">
+                <span className="w-4 shrink-0 text-xs tabular-nums text-muted">{i + 1}</span>
+                <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full bg-bg-hover">
+                  {s.channel_image_url && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy"
+                         className="h-full w-full object-cover" />
+                  )}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold text-fg transition-colors group-hover:text-accent">
+                    {s.channel_name}
+                  </span>
+                  <span className="block truncate text-[11px] text-muted">
+                    {s.category_name || "카테고리 없음"} · 시청자 {nf(s.concurrent_viewers)}명
+                  </span>
+                </span>
+                <span className="shrink-0 text-sm font-semibold"><Delta pct={s.growth_rate} /></span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function NewcomersAnalysisTab({ initial, onRanking }:
+  { initial: RisingNewcomers; onRanking: () => void }) {
+  const [group, setGroup] = useState<NewcomerGroup>("new");
+  // group=new는 페이지 진입 시 이미 받아 둔 응답을 그대로 쓴다. small은 처음 누를 때만 받는다.
+  const [byGroup, setByGroup] = useState<Partial<Record<NewcomerGroup, RisingNewcomers>>>(
+    { new: initial });
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (byGroup[group]) return;
+    let alive = true;
+    setLoading(true);
+    api.rising.newcomers(80, group)
+      .then((d) => { if (alive) setByGroup((p) => ({ ...p, [group]: d })); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [group, byGroup]);
+
+  const data = byGroup[group];
+  const isSmall = group === "small";
+  const label = isSmall ? "소형" : "신입";
+
+  return (
+    <div className="space-y-5">
+      {/* 상단 — 메뉴 타이틀 + 서브 토글 탭 */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 text-xl font-extrabold tracking-tight md:text-2xl">
+            <Sprout size={20} style={{ color: GREEN }} /> 신규 &amp; 초기 스트리머 분석
+          </h2>
+          <p className="mt-1 text-sm text-muted">
+            {isSmall
+              ? `방송 경력과 무관하게 최근 평균 동시 시청자 ${data?.criteria?.small_avg_max ?? 10}명 이하인 채널입니다.`
+              : `첫 방송 후 ${data?.criteria?.debut_max_days ?? 60}일 이내인 채널입니다. 첫 방송일은 치지직 채널 정보 기준이며, 아직 수집되지 않은 채널은 NexBot 최초 트랙킹 일자로 보완합니다.`}
+          </p>
+        </div>
+        <NcGroupToggle value={group} onChange={setGroup} />
+      </div>
+
+      {!data ? (
+        <div className="flex items-center justify-center gap-2 py-24 text-muted">
+          <Loader2 size={18} className="animate-spin" /> {label} 데이터를 불러오는 중...
+        </div>
+      ) : (
+        <div className={loading ? "opacity-60 transition-opacity" : "transition-opacity"}>
+          {isSmall
+            ? <SmallStreamerView data={data} />
+            : <NewStreamerView data={data} onRanking={onRanking} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Tab 1: 신규 스트리머 ─────────────────────────────────────────────────────
+function NewStreamerView({ data, onRanking }: { data: RisingNewcomers; onRanking: () => void }) {
   const sm = data.summary;
   const ins = data.insights;
-  const hourLabel = (h: number) => `${String(h).padStart(2, "0")}:00 ~ ${String((h + 1) % 24).padStart(2, "0")}:00`;
   const top = data.streamers.slice(0, 10);
   const maxViewers  = Math.max(1, ...data.streamers.map((s) => s.concurrent_viewers));
   const maxFollower = Math.max(1, ...data.streamers.map((s) => s.follower_count));
 
   return (
     <div className="space-y-5">
-      {/* KPI 4카드 */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {/* Row 1 — KPI 4카드 */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <NcTile label="현재 라이브 신입" value={nf(sm?.count ?? 0)} unit="채널" />
         <NcTile label="신입 총 시청자" value={nf(sm?.total_viewers ?? 0)} unit="명" />
-        <NcTile label="신입 평균 시청자" value={nf(sm?.avg_viewers ?? 0)} unit="명" accent />
+        {/* 정확한 첫 방송일이 있는 채널만으로 낸 평균 — 표본이 없으면 '-' */}
+        <NcTile label="신입 평균 방송 경력"
+                value={sm?.avg_debut_days != null ? `${nf(sm.avg_debut_days)}` : "-"}
+                unit={sm?.avg_debut_days != null ? "일차" : undefined} accent />
         <NcTile label="신입 최고 동접" value={nf(sm?.peak_viewers ?? 0)} unit="명" />
       </div>
 
-      {/* 인사이트 3 */}
+      {/* Row 2 — 6:4 : 골든타임 히트맵 / 체급 기준선 */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-10">
+        <div className="lg:col-span-6">
+          {ins?.hourly && ins.hourly.length > 0
+            ? <GoldenHourHeatmap hourly={ins.hourly} />
+            : <div className="card"><h3 className="section-title">24시간 신입 노출 골든타임 분석</h3>
+                <p className="py-8 text-center text-sm text-muted">시간대 데이터가 아직 부족합니다.</p></div>}
+        </div>
+        <div className="lg:col-span-4"><BaselineCard ins={ins} label="신입" /></div>
+      </div>
+
+      {/* Row 3 — 5:5 : 블루오션 / 카테고리 점유율 */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <BlueOceanCards cats={data.categories ?? []} summary={sm} dense label="신입" />
+        <NewcomerCategoryDonut cats={data.categories ?? []} dense label="신입" />
+      </div>
+
+      {/* Row 4 — 신입 라이징 TOP 10 */}
       <div className="card">
-        <h3 className="section-title mb-1">신입 인사이트</h3>
-        <p className="text-sm text-muted mb-4">신입/하꼬 그룹 데이터로 뽑은 방송 전략 힌트</p>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <InsightCard title="인기 추천 카테고리">
-            {ins?.top_category
-              ? <>현재 신입 스트리머 그룹에서{" "}
-                  <b className="rounded-md px-1.5 py-0.5 font-extrabold"
-                     style={{ color: GREEN, background: "rgba(0,255,163,0.12)" }}>{ins.top_category.name}</b>
-                  {" "}카테고리가 방송당 평균{" "}
-                  <b className="text-fg">{nf(ins.top_category.avg_viewers)}명</b>으로 시청자 반응이 가장 좋습니다.{" "}
-                  <span className="text-muted/70">(신입 라이브 {nf(ins.top_category.lives)}개 기준)</span></>
-              : `신입 라이브가 ${NC_CAT_MIN_LIVES}개 이상인 카테고리가 아직 없습니다. 표본이 쌓이면 표시됩니다.`}
-          </InsightCard>
-          <InsightCard title="노출 최적 시간대">
-            {ins?.golden_hour
-              ? <>최근 24시간 분석 결과,{" "}
-                  <b className="rounded-md px-1.5 py-0.5 font-extrabold tabular-nums"
-                     style={{ color: GREEN, background: "rgba(0,255,163,0.12)" }}>{hourLabel(ins.golden_hour.hour)}</b>
-                  {" "}시간대에 신입 채널의
-                  방송당 평균 시청자가 <b className="text-fg">{nf(ins.golden_hour.avg_viewers)}명</b>으로 가장 높았습니다
-                  {ins.golden_hour.uplift_pct > 0 ? <> (평소 대비 <b style={{ color: GREEN }}>+{ins.golden_hour.uplift_pct}%</b>)</> : ""}.</>
-              : "시간대 분석용 데이터가 아직 부족합니다."}
-          </InsightCard>
-          <InsightCard title="신입 평균 체급 기준선">
-            {ins?.baseline
-              ? <>현재 신입 그룹 평균은 <b className="text-fg">{nf(ins.baseline.avg_viewers)}명</b>입니다.{" "}
-                  <b style={{ color: GREEN }}>{nf(ins.baseline.top20_cut)}명</b> 달성 시 상위 20%,{" "}
-                  <b style={{ color: GREEN }}>{nf(ins.baseline.top10_cut)}명</b> 달성 시 상위 10%권에 진입하여
-                  메인 노출 기회가 대폭 늘어납니다.</>
-              : "데이터가 아직 부족합니다."}
-            {ins?.tiers && ins.tiers.length > 0 && <TierDistribution tiers={ins.tiers} />}
-          </InsightCard>
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="section-title flex items-center gap-1.5">
+            <Sprout size={16} style={{ color: GREEN }} /> 신입 라이징 TOP 10
+          </h3>
+          <button onClick={onRanking} className="text-xs font-medium hover:underline" style={{ color: GREEN }}>
+            전체 순위 보기 →
+          </button>
+        </div>
+        <p className="mb-4 text-xs text-muted">성장률(현재 vs 최근 7일 평균) 상위</p>
+        {top.length > 0
+          ? <NewcomerTable items={top} maxViewers={maxViewers} maxFollower={maxFollower} />
+          : <p className="py-4 text-center text-sm text-muted">
+              첫 방송 60일 이내 조건에 맞는 라이브 방송이 아직 없습니다.
+            </p>}
+      </div>
+    </div>
+  );
+}
+
+// ── Tab 2: 소형(하꼬) 스트리머 ───────────────────────────────────────────────
+function SmallStreamerView({ data }: { data: RisingNewcomers }) {
+  const sm = data.summary;
+  const ins = data.insights;
+
+  return (
+    <div className="space-y-5">
+      {/* Row 1 — KPI 4카드 */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <NcTile label="현재 라이브 소형 채널" value={nf(sm?.count ?? 0)} unit="채널" />
+        <NcTile label="총 시청자" value={nf(sm?.total_viewers ?? 0)} unit="명" />
+        <NcTile label="소형 평균 시청자" value={nf(sm?.avg_viewers ?? 0)} unit="명" accent />
+        <NcTile label="시청자 3명 초과 비중" value={`${sm?.over3_share ?? 0}`} unit="%" />
+      </div>
+
+      {/* Row 2 — 6:4 : 빈집 타임 / 제목 키워드 효율 */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-10">
+        <div className="lg:col-span-6">
+          {ins?.vacancy_hourly && ins.vacancy_hourly.length > 0
+            ? <VacancyHours hourly={ins.vacancy_hourly} best={ins.vacancy_best} />
+            : <div className="card"><h3 className="section-title">대기업 방종 빈집 타임</h3>
+                <p className="py-8 text-center text-sm text-muted">
+                  빈집 타임 분석용 데이터가 아직 부족합니다.
+                </p></div>}
+        </div>
+        <div className="lg:col-span-4">
+          {ins?.title_keyword
+            ? <TitleKeywordCard tk={ins.title_keyword} label="소형" />
+            : <div className="card h-full"><h3 className="section-title">방송 제목 키워드 유입 효율</h3>
+                <p className="py-8 text-center text-sm text-muted">
+                  키워드 포함/미포함 그룹이 각각 5개 이상 모이면 표시됩니다.
+                </p></div>}
         </div>
       </div>
 
-      {/* 제목 키워드 효율 */}
-      {ins?.title_keyword && <TitleKeywordCard tk={ins.title_keyword} />}
-
-      {/* 24시간 골든타임 히트맵 */}
-      {ins?.hourly && ins.hourly.length > 0 && <GoldenHourHeatmap hourly={ins.hourly} />}
-
-      {/* 블루오션 카테고리 TOP 5 */}
-      <BlueOceanCards cats={data.categories ?? []} summary={sm} />
-
-      {/* 카테고리 점유율 (신입 기준) */}
-      <NewcomerCategoryDonut cats={data.categories ?? []} />
-
-      {/* 상위 미리보기(10) → 전체 순위 */}
-      <div className="card">
-        <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
-          <h3 className="section-title flex items-center gap-1.5"><Sprout size={16} style={{ color: GREEN }} /> 신입 급성장 TOP 10</h3>
-          <button onClick={onRanking} className="text-xs font-medium hover:underline" style={{ color: GREEN }}>전체 순위 보기 →</button>
-        </div>
-        <p className="text-xs text-muted mb-4">성장률(현재 vs 최근 7일 평균) 상위</p>
-        {top.length > 0
-          ? <NewcomerTable items={top} maxViewers={maxViewers} maxFollower={maxFollower} />
-          : <p className="text-sm text-muted py-4 text-center">조건에 맞는 신규/라이징 방송이 아직 없습니다.</p>}
+      {/* Row 3 — 카테고리 TOP 5 / 성장률 상위 소형 채널 */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <SmallCategoryTop5 cats={data.categories ?? []} />
+        <SmallGrowthList items={data.streamers} />
       </div>
     </div>
   );
@@ -1909,7 +2141,7 @@ export default function StatsPage() {
             {/* 우측 뷰 */}
             <div className="min-w-0">
               {tab === "overview"           && ov   && <OverviewTab ov={ov} stars={stars} />}
-              {tab === "newcomers_analysis" && news && <NewcomersAnalysisTab data={news} onRanking={() => selectTab("newcomers_ranking")} />}
+              {tab === "newcomers_analysis" && news && <NewcomersAnalysisTab initial={news} onRanking={() => selectTab("newcomers_ranking")} />}
               {tab === "period_analysis"              && <PeriodAnalysis />}
               {tab === "ranking"            && rank && <RankingTab rank={rank} />}
               {tab === "newcomers_ranking"  && news && <NewcomersRankingTab data={news} />}

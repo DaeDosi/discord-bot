@@ -59,6 +59,21 @@ GET https://api.chzzk.naver.com/service/v1/channels/{channelId}/data?fields=chan
 > - **자동화 수집이 네이버/치지직의 이용약관·robots 정책에 부합하는지는 운영자가 별도로
 >   검토해야 한다.** 이 문서는 기술적 동작만 설명하며 법적/약관상 적법성을 보증하지 않는다.
 
+### 백그라운드 백필
+
+`/stats`의 **신규 & 초기 분석** 탭이 "첫 방송 60일 이내"로 필터링하려면 채널마다
+`first_live_date`가 있어야 한다. 요청 경로에서 모으면 첫 방문자가 수백 번의 외부 호출을
+기다리게 되므로, 백엔드가 뜰 때 백필 루프(`start_history_backfill`)를 함께 띄운다.
+
+- `rising_channel_stats`에서 **아직 `first_live_date`가 없는 채널**을 최근 본 순서로
+  사이클당 `CHZZK_HISTORY_BACKFILL_BATCH`개씩 수집한다.
+- 채널명을 함께 넘기므로 **채널당 외부 요청 1회**로 끝나고, 첫 방송일은 변하지 않으므로
+  한 번 성공하면 그 채널은 다시 건드리지 않는다.
+- 속도 제한·동시성·403 쿨다운은 단일 조회와 동일한 경로를 그대로 탄다.
+- 백필이 아직 닿지 않은 채널은 대시보드에서 `rising_channel_stats.first_seen`
+  (NexBot 최초 트랙킹 일자)으로 보완하고, 그런 행은 `first_stream_source: "TRACKED"`로
+  표시해 프론트가 '추적 N일차'라고 구분해 보여 준다.
+
 ### 채널 ID 처리
 
 다음 입력을 모두 받아 32자리 16진수 채널 ID(소문자)로 정규화한다.
@@ -178,6 +193,10 @@ curl https://<backend>/api/chzzk/channel-history/metrics
 | `CHZZK_BACKOFF_MAX_SECONDS` | `30` | 백오프 상한 |
 | `CHZZK_MAX_BATCH_SIZE` | `100` | 배치 1회 최대 채널 수 |
 | `CHZZK_USER_AGENT` | `NexBot-CHZZKCollector/1.0` | 요청 UA |
+| `CHZZK_HISTORY_BACKFILL` | `1` | 백그라운드 백필 사용 (`0`이면 끔) |
+| `CHZZK_HISTORY_BACKFILL_INTERVAL` | `300` | 백필 사이클 간격(초) |
+| `CHZZK_HISTORY_BACKFILL_BATCH` | `60` | 사이클당 채널 수 |
+| `CHZZK_HISTORY_BACKFILL_DELAY` | `90` | 부팅 후 첫 사이클까지 유예(초) |
 
 배포 관련:
 

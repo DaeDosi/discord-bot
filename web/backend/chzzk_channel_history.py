@@ -617,3 +617,86 @@ async def collect_batch(channels: list[str], *, refresh: bool = False,
           "duration_ms": round((time.monotonic() - t0) * 1000, 1)})
     return {"jobId": job_id, "requested": len(channels), "unique": len(order),
             "invalid": invalid, "results": out}
+
+
+# ── 백필 루프 ───────────────────────────────────────────────────────────────
+# '신규 & 초기 분석' 탭의 60일 필터는 채널마다 first_live_date가 있어야 성립한다.
+# 요청이 들어올 때 그때그때 모으면 첫 방문자가 수백 번의 외부 호출을 기다려야 하므로,
+# 백그라운드에서 '아직 수집 안 된 채널'을 조금씩 채운다. 첫 방송일은 변하지 않으므로
+# 채널당 딱 한 번만 성공하면 끝이고, 그 뒤로는 이 루프가 그 채널을 다시 건드리지 않는다.
+BACKFILL_ENABLED = os.getenv("CHZZK_HISTORY_BACKFILL", "1") != "0"
+BACKFILL_INTERVAL_SECONDS = int(os.getenv("CHZZK_HISTORY_BACKFILL_INTERVAL", "300"))
+BACKFILL_BATCH = int(os.getenv("CHZZK_HISTORY_BACKFILL_BATCH", "60"))
+# 첫 사이클까지의 유예 — 부팅 직후엔 수집기/DB 초기화가 먼저 끝나야 한다
+BACKFILL_START_DELAY_SECONDS = int(os.getenv("CHZZK_HISTORY_BACKFILL_DELAY", "90"))
+
+
+async def _backfill_candidates(limit: int) -> list[tuple[str, str]]:
+    """아직 first_live_date가 없는 채널을 (id, name)으로 돌려준다.
+
+    최근에 본 채널부터 채운다 — 지금 방송 중인 채널이 대시보드에 먼저 필요하다.
+    이미 성공했거나(=first_live_date 있음) 아직 재시도 시각이 안 된 실패 건은 제외한다.
+    """
+    now = int(time.time())
+    db = await get_db()
+    rows = await (await db.execute(
+        """SELECT s.chzzk_channel_id AS cid, s.channel_name AS name
+           FROM rising_channel_stats s
+           LEFT JOIN chzzk_channel_history h ON h.channel_id = s.chzzk_channel_id
+           WHERE h.channel_id IS NULL
+              OR (h.first_live_date IS NULL AND (
+                    (h.status = ?  AND ? - COALESCE(h.last_attempt_at,0) >= ?) OR
+                    (h.status = ?  AND ? - COALESCE(h.last_attempt_at,0) >= ?) OR
+                    (h.status NOT IN (?,?) AND ? - COALESCE(h.last_attempt_at,0) >= ?)
+                 ))
+           ORDER BY s.last_seen DESC
+           LIMIT ?""",
+        (ST_NO_HISTORY, now, int(NO_HISTORY_TTL_HOURS * 3600),
+         ST_NOT_FOUND,  now, int(NOT_FOUND_TTL_HOURS * 3600),
+         ST_NO_HISTORY, ST_NOT_FOUND, now, int(ERROR_RETRY_MINUTES * 60),
+         max(1, limit)),
+    )).fetchall()
+    return [(r["cid"], r["name"] or "") for r in rows]
+
+
+async def _backfill_once() -> dict:
+    """한 사이클. 속도 제한·동시성은 get_channel_history 안에서 그대로 적용된다."""
+    if _blocked_until[0] and time.time() < _blocked_until[0]:
+        return {"skipped": "blocked"}
+    todo = await _backfill_candidates(BACKFILL_BATCH)
+    if not todo:
+        return {"picked": 0}
+
+    job_id = uuid.uuid4().hex[:8]
+    t0 = time.monotonic()
+    ok = 0
+
+    async def one(cid: str, name: str):
+        nonlocal ok
+        try:
+            # 채널명을 넘겨 이름 조회 요청을 생략한다 → 채널당 외부 요청 1회
+            res = await get_channel_history(cid, channel_name=name or None, job_id=job_id)
+            if res.get("firstLiveDate"):
+                ok += 1
+        except Exception:
+            pass
+
+    await asyncio.gather(*[one(c, n) for c, n in todo])
+    out = {"job_id": job_id, "picked": len(todo), "with_date": ok,
+           "duration_ms": round((time.monotonic() - t0) * 1000)}
+    _log({"event": "backfill", **out})
+    return out
+
+
+async def start_history_backfill():
+    """main.py의 lifespan에서 create_task로 띄운다. 실패해도 프로세스를 죽이지 않는다."""
+    if not BACKFILL_ENABLED:
+        _log({"event": "backfill_disabled"})
+        return
+    await asyncio.sleep(BACKFILL_START_DELAY_SECONDS)
+    while True:
+        try:
+            await _backfill_once()
+        except Exception as e:
+            _log({"event": "backfill_error", "level": "warning", "detail": str(e)[:200]})
+        await asyncio.sleep(BACKFILL_INTERVAL_SECONDS)

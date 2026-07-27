@@ -91,14 +91,108 @@ export function GoldenHourHeatmap({ hourly }: { hourly: NonNullable<NewcomerInsi
   );
 }
 
+// ── 대기업 방종 '빈집 타임' (소형 탭) ───────────────────────────────────────
+// 시간대별로 대형 채널 동시 라이브 수(막대, 회색)와 소형 채널 방송당 평균 시청자(막대, 네온)를
+// 겹쳐 보여 준다. 대형이 적은데 소형 평균이 높은 시간이 노려볼 만한 '빈집'이다.
+export function VacancyHours({ hourly, best }: {
+  hourly: NonNullable<NewcomerInsights["vacancy_hourly"]>;
+  best: NonNullable<NewcomerInsights["vacancy_best"]>  | null | undefined;
+}) {
+  const { maxBig, maxSmall, hasData } = useMemo(() => ({
+    maxBig:   Math.max(1, ...hourly.map((h) => h.big_lives)),
+    maxSmall: Math.max(1, ...hourly.map((h) => h.small_avg_viewers)),
+    hasData:  hourly.some((h) => h.snaps > 0),
+  }), [hourly]);
+  const p2 = (n: number) => String(n).padStart(2, "0");
+
+  return (
+    <div className="card">
+      <div className="mb-3 flex items-center justify-between gap-2 flex-wrap">
+        <h3 className="section-title">대기업 방종 빈집 타임</h3>
+        {best && (
+          <span className="rounded-full px-2.5 py-0.5 text-[11px] font-semibold"
+                style={{ color: GREEN, background: "rgba(0,255,163,0.10)" }}>
+            빈집 타임: {p2(best.hour)}:00 ~ {p2((best.hour + 1) % 24)}:00
+          </span>
+        )}
+      </div>
+
+      {!hasData ? (
+        <p className="py-8 text-center text-sm text-muted">
+          빈집 타임 분석용 데이터가 아직 부족합니다. 최근 7일치가 쌓이면 표시됩니다.
+        </p>
+      ) : (
+        <>
+          {best && (
+            <p className="text-sm text-muted">
+              최근 {best.window_days}일 기준,{" "}
+              <b className="rounded-md px-1.5 py-0.5 font-extrabold tabular-nums"
+                 style={{ color: GREEN, background: "rgba(0,255,163,0.12)" }}>
+                {p2(best.hour)}:00 ~ {p2((best.hour + 1) % 24)}:00
+              </b>{" "}
+              시간대는 대형 채널이 평균 <b className="text-fg">{best.big_lives}개</b>만 켜져 있는데
+              소형 채널 방송당 평균 시청자는 <b className="text-fg">{nf(best.small_avg_viewers)}명</b>
+              {best.uplift_pct > 0 && <> (평소 대비 <b style={{ color: GREEN }}>+{best.uplift_pct}%</b>)</>}
+              으로 가장 높았습니다.
+            </p>
+          )}
+
+          <div className="mt-4 grid grid-cols-12 gap-1 md:grid-cols-[repeat(24,minmax(0,1fr))]">
+            {hourly.map((h) => (
+              <div key={h.hour} className="group relative flex flex-col justify-end">
+                {/* 위: 대형 채널 동시 라이브 수(회색) / 아래: 소형 평균 시청자(네온) */}
+                <div className="flex h-10 items-end justify-center">
+                  <div className="w-full rounded-sm"
+                       style={{ height: `${(h.big_lives / maxBig) * 100}%`,
+                                background: "rgba(148,163,184,0.35)" }} />
+                </div>
+                <div className="mt-0.5 flex h-10 items-start justify-center">
+                  <div className="w-full rounded-sm"
+                       style={{ height: `${(h.small_avg_viewers / maxSmall) * 100}%`,
+                                background: h.hour === best?.hour ? GREEN : "rgba(0,255,163,0.45)" }} />
+                </div>
+                <span className="mt-0.5 block text-center text-[9px] tabular-nums text-muted/70">
+                  {h.hour % 3 === 0 ? h.hour : ""}
+                </span>
+                <div className="pointer-events-none absolute bottom-[5.5rem] left-1/2 z-20 hidden -translate-x-1/2
+                                whitespace-nowrap rounded-lg border border-border bg-bg-card px-2.5 py-1.5
+                                text-[10px] text-fg shadow-2xl group-hover:block">
+                  {p2(h.hour)}시: 대형 <b>{h.big_lives}개</b> · 소형 평균 <b>{nf(h.small_avg_viewers)}명</b>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-3 flex items-center gap-4 text-[11px] text-muted">
+            <span className="flex items-center gap-1.5">
+              <span className="h-2 w-3 rounded-sm" style={{ background: "rgba(148,163,184,0.35)" }} />
+              대형 채널 동시 라이브 수 (위)
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="h-2 w-3 rounded-sm" style={{ background: GREEN }} />
+              소형 채널 방송당 평균 시청자 (아래)
+            </span>
+          </div>
+          <Sub>
+            * 대형은 시간당 평균 시청자 {nf(best?.big_threshold ?? 1000)}명 이상인 방송입니다.
+            위 막대가 짧고 아래 막대가 긴 시간대일수록 대형 방송이 적어 시청자가 흩어지는 구간입니다.
+            상관 지표일 뿐 인과는 아닙니다.
+          </Sub>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── 제목 키워드 효율 ────────────────────────────────────────────────────────
-export function TitleKeywordCard({ tk }: { tk: NonNullable<NewcomerInsights["title_keyword"]> }) {
+export function TitleKeywordCard({ tk, label = "신입" }:
+  { tk: NonNullable<NewcomerInsights["title_keyword"]>; label?: string }) {
   const up = (tk.lift_pct ?? 0) >= 0;
   return (
     <div className="card">
-      <h3 className="section-title">제목 키워드 효율</h3>
+      <h3 className="section-title">방송 제목 키워드 유입 효율</h3>
       <p className="mt-1 text-sm text-muted">
-        방송 제목에 유입 키워드({tk.keywords.join(", ")})가 있는 신입과 없는 신입의 평균 시청자 비교입니다.
+        방송 제목에 유입 키워드({tk.keywords.join(", ")})가 있는 {label}과 없는 {label}의 평균 시청자 비교입니다.
       </p>
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -135,8 +229,9 @@ export function TitleKeywordCard({ tk }: { tk: NonNullable<NewcomerInsights["tit
 }
 
 // ── ② 블루오션 카테고리 TOP 5 ───────────────────────────────────────────────
-export function BlueOceanCards({ cats, summary }:
-  { cats: NewcomerCategory[]; summary?: NewcomerSummary }) {
+// dense: 2열 레이아웃의 좁은 칼럼에 들어갈 때 — 5칸 가로 배치 대신 2칸으로 접는다.
+export function BlueOceanCards({ cats, summary, dense = false, label = "신입" }:
+  { cats: NewcomerCategory[]; summary?: NewcomerSummary; dense?: boolean; label?: string }) {
   // 블루오션 지수 = 카테고리 채널당 평균 시청자 ÷ 신입 전체 평균.
   // 표본이 1~2개면 우연히 높게 나오므로 방송 3개 이상만 후보로 둔다(인사이트 카드와 같은 기준).
   const base = Math.max(1, summary?.avg_viewers ?? 1);
@@ -152,7 +247,7 @@ export function BlueOceanCards({ cats, summary }:
       <div className="card">
         <h3 className="section-title">블루오션 카테고리 TOP 5</h3>
         <p className="py-8 text-center text-sm text-muted">
-          신입 방송이 3개 이상인 카테고리가 아직 없습니다.
+          {label} 방송이 3개 이상인 카테고리가 아직 없습니다.
         </p>
       </div>
     );
@@ -162,10 +257,10 @@ export function BlueOceanCards({ cats, summary }:
     <div className="card">
       <h3 className="section-title">블루오션 카테고리 TOP 5</h3>
       <p className="mt-0.5 text-[11px] text-muted">
-        신입 방송 수 대비 시청자가 많은 카테고리 — 경쟁이 적고 노출 효율이 좋은 구간입니다.
+        {label} 방송 수 대비 시청자가 많은 카테고리 — 경쟁이 적고 노출 효율이 좋은 구간입니다.
       </p>
 
-      <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
+      <div className={`mt-4 grid gap-3 ${dense ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-2 md:grid-cols-5"}`}>
         {top.map((c, i) => (
           <div key={c.category}
                className="rounded-xl border p-3"
@@ -183,9 +278,9 @@ export function BlueOceanCards({ cats, summary }:
         ))}
       </div>
       <Sub>
-        * 블루오션 지수 = 카테고리 채널당 평균 시청자 ÷ 신입 전체 평균({nf(base)}명).
+        * 블루오션 지수 = 카테고리 채널당 평균 시청자 ÷ {label} 전체 평균({nf(base)}명).
         2.0x면 같은 방송을 켜도 평균보다 2배 많은 시청자가 들어온다는 뜻입니다.
-        표본 왜곡을 막기 위해 신입 방송 3개 이상인 카테고리만 집계합니다.
+        표본 왜곡을 막기 위해 {label} 방송 3개 이상인 카테고리만 집계합니다.
       </Sub>
     </div>
   );
@@ -194,13 +289,14 @@ export function BlueOceanCards({ cats, summary }:
 // ── ③ 신입 체급 구간별 분포 ─────────────────────────────────────────────────
 const TIER_COLORS = ["rgba(107,114,128,0.65)", "rgba(0,194,255,0.65)", "rgba(0,255,163,0.55)", GREEN];
 
-export function TierDistribution({ tiers }: { tiers: NonNullable<NewcomerInsights["tiers"]> }) {
+export function TierDistribution({ tiers, label = "신입" }:
+  { tiers: NonNullable<NewcomerInsights["tiers"]>; label?: string }) {
   const total = tiers.reduce((s, t) => s + t.count, 0);
   if (total === 0) return null;
 
   return (
     <div className="mt-4 border-t border-border pt-3">
-      <p className="text-xs font-semibold text-fg">신입 체급 구간별 분포</p>
+      <p className="text-xs font-semibold text-fg">{label} 체급 구간별 분포</p>
 
       {/* 수평 스택 바 */}
       <div className="mt-2 flex h-3 w-full overflow-hidden rounded-full bg-bg-hover">
@@ -228,8 +324,8 @@ export function TierDistribution({ tiers }: { tiers: NonNullable<NewcomerInsight
         ))}
       </div>
       <p className="mt-2 text-[11px] leading-relaxed text-muted/70">
-        * 현재 라이브 중인 신입이 어느 구간에 몰려 있는지 보여 줍니다. 오른쪽 구간으로 갈수록
-        신입 상위권입니다.
+        * 현재 라이브 중인 {label}이 어느 구간에 몰려 있는지 보여 줍니다. 오른쪽 구간으로 갈수록
+        {label} 상위권입니다.
       </p>
     </div>
   );

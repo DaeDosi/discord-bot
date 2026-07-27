@@ -348,23 +348,63 @@ _TITLE_KEYWORDS = re.compile("|".join(_TITLE_KEYWORD_LIST))
 _TITLE_MIN_SAMPLES = 5   # 양쪽 그룹이 이보다 적으면 비교하지 않는다
 # 사이트맵에 넣을 최소 스냅샷 수 — 한두 번 잡힌 채널은 페이지가 거의 비어 색인 가치가 없다
 _SITEMAP_MIN_SNAPS = 12
-_newcomers_cache: dict = {"ts": 0, "data": None}
+
+# ── '신규 & 초기 분석' 두 그룹의 정의 ────────────────────────────────────────
+# new   : 첫 방송 후 60일 이내 (방송 경력 기준 — 시청자 규모와 무관)
+# small : 최근 평균 동시 시청자 10명 이하 (경력과 무관 — 규모 기준)
+# 두 축이 서로 독립이라 한 채널이 양쪽에 다 나올 수 있고, 그게 의도된 동작이다.
+_NEW_DEBUT_MAX_DAYS = 60
+_SMALL_AVG_MAX = 10
+# 빈집 타임 분석에서 '대기업'으로 볼 시간당 평균 시청자 하한과 집계 창
+_BIG_AVG_MIN = 1000
+_VACANCY_WINDOW_DAYS = 7
+_GROUPS = ("new", "small")
+# 그룹별로 결과가 다르므로 캐시도 그룹별로 나눈다
+_newcomers_cache: dict = {}
+
+
+async def _first_stream_map(db) -> dict[str, int]:
+    """channel_id -> 첫 방송 시각(epoch). chzzk_channel_history(정확한 값) 기준.
+
+    비어 있는 채널은 호출부에서 rising_channel_stats.first_seen(NexBot 최초 트랙킹
+    일자)으로 보완한다 — 백필이 아직 안 닿은 채널이 목록에서 통째로 사라지지 않게.
+    """
+    rows = await (await db.execute(
+        "SELECT channel_id, first_live_date_iso FROM chzzk_channel_history "
+        "WHERE first_live_date_iso IS NOT NULL"
+    )).fetchall()
+    out: dict[str, int] = {}
+    for r in rows:
+        try:
+            out[r["channel_id"]] = int(datetime.fromisoformat(r["first_live_date_iso"]).timestamp())
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 @router.get("/newcomers")
-async def newcomers(limit: int = 100):
-    """신규 스트리머(하꼬/라이징) — 현재 라이브 중 소형 채널만.
+async def newcomers(limit: int = 100, group: str = "new"):
+    """신규 & 초기 스트리머 분석 — 현재 라이브 중인 채널을 두 기준 중 하나로 거른다.
 
-    포함 조건(하나 이상): 신입/하꼬 등 태그 포함 / 최근 평균 시청자 50명 미만.
-    최소 3명 이상 컷오프. 채팅(소통 화력)은 미수집이라 잠금.
+    group=new   : (지금 - 첫 방송일) <= 60일. 첫 방송일은 chzzk_channel_history의
+                  정확한 값을 쓰고, 아직 백필되지 않았으면 NexBot 최초 트랙킹 일자로 보완한다.
+    group=small : 최근 7일 평균 동시 시청자 10명 이하(방송 경력 무관).
+
+    채팅(소통 화력)은 미수집이라 잠금.
     """
+    group = group if group in _GROUPS else "new"
+    is_small = group == "small"
+    # 시간대 집계에서 '이 그룹에 해당하는 방송'으로 볼 시간당 평균 시청자 상한
+    hour_avg_max = _SMALL_AVG_MAX if is_small else _NEWCOMER_AVG_MAX
+
     now = int(time.time())
-    if _newcomers_cache["data"] is not None and now - _newcomers_cache["ts"] < 60:
-        return _newcomers_cache["data"]
+    hit = _newcomers_cache.get(group)
+    if hit and now - hit[0] < 60:
+        return hit[1]
 
     ts = await _latest_run_ts()
     if ts is None:
-        return {"collected_at": None, "streamers": []}
+        return {"collected_at": None, "group": group, "streamers": []}
     db = await get_db()
 
     cur = await (await db.execute(
@@ -387,24 +427,35 @@ async def newcomers(limit: int = 100):
         (ts - 7 * 86400,)
     )).fetchall()}
     agg = agg7
-    # 데뷔일(first_seen)은 채널 통계 테이블에서 — 원본 절단과 무관하게 누적 유지된다
+    # 데뷔일 소스 두 가지:
+    #  ① chzzk_channel_history.first_live_date — 치지직이 주는 정확한 첫 방송일(우선)
+    #  ② rising_channel_stats.first_seen      — NexBot이 이 채널을 처음 본 시각(보완)
+    # ②는 수집 시작 이후만 알 수 있어 실제보다 늦을 수 있다. 어느 쪽을 썼는지
+    # first_stream_source로 함께 내려보내 프론트가 '추정' 여부를 표시할 수 있게 한다.
     first_map = {r["chzzk_channel_id"]: r["first_seen"] for r in await (await db.execute(
         "SELECT chzzk_channel_id, first_seen FROM rising_channel_stats"
     )).fetchall()}
+    exact_map = await _first_stream_map(db)
 
     out = []
     for r in cur:
         cid = r["chzzk_channel_id"]
         avg_all = agg.get(cid, r["concurrent_viewers"])
-        first_seen = first_map.get(cid, ts)
-        first_days = round((ts - int(first_seen)) / 86400, 1)
+        exact_first = exact_map.get(cid)
+        first_ts = exact_first if exact_first is not None else int(first_map.get(cid, ts))
+        debut_days = round((ts - first_ts) / 86400, 1)
         tags = r["tags"] or ""
         tag_new = any(t in tags for t in _NEW_TAGS)
-        # 포함: 신입 태그이거나 최근 평균 시청자 50명 미만(하꼬/라이징)만.
-        # (첫 수집 30일 조건은 원천 보관이 14일이라 사실상 모든 채널을 통과시켜 대형 채널이
-        #  섞이는 문제가 있어 필터에서 제외 — 데뷔일은 아래 컬럼/뱃지 정보로만 유지)
-        if not (tag_new or (avg_all is not None and avg_all < _NEWCOMER_AVG_MAX)):
-            continue
+
+        if is_small:
+            # 소형(하꼬): 방송 경력과 무관하게 최근 평균 동시 시청자 10명 이하
+            if avg_all is None or avg_all > _SMALL_AVG_MAX:
+                continue
+        else:
+            # 신규: 첫 방송 후 60일 이내
+            if debut_days > _NEW_DEBUT_MAX_DAYS:
+                continue
+
         # 시청자 하한을 없애면서 avg7이 0인 채널(계속 0명)이 생긴다 — 그 경우 성장률은 None.
         avg7 = agg7.get(cid, avg_all) or avg_all or r["concurrent_viewers"]
         growth = round((r["concurrent_viewers"] - avg7) / avg7 * 100, 1) if avg7 and avg7 > 0 else None
@@ -418,8 +469,11 @@ async def newcomers(limit: int = 100):
             "follower_count":     r["follower_count"],
             "avg_viewers":        round(avg_all) if avg_all is not None else r["concurrent_viewers"],
             "growth_rate":        growth,
-            "first_seen_days":    first_days,
-            "is_new":             first_days <= 7,
+            "first_seen_days":    debut_days,   # 하위 호환(이름은 유지, 값은 데뷔일 기준)
+            "debut_days":         debut_days,
+            "first_stream_date":  _kst_date(first_ts),
+            "first_stream_source": "CHZZK" if exact_first is not None else "TRACKED",
+            "is_new":             debut_days <= 7,
             "tag_new":            tag_new,
             "live_title":         r["live_title"] or "",
             "tags":               [t for t in tags.split(",") if t][:4],
@@ -428,8 +482,10 @@ async def newcomers(limit: int = 100):
     # 기본 정렬: 급성장순(소통 화력은 채팅 미수집이라 프론트에서 잠금)
     out.sort(key=lambda x: (x["growth_rate"] if x["growth_rate"] is not None else -1e9), reverse=True)
 
-    # 소형 채널은 팔로워가 0(상위 100만 보강)이라, 상위 후보를 온디맨드로 팔로워 보강 후
-    # '팔로워 100명 이하'만 남긴다. (보강 실패=0은 배제하지 않음)
+    # 소형 채널은 스냅샷 팔로워가 0(상위 100만 보강)이라, 목록에 실제로 보일 상위 후보만
+    # 온디맨드로 보강한다. 예전에는 여기서 '팔로워 100명 이하'로 한 번 더 걸렀지만,
+    # 이제 그룹 정의(60일 이내 / 평균 10명 이하)가 필터를 전담하므로 팔로워는 표시용이다.
+    # out 자체는 자르지 않는다 — 요약/카테고리/체급 분포는 필터를 통과한 전체 기준이어야 한다.
     enrich = out[:_NEWCOMER_ENRICH_N]
     sem = asyncio.Semaphore(12)
     async with httpx.AsyncClient() as client:
@@ -445,14 +501,23 @@ async def newcomers(limit: int = 100):
                                    timeout=_NEWCOMER_ENRICH_TIMEOUT)
         except asyncio.TimeoutError:
             pass
-    out = [x for x in enrich if x["follower_count"] <= 100]
 
     # ── KPI 요약 ──────────────────────────────────────────────────────────
     count = len(out)
     total_v = sum(x["concurrent_viewers"] for x in out)
     avg_v = round(total_v / count) if count else 0
     peak_v = max((x["concurrent_viewers"] for x in out), default=0)
-    summary = {"count": count, "total_viewers": total_v, "avg_viewers": avg_v, "peak_viewers": peak_v}
+    # 신규 탭 KPI: 평균 방송 경력(데뷔 N일차) — 정확한 첫 방송일이 있는 채널만으로 낸다.
+    # 트랙킹 보완값(TRACKED)은 수집 시작 이후만 알 수 있어 섞으면 평균이 실제보다 짧아진다.
+    exact_days = [x["debut_days"] for x in out if x["first_stream_source"] == "CHZZK"]
+    avg_debut_days = round(sum(exact_days) / len(exact_days), 1) if exact_days else None
+    # 소형 탭 KPI: 시청자 3명 초과 비중 — '0~2명 벽'을 넘은 채널이 얼마나 되는지
+    over3 = sum(1 for x in out if x["concurrent_viewers"] > 3)
+    summary = {"count": count, "total_viewers": total_v, "avg_viewers": avg_v,
+               "peak_viewers": peak_v,
+               "avg_debut_days": avg_debut_days, "debut_sample": len(exact_days),
+               "over3_count": over3,
+               "over3_share": round(over3 / count * 100, 1) if count else 0.0}
 
     # ── 인사이트 ──────────────────────────────────────────────────────────
     # 1) 인기 카테고리(방송당 평균 시청자 최고) — 채팅 미수집이라 소통 화력 대신 시청자 기반
@@ -490,9 +555,9 @@ async def newcomers(limit: int = 100):
                   SUM(snaps)       AS n,
                   COUNT(DISTINCT chzzk_channel_id) AS ch
            FROM rising_hourly_rollup
-           WHERE hour_ts >= ? AND avg_viewers < ?
+           WHERE hour_ts >= ? AND avg_viewers <= ?
            GROUP BY h""",
-        (ts - 86400, _NEWCOMER_AVG_MAX)
+        (ts - 86400, hour_avg_max)
     )).fetchall()
     hour_agg = {int(r["h"]): {"v": int(r["v"] or 0), "n": int(r["n"] or 0), "ch": int(r["ch"] or 0)}
                 for r in hrows if r["n"]}
@@ -560,9 +625,62 @@ async def newcomers(limit: int = 100):
             "keywords": _TITLE_KEYWORD_LIST,
         }
 
+    # ── 대기업 방종 '빈집 타임' (소형 탭 전용) ────────────────────────────
+    # 대형 채널이 적게 켜져 있는 시간대일수록 그 시청자가 다른 방송으로 흩어진다는 가설을
+    # 실제 데이터로 확인한다. 시간대별로 (a) 대형 채널 평균 동시 라이브 수와
+    # (b) 소형 채널의 방송당 평균 시청자를 함께 내고, 대형이 중앙값 이하로 적은 시간 중
+    # 소형 평균 시청자가 가장 높은 시각을 고른다.
+    #
+    # 최근 24시간은 요일 편향이 커서(주중 1일치만 잡히면 그날의 특성이 그대로 나옴)
+    # 7일 창으로 집계하고, 시간대별 '일수'로 나눠 하루 평균 동시 라이브 수를 만든다.
+    vacancy_hourly: list[dict] = []
+    vacancy_best = None
+    if is_small:
+        vrows = await (await db.execute(
+            """SELECT CAST(strftime('%H', hour_ts + 32400, 'unixepoch') AS INTEGER) AS h,
+                      SUM(CASE WHEN avg_viewers >= ? THEN 1 ELSE 0 END)          AS big_rows,
+                      SUM(CASE WHEN avg_viewers <= ? THEN sum_viewers ELSE 0 END) AS small_v,
+                      SUM(CASE WHEN avg_viewers <= ? THEN snaps ELSE 0 END)       AS small_n,
+                      COUNT(DISTINCT strftime('%Y-%m-%d', hour_ts + 32400, 'unixepoch')) AS days
+               FROM rising_hourly_rollup
+               WHERE hour_ts >= ?
+               GROUP BY h""",
+            (_BIG_AVG_MIN, _SMALL_AVG_MAX, _SMALL_AVG_MAX,
+             ts - _VACANCY_WINDOW_DAYS * 86400)
+        )).fetchall()
+        vmap = {int(r["h"]): r for r in vrows}
+        for h in range(24):
+            r = vmap.get(h)
+            days = max(1, int(r["days"] or 1)) if r else 1
+            sn = int(r["small_n"] or 0) if r else 0
+            vacancy_hourly.append({
+                "hour": h,
+                # 그 시각에 평균 몇 개의 대형 채널이 동시에 켜져 있었는지
+                "big_lives": round(int(r["big_rows"] or 0) / days, 1) if r else 0.0,
+                "small_avg_viewers": round(int(r["small_v"] or 0) / sn) if sn else 0,
+                "snaps": sn,
+            })
+        usable = [v for v in vacancy_hourly if v["snaps"] > 0]
+        if len(usable) >= 6:
+            bigs = sorted(v["big_lives"] for v in usable)
+            median_big = bigs[len(bigs) // 2]
+            quiet = [v for v in usable if v["big_lives"] <= median_big] or usable
+            best = max(quiet, key=lambda v: v["small_avg_viewers"])
+            overall = sum(v["small_avg_viewers"] for v in usable) / len(usable)
+            vacancy_best = {
+                "hour": best["hour"],
+                "small_avg_viewers": best["small_avg_viewers"],
+                "big_lives": best["big_lives"],
+                "uplift_pct": round((best["small_avg_viewers"] / overall - 1) * 100)
+                              if overall > 0 else 0,
+                "window_days": _VACANCY_WINDOW_DAYS,
+                "big_threshold": _BIG_AVG_MIN,
+            }
+
     insights = {"top_category": top_category, "golden_hour": golden_hour,
                 "baseline": baseline, "hourly": hourly, "tiers": tiers,
-                "title_keyword": title_keyword}
+                "title_keyword": title_keyword,
+                "vacancy_hourly": vacancy_hourly, "vacancy_best": vacancy_best}
 
     # ── 카테고리 점유율(신입 기준) ─────────────────────────────────────────
     # cat_agg는 필터를 통과한 신입 '전체'로 집계돼 있으므로, streamers[:limit]로 자른
@@ -582,10 +700,11 @@ async def newcomers(limit: int = 100):
         key=lambda x: x["viewers"], reverse=True,
     )[:20]
 
-    result = {"collected_at": ts, "streamers": out[:limit], "summary": summary,
-              "insights": insights, "categories": categories}
-    _newcomers_cache["ts"] = now
-    _newcomers_cache["data"] = result
+    result = {"collected_at": ts, "group": group, "streamers": out[:limit],
+              "summary": summary, "insights": insights, "categories": categories,
+              "criteria": {"debut_max_days": _NEW_DEBUT_MAX_DAYS,
+                           "small_avg_max": _SMALL_AVG_MAX}}
+    _newcomers_cache[group] = (now, result)
     return result
 
 

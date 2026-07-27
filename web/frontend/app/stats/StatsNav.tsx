@@ -17,7 +17,9 @@ export interface NavItem { key: Tab; label: string; icon: React.ReactNode; live?
 export const NAV_GROUPS: { header: string | null; items: NavItem[] }[] = [
   { header: "실시간 분석", items: [
     { key: "overview",           label: "전체 스트리머 분석", icon: <LineIcon size={16} />, live: true },
-    { key: "newcomers_analysis", label: "신규 스트리머 분석", icon: <Sprout size={16} />, live: true },
+    // 신규(첫 방송 60일 이내)와 소형(평균 시청자 10명 이하)을 한 메뉴로 통합.
+    // 두 그룹은 탭 안의 세그먼티드 컨트롤로 전환한다.
+    { key: "newcomers_analysis", label: "신규 & 초기 분석", icon: <Sprout size={16} />, live: true },
     // 실시간 한 장이 아니라 기간 누적이지만, '분석' 성격이 같아 같은 그룹에 둔다(LIVE 표시 없음)
     { key: "period_analysis",    label: "기간별 상세 분석",   icon: <SlidersHorizontal size={16} /> },
   ] },

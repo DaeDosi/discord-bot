@@ -339,11 +339,26 @@ export interface RisingNewcomer {
   avg_viewers:        number;
   growth_rate:        number | null;
   first_seen_days:    number;
+  /** 데뷔 N일차. first_stream_source가 CHZZK면 치지직 첫 방송일 기준(정확),
+   *  TRACKED면 NexBot이 이 채널을 처음 본 날 기준(보완값 — 실제보다 짧을 수 있음). */
+  debut_days:          number;
+  first_stream_date:   string;             // "YYYY-MM-DD" (KST)
+  first_stream_source: "CHZZK" | "TRACKED";
   is_new:             boolean;
   tag_new:            boolean;
   tags:               string[];
 }
-export interface NewcomerSummary { count: number; total_viewers: number; avg_viewers: number; peak_viewers: number; }
+/** 신규 & 초기 분석의 두 그룹 — new: 첫 방송 60일 이내 / small: 평균 시청자 10명 이하 */
+export type NewcomerGroup = "new" | "small";
+export interface NewcomerSummary {
+  count: number; total_viewers: number; avg_viewers: number; peak_viewers: number;
+  /** 신규 탭 KPI — 정확한 첫 방송일이 있는 채널만으로 낸 평균 방송 경력(일). 표본 없으면 null */
+  avg_debut_days?: number | null;
+  debut_sample?:   number;
+  /** 소형 탭 KPI — 동시 시청자 3명 초과 채널 비중(%) */
+  over3_count?: number;
+  over3_share?: number;
+}
 export interface NewcomerInsights {
   top_category: { name: string; avg_viewers: number; lives: number } | null;
   golden_hour:  { hour: number; avg_viewers: number; uplift_pct: number;
@@ -359,6 +374,11 @@ export interface NewcomerInsights {
     with_avg: number; without_avg: number;
     lift_pct: number | null; keywords: string[];
   } | null;
+  // 대기업 방종 '빈집 타임' (소형 탭 전용) — 시간대별 대형 채널 동시 라이브 수와
+  // 소형 채널 방송당 평균 시청자. big_lives가 적을수록 시청자가 흩어지는 시간대다.
+  vacancy_hourly?: { hour: number; big_lives: number; small_avg_viewers: number; snaps: number }[];
+  vacancy_best?:   { hour: number; small_avg_viewers: number; big_lives: number;
+                     uplift_pct: number; window_days: number; big_threshold: number } | null;
 }
 // 신입 기준 카테고리 점유율 — 필터를 통과한 신입 전체로 집계(streamers 절단 전)
 export interface NewcomerCategory {
@@ -366,10 +386,12 @@ export interface NewcomerCategory {
 }
 export interface RisingNewcomers {
   collected_at: number | null;
+  group?:       NewcomerGroup;
   streamers:    RisingNewcomer[];
   summary?:     NewcomerSummary;
   insights?:    NewcomerInsights;
   categories?:  NewcomerCategory[];
+  criteria?:    { debut_max_days: number; small_avg_max: number };
 }
 
 // 누적(기간) 랭킹 — 실시간 스냅샷 순위와 달리 기간 전체를 집계한 순위
