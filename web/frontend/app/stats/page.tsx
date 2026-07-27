@@ -964,13 +964,10 @@ function HelpTip({ children }: { children: React.ReactNode }) {
 
 // 카테고리 점유율(신입 기준) — 전체 스트리머 분석의 CategoryDonut과 같은 구성.
 // 데이터는 newcomers 응답에 함께 실려오므로 별도 요청/기간 필터가 없다.
-// dense: 2열 레이아웃의 좁은 칼럼에 들어갈 때 — 도넛:테이블을 5:7이 아닌 1:1로 맞추고
-// 도넛을 줄인다(스펙: "도넛 차트 + 테이블 수평 1:1 맞춤").
-function NewcomerCategoryDonut({ cats, dense = false, label = "신입" }:
-  { cats: NewcomerCategory[]; dense?: boolean; label?: string }) {
+function NewcomerCategoryDonut({ cats, label = "신입" }:
+  { cats: NewcomerCategory[]; label?: string }) {
   const [hover, setHover] = useState<number | null>(null);
   const slices = toSlices(cats, 5, (c) => c.category, (c) => c.viewers);
-  // dense에서도 TOP 8까지 — 좌측(블루오션 3열 2행) 높이에 맞춰 하단 여백을 채운다
   const legendRows = cats.slice(0, 8);
   const totalLives = cats.reduce((s, c) => s + c.lives, 0);
 
@@ -991,21 +988,19 @@ function NewcomerCategoryDonut({ cats, dense = false, label = "신입" }:
         // flex-1 + items-center: 카드가 h-full로 늘어나도 내용이 위로 붙지 않고
         // 남는 높이 안에서 가운데 정렬된다(하단에 까맣게 남던 공간 제거).
         <div className="grid flex-1 grid-cols-1 items-center gap-5 md:grid-cols-12">
-          {/* dense에서 도넛:테이블 1:1 — 좁은 칼럼에서도 도넛을 줄이지 않고 오히려 키워
-              좌측 카드 높이를 따라간다(스펙: "도넛 차트 크기 확대 + 수평 1:1 맞춤"). */}
-          <div className={`${dense ? "md:col-span-6" : "md:col-span-5"} flex justify-center`}>
+          <div className="md:col-span-5 flex justify-center">
             <DonutChart slices={slices} hover={hover} onHover={setHover}
-                        centerLabel={`${label} 총 시청자`} size={dense ? 210 : 190} />
+                        centerLabel={`${label} 총 시청자`} />
           </div>
 
-          <div className={`${dense ? "md:col-span-6" : "md:col-span-7"} overflow-x-auto`}>
-            <table className={`w-full text-sm ${dense ? "min-w-[260px]" : "min-w-[360px]"}`}>
+          <div className="md:col-span-7 overflow-x-auto">
+            <table className="w-full text-sm min-w-[360px]">
               <thead>
                 <tr className="text-muted text-xs border-b border-border">
                   <th className="text-left font-medium py-1.5 w-7">#</th>
                   <th className="text-left font-medium py-1.5">카테고리</th>
                   <th className="text-right font-medium py-1.5">점유율</th>
-                  <th className={`text-right font-medium py-1.5 ${dense ? "hidden" : "hidden sm:table-cell"}`}>방송 수</th>
+                  <th className="text-right font-medium py-1.5 hidden sm:table-cell">방송 수</th>
                   <th className="text-right font-medium py-1.5 pr-1">방송당 평균</th>
                 </tr>
               </thead>
@@ -1024,7 +1019,7 @@ function NewcomerCategoryDonut({ cats, dense = false, label = "신입" }:
                       </span>
                     </td>
                     <td className="py-1.5 text-right font-semibold tabular-nums text-fg">{c.share.toFixed(1)}%</td>
-                    <td className={`py-1.5 text-right tabular-nums text-muted ${dense ? "hidden" : "hidden sm:table-cell"}`}>{nf(c.lives)}개</td>
+                    <td className="py-1.5 text-right tabular-nums text-muted hidden sm:table-cell">{nf(c.lives)}개</td>
                     <td className="py-1.5 text-right pr-1 tabular-nums font-semibold"><GradText>{nf(c.avg_viewers)}</GradText></td>
                   </tr>
                 ))}
@@ -1331,21 +1326,21 @@ function NewcomersAnalysisTab({ initial, onRanking }:
 
   return (
     <div className="space-y-5">
-      {/* 상단 — 위: 제목 ↔ 토글(수평 분리) / 아래: 서브 설명글 전체 폭.
-          설명글을 제목과 같은 블록에 두면 문장이 길어질수록 토글이 오른쪽 끝으로
-          밀려 제목과 멀어졌다. 설명글을 아래 줄로 내려 제목과 토글만 마주보게 한다. */}
-      <div>
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* 상단 — 제목+설명글(좌) ↔ 토글(우)을 items-start로 마주보게 둔다.
+          설명글 폭을 max-w-2xl로 제한하는 게 핵심: 제한이 없으면 문장이 컨테이너 전체를
+          밀어내며 토글이 오른쪽 끝에 왜소하게 붙는다. */}
+      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+        <div className="min-w-0 max-w-2xl">
           <h2 className="flex items-center gap-2 text-xl font-extrabold tracking-tight md:text-2xl">
             <Sprout size={20} style={{ color: GREEN }} /> 신규 &amp; 초기 스트리머 분석
           </h2>
-          <NcGroupToggle value={group} onChange={setGroup} />
+          <p className="mt-2 text-sm leading-relaxed text-muted">
+            {isSmall
+              ? `방송 경력과 무관하게 최근 평균 동시 시청자 ${data?.criteria?.small_avg_max ?? 10}명 이하인 채널입니다.`
+              : `첫 방송 후 ${data?.criteria?.debut_max_days ?? 60}일 이내인 채널입니다. 첫 방송일은 치지직 채널 정보 기준이며, 아직 수집되지 않은 채널은 NexBot 최초 트랙킹 일자로 보완합니다.`}
+          </p>
         </div>
-        <p className="mt-2 text-sm leading-relaxed text-muted">
-          {isSmall
-            ? `방송 경력과 무관하게 최근 평균 동시 시청자 ${data?.criteria?.small_avg_max ?? 10}명 이하인 채널입니다.`
-            : `첫 방송 후 ${data?.criteria?.debut_max_days ?? 60}일 이내인 채널입니다. 첫 방송일은 치지직 채널 정보 기준이며, 아직 수집되지 않은 채널은 NexBot 최초 트랙킹 일자로 보완합니다.`}
-        </p>
+        <NcGroupToggle value={group} onChange={setGroup} />
       </div>
 
       {!data ? (
@@ -1384,25 +1379,25 @@ function NewStreamerView({ data, onRanking }: { data: RisingNewcomers; onRanking
         <NcTile label="신입 최고 동접" value={nf(sm?.peak_viewers ?? 0)} unit="명" />
       </div>
 
-      {/* Row 2 — 6:4 : 골든타임 히트맵 / 체급 기준선.
-          items-stretch(그리드 기본) + 각 카드 h-full 로 좌우 바깥 테두리 높이를 맞춘다. */}
-      <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-10">
-        <div className="lg:col-span-6">
-          {ins?.hourly && ins.hourly.length > 0
-            ? <GoldenHourHeatmap hourly={ins.hourly} />
-            : <div className="card h-full"><h3 className="section-title">24시간 신입 노출 골든타임 분석</h3>
-                <p className="py-8 text-center text-sm text-muted">시간대 데이터가 아직 부족합니다.</p></div>}
-        </div>
-        <div className="lg:col-span-4"><BaselineCard ins={ins} label="신입" /></div>
-      </div>
+      {/* 아래 섹션은 전체 스트리머 분석 탭과 같이 전부 '풀 폭 카드 스택'이다.
+          예전에는 6:4 / 5:5 2열로 나눴는데, 좌우 카드의 자연 높이가 크게 달라(히트맵은
+          24칸 한 줄, 블루오션은 카드 그리드) 짧은 쪽 아래에 큰 빈 공간이 남았다.
+          높이를 억지로 맞추면 그만큼이 여백으로 남을 뿐이라, 폭을 다 쓰는 쪽으로 바꿨다. */}
 
-      {/* Row 3 — 5:5 : 블루오션 / 카테고리 점유율.
-          블루오션은 3열 2행으로 접어 세로 길이를 줄이고, 점유율 쪽은 도넛을 키우고
-          순위 리스트를 TOP 8까지 늘려 남던 하단 여백을 채운다. */}
-      <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-2">
-        <BlueOceanCards cats={data.categories ?? []} summary={sm} dense label="신입" />
-        <NewcomerCategoryDonut cats={data.categories ?? []} dense label="신입" />
-      </div>
+      {/* 24시간 노출 골든타임 — 24칸 히트맵이라 폭이 넓을수록 읽기 쉽다 */}
+      {ins?.hourly && ins.hourly.length > 0
+        ? <GoldenHourHeatmap hourly={ins.hourly} />
+        : <div className="card"><h3 className="section-title">24시간 신입 노출 골든타임 분석</h3>
+            <p className="py-8 text-center text-sm text-muted">시간대 데이터가 아직 부족합니다.</p></div>}
+
+      {/* 신입 평균 체급 기준선 + 체급 구간 분포 */}
+      <BaselineCard ins={ins} label="신입" />
+
+      {/* 블루오션 카테고리 TOP 5 — 5칸을 한 줄로 */}
+      <BlueOceanCards cats={data.categories ?? []} summary={sm} label="신입" />
+
+      {/* 카테고리 점유율 — 도넛 5 : 테이블 7 */}
+      <NewcomerCategoryDonut cats={data.categories ?? []} label="신입" />
 
       {/* Row 4 — 신입 라이징 TOP 10 */}
       <div className="card">
@@ -1440,27 +1435,26 @@ function SmallStreamerView({ data }: { data: RisingNewcomers }) {
         <NcTile label="시청자 3명 초과 비중" value={`${sm?.over3_share ?? 0}`} unit="%" />
       </div>
 
-      {/* Row 2 — 6:4 : 빈집 타임 / 제목 키워드 효율 (좌우 높이 1:1) */}
-      <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-10">
-        <div className="lg:col-span-6">
-          {ins?.vacancy_hourly && ins.vacancy_hourly.length > 0
-            ? <VacancyHours hourly={ins.vacancy_hourly} best={ins.vacancy_best} />
-            : <div className="card h-full"><h3 className="section-title">대기업 방종 빈집 타임</h3>
-                <p className="py-8 text-center text-sm text-muted">
-                  빈집 타임 분석용 데이터가 아직 부족합니다.
-                </p></div>}
-        </div>
-        <div className="lg:col-span-4">
-          {ins?.title_keyword
-            ? <TitleKeywordCard tk={ins.title_keyword} label="소형" />
-            : <div className="card h-full"><h3 className="section-title">방송 제목 키워드 유입 효율</h3>
-                <p className="py-8 text-center text-sm text-muted">
-                  키워드 포함/미포함 그룹이 각각 5개 이상 모이면 표시됩니다.
-                </p></div>}
-        </div>
-      </div>
+      {/* 신규 탭과 같은 이유로 풀 폭 스택 — 24칸 시간대 차트 옆에 짧은 카드를 붙이면
+          그 아래가 통째로 빈다. 카테고리/성장률만 자연 높이가 비슷해 2열로 남겨 둔다. */}
 
-      {/* Row 3 — 카테고리 TOP 5 / 성장률 상위 소형 채널 (좌우 높이 1:1) */}
+      {/* 대기업 방종 빈집 타임 — 24칸 이중 막대라 폭이 넓을수록 읽기 쉽다 */}
+      {ins?.vacancy_hourly && ins.vacancy_hourly.length > 0
+        ? <VacancyHours hourly={ins.vacancy_hourly} best={ins.vacancy_best} />
+        : <div className="card"><h3 className="section-title">대기업 방종 빈집 타임</h3>
+            <p className="py-8 text-center text-sm text-muted">
+              빈집 타임 분석용 데이터가 아직 부족합니다.
+            </p></div>}
+
+      {/* 방송 제목 키워드 유입 효율 — 3칸 비교 타일을 한 줄로 */}
+      {ins?.title_keyword
+        ? <TitleKeywordCard tk={ins.title_keyword} label="소형" />
+        : <div className="card"><h3 className="section-title">방송 제목 키워드 유입 효율</h3>
+            <p className="py-8 text-center text-sm text-muted">
+              키워드 포함/미포함 그룹이 각각 5개 이상 모이면 표시됩니다.
+            </p></div>}
+
+      {/* 카테고리 TOP 5 / 성장률 상위 소형 채널 — 둘 다 5~8행 리스트라 높이가 비슷하다 */}
       <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-2">
         <SmallCategoryTop5 cats={data.categories ?? []} />
         <SmallGrowthList items={data.streamers} />

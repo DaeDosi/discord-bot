@@ -571,13 +571,18 @@ async def newcomers(limit: int = 100, group: str = "new"):
         golden_hour = {"hour": h, "avg_viewers": round(hour_avg), "uplift_pct": uplift,
                        "samples": e["n"], "hours_covered": len(hour_agg)}
 
-    # 2-1) 24시간 골든타임 히트맵용 — 비어 있는 시간도 0으로 채워 항상 24칸을 만든다
+    # 2-1) 24시간 골든타임 히트맵용 — 비어 있는 시간도 0으로 채워 항상 24칸을 만든다.
+    #
+    # 소수점 1자리까지 준다. 정수로 반올림하면 수천 채널을 시간별로 평균낸 값이
+    # 24시간 전부 같은 정수(예: 7)로 붙어버려 히트맵의 24칸이 완전히 동일해지고,
+    # 결과적으로 전 구간이 최고 색(진한 초록)으로 칠해졌다. 이 지표는 애초에 값 자체보다
+    # 시간대 간 '상대차'를 보는 용도라 그 상대차를 반올림으로 날리면 안 된다.
     hourly = []
     for h in range(24):
         e = hour_agg.get(h)
         hourly.append({
             "hour": h,
-            "avg_viewers": round(e["v"] / e["n"]) if e and e["n"] else 0,
+            "avg_viewers": round(e["v"] / e["n"], 1) if e and e["n"] else 0,
             "channels": e["ch"] if e else 0,
             "snaps": e["n"] if e else 0,
         })
@@ -667,7 +672,8 @@ async def newcomers(limit: int = 100, group: str = "new"):
                 "hour": h,
                 # 그 시각에 평균 몇 개의 대형 채널이 동시에 켜져 있었는지
                 "big_lives": round(int(r["big_rows"] or 0) / days, 1) if r else 0.0,
-                "small_avg_viewers": round(int(r["small_v"] or 0) / sn) if sn else 0,
+                # 히트맵과 같은 이유로 소수점 1자리 — 정수 반올림은 시간대 간 차이를 지운다
+                "small_avg_viewers": round(int(r["small_v"] or 0) / sn, 1) if sn else 0,
                 "snaps": sn,
             })
         usable = [v for v in vacancy_hourly if v["snaps"] > 0]

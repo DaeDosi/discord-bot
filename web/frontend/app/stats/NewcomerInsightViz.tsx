@@ -12,11 +12,24 @@ const Sub = ({ children }: { children: React.ReactNode }) =>
 
 // ── ① 24시간 골든타임 히트맵 ────────────────────────────────────────────────
 export function GoldenHourHeatmap({ hourly }: { hourly: NonNullable<NewcomerInsights["hourly"]> }) {
-  const { max, peakLabel } = useMemo(() => {
-    const mx = Math.max(1, ...hourly.map((h) => h.avg_viewers));
-    // 피크타임 라벨: 최고 시간대를 중심으로 연속된 상위 구간(최고의 75% 이상)을 묶는다
-    const hot = hourly.filter((h) => h.avg_viewers >= mx * 0.75).map((h) => h.hour).sort((a, b) => a - b);
-    if (hot.length === 0) return { max: mx, peakLabel: null };
+  // 색은 '0~최고' 비율이 아니라 '24시간 중 최저~최고 사이의 상대 위치'로 정한다.
+  //
+  // 예전에는 avg/max 를 썼다. 이 지표는 수천 채널을 시간별로 평균낸 값이라 시간대 차이가
+  // 7.1 대 7.6 처럼 작게 나오고, 그러면 모든 칸의 비율이 0.9~1.0에 몰려 전 구간이
+  // 최고 색(진한 초록) 하나로 칠해졌다(= 정보량 0). 최저~최고로 정규화하면 같은 데이터에서
+  // 시간대별 강약이 드러난다. 값 자체는 툴팁과 평균 대비 편차로 보여 준다.
+  const { min, span, avg, peakLabel } = useMemo(() => {
+    const vals = hourly.filter((h) => h.snaps > 0).map((h) => h.avg_viewers);
+    const mn = vals.length ? Math.min(...vals) : 0;
+    const mx = vals.length ? Math.max(...vals) : 0;
+    const mean = vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+    const sp = mx - mn;
+    // 피크타임 라벨: 상대 위치 0.75 이상인 시간을 연속 구간으로 묶는다.
+    // (예전엔 절대 비율 0.75라 값이 평평하면 24시간 전체가 '피크타임'으로 잡혔다.)
+    const rel = (v: number) => (sp > 0 ? (v - mn) / sp : 0);
+    const hot = hourly.filter((h) => h.snaps > 0 && rel(h.avg_viewers) >= 0.75)
+                      .map((h) => h.hour).sort((a, b) => a - b);
+    if (hot.length === 0) return { min: mn, span: sp, avg: mean, peakLabel: null };
     // 자정을 넘는 연속 구간(예: 22,23,0,1)도 하나로 보이도록 순환 기준으로 최장 구간을 찾는다
     let best = [hot[0]], cur = [hot[0]];
     for (let i = 1; i < hot.length; i++) {
@@ -32,7 +45,8 @@ export function GoldenHourHeatmap({ hourly }: { hourly: NonNullable<NewcomerInsi
     }
     const s = best[0], e = best[best.length - 1];
     const p2 = (n: number) => String(n).padStart(2, "0");
-    return { max: mx, peakLabel: `${p2(s)}:00 ~ ${p2((e + 1) % 24)}:00` };
+    return { min: mn, span: sp, avg: mean,
+             peakLabel: `${p2(s)}:00 ~ ${p2((e + 1) % 24)}:00` };
   }, [hourly]);
 
   const hasData = hourly.some((h) => h.snaps > 0);
@@ -57,33 +71,61 @@ export function GoldenHourHeatmap({ hourly }: { hourly: NonNullable<NewcomerInsi
               임의값 문법으로 24칸을 만든다 — 모바일은 12칸 2줄이 오히려 읽기 좋다. */}
           <div className="grid grid-cols-12 gap-1 md:grid-cols-[repeat(24,minmax(0,1fr))]">
             {hourly.map((h) => {
-              const r = h.avg_viewers / max;
+              // span=0(24시간 값이 전부 동일)일 때는 강약이 없으므로 중간 톤 하나로 칠한다.
+              const r = span > 0 ? (h.avg_viewers - min) / span : 0.5;
               const bg = h.snaps === 0 ? "rgb(var(--color-bg-hover-rgb))"
                 : r >= 0.8 ? GREEN
                 : r >= 0.5 ? "rgba(0,255,163,0.55)"
                 : r >= 0.25 ? "rgba(0,255,163,0.28)"
                 : "rgba(0,255,163,0.12)";
+              const dev = avg > 0 ? Math.round((h.avg_viewers / avg - 1) * 100) : 0;
               return (
                 <div key={h.hour} className="group relative">
-                  <div className="h-8 cursor-pointer rounded-sm transition-transform hover:scale-110"
+                  <div className="h-9 cursor-pointer rounded-sm transition-transform hover:scale-110"
                        style={{ background: bg }} />
                   <span className="mt-0.5 block text-center text-[9px] tabular-nums text-muted/70">
                     {h.hour % 3 === 0 ? h.hour : ""}
                   </span>
                   {/* 호버 툴팁 */}
-                  <div className="pointer-events-none absolute bottom-10 left-1/2 z-20 hidden -translate-x-1/2
+                  <div className="pointer-events-none absolute bottom-11 left-1/2 z-20 hidden -translate-x-1/2
                                   whitespace-nowrap rounded-lg border border-border bg-bg-card px-2.5 py-1.5
                                   text-[10px] text-fg shadow-2xl group-hover:block">
                     {String(h.hour).padStart(2, "0")}시: 신입 평균 <b>{nf(h.avg_viewers)}명</b>
+                    {h.snaps > 0 && avg > 0 && (
+                      <> · 평균 대비{" "}
+                        <b style={{ color: dev >= 0 ? GREEN : "#EF4444" }}>
+                          {dev >= 0 ? "+" : ""}{dev}%
+                        </b>
+                      </>
+                    )}
                     {" "}(경쟁 채널 {nf(h.channels)}개)
                   </div>
                 </div>
               );
             })}
           </div>
+
+          {/* 색 범례 — 절대 수치가 아니라 24시간 안에서의 상대 위치라는 걸 명시한다 */}
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted">
+            <span className="flex items-center gap-1.5">
+              낮음 {span > 0 && <b className="tabular-nums text-fg">{nf(min)}명</b>}
+              {["rgba(0,255,163,0.12)", "rgba(0,255,163,0.28)", "rgba(0,255,163,0.55)", GREEN].map((c) => (
+                <span key={c} className="h-2.5 w-4 rounded-sm" style={{ background: c }} />
+              ))}
+              {span > 0 && <b className="tabular-nums text-fg">{nf(min + span)}명</b>} 높음
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="h-2.5 w-4 rounded-sm" style={{ background: "rgb(var(--color-bg-hover-rgb))" }} />
+              수집된 신입 방송 없음
+            </span>
+          </div>
+
           <Sub>
-            * 초록색이 짙을수록 신입 방송 대비 시청자 유입이 높은 골든타임 시간대입니다.
-            최근 24시간 집계 기준이며, 회색은 해당 시간대에 수집된 신입 방송이 없다는 뜻입니다.
+            * 색은 <b className="text-fg">24시간 중 상대적인 강약</b>입니다(그 시간대 값이
+            최저면 가장 옅고 최고면 가장 짙음). 수천 개 방송을 시간별로 평균낸 값이라
+            시간대 차이 자체는 작게 나오므로, 절대 수치보다 어느 시간이 상대적으로 유리한지를
+            보는 데 쓰세요. 실제 수치와 평균 대비 편차는 칸에 마우스를 올리면 나옵니다.
+            최근 24시간 집계 기준입니다.
           </Sub>
         </>
       )}
@@ -231,9 +273,8 @@ export function TitleKeywordCard({ tk, label = "신입" }:
 }
 
 // ── ② 블루오션 카테고리 TOP 5 ───────────────────────────────────────────────
-// dense: 2열 레이아웃의 좁은 칼럼에 들어갈 때 — 5칸 가로 배치 대신 2칸으로 접는다.
-export function BlueOceanCards({ cats, summary, dense = false, label = "신입" }:
-  { cats: NewcomerCategory[]; summary?: NewcomerSummary; dense?: boolean; label?: string }) {
+export function BlueOceanCards({ cats, summary, label = "신입" }:
+  { cats: NewcomerCategory[]; summary?: NewcomerSummary; label?: string }) {
   // 블루오션 지수 = 카테고리 채널당 평균 시청자 ÷ 신입 전체 평균.
   // 표본이 1~2개면 우연히 높게 나오므로 방송 3개 이상만 후보로 둔다(인사이트 카드와 같은 기준).
   const base = Math.max(1, summary?.avg_viewers ?? 1);
@@ -262,28 +303,19 @@ export function BlueOceanCards({ cats, summary, dense = false, label = "신입" 
         {label} 방송 수 대비 시청자가 많은 카테고리 — 경쟁이 적고 노출 효율이 좋은 구간입니다.
       </p>
 
-      {/* dense(2열 레이아웃의 좁은 칼럼)에서는 카드가 세로로 5칸 쌓이면서 우측 패널보다
-          훨씬 길어져 아래에 큰 빈 공간을 만들었다 → 3열 2행으로 접고 패딩/폰트를 줄인다. */}
-      <div className={`mt-4 grid gap-2 ${dense ? "grid-cols-2 sm:grid-cols-3" : "grid-cols-2 md:grid-cols-5"}`}>
+      <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
         {top.map((c, i) => (
-          <div key={c.category}
-               className={`rounded-xl border ${dense ? "p-2.5" : "p-3"}`}
+          <div key={c.category} className="rounded-xl border p-3"
                style={{ background: "rgba(0,255,163,0.04)",
                         borderColor: i === 0 ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))" }}>
-            <p className={`truncate font-bold text-fg ${dense ? "text-[11px]" : "text-xs"}`}
-               title={c.category}>{c.category}</p>
+            <p className="truncate text-xs font-bold text-fg" title={c.category}>{c.category}</p>
             <p className="mt-1 tracking-tight">
-              <span className={`font-extrabold tabular-nums ${dense ? "text-base" : "text-lg"}`}
-                    style={{ color: GREEN }}>
+              <span className="text-lg font-extrabold tabular-nums" style={{ color: GREEN }}>
                 {c.index.toFixed(1)}x
               </span>
             </p>
-            <p className={`mt-0.5 text-muted ${dense ? "text-[10px]" : "text-[11px]"}`}>
-              채널당 {nf(c.avg_viewers)}명
-            </p>
-            <p className={`text-muted/70 ${dense ? "text-[10px]" : "text-[11px]"}`}>
-              방송 {nf(c.lives)}개
-            </p>
+            <p className="mt-0.5 text-[11px] text-muted">채널당 {nf(c.avg_viewers)}명</p>
+            <p className="text-[11px] text-muted/70">방송 {nf(c.lives)}개</p>
           </div>
         ))}
       </div>
