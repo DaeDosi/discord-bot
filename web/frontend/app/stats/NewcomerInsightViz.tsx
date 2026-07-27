@@ -106,16 +106,16 @@ export function GoldenHourHeatmap({ hourly }: { hourly: NonNullable<NewcomerInsi
           </div>
 
           {/* 색 범례 — 절대 수치가 아니라 24시간 안에서의 상대 위치라는 걸 명시한다 */}
-          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted">
-            <span className="flex items-center gap-1.5">
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm text-muted">
+            <span className="flex items-center gap-2">
               낮음 {span > 0 && <b className="tabular-nums text-fg">{nf(min)}명</b>}
               {["rgba(0,255,163,0.12)", "rgba(0,255,163,0.28)", "rgba(0,255,163,0.55)", GREEN].map((c) => (
-                <span key={c} className="h-2.5 w-4 rounded-sm" style={{ background: c }} />
+                <span key={c} className="h-3 w-5 rounded-sm" style={{ background: c }} />
               ))}
               {span > 0 && <b className="tabular-nums text-fg">{nf(min + span)}명</b>} 높음
             </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-2.5 w-4 rounded-sm" style={{ background: "rgb(var(--color-bg-hover-rgb))" }} />
+            <span className="flex items-center gap-2">
+              <span className="h-3 w-5 rounded-sm" style={{ background: "rgb(var(--color-bg-hover-rgb))" }} />
               수집된 신입 방송 없음
             </span>
           </div>
