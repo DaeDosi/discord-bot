@@ -164,6 +164,12 @@ export const api = {
     },
   },
 
+  // 싱드컵 이벤트 — 네이버 라운지 수집 결과(백엔드가 정규화한 형태만 내려온다)
+  singcup: {
+    rankings: (limit = 200) =>
+      fetch(`${BASE}/api/singcup/rankings?limit=${limit}`).then(r => r.json()) as Promise<import("./types").SingcupRankings>,
+  },
+
   // CHZZK Rising — 공개(비로그인) 분석 포털. 인증 불필요라 plain fetch 사용.
   rising: {
     overview: () =>

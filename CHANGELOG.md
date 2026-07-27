@@ -3,6 +3,20 @@
 세션 단위로 주요 작업을 정리합니다. 커밋 메시지가 더 자세하니, 특정 항목의 정확한 diff가
 필요하면 `git log --oneline`으로 관련 커밋 해시를 찾아 `git show <hash>`로 확인하세요.
 
+## 2026-07-28 세션 (싱드컵 이벤트 페이지 신설)
+
+- 네이버 게임 **치지직 라운지 자유게시판**(비공식 feed API)에서 `[싱드컵]` 말머리 게시글을
+  수집해 버프 순위를 보여주는 이벤트 페이지 신설. `/stats` 좌측 메뉴에 `싱드컵 [EVENT]`.
+- 신규: `web/backend/singcup_collector.py`(수집·순위), `routers/singcup_router.py`
+  (`GET /api/singcup/rankings|status`, secret 보호 `POST /collect`),
+  `app/stats/Singcup.tsx`, `singcup_feeds`/`singcup_collect_runs`/`singcup_collect_lock` 테이블.
+- 주의점 두 가지가 API 함정: **offset은 페이지 번호**(+1이지 +30이 아님), **limit 상한 30**.
+- 작성자 중복 제거는 `user.userIdHash` 기준(닉네임은 바뀌고 겹친다). 한 작성자는 가장
+  버프가 높은 한 편만 순위에 넣고, 동률은 조회수 → 작성 시각 → feedId로 가린다.
+- 수집 실패가 순위를 비우지 않게: 스키마가 깨지면 '빈 결과'가 아니라 '수집 실패'로 기록하고,
+  게시글은 **전체 스캔 성공 회차에서 연속 2회 누락**일 때만 비활성화한다.
+- Railway replica가 늘어도 `singcup_collect_lock` 분산 락으로 한 번에 하나만 실행.
+
 ## 2026-07-27 세션 (첫 방송일 정확 수집 + '신규 & 초기 분석' 통합)
 
 ### '신규 & 초기 분석' 메뉴 통합

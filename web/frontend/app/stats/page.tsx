@@ -20,6 +20,7 @@ import CategoryRankCards from "./CategoryRankCards";
 import RankingCharts from "./RankingCharts";
 import TagSearch from "./TagSearch";
 import PeriodAnalysis from "./PeriodAnalysis";
+import Singcup from "./Singcup";
 import { ViewerDistribution, TrafficHeatmap, TitleKeywordRank } from "./OverviewViz";
 import { GoldenHourHeatmap, BlueOceanCards, TierDistribution, TitleKeywordCard, VacancyHours } from "./NewcomerInsightViz";
 import StatsNav, { type Tab } from "./StatsNav";
@@ -2160,6 +2161,7 @@ export default function StatsPage() {
 
             {/* 우측 뷰 */}
             <div className="min-w-0">
+              {tab === "singcup"                       && <Singcup />}
               {tab === "overview"           && ov   && <OverviewTab ov={ov} stars={stars} />}
               {tab === "newcomers_analysis" && news && <NewcomersAnalysisTab initial={news} onRanking={() => selectTab("newcomers_ranking")} />}
               {tab === "period_analysis"              && <PeriodAnalysis />}

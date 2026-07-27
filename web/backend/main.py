@@ -19,6 +19,7 @@ from auth import exchange_code, get_discord_user, create_jwt, FRONTEND_URL, veri
 from chzzk_monitor import start_monitor
 from rising_collector import start_collector
 from chzzk_channel_history import start_history_backfill
+from singcup_collector import start_singcup_collector
 from routers.auth_router       import router as auth_router
 from routers.guilds_router     import router as guilds_router
 from routers.settings_router   import router as settings_router
@@ -31,6 +32,7 @@ from routers.admin_router      import router as admin_router
 from routers.points_router     import router as points_router
 from routers.mc_event_router   import router as mc_event_router
 from routers.rising_router      import router as rising_router
+from routers.singcup_router     import router as singcup_router
 
 
 @asynccontextmanager
@@ -41,6 +43,9 @@ async def lifespan(app: FastAPI):
     # 첫 방송일 백필 — '신규 & 초기 분석'의 60일 필터가 성립하려면 채널마다 한 번씩
     # first_live_date를 채워 둬야 한다. 요청 경로에서 모으면 첫 방문자가 다 기다린다.
     asyncio.create_task(start_history_backfill())
+    # 싱드컵 이벤트 수집 — 이벤트 기간에만 돌고, 여러 replica가 떠도 DB 락으로
+    # 한 번에 하나만 실행된다. 실패해도 메인 통계 서비스에는 영향이 없다.
+    asyncio.create_task(start_singcup_collector())
     yield
 
 
@@ -74,6 +79,7 @@ app.include_router(admin_router)
 app.include_router(points_router)
 app.include_router(mc_event_router)
 app.include_router(rising_router)
+app.include_router(singcup_router)
 
 
 @app.get("/auth/callback")

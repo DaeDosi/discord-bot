@@ -516,3 +516,39 @@ export interface RisingPeriodAnalysis {
   error?: string;
   detail?: string;
 }
+
+// ── 싱드컵 이벤트 ────────────────────────────────────────────────────────────
+// 백엔드(singcup_collector)가 네이버 라운지 응답을 정규화해 내려준다.
+// 프론트는 원본 API 구조를 전혀 모른다.
+export type SingcupStatus = "UPCOMING" | "LIVE" | "ENDED";
+export interface SingcupEntry {
+  rank:                  number;
+  feedId:                number;
+  authorIdHash:          string;
+  authorNickname:        string;
+  authorProfileImageUrl: string;
+  authorVerified:        boolean;
+  title:                 string;
+  buffCount:             number;
+  nerfCount:             number;
+  viewCount:             number;
+  commentCount:          number;
+  createdAt:             string | null;
+  clipUrl:               string | null;
+  postUrl:               string;
+  mobilePostUrl:         string;
+}
+export interface SingcupRankings {
+  event: {
+    id: string; name: string; startAt: string; endAt: string; status: SingcupStatus;
+  };
+  summary: {
+    submissionCount: number; participantCount: number; totalBuffCount: number;
+    topNickname: string | null;
+  };
+  collector: {
+    lastSuccessAt: string | null; lastAttemptAt: string | null;
+    status: string; stale: boolean; staleAfterMinutes: number;
+  };
+  rankings: SingcupEntry[];
+}

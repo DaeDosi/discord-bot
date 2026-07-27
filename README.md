@@ -15,6 +15,9 @@
 
 테스트: `pip install -r requirements-dev.txt && pytest`
 
+외부 비공식 API를 쓰는 기능이 두 개 있습니다 — 아래 두 절을 꼭 읽어 주세요:
+[치지직 첫 방송일 수집](#치지직-첫-방송일-수집-channel-history) · [싱드컵 이벤트 수집](#싱드컵-이벤트-수집)
+
 ---
 
 ## 치지직 첫 방송일 수집 (channel history)
@@ -237,3 +240,154 @@ CHZZK_LIVE_TESTS=1 pytest tests/integration -m integration   # 실제 치지직 
 통합 테스트 채널은 `4b8f70248caa6f086ceec07aad69a5cc`이며 `firstLiveDate`는
 `2025-01-14 22:19:58`로 고정 검증한다. `totalLiveHours`는 방송할수록 늘어나므로
 고정값으로 검증하지 않는다.
+
+---
+
+## 싱드컵 이벤트 수집
+
+치지직에서 진행하는 **싱드컵** 참가 게시글을 네이버 게임 '치지직 라운지' 자유게시판에서
+모아 **버프 수 순위**를 보여 줍니다. `/stats` 좌측 메뉴의 `싱드컵 [EVENT]`에서 볼 수 있습니다.
+
+### 사용하는 API
+
+```
+GET https://comm-api.game.naver.com/nng_main/v1/community/lounge/chzzk/feed
+    ?offset=<페이지번호>&limit=30&order=NEW&boardId=4&buffFilteringYN=N
+```
+
+> ### ⚠️ 두 가지 함정
+>
+> - **`offset`은 글 개수가 아니라 페이지 번호입니다.** 다음 페이지는 `offset + 1`이지
+>   `offset + 30`이 아닙니다. 30씩 더하면 게시글을 대량으로 건너뜁니다.
+> - **`limit`은 30이 상한입니다.** 100 등을 넣으면 400이 납니다. 올리지 마세요.
+
+이 엔드포인트도 [첫 방송일 수집](#치지직-첫-방송일-수집-channel-history)과 마찬가지로
+**공식 Open API가 아닌 웹 내부 API**입니다. 예고 없이 형태가 바뀌거나 막힐 수 있고,
+**자동화 수집이 네이버 이용약관에 부합하는지는 운영자가 별도로 검토해야 합니다.**
+네이버 로그인 쿠키·세션은 쓰지 않으며(비로그인으로 조회됩니다), 프론트엔드가 네이버를
+직접 부르지 않고 반드시 우리 백엔드를 거칩니다. CORS 우회 프록시나 브라우저 자동화는
+사용하지 않습니다.
+
+### 참가작 판별
+
+제목을 **HTML entity 디코딩 → 유니코드 정규화(NFKC) → 앞뒤 공백 제거**한 뒤
+`^\s*\[\s*싱드컵\s*\]` 에 맞는 글만 참가작으로 봅니다.
+제목에 "싱드컵"이라는 단어만 있고 `[싱드컵]` 말머리가 없으면 제외합니다.
+
+추가 조건: `board.boardId == 4` · 작성 시각이 이벤트 기간(KST) 안 · 클린봇 숨김 아님 ·
+게시글 ID 정상.
+
+`feed.createdDate`는 `YYYYMMDDHHmmss`(KST) 문자열이며 파싱해 epoch로 저장합니다.
+날짜 문자열이 깨진 게시글은 **그 글만** 건너뛰고 경고 로그를 남깁니다.
+
+### 클립 URL
+
+본문(`feed.contents`, JSON 문자열)을 파싱해 구조를 **재귀 순회**하며
+`https://chzzk.naver.com/clips/{id}` 형태를 찾습니다. `textNode.value` / `textNode.link.url` /
+`oglink.link` 등 어디에 있든 잡히고, 배열 인덱스에 의존하지 않습니다. 중복은 제거하고
+첫 번째를 대표 클립으로 씁니다. 본문 JSON 파싱에 실패해도 게시글은 저장하며,
+원문 문자열에서라도 URL을 건집니다.
+
+### 순위 규칙
+
+정렬은 **버프 내림차순 → 조회수 내림차순 → 작성 시각 오름차순 → feedId 오름차순**입니다.
+버프는 바깥쪽 `buff.buffCount`를 씁니다(`feed.buff`도 있지만 섞지 않습니다).
+
+작성자 중복 제거는 **`user.userIdHash`** 기준입니다. 닉네임은 바뀌거나 겹칠 수 있어
+쓰지 않습니다. 한 작성자가 여러 편을 올렸으면 합산하지 않고 **가장 잘 된 한 편만** 순위에
+넣습니다. `userIdHash`가 없는 글은 닉네임으로 합치지 않고 `feed:{feedId}` 임시 키를 씁니다
+(잘못된 병합이 누락보다 나쁩니다).
+
+### 수집 흐름
+
+1. `offset=0`부터 한 페이지씩 **순차** 호출(동시 요청 없음, 페이지 사이 짧은 간격).
+2. 각 게시글을 정규화 → 참가작이면 `feedId` 기준 **upsert**.
+3. `offset += 1`.
+4. 종료 조건: 빈 페이지 / 페이지 전체가 이벤트 시작 이전(`order=NEW`라 최신순) /
+   `SINGCUP_MAX_PAGES` 도달 / 동일 페이지 반복 감지.
+5. **이벤트 구간을 끝까지 확인한 회차(full scan)에서만** 이번에 안 보인 글의
+   `missing_scan_count`를 올리고, 연속 2회 누락일 때만 `active=0`으로 내립니다.
+   원본 API의 일시적 누락으로 순위가 사라지지 않게 하기 위한 2단계 처리입니다.
+
+**수집에 실패해도 DB의 기존 순위는 절대 지우지 않습니다.** 응답 스키마가 깨지면
+'데이터 없음'이 아니라 **수집 실패**로 처리하고 마지막 정상 데이터를 계속 제공합니다.
+
+### 상태 코드별 처리
+
+| 상태 | 처리 |
+| --- | --- |
+| 400 | 파라미터/스펙 변경 신호 — **재시도하지 않음**, `SCHEMA_ERROR`로 기록 |
+| 401 / 403 | 접근 거부 — 재시도하지 않고 `BLOCKED`로 표시(운영자 확인 필요) |
+| 404 | 경로 변경 가능성 — 재시도하지 않고 `SCHEMA_ERROR` |
+| 408 / 429 / 5xx / timeout | 최대 3회 재시도, 지수 백오프 + 지터, `Retry-After` 우선 |
+
+숫자 필드는 안전하게 정수화합니다(null·변환 불가 → 0, 음수 → 0으로 보정하고 경고).
+게시글 한 건의 오류가 전체 수집을 멈추지 않습니다.
+
+### API
+
+```bash
+curl https://<backend>/api/singcup/rankings          # 순위(공개)
+curl https://<backend>/api/singcup/status            # 수집기 진단(공개)
+
+# 수동 수집 — SINGCUP_ADMIN_SECRET 헤더 필요
+curl -X POST https://<backend>/api/singcup/collect -H 'X-Singcup-Secret: <secret>'
+```
+
+`secret`이 설정되지 않은 배포에서는 수동 수집이 **503으로 아예 막힙니다**(빈 값과 일치해
+열리는 사고 방지). secret은 프론트엔드에 노출하지 않으며 로그에도 남기지 않습니다.
+
+### 수집 주기와 중복 실행 방지
+
+백엔드가 뜰 때 `start_singcup_collector()`가 함께 돌며, 이벤트 상태에 따라 스스로 조절합니다.
+
+- 시작 전: 시작 시각까지 대기(최대 30분 간격으로 확인)
+- 진행 중: `SINGCUP_COLLECT_INTERVAL_MINUTES`(기본 3분)
+- 종료 후: `SINGCUP_POST_EVENT_HOURS`(기본 24시간) 동안만 1시간 간격으로 최종 검산, 이후 중단
+
+**Railway replica가 여러 개여도 중복 수집되지 않습니다** — `singcup_collect_lock` 테이블에
+조건부 UPDATE(rowcount로 획득 판정)로 분산 락을 겁니다. 락 TTL은 `SINGCUP_MAX_RUN_SECONDS`와
+같아, 프로세스가 죽어도 그 시간 뒤 자동으로 풀립니다. 이전 수집이 끝나지 않았으면 새 작업은
+`SKIPPED`로 건너뜁니다.
+
+별도 Cron이 필요 없지만, Railway Cron Job으로 돌리고 싶다면 위 `POST /api/singcup/collect`를
+호출하면 됩니다(락이 같이 걸리므로 내장 루프와 같이 써도 안전합니다).
+
+### 환경변수
+
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `SINGCUP_ENABLED` | `true` | `false`면 수집 루프를 띄우지 않음(조회 API는 그대로 동작) |
+| `SINGCUP_EVENT_ID` | `singcup-2026` | 이벤트 식별자(DB 행 구분) |
+| `SINGCUP_EVENT_NAME` | `싱드컵` | 화면 표기명 |
+| `SINGCUP_START_AT` | `2026-07-27T20:00:00+09:00` | 시작(KST) |
+| `SINGCUP_END_AT` | `2026-08-09T23:59:59+09:00` | 종료(KST) |
+| `SINGCUP_COLLECT_INTERVAL_MINUTES` | `3` | 진행 중 수집 주기 |
+| `SINGCUP_MAX_PAGES` | `100` | 한 회차 최대 페이지 수 |
+| `SINGCUP_REQUEST_TIMEOUT_MS` | `10000` | 요청 타임아웃 |
+| `SINGCUP_MAX_RETRIES` | `3` | 재시도 가능한 오류의 총 시도 횟수 |
+| `SINGCUP_MAX_RUN_SECONDS` | `300` | 한 회차 최대 실행 시간(= 락 TTL) |
+| `SINGCUP_STALE_AFTER_MINUTES` | `20` | 이 시간을 넘기면 화면에 '집계 지연' 표시 |
+| `SINGCUP_MISSING_SCANS` | `2` | 연속 몇 회 누락에서 비활성 처리할지 |
+| `SINGCUP_POST_EVENT_HOURS` | `24` | 종료 후 최종 검산 기간 |
+| `SINGCUP_ADMIN_SECRET` | (없음) | 수동 수집 인증. **비워두면 수동 수집이 막힙니다** |
+
+이벤트 기간은 코드에 흩어 두지 않고 위 두 환경변수(또는 `singcup_collector`의 기본값)
+한 곳에서만 관리합니다.
+
+### 403/429가 늘어날 때
+
+1. `GET /api/singcup/status`의 `recentRuns`에서 `status`를 확인합니다
+   (`BLOCKED`면 IP/정책, `FAILED`면 일시 장애, `SCHEMA_ERROR`면 API 변경).
+2. `SINGCUP_COLLECT_INTERVAL_MINUTES`를 늘려 요청량을 줄입니다.
+3. **우회를 시도하지 마세요.** 순위 페이지는 마지막 정상 데이터로 계속 동작하며
+   화면에 '집계 지연'이 표시됩니다.
+4. Railway에서 네이버 접근이 되는지 확인하려면:
+   `SINGCUP_LIVE_TESTS=1 pytest tests/integration -m integration`
+
+### 테스트
+
+```bash
+pytest tests/test_singcup.py                                    # mock (외부 호출 없음)
+SINGCUP_LIVE_TESTS=1 pytest tests/integration -m integration     # 실제 라운지 API
+```

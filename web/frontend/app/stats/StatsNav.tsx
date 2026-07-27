@@ -1,15 +1,25 @@
 "use client";
 import { useState } from "react";
-import { ChevronDown, LineChart as LineIcon, ListOrdered, Gamepad2, Sprout, Radio, Users, Hash, SlidersHorizontal } from "lucide-react";
+import { ChevronDown, LineChart as LineIcon, ListOrdered, Gamepad2, Sprout, Radio, Users, Hash, SlidersHorizontal, Trophy } from "lucide-react";
 
 // /stats 좌측 메뉴. 탭은 URL이 아니라 state로 전환된다.
 // (route 기반 항목을 지원하던 분기는 /stats/network 제거와 함께 걷어냈다.)
 export type Tab =
   | "overview" | "newcomers_analysis" | "period_analysis"
   | "ranking" | "ranking_period" | "newcomers_ranking"
-  | "category" | "category_streamers" | "tags";
+  | "category" | "category_streamers" | "tags"
+  | "singcup";
 
-export interface NavItem { key: Tab; label: string; icon: React.ReactNode; live?: boolean }
+export interface NavItem {
+  key: Tab; label: string; icon: React.ReactNode; live?: boolean;
+  /** 우측에 골드 'EVENT' 배지를 붙인다(기간 한정 이벤트 메뉴) */
+  event?: boolean;
+}
+
+// 기간 한정 이벤트 — 그룹에 넣지 않고 검색창과 '실시간 분석' 사이에 단독으로 둔다.
+export const EVENT_ITEM: NavItem = {
+  key: "singcup", label: "싱드컵", icon: <Trophy size={16} />, event: true,
+};
 
 // 랭킹은 한 그룹으로 묶되 기준이 다르다는 것은 LIVE 표시로 구분한다.
 // 실시간 랭킹은 최신 수집 사이클 한 장의 동시 시청자 순위라 그 순간 방송 중이었는지에
@@ -41,6 +51,8 @@ export const groupHeaderOf = (k: Tab): string | null =>
 
 const GREEN = "#00FFA3";
 const GRAD  = `linear-gradient(135deg, ${GREEN}, #00C2FF)`;
+// 이벤트 포인트 — 사이트 기본 포인트(청록)와 충돌하지 않게 골드 계열을 쓴다
+const GOLD  = "#FACC15";
 
 export default function StatsNav({
   active, onSelect, children,
@@ -58,20 +70,32 @@ export default function StatsNav({
 
   const renderItem = (t: NavItem) => {
     const isActive = active === t.key;
+    // 이벤트 메뉴는 활성 스타일을 그대로 쓰되 포인트 색만 골드로 바꾼다.
+    const point = t.event ? GOLD : GREEN;
     return (
       <button key={t.key} onClick={() => onSelect(t.key)}
         className="relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors w-full border overflow-hidden"
         style={{
-          background: isActive ? "rgba(0,255,163,0.08)" : "transparent",
-          borderColor: isActive ? "rgba(0,194,255,0.35)" : "transparent",
+          background: isActive ? (t.event ? "rgba(250,204,21,0.10)" : "rgba(0,255,163,0.08)") : "transparent",
+          borderColor: isActive ? (t.event ? "rgba(250,204,21,0.40)" : "rgba(0,194,255,0.35)") : "transparent",
         }}>
-        {isActive && <span className="absolute left-0 top-0 bottom-0 w-1 rounded-r" style={{ background: GRAD }} />}
-        <span style={{ color: isActive ? GREEN : "rgb(var(--color-muted-rgb))" }}>{t.icon}</span>
-        <span className="block text-sm font-semibold whitespace-nowrap" style={{ color: isActive ? GREEN : undefined }}>{t.label}</span>
+        {isActive && (
+          <span className="absolute left-0 top-0 bottom-0 w-1 rounded-r"
+                style={{ background: t.event ? GOLD : GRAD }} />
+        )}
+        <span style={{ color: isActive ? point : "rgb(var(--color-muted-rgb))" }}>{t.icon}</span>
+        <span className="block text-sm font-semibold whitespace-nowrap"
+              style={{ color: isActive ? point : undefined }}>{t.label}</span>
         {t.live && (
           <span className="ml-auto flex shrink-0 items-center gap-1" title="실시간 기준">
             <span className="nb-live-dot h-1.5 w-1.5 rounded-full" style={{ background: "#FF4D4D" }} />
             <span className="text-[9px] font-bold tracking-wide" style={{ color: "#FF4D4D" }}>LIVE</span>
+          </span>
+        )}
+        {t.event && (
+          <span className="nb-event-badge ml-auto shrink-0 rounded px-1.5 py-0.5 text-[9px] font-extrabold tracking-wide"
+                style={{ background: GOLD, color: "#1a1400" }} title="기간 한정 이벤트">
+            EVENT
           </span>
         )}
       </button>
@@ -81,6 +105,8 @@ export default function StatsNav({
   return (
     <aside className="md:sticky md:top-[76px] md:self-start">
       {children}
+      {/* 스트리머 검색 ↔ 실시간 분석 사이에 단독 이벤트 메뉴 */}
+      <div className="mb-1">{renderItem(EVENT_ITEM)}</div>
       <nav className="flex flex-col gap-1">
         {NAV_GROUPS.map((g, gi) => {
           if (!g.header) return <div key={gi} className="mt-1">{g.items.map(renderItem)}</div>;

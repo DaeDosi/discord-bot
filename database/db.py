@@ -539,6 +539,67 @@ async def init_db():
            )""",
         "CREATE INDEX IF NOT EXISTS idx_chzzk_channel_history_status "
         "ON chzzk_channel_history(status, last_attempt_at)",
+        # ── 싱드컵 이벤트 (네이버 게임 치지직 라운지 자유게시판 수집) ──────────
+        # 비공식 라운지 API에서 '[싱드컵]' 말머리 게시글만 골라 담는다.
+        # 수집 실패로 기존 순위가 사라지면 안 되므로 행을 지우지 않고 active 플래그로
+        # 관리한다(전체 페이지 수집에 성공한 회차에서 연속 2회 안 보일 때만 비활성).
+        """CREATE TABLE IF NOT EXISTS singcup_feeds (
+               feed_id                  INTEGER PRIMARY KEY,   -- 라운지 게시글 ID
+               event_id                 TEXT    NOT NULL,
+               author_id_hash           TEXT    NOT NULL,      -- user.userIdHash (닉네임은 바뀔 수 있다)
+               author_nickname          TEXT    NOT NULL DEFAULT '',
+               author_profile_image_url TEXT    NOT NULL DEFAULT '',
+               author_verified          INTEGER NOT NULL DEFAULT 0,
+               title                    TEXT    NOT NULL DEFAULT '',
+               created_at               INTEGER NOT NULL,      -- epoch (KST 문자열을 파싱)
+               post_updated_at          INTEGER,
+               buff_count               INTEGER NOT NULL DEFAULT 0,
+               nerf_count               INTEGER NOT NULL DEFAULT 0,
+               view_count               INTEGER NOT NULL DEFAULT 0,
+               comment_count            INTEGER NOT NULL DEFAULT 0,
+               clip_url                 TEXT,                  -- 대표(첫 번째) 클립
+               clip_urls                TEXT    NOT NULL DEFAULT '',  -- 개행 구분 전체 목록
+               post_url                 TEXT    NOT NULL DEFAULT '',
+               mobile_post_url          TEXT    NOT NULL DEFAULT '',
+               board_id                 INTEGER,
+               board_name               TEXT    NOT NULL DEFAULT '',
+               lounge_id                TEXT    NOT NULL DEFAULT '',
+               original_lounge_id       TEXT    NOT NULL DEFAULT '',
+               raw_contents             TEXT,                  -- 본문 원본 JSON 문자열
+               hidden_by_clean_bot      INTEGER NOT NULL DEFAULT 0,
+               pinned                   INTEGER NOT NULL DEFAULT 0,
+               active                   INTEGER NOT NULL DEFAULT 1,
+               missing_scan_count       INTEGER NOT NULL DEFAULT 0,
+               first_collected_at       INTEGER NOT NULL,
+               last_collected_at        INTEGER NOT NULL,
+               row_updated_at           INTEGER NOT NULL
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_feeds_rank "
+        "ON singcup_feeds(event_id, active, buff_count DESC, view_count DESC, created_at, feed_id)",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_feeds_author "
+        "ON singcup_feeds(event_id, author_id_hash)",
+        """CREATE TABLE IF NOT EXISTS singcup_collect_runs (
+               id          INTEGER PRIMARY KEY AUTOINCREMENT,
+               event_id    TEXT    NOT NULL,
+               started_at  INTEGER NOT NULL,
+               finished_at INTEGER,
+               ok          INTEGER NOT NULL DEFAULT 0,
+               full_scan   INTEGER NOT NULL DEFAULT 0,  -- 이벤트 구간 전체를 확인했는가
+               pages       INTEGER NOT NULL DEFAULT 0,
+               feeds_seen  INTEGER NOT NULL DEFAULT 0,
+               matched     INTEGER NOT NULL DEFAULT 0,
+               status      TEXT    NOT NULL DEFAULT 'OK',
+               note        TEXT    NOT NULL DEFAULT ''
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_runs_time ON singcup_collect_runs(started_at)",
+        # 분산 락 — Railway replica가 늘어나도 같은 시각에 한 프로세스만 수집하게 한다.
+        # 조건부 UPDATE의 rowcount로 획득 여부를 판정한다(check-then-set 경합 방지).
+        """CREATE TABLE IF NOT EXISTS singcup_collect_lock (
+               id           INTEGER PRIMARY KEY CHECK (id = 1),
+               locked_until INTEGER NOT NULL DEFAULT 0,
+               owner        TEXT    NOT NULL DEFAULT ''
+           )""",
+        "INSERT OR IGNORE INTO singcup_collect_lock (id, locked_until, owner) VALUES (1, 0, '')",
     ]:
         try:
             await db.execute(sql)

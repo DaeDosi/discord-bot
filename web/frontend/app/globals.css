@@ -200,6 +200,18 @@ html.light .hero-grid {
   .nb-neon-border.nb-neon-glow::before { animation: none; opacity: 0.55; }
 }
 
+/* 이벤트(싱드컵) 배지 — 골드 사각 배지에 은은한 glow. 번쩍이지 않게 밝기만 오르내린다. */
+@keyframes nb-event-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(250, 204, 21, 0.00); }
+  50%      { box-shadow: 0 0 8px 1px rgba(250, 204, 21, 0.45); }
+}
+.nb-event-badge {
+  animation: nb-event-glow 2.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nb-event-badge { animation: none; box-shadow: 0 0 6px 0 rgba(250, 204, 21, 0.35); }
+}
+
 /* 좌측 메뉴 LIVE 표시 — 은은한 깜빡임(과하지 않게 1.6초 주기) */
 @keyframes nb-live-blink {
   0%, 100% { opacity: 1; }
