@@ -103,8 +103,10 @@ function FilterPanel({
         <span className="text-sm font-bold text-fg">분석 필터</span>
       </div>
 
-      {/* min-h-0: flex 아이템의 기본 min-height:auto 때문에 overflow-y가 먹지 않는 것을 푼다 */}
-      <div className="md:min-h-0 md:flex-1 md:overflow-y-auto">
+      {/* min-h-0: flex 아이템의 기본 min-height:auto 때문에 overflow-y가 먹지 않는 것을 푼다.
+          overscroll-contain: 필터 목록 끝까지 스크롤한 뒤 계속 굴리면 스크롤이 페이지로
+          넘어가(스크롤 체이닝) 본문이 같이 내려가던 것을 막는다. */}
+      <div className="md:min-h-0 md:flex-1 md:overflow-y-auto md:overscroll-contain">
       <Section title="기간">
         <div className="grid grid-cols-2 gap-1.5">
           {RANGES.map((r) => {

@@ -8,7 +8,6 @@ import type { ViewerBand, HeatCell, TitleKeyword } from "@/lib/types";
 // (개요 5개 API의 Promise.all에 끼우면 초기 로딩이 그만큼 늦어진다).
 
 const GREEN = "#00FFA3";
-const PANEL = "#181A20";
 const GRAY = "#9CA3AF";
 const nf = (n: number) => n.toLocaleString("ko-KR");
 const Sub = ({ children }: { children: React.ReactNode }) =>
@@ -164,7 +163,9 @@ export function TitleKeywordRank() {
   const max = Math.max(1, ...(kws ?? []).map((k) => k.lives));
 
   return (
-    <div className="card">
+    // 색은 전부 테마 토큰을 쓴다 — 예전엔 PANEL(#181A20)/흰 글씨/흰색 반투명 트랙 같은
+    // 고정 다크 값이라 라이트 모드에서 이 카드만 검은 패널로 남았다.
+    <div className="card flex h-full flex-col">
       <h3 className="section-title">인기 방송 제목 키워드</h3>
       <p className="mt-1 text-sm text-muted">현재 라이브 제목에서 가장 많이 쓰인 단어입니다.</p>
 
@@ -176,23 +177,25 @@ export function TitleKeywordRank() {
         <p className="py-10 text-center text-sm text-muted">추출할 제목 데이터가 아직 없습니다.</p>
       ) : (
         <>
-          <div className="mt-4 space-y-1.5">
+          <div className="mt-4 flex flex-1 flex-col justify-between gap-1.5">
             {kws.map((k, i) => (
-              <div key={k.keyword} className="flex items-center gap-2.5 rounded-lg p-2"
-                   style={{ background: PANEL }}>
-                <span className="w-5 shrink-0 text-right text-[11px] font-extrabold tabular-nums"
-                      style={{ color: i < 3 ? GREEN : GRAY }}>{i + 1}</span>
-                <span className="w-[92px] shrink-0 truncate rounded-full border px-2.5 py-0.5 text-xs font-medium"
-                      style={{ color: "#fff", borderColor: "rgba(0,255,163,0.25)", background: "rgba(0,255,163,0.08)" }}
+              <div key={k.keyword} className="flex items-center gap-2.5 rounded-lg bg-bg-hover p-2">
+                <span className="w-5 shrink-0 text-right text-xs font-extrabold tabular-nums"
+                      style={{ color: i < 3 ? GREEN : undefined }}
+                      >{i + 1}</span>
+                {/* 태그는 고정폭 안에서 가운데 정렬 — 왼쪽으로 쏠려 보이던 것을 맞춘다 */}
+                <span className="flex w-[104px] shrink-0 items-center justify-center truncate rounded-full
+                                 border px-2.5 py-1 text-xs font-medium text-fg"
+                      style={{ borderColor: "rgba(0,255,163,0.30)", background: "rgba(0,255,163,0.10)" }}
                       title={k.keyword}>
                   {k.keyword}
                 </span>
-                <span className="h-2 flex-1 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.06)" }}>
+                <span className="h-2 flex-1 overflow-hidden rounded-full bg-bg">
                   <span className="block h-full rounded-full"
                         style={{ width: `${(k.lives / max) * 100}%`,
                                  background: `linear-gradient(90deg, ${GREEN}, #06B6D4)` }} />
                 </span>
-                <span className="w-[86px] shrink-0 text-right text-[11px] tabular-nums" style={{ color: GRAY }}>
+                <span className="w-[92px] shrink-0 text-right text-xs tabular-nums text-muted">
                   {nf(k.lives)}개 · {nf(k.avg_viewers)}명
                 </span>
               </div>

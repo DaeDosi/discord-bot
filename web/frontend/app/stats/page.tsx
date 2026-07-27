@@ -656,23 +656,28 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
       {/* 카테고리 점유율 (자체 시간 필터) */}
       <CategoryDonut />
 
-      {/* 급상승 스트리머 + 인기 제목 키워드 (2열) */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-      <div className="card">
+      {/* 급상승 스트리머 + 인기 제목 키워드 (2열, 높이 1:1) */}
+      <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-2">
+      <div className="card flex h-full flex-col">
         <h3 className="section-title mb-1">급상승 스트리머</h3>
-        <p className="text-xs text-muted mb-4">24시간 전 대비 동시 시청자 성장률 상위</p>
+        <p className="text-sm text-muted mb-4">24시간 전 대비 동시 시청자 성장률 상위</p>
         {stars && stars.stars.length > 0 ? (
-          <div className="space-y-1.5">
+          // flex-1 + justify-between: 옆 칼럼(키워드 10행)이 더 길어 아래가 비던 것을
+          // 행 간격으로 채운다. 카테고리는 전체 스트리머 랭킹과 같은 알약형 뱃지를 쓴다.
+          <div className="flex flex-1 flex-col justify-between gap-1">
             {stars.stars.slice(0, 8).map((s, i) => (
               <a key={s.chzzk_channel_id} href={`https://chzzk.naver.com/${s.chzzk_channel_id}`}
                  target="_blank" rel="noopener noreferrer"
                  className="flex items-center gap-3 rounded-lg px-2.5 py-2 hover:bg-bg-hover transition-colors">
-                <span className="text-xs font-bold w-5 text-center tabular-nums"
+                <span className="w-5 shrink-0 text-center text-sm font-bold tabular-nums"
                       style={{ color: i < 3 ? GREEN : undefined }}>{i + 1}</span>
-                <span className="text-sm font-semibold text-fg truncate flex-1">{s.channel_name}</span>
-                <span className="text-[11px] text-muted truncate hidden sm:block">{s.category || "-"}</span>
-                <span className="text-sm font-bold tabular-nums flex items-center gap-1" style={{ color: GREEN }}>
-                  <TrendingUp size={12} /> +{nf(s.growth_rate)}%
+                <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-fg">{s.channel_name}</span>
+                {s.category
+                  ? <span className="hidden max-w-[150px] shrink-0 truncate rounded-full border border-border
+                                     bg-bg-hover px-3 py-1 text-xs font-medium text-fg sm:inline-block">{s.category}</span>
+                  : <span className="hidden shrink-0 text-sm text-muted sm:inline-block">-</span>}
+                <span className="flex shrink-0 items-center gap-1 text-[15px] font-bold tabular-nums" style={{ color: GREEN }}>
+                  <TrendingUp size={14} /> +{nf(s.growth_rate)}%
                 </span>
               </a>
             ))}

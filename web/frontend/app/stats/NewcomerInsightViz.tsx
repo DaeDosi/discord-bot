@@ -371,7 +371,7 @@ export function BlueOceanCards({ cats, summary, label = "신입" }:
             <p className="truncate text-xs font-bold text-white" title={c.category}>{c.category}</p>
             <p className="mt-1.5 tracking-tight">
               <span className="text-xl font-extrabold tabular-nums" style={{ color: GREEN }}>
-                {c.index.toFixed(1)}x
+                x{c.index.toFixed(1)}
               </span>
             </p>
             <p className="mt-1 text-[11px]" style={{ color: CARD_SUB_TEXT }}>
@@ -385,7 +385,7 @@ export function BlueOceanCards({ cats, summary, label = "신입" }:
       <div className="mt-auto">
         <Sub>
           * 블루오션 지수 = 카테고리 채널당 평균 시청자 ÷ {label} 전체 평균({nf(base)}명).
-          2.0x면 같은 방송을 켜도 평균보다 2배 많은 시청자가 들어온다는 뜻입니다.
+          x2.0이면 같은 방송을 켜도 평균보다 2배 많은 시청자가 들어온다는 뜻입니다.
           표본 왜곡을 막기 위해 {label} 방송 3개 이상인 카테고리만 집계합니다.
         </Sub>
       </div>
