@@ -83,8 +83,8 @@ export function GoldenHourHeatmap({ hourly }: { hourly: NonNullable<NewcomerInsi
                 <div key={h.hour} className="group relative">
                   <div className="h-9 cursor-pointer rounded-sm transition-transform hover:scale-110"
                        style={{ background: bg }} />
-                  <span className="mt-0.5 block text-center text-[9px] tabular-nums text-muted/70">
-                    {h.hour % 3 === 0 ? h.hour : ""}
+                  <span className="mt-0.5 block whitespace-nowrap text-center text-[9px] tabular-nums text-muted/70">
+                    {h.hour % 3 === 0 ? `${h.hour}시` : ""}
                   </span>
                   {/* 호버 툴팁 */}
                   <div className="pointer-events-none absolute bottom-11 left-1/2 z-20 hidden -translate-x-1/2
@@ -136,6 +136,8 @@ export function GoldenHourHeatmap({ hourly }: { hourly: NonNullable<NewcomerInsi
 // ── 대기업 방종 '빈집 타임' (소형 탭) ───────────────────────────────────────
 // 시간대별로 대형 채널 동시 라이브 수(막대, 회색)와 소형 채널 방송당 평균 시청자(막대, 네온)를
 // 겹쳐 보여 준다. 대형이 적은데 소형 평균이 높은 시간이 노려볼 만한 '빈집'이다.
+const BAR_MAX_PCT = 88;  // 최고값 막대가 트랙 경계에 닿아 잘려 보이지 않도록 남기는 여유
+const BAR_MIN_PCT = 3;   // 0은 아니지만 아주 작은 값이 완전히 사라지지 않게 하는 바닥
 export function VacancyHours({ hourly, best }: {
   hourly: NonNullable<NewcomerInsights["vacancy_hourly"]>;
   best: NonNullable<NewcomerInsights["vacancy_best"]> | null | undefined;
@@ -179,39 +181,49 @@ export function VacancyHours({ hourly, best }: {
             </p>
           )}
 
+          {/* 막대 높이는 트랙의 최대 BAR_MAX_PCT까지만 쓴다. 100%를 쓰면 최고값 막대가
+              트랙 위/아래 경계에 정확히 닿아 잘려 보였다. 0이 아닌 아주 작은 값은
+              BAR_MIN_PCT 바닥을 줘서 아예 사라지지 않게 한다. */}
           <div className="mt-4 grid grid-cols-12 gap-1 md:grid-cols-[repeat(24,minmax(0,1fr))]">
-            {hourly.map((h) => (
-              <div key={h.hour} className="group relative flex flex-col justify-end">
-                {/* 위: 대형 채널 동시 라이브 수(회색) / 아래: 소형 평균 시청자(네온) */}
-                <div className="flex h-10 items-end justify-center">
-                  <div className="w-full rounded-sm"
-                       style={{ height: `${(h.big_lives / maxBig) * 100}%`,
-                                background: "rgba(148,163,184,0.35)" }} />
+            {hourly.map((h) => {
+              const bigPct = h.big_lives > 0
+                ? Math.max(BAR_MIN_PCT, (h.big_lives / maxBig) * BAR_MAX_PCT) : 0;
+              const smallPct = h.small_avg_viewers > 0
+                ? Math.max(BAR_MIN_PCT, (h.small_avg_viewers / maxSmall) * BAR_MAX_PCT) : 0;
+              return (
+                <div key={h.hour} className="group relative flex flex-col justify-end">
+                  {/* 위: 대형 채널 동시 라이브 수(회색) / 아래: 소형 평균 시청자(네온) */}
+                  <div className="flex h-16 items-end justify-center">
+                    <div className="w-full rounded-sm"
+                         style={{ height: `${bigPct}%`, background: "rgba(148,163,184,0.35)" }} />
+                  </div>
+                  {/* 두 트랙 사이 기준선 — 위/아래 막대가 어디서 갈라지는지 보이게 */}
+                  <div className="my-1 h-px w-full" style={{ background: "rgb(var(--color-border-rgb))" }} />
+                  <div className="flex h-16 items-start justify-center">
+                    <div className="w-full rounded-sm"
+                         style={{ height: `${smallPct}%`,
+                                  background: h.hour === best?.hour ? GREEN : "rgba(0,255,163,0.45)" }} />
+                  </div>
+                  <span className="mt-1 block whitespace-nowrap text-center text-[9px] tabular-nums text-muted/70">
+                    {h.hour % 3 === 0 ? `${h.hour}시` : ""}
+                  </span>
+                  <div className="pointer-events-none absolute bottom-[9rem] left-1/2 z-20 hidden -translate-x-1/2
+                                  whitespace-nowrap rounded-lg border border-border bg-bg-card px-2.5 py-1.5
+                                  text-[10px] text-fg shadow-2xl group-hover:block">
+                    {p2(h.hour)}시: 대형 <b>{h.big_lives}개</b> · 소형 평균 <b>{nf(h.small_avg_viewers)}명</b>
+                  </div>
                 </div>
-                <div className="mt-0.5 flex h-10 items-start justify-center">
-                  <div className="w-full rounded-sm"
-                       style={{ height: `${(h.small_avg_viewers / maxSmall) * 100}%`,
-                                background: h.hour === best?.hour ? GREEN : "rgba(0,255,163,0.45)" }} />
-                </div>
-                <span className="mt-0.5 block text-center text-[9px] tabular-nums text-muted/70">
-                  {h.hour % 3 === 0 ? h.hour : ""}
-                </span>
-                <div className="pointer-events-none absolute bottom-[5.5rem] left-1/2 z-20 hidden -translate-x-1/2
-                                whitespace-nowrap rounded-lg border border-border bg-bg-card px-2.5 py-1.5
-                                text-[10px] text-fg shadow-2xl group-hover:block">
-                  {p2(h.hour)}시: 대형 <b>{h.big_lives}개</b> · 소형 평균 <b>{nf(h.small_avg_viewers)}명</b>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
-          <div className="mt-3 flex items-center gap-4 text-[11px] text-muted">
-            <span className="flex items-center gap-1.5">
-              <span className="h-2 w-3 rounded-sm" style={{ background: "rgba(148,163,184,0.35)" }} />
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm text-muted">
+            <span className="flex items-center gap-2">
+              <span className="h-3 w-5 rounded-sm" style={{ background: "rgba(148,163,184,0.35)" }} />
               대형 채널 동시 라이브 수 (위)
             </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-2 w-3 rounded-sm" style={{ background: GREEN }} />
+            <span className="flex items-center gap-2">
+              <span className="h-3 w-5 rounded-sm" style={{ background: GREEN }} />
               소형 채널 방송당 평균 시청자 (아래)
             </span>
           </div>
