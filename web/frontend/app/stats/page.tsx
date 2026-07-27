@@ -23,6 +23,7 @@ import PeriodAnalysis from "./PeriodAnalysis";
 import { ViewerDistribution, TrafficHeatmap, TitleKeywordRank } from "./OverviewViz";
 import { GoldenHourHeatmap, BlueOceanCards, TierDistribution, TitleKeywordCard, VacancyHours } from "./NewcomerInsightViz";
 import StatsNav, { type Tab } from "./StatsNav";
+import { CARD_BORDER, CARD_DARK } from "./cardStyle";
 
 import LineChart, { type LinePoint, type LineSeries } from "./LineChart";
 
@@ -1032,28 +1033,9 @@ function NewcomerCategoryDonut({ cats, label = "신입" }:
   );
 }
 
-// 첫 방송일 뱃지 — 치지직이 준 정확한 첫 방송일이면 실선, NexBot 트랙킹 보완값이면
-// 점선 + '추적' 표기로 구분한다(보완값은 수집 시작 이후만 알 수 있어 실제보다 짧다).
-function DebutBadge({ s }: { s: RisingNewcomer }) {
-  if (!s.first_stream_date) return null;
-  const exact = s.first_stream_source === "CHZZK";
-  const days = Math.max(0, Math.floor(s.debut_days ?? s.first_seen_days ?? 0));
-  return (
-    <span
-      className={`mt-0.5 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums
-                  ${exact ? "border" : "border border-dashed"}`}
-      style={exact
-        ? { color: GREEN, borderColor: "rgba(0,255,163,0.35)", background: "rgba(0,255,163,0.08)" }
-        : { color: "rgb(var(--color-muted-rgb))", borderColor: "rgb(var(--color-border-rgb))" }}
-      title={exact
-        ? `첫 방송 ${s.first_stream_date} (치지직 채널 정보 기준)`
-        : `NexBot이 이 채널을 처음 본 날 ${s.first_stream_date} — 실제 첫 방송은 더 이전일 수 있습니다`}>
-      {exact ? `첫 방송 ${s.first_stream_date} · ${nf(days)}일차` : `추적 ${nf(days)}일차`}
-    </span>
-  );
-}
-
 // 신입 인라인 프로그레스 바 테이블 (랭킹 탭 + 분석 탭 미리보기 공용)
+// (첫 방송일/추적 일차 뱃지는 이름 아래에 붙였다가 표가 지저분해져 걷어냈다.
+//  first_stream_date/debut_days 는 백엔드 필터링에 계속 쓰이므로 응답에는 그대로 있다.)
 function NewcomerTable({ items, maxViewers, maxFollower }:
   { items: RisingNewcomer[]; maxViewers: number; maxFollower: number }) {
   return (
@@ -1115,10 +1097,7 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
                       )}
                     </span>
                     <ChzzkMark />
-                    <span className="min-w-0">
-                      <span className="block text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[130px] md:max-w-none">{s.channel_name}</span>
-                      <DebutBadge s={s} />
-                    </span>
+                    <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[130px] md:max-w-none">{s.channel_name}</span>
                   </Link>
                 </td>
                 <td className="py-3.5 px-6 hidden sm:table-cell align-top">
@@ -1540,7 +1519,7 @@ const CAT_SORT_OPTS: { k: "viewers" | "lives"; label: string }[] = [
 // 카드 안쪽에는 어떤 그라데이션/이미지 오버레이도 깔지 않는다(내부는 완전 단색).
 // 흐르는 테두리는 globals.css의 .nb-neon-border(conic-gradient + mask XOR)가 담당하고,
 // TOP 1~3는 .nb-podium으로 평상시에도 은은하게 고정 노출된다.
-const CARD_DARK = "#181A20";
+// 패널 색은 블루오션 카드와 공유한다(./cardStyle) — 두 카드가 같은 룩이어야 한다.
 
 // TOP 1~3 정적 테두리 색(골드/실버/브론즈), 4위 이하는 차분한 다크
 const CARD_RINGS = [
@@ -1556,7 +1535,7 @@ function CategoryCard({ c, rank, onPick }: { c: RisingCategory; rank: number; on
     <button onClick={onPick} type="button"
       className={`nb-neon-border${podium ? " nb-podium" : ""} group rounded-xl border p-3.5 text-left
                   transition-colors`}
-      style={{ background: CARD_DARK, borderColor: CARD_RINGS[rank] ?? "rgba(31,41,55,0.80)" }}>
+      style={{ background: CARD_DARK, borderColor: CARD_RINGS[rank] ?? CARD_BORDER }}>
       {/* 헤더: 순위 + 방송 수 글래스 뱃지 */}
       <div className="flex items-center gap-2">
         <span className="text-xs font-extrabold tabular-nums"

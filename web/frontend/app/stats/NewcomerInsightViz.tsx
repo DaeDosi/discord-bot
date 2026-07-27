@@ -1,6 +1,7 @@
 "use client";
 import { useMemo } from "react";
 import type { NewcomerInsights, NewcomerCategory, NewcomerSummary } from "@/lib/types";
+import { CARD_BORDER, CARD_DARK, CARD_SUB_TEXT } from "./cardStyle";
 
 // 신규 스트리머 분석 탭의 인사이트 시각화 3종.
 // 데이터는 모두 newcomers 응답에 함께 실려 오므로 별도 요청이 없다.
@@ -315,19 +316,24 @@ export function BlueOceanCards({ cats, summary, label = "신입" }:
         {label} 방송 수 대비 시청자가 많은 카테고리 — 경쟁이 적고 노출 효율이 좋은 구간입니다.
       </p>
 
+      {/* 카드 룩은 '카테고리별 스트리머' 탭의 CategoryCard와 동일한 매트 다크 패널.
+          다만 이 카드는 클릭 대상이 아니라 호버 유도가 의미 없어서, 테두리 네온을
+          nb-neon-always 로 상시 흐르게 한다. */}
       <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
-        {top.map((c, i) => (
-          <div key={c.category} className="rounded-xl border p-3"
-               style={{ background: "rgba(0,255,163,0.04)",
-                        borderColor: i === 0 ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))" }}>
-            <p className="truncate text-xs font-bold text-fg" title={c.category}>{c.category}</p>
-            <p className="mt-1 tracking-tight">
-              <span className="text-lg font-extrabold tabular-nums" style={{ color: GREEN }}>
+        {top.map((c) => (
+          <div key={c.category}
+               className="nb-neon-border nb-neon-always rounded-xl border p-3.5"
+               style={{ background: CARD_DARK, borderColor: CARD_BORDER }}>
+            <p className="truncate text-xs font-bold text-white" title={c.category}>{c.category}</p>
+            <p className="mt-1.5 tracking-tight">
+              <span className="text-xl font-extrabold tabular-nums" style={{ color: GREEN }}>
                 {c.index.toFixed(1)}x
               </span>
             </p>
-            <p className="mt-0.5 text-[11px] text-muted">채널당 {nf(c.avg_viewers)}명</p>
-            <p className="text-[11px] text-muted/70">방송 {nf(c.lives)}개</p>
+            <p className="mt-1 text-[11px]" style={{ color: CARD_SUB_TEXT }}>
+              채널당 {nf(c.avg_viewers)}명
+            </p>
+            <p className="text-[11px]" style={{ color: CARD_SUB_TEXT }}>방송 {nf(c.lives)}개</p>
           </div>
         ))}
       </div>
