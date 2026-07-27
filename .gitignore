@@ -39,3 +39,6 @@ Thumbs.db
 
 # ── 별도 앱 (Expo/React Native, 이 모노레포와 무관) ──────
 chzzk-repo/
+
+# ── pytest ───────────────────────────────────────────────
+.pytest_cache/

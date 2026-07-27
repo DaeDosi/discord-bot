@@ -5,3 +5,10 @@ exclude = ["chzzk-repo", "web/frontend"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+# 통합 테스트(실제 치지직 API 호출)는 기본 실행에서 제외한다 — 네트워크/차단에 좌우되므로
+# 운영자가 CHZZK_LIVE_TESTS=1 을 주고 수동으로만 돌린다.
+testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = ["integration: 실제 외부 API를 호출하는 테스트"]

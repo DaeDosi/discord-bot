@@ -22,6 +22,7 @@ from routers.auth_router       import router as auth_router
 from routers.guilds_router     import router as guilds_router
 from routers.settings_router   import router as settings_router
 from routers.chzzk_router      import router as chzzk_router
+from routers.chzzk_history_router import router as chzzk_history_router
 from routers.stats_router      import router as stats_router
 from routers.verify_router     import router as verify_router
 from routers.chzzk_auth_router import router as chzzk_auth_router
@@ -58,6 +59,9 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(guilds_router)
 app.include_router(settings_router)
+# chzzk_history_router 를 chzzk_router 보다 먼저 등록한다 — 같은 /api/chzzk prefix를
+# 쓰므로, 리터럴 경로(/channel-history)가 /{guild_id}/... 패턴보다 앞서 매칭되게 한다.
+app.include_router(chzzk_history_router)
 app.include_router(chzzk_router)
 app.include_router(stats_router)
 app.include_router(verify_router)

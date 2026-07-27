@@ -41,6 +41,8 @@ _HEAVY_MARKERS = (
     "/api/rising/search",
     # 기간별 상세 분석: 롤업 전 구간 스캔 + 체급 판정 서브쿼리라 무겁다
     "/api/rising/period-analysis",
+    # 첫 방송일 수집: 무인증 POST인데 캐시 미스 시 치지직 외부 호출을 유발한다
+    "/api/chzzk/channel-history",
 )
 
 

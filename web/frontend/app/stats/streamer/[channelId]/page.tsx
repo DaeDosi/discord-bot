@@ -30,6 +30,32 @@ function Sub({ children }: { children: React.ReactNode }) {
   return <p className="mt-1 text-[11px] leading-relaxed text-muted">{children}</p>;
 }
 
+// 첫 방송일 — 치지직이 직접 주는 값(channelHistory)은 정확하므로 그대로,
+// 다시보기(VOD) 최고령 영상으로 역산한 폴백일 때만 '(추정)'을 붙인다.
+// 정확한 값은 "YYYY-MM-DD HH:mm:ss"(KST)라 Date로 파싱하면 브라우저 로컬 타임존으로
+// 해석돼 날짜가 하루 밀릴 수 있다 — 앞 10자를 그대로 쓴다.
+function FirstBroadcast({ data }: { data: StreamerDashboard }) {
+  const raw = data.first_broadcast;
+  if (!raw) return <>첫 방송 정보 없음</>;
+
+  const exact = data.first_broadcast_source === "CHZZK_CHANNEL_HISTORY";
+  const [y, m, d] = raw.slice(0, 10).split("-");
+  const label = y && m && d
+    ? `${y}. ${Number(m)}. ${Number(d)}.`
+    : new Date(raw).toLocaleDateString("ko-KR");
+
+  return (
+    <>
+      <span title={exact ? `${raw} (KST) · 치지직 채널 정보 기준` : "다시보기 최고령 영상 기준 추정"}>
+        첫 방송{exact ? "" : "(추정)"} {label}
+      </span>
+      {exact && typeof data.total_live_hours === "number" && (
+        <> · 누적 방송 {nf(data.total_live_hours)}시간</>
+      )}
+    </>
+  );
+}
+
 function Kpi({ icon, label, value, unit, sub }:
   { icon: React.ReactNode; label: string; value: string; unit?: string; sub?: React.ReactNode }) {
   return (
@@ -193,9 +219,7 @@ export default function StreamerPage() {
                   </div>
                   {data.live_title && <p className="mt-1 truncate text-sm text-muted">{data.live_title}</p>}
                   <Sub>
-                    {data.first_broadcast
-                      ? <>첫 방송(추정) {new Date(data.first_broadcast).toLocaleDateString("ko-KR")}</>
-                      : <>첫 방송 정보 없음</>}
+                    <FirstBroadcast data={data} />
                     {" · "}팔로워 {nf(data.follower_count ?? 0)}명
                     {typeof data.history_days === "number" && <> · 수집 이력 {data.history_days}일</>}
                   </Sub>

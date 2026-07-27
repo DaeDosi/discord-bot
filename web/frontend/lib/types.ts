@@ -307,7 +307,12 @@ export interface StreamerDashboard {
   live_title?:       string;
   follower_count?:   number;
   is_live?:          boolean;
-  first_broadcast?:  string | null;
+  /** 첫 방송일. source가 CHZZK_CHANNEL_HISTORY면 치지직이 준 정확한 값("YYYY-MM-DD HH:mm:ss"),
+   *  VOD_ESTIMATE면 다시보기 최고령 영상 기준 추정치다. */
+  first_broadcast?:        string | null;
+  first_broadcast_iso?:    string | null;
+  first_broadcast_source?: "CHZZK_CHANNEL_HISTORY" | "VOD_ESTIMATE" | null;
+  total_live_hours?:       number | null;
   window_days?:      number;
   history_days?:     number;
   summary?:          StreamerSummary;

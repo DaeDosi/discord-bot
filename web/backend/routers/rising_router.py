@@ -13,6 +13,7 @@ from collections import Counter
 from fastapi import APIRouter, Query
 from database import get_db
 from rising_collector import latest_image, _fetch_channel_meta
+from chzzk_channel_history import get_channel_history
 
 _CHZZK_API = "https://api.chzzk.naver.com"
 _CHZZK_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
@@ -623,9 +624,42 @@ async def search(keyword: str, size: int = 8):
     return {"results": results}
 
 
+async def _first_broadcast_info(channel_id: str, channel_name: str | None) -> dict:
+    """첫 방송일 — 치지직이 직접 주는 값(정확)을 쓰고, 없을 때만 VOD 추정으로 후퇴한다.
+
+    1순위: chzzk_channel_history 캐시(비공식 channelHistory 엔드포인트). 첫 방송일은 변하지
+           않으므로 채널당 사실상 1회만 외부를 부른다. 이미 아는 채널명을 넘겨 이름 조회
+           요청을 생략하므로 최초 수집도 채널당 1요청이다.
+    2순위: 다시보기 최고령 영상 날짜(기존 방식) — VOD를 지운 채널은 실제보다 늦게 나온다.
+
+    반환: {"date", "iso", "total_live_hours", "source"} — source는 "CHZZK_CHANNEL_HISTORY"
+    또는 "VOD_ESTIMATE", 둘 다 실패하면 None.
+    """
+    try:
+        h = await get_channel_history(
+            channel_id, channel_name=channel_name,
+            # 공개 페이지라 응답 지연을 만들지 않는다 — 누적 방송시간이 오래됐어도
+            # 여기서 외부를 다시 부르지 않고, 배치/단일 수집 API가 갱신하도록 맡긴다.
+            refresh_stale_total=False,
+        )
+        if h.get("firstLiveDate"):
+            return {"date": h["firstLiveDate"], "iso": h.get("firstLiveDateIso"),
+                    "total_live_hours": h.get("totalLiveHours"),
+                    "source": "CHZZK_CHANNEL_HISTORY"}
+    except Exception:
+        pass  # 비공식 엔드포인트가 막히거나 바뀌어도 페이지는 떠야 한다 → VOD 추정으로 후퇴
+
+    vod = await _fetch_first_broadcast(channel_id)
+    if vod:
+        return {"date": vod, "iso": None, "total_live_hours": None, "source": "VOD_ESTIMATE"}
+    return {"date": None, "iso": None, "total_live_hours": None, "source": None}
+
+
 async def _fetch_first_broadcast(channel_id: str) -> str | None:
-    """채널 다시보기(VOD) 목록에서 가장 오래된 영상 날짜로 첫 방송을 추정한다(공식 API에
-    개설일/첫방송일 필드가 없어 이 방식이 유일). VOD 삭제 등으로 실제보다 늦을 수 있어 '추정'."""
+    """채널 다시보기(VOD) 목록에서 가장 오래된 영상 날짜로 첫 방송을 추정한다.
+
+    channelHistory(정확한 값)를 못 가져올 때만 쓰는 폴백. VOD 삭제 등으로 실제보다 늦을 수
+    있어 '추정'이다."""
     # 채널 ID가 URL에 그대로 들어가므로 형식을 먼저 검증한다
     if not _valid_channel_id(channel_id):
         return None
@@ -738,7 +772,9 @@ async def streamer(channel_id: str, days: int = 30):
         for wk, e in sorted(week_map.items())
     ]
 
-    first_broadcast = await _fetch_first_broadcast(channel_id)  # 다시보기 최고령 = 첫 방송 추정
+    channel_name = (live_row["channel_name"] if live_row else None) or last["channel_name"]
+    # 이미 아는 채널명을 넘겨 첫 방송일 수집이 채널명 조회 요청을 생략하게 한다.
+    fb = await _first_broadcast_info(channel_id, channel_name)
 
     # 소형 채널은 스냅샷 팔로워가 0(상위 100만 보강)이라, 개인 페이지에선 1회 조회로 보강
     live_follower = None
@@ -755,12 +791,17 @@ async def streamer(channel_id: str, days: int = 30):
     return {
         "found": True,
         "channel_id": channel_id,
-        "channel_name": (live_row["channel_name"] if live_row else None) or last["channel_name"],
+        "channel_name": channel_name,
         "channel_image_url": latest_image(channel_id),
         "live_title": (live_row["live_title"] if live_row else "") or "",
         "follower_count": follower_now,
         "is_live": bool(latest_ts and live_row and live_row["collected_at"] == latest_ts),
-        "first_broadcast": first_broadcast,   # 추정(다시보기 기반), 없으면 None
+        # first_broadcast: 기존 필드(하위 호환). source가 CHZZK_CHANNEL_HISTORY면 정확한 값,
+        # VOD_ESTIMATE면 예전과 같은 다시보기 기반 추정치다.
+        "first_broadcast": fb["date"],
+        "first_broadcast_iso": fb["iso"],
+        "first_broadcast_source": fb["source"],
+        "total_live_hours": fb["total_live_hours"],
         "window_days": days,
         "history_days": len(daily_map),
         "summary": {

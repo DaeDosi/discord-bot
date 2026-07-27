@@ -517,6 +517,28 @@ async def init_db():
                last_seen        INTEGER NOT NULL,
                channel_name     TEXT    NOT NULL DEFAULT ''
            )""",
+        # 치지직 '첫 방송일 / 누적 방송시간' 캐시.
+        # 다시보기(VOD) 최고령 영상으로 첫 방송을 '추정'하던 것을, 치지직 채널정보 화면이
+        # 쓰는 비공식 엔드포인트(/channels/{id}/data?fields=channelHistory)가 주는 정확한
+        # 값으로 대체하기 위한 테이블. 첫 방송일은 변하지 않으므로 사실상 영구 캐시이며,
+        # 매 요청마다 외부를 다시 부르지 않도록 여기서 읽는다.
+        """CREATE TABLE IF NOT EXISTS chzzk_channel_history (
+               channel_id             TEXT PRIMARY KEY,          -- 32자 16진수(소문자 정규화)
+               channel_name           TEXT,
+               first_live_date        TEXT,                      -- 원본 "YYYY-MM-DD HH:mm:ss" (KST)
+               first_live_date_iso    TEXT,                      -- "....T..+09:00" (timezone-aware)
+               total_live_hours       INTEGER,
+               source                 TEXT NOT NULL DEFAULT 'CHZZK_CHANNEL_HISTORY',
+               status                 TEXT NOT NULL DEFAULT 'OK',-- OK|NO_HISTORY|NOT_FOUND|BLOCKED|ERROR
+               collected_at           INTEGER,                   -- 마지막 '정상' 수집 시각(epoch)
+               total_hours_updated_at INTEGER,                   -- 누적 방송시간 갱신 시각(epoch)
+               last_error             TEXT,
+               last_attempt_at        INTEGER,                   -- 실패 포함 마지막 시도(TTL 판정용)
+               created_at             INTEGER NOT NULL,
+               updated_at             INTEGER NOT NULL
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_chzzk_channel_history_status "
+        "ON chzzk_channel_history(status, last_attempt_at)",
     ]:
         try:
             await db.execute(sql)

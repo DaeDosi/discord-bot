@@ -3,6 +3,18 @@
 세션 단위로 주요 작업을 정리합니다. 커밋 메시지가 더 자세하니, 특정 항목의 정확한 diff가
 필요하면 `git log --oneline`으로 관련 커밋 해시를 찾아 `git show <hash>`로 확인하세요.
 
+## 2026-07-27 세션 (첫 방송일 정확 수집)
+
+- **첫 방송일 = 추정 → 정확한 값**: 치지직 채널 정보 화면이 쓰는 비공식 내부 API
+  (`/service/v1/channels/{id}/data?fields=channelHistory`)에서 `firstLiveDate`·
+  `totalLiveHours`를 직접 가져오도록 교체. 기존 VOD 최고령 날짜 추정(`375f51e`)은
+  이 엔드포인트가 실패할 때만 쓰는 폴백으로 남겼고, 스트리머 상세 페이지는 정확한 값일 때
+  '(추정)' 표기를 떼고 누적 방송 시간을 함께 보여준다.
+- 신규: `web/backend/chzzk_channel_history.py`(캐시·속도제한·재시도·single-flight),
+  `routers/chzzk_history_router.py`(`POST /api/chzzk/channel-history[/batch]`,
+  `GET .../metrics`), `chzzk_channel_history` 테이블, `tests/`(이 저장소 최초 테스트),
+  `README.md`. 비문서화 엔드포인트라 차단·스키마 변경 리스크는 README에 명시.
+
 ## 2026-07-25 ~ 07-26 세션 (CHZZK 통계 분석 서비스 신설 + 정리 작업)
 
 **개요**: 지난 세션 TODO 점검에서 시작해, ①포인트 도박 버그 수정 ②커뮤니티 기능 제거
