@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   Trophy, ExternalLink, Play, Eye, Heart, Loader2, Radio, ClipboardList, X,
+  Search, ArrowDown, ArrowUp,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { SingcupMain, SingcupStreamer, SingcupRankings } from "@/lib/types";
@@ -16,6 +17,7 @@ import {
 // 자유게시판 버프 목록은 '자유게시판 홍보글' 드로어(?view=board)로 나가 있다.
 
 type SortKey = "score" | "heart" | "heart24h" | "view" | "follower";
+type SortDir = "desc" | "asc";
 const SORTS: { k: SortKey; label: string }[] = [
   { k: "score",    label: "예상 인기점수" },
   { k: "heart",    label: "하트 많은 순" },
@@ -265,6 +267,8 @@ export default function Singcup() {
   const [data, setData] = useState<SingcupMain | null>(null);
   const [loading, setLoading] = useState(true);
   const [sort, setSort] = useState<SortKey>("score");
+  const [dir, setDir] = useState<SortDir>("desc");
+  const [query, setQuery] = useState("");
   const [boardOpen, setBoardOpen] = useState(false);
 
   // ?view=board 로 상태를 유지한다(새로고침·공유에도 드로어가 열리도록)
@@ -292,8 +296,17 @@ export default function Singcup() {
     return () => { alive = false; clearInterval(t); };
   }, []);
 
+  // 검색은 이미 받아온 참가자 목록 안에서만 한다 — 싱드컵에 등록된 사람만 찾아진다.
+  const matched = useMemo(() => {
+    const all = data?.streamers ?? [];
+    const q = query.trim().toLowerCase();
+    if (!q) return all;
+    return all.filter((s) =>
+      s.channelName.toLowerCase().includes(q) || s.clipTitle.toLowerCase().includes(q));
+  }, [data, query]);
+
   const rows = useMemo(() => {
-    const list = [...(data?.streamers ?? [])];
+    const list = [...matched];
     if (sort === "heart") list.sort((a, b) => b.heartCount - a.heartCount);
     else if (sort === "view") list.sort((a, b) => b.viewCount - a.viewCount);
     else if (sort === "follower") list.sort((a, b) => b.followerCount - a.followerCount);
@@ -301,8 +314,9 @@ export default function Singcup() {
       list.sort((a, b) => (b.heartChangeRate24h ?? -1e9) - (a.heartChangeRate24h ?? -1e9));
     }
     // score는 백엔드가 매긴 순서 그대로(동점 타이브레이커까지 반영돼 있다)
-    return list;
-  }, [data, sort]);
+    // 위 정렬은 전부 내림차순이므로, 오름차순은 뒤집기만 하면 된다.
+    return dir === "asc" ? list.reverse() : list;
+  }, [matched, sort, dir]);
 
   const ev = data?.event;
   const ended = ev?.status === "ENDED";
@@ -368,21 +382,63 @@ export default function Singcup() {
         <Tile label="현재 라이브" value={nf(data?.summary.liveCount ?? 0)} unit="명" />
       </div>
 
-      {/* 정렬 */}
-      <div className="flex flex-wrap items-center gap-2">
-        {SORTS.map((s) => {
-          const on = sort === s.k;
-          return (
-            <button key={s.k} onClick={() => setSort(s.k)}
-              className="rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
-              style={{ background: on ? `${GOLD}1a` : "transparent",
-                       borderColor: on ? `${GOLD}59` : "rgb(var(--color-border-rgb))",
-                       color: on ? GOLD : "rgb(var(--color-muted-rgb))" }}>
-              {s.label}
+      {/* 컨트롤 — 좌: 참가자 검색 / 우: 정렬 + 오름·내림 전환 */}
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+        {/* 검색: 이미 받아온 참가자 목록 안에서만 찾는다(싱드컵 등록자 전용) */}
+        <div className="relative w-full sm:w-[280px]">
+          <Search size={15}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <input
+            value={query} onChange={(e) => setQuery(e.target.value)}
+            placeholder="참가 스트리머 검색"
+            aria-label="싱드컵 참가 스트리머 검색"
+            className="w-full rounded-lg border border-border bg-bg py-2 pl-9 pr-8 text-sm
+                       text-fg placeholder-muted focus:border-accent focus:outline-none" />
+          {query && (
+            <button onClick={() => setQuery("")} aria-label="검색어 지우기"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1
+                               text-muted transition-colors hover:text-fg">
+              <X size={14} />
             </button>
-          );
-        })}
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 sm:ml-auto sm:justify-end">
+          {SORTS.map((s) => {
+            const on = sort === s.k;
+            return (
+              <button key={s.k} onClick={() => setSort(s.k)}
+                className="rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
+                style={{ background: on ? `${GOLD}1a` : "transparent",
+                         borderColor: on ? `${GOLD}59` : "rgb(var(--color-border-rgb))",
+                         color: on ? GOLD : "rgb(var(--color-muted-rgb))" }}>
+                {s.label}
+              </button>
+            );
+          })}
+          {/* 모든 정렬은 내림차순 기준이라 오름차순은 순서를 뒤집는다 */}
+          <button onClick={() => setDir((d) => (d === "desc" ? "asc" : "desc"))}
+            title={dir === "desc" ? "내림차순 (높은 순) — 누르면 오름차순"
+                                  : "오름차순 (낮은 순) — 누르면 내림차순"}
+            aria-label={dir === "desc" ? "내림차순 정렬 중" : "오름차순 정렬 중"}
+            className="flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs
+                       font-medium transition-colors"
+            style={{ background: `${GOLD}1a`, borderColor: `${GOLD}59`, color: GOLD }}>
+            {dir === "desc" ? <ArrowDown size={13} /> : <ArrowUp size={13} />}
+            {dir === "desc" ? "높은 순" : "낮은 순"}
+          </button>
+        </div>
       </div>
+
+      {query && (
+        <p className="text-xs text-muted">
+          <b className="text-fg">{nf(matched.length)}</b>명 검색됨
+          <span className="mx-1.5 text-border">·</span>
+          <button onClick={() => setQuery("")} className="underline hover:text-fg">
+            전체 보기
+          </button>
+        </p>
+      )}
 
       {/* 표기 안내 — '직전 -' / '24시간 NEW'가 무슨 뜻인지 화면에서 바로 알 수 있게 */}
       <p className="text-[11px] leading-relaxed text-muted/80">
@@ -403,16 +459,36 @@ export default function Singcup() {
       ) : rows.length === 0 ? (
         <div className="card py-16 text-center">
           <Trophy size={30} className="mx-auto mb-3 opacity-25" style={{ color: GOLD }} />
-          <p className="font-medium text-fg">아직 확인된 #싱드컵 태그 클립이 없습니다.</p>
-          {ev?.status === "UPCOMING" && (
-            <p className="mt-1 text-sm text-muted">
-              이벤트 시작 예정: <span className="tabular-nums">{fmtDateTime(ev.startAt)}</span>
-            </p>
+          {query ? (
+            <>
+              <p className="font-medium text-fg">
+                &lsquo;{query}&rsquo; 와 일치하는 참가 스트리머가 없습니다.
+              </p>
+              <p className="mt-1 text-sm text-muted">
+                싱드컵에 등록된 참가자만 검색됩니다.
+              </p>
+              <button onClick={() => setQuery("")}
+                      className="btn-secondary mt-4 text-sm">검색 초기화</button>
+            </>
+          ) : (
+            <>
+              <p className="font-medium text-fg">아직 확인된 #싱드컵 태그 클립이 없습니다.</p>
+              {ev?.status === "UPCOMING" && (
+                <p className="mt-1 text-sm text-muted">
+                  이벤트 시작 예정: <span className="tabular-nums">{fmtDateTime(ev.startAt)}</span>
+                </p>
+              )}
+            </>
           )}
         </div>
       ) : (
         <div className="space-y-2">
-          {rows.map((s, i) => <Row key={s.channelId} s={s} index={sort === "score" ? i : -1} />)}
+          {/* 메달은 '점수 내림차순 + 검색 없음'일 때만 — 그 외에는 목록 순서가
+              실제 1~3위와 다르므로 강조하면 오해를 준다 */}
+          {rows.map((s, i) => (
+            <Row key={s.channelId} s={s}
+                 index={sort === "score" && dir === "desc" && !query ? i : -1} />
+          ))}
         </div>
       )}
 
