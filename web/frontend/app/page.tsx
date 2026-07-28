@@ -273,7 +273,7 @@ export default function HomePage() {
               href="/stats"
               className="hidden sm:flex items-center gap-1 text-sm font-medium text-muted hover:text-fg transition-colors mr-1"
             >
-              <Radio size={14} style={{ color: "#00FFA3" }} /> 통계
+              <Radio size={14} style={{ color: "#00FFA3" }} /> 치지직 통계
             </Link>
             <Link
               href="/guide"
@@ -333,6 +333,14 @@ export default function HomePage() {
             className="flex flex-wrap items-center justify-center gap-3 animate-fade-up"
             style={{ animationDelay: "0.2s" }}
           >
+            <Link
+              href="/stats"
+              className="flex items-center gap-2 px-6 py-3 border border-border
+                         hover:border-accent/40 text-fg rounded-xl transition-colors
+                         hover:bg-bg-hover font-medium"
+            >
+              <Radio size={16} style={{ color: "#00FFA3" }} /> 치지직 통계
+            </Link>
             {user
               ? <Link href="/dashboard"
                       className="flex items-center gap-2 px-6 py-3 bg-accent hover:bg-accent-hover
