@@ -520,14 +520,31 @@ async def leave_guild(guild_id: str, user: dict = Depends(_require_owner)):
 # 되돌리기 어려운 작업(VACUUM/DELETE/파일 조작)은 이 엔드포인트에 두지 않는다.
 
 @router.get("/db/diagnostics")
-async def db_diagnostics(user: dict = Depends(_require_owner)):
-    """DB 파일·페이지·테이블별 행 수와 증가 속도, 예상 소진일."""
-    from db_diagnostics import collect
-    return await collect()
+async def db_diagnostics(force: bool = False, user: dict = Depends(_require_owner)):
+    """DB 파일·페이지·테이블별 행 수와 증가 속도, 예상 소진일.
+
+    COUNT(*)와 dbstat가 전체를 훑으므로 10분 캐시 + 동시 실행 1개 + 타임아웃이 걸려
+    있다. force=true는 캐시를 무시한다(자주 쓰지 말 것).
+    """
+    from db_diagnostics import collect_cached
+    try:
+        return await collect_cached(force=force)
+    except RuntimeError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from None
 
 
 @router.get("/db/integrity")
-async def db_integrity(user: dict = Depends(_require_owner)):
-    """PRAGMA integrity_check. 백업 직후 검증용 — 큰 DB에서는 수십 초 걸린다."""
+async def db_integrity(full: bool = False, user: dict = Depends(_require_owner)):
+    """무결성 검사. 기본은 가벼운 quick_check, full=true는 백업 직후 검증용."""
     from db_diagnostics import integrity_check
-    return await integrity_check()
+    return await integrity_check(quick=not full)
+
+
+@router.get("/db/retention/report")
+async def db_retention_report(user: dict = Depends(_require_owner)):
+    """보존정책 dry-run 리포트 — 무엇을 지울 것인지만 보여준다(삭제 안 함).
+
+    프루닝 활성화 전에 이 결과를 먼저 확인한다.
+    """
+    from singcup_retention import run_retention
+    return await run_retention()

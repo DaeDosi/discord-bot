@@ -1,14 +1,18 @@
-"""DB 용량·증가 속도 진단 (읽기 전용).
+"""DB 용량·증가 속도 진단.
 
 목적은 '500MB를 언제 넘기는가'를 추측이 아니라 측정으로 답하는 것이다.
-이 모듈은 **읽기와 PASSIVE 체크포인트만** 수행한다. VACUUM/DELETE/TRUNCATE 등
-되돌리기 어려운 작업은 여기에 두지 않는다(운영 중 파일 잠금이 길어진다).
+
+⚠️ 완전한 읽기 전용은 아니다. wal_checkpoint(PASSIVE)는 조건이 맞으면 실제로
+WAL 내용을 본 DB 파일로 옮기고 WAL을 줄인다(다른 읽기/쓰기를 막지는 않는다).
+데이터 자체는 바뀌지 않지만 '읽기만 한다'는 표현은 부정확하다.
+VACUUM/DELETE/TRUNCATE 등 되돌리기 어려운 작업은 여기에 두지 않는다.
 
 응답에 파일 경로·접속 문자열을 넣지 않는다 — 진단값만 필요하고, 경로가 로그나
 스크린샷으로 흘러나가면 그 자체가 정보 노출이다.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 
@@ -115,6 +119,7 @@ async def collect(volume_bytes: int | None = None) -> dict:
     now = int(time.time())
 
     # PASSIVE는 다른 읽기/쓰기를 막지 않는다(FULL/TRUNCATE와 다르다).
+    # 다만 '아무 일도 안 한다'는 뜻은 아니다 — 조건이 맞으면 WAL을 본 파일로 옮긴다.
     try:
         wal = await (await db.execute("PRAGMA wal_checkpoint(PASSIVE)")).fetchone()
         checkpoint = {"busy": wal[0], "wal_pages": wal[1], "checkpointed": wal[2]}
@@ -161,11 +166,57 @@ async def collect(volume_bytes: int | None = None) -> dict:
     }
 
 
-async def integrity_check() -> dict:
-    """PRAGMA integrity_check — 백업 후 검증용. 큰 DB에서는 수십 초 걸릴 수 있다."""
+async def integrity_check(quick: bool = True) -> dict:
+    """무결성 검사.
+
+    quick_check는 integrity_check보다 훨씬 가볍다(인덱스 정합성까지는 안 본다).
+    일상 점검은 quick, 백업 직후 검증처럼 확실히 봐야 할 때만 full을 쓴다.
+    full은 큰 DB에서 수십 초 동안 페이지를 전부 훑으므로 자주 돌리면 안 된다.
+    """
     db = await get_db()
     t0 = time.perf_counter()
-    rows = await (await db.execute("PRAGMA integrity_check")).fetchall()
+    sql = "PRAGMA quick_check" if quick else "PRAGMA integrity_check"
+    rows = await (await db.execute(sql)).fetchall()
     msgs = [r[0] for r in rows]
-    return {"ok": msgs == ["ok"], "messages": msgs[:20],
+    return {"mode": "quick" if quick else "full", "ok": msgs == ["ok"],
+            "messages": msgs[:20],
             "elapsed_ms": int((time.perf_counter() - t0) * 1000)}
+
+
+# ── 운영 부하 제한 ─────────────────────────────────────────────────────────
+# COUNT(*)와 dbstat는 테이블 전체를 훑는다. 진단을 자주 부르면 그 자체가 부하가
+# 되므로 결과를 캐시하고, 동시에 두 개가 돌지 않게 막고, 시간을 제한한다.
+_CACHE_TTL = float(os.getenv("DB_DIAG_CACHE_TTL_SECONDS", "600"))
+_TIMEOUT = float(os.getenv("DB_DIAG_TIMEOUT_SECONDS", "30"))
+_cache: tuple[float, dict] | None = None
+_lock = asyncio.Lock()
+
+
+async def collect_cached(force: bool = False) -> dict:
+    """10분 캐시 + 동시 실행 1개 + 타임아웃."""
+    global _cache
+    now = time.time()
+    if not force and _cache and now - _cache[0] < _CACHE_TTL:
+        return {**_cache[1], "cached": True,
+                "cache_age_seconds": round(now - _cache[0], 1)}
+    if _lock.locked():
+        # 이미 도는 중이면 새로 시작하지 않는다 — 있으면 오래된 값이라도 준다
+        if _cache:
+            return {**_cache[1], "cached": True, "stale": True,
+                    "note": "다른 진단이 실행 중입니다"}
+        raise RuntimeError("진단이 이미 실행 중입니다. 잠시 후 다시 시도하세요.")
+    async with _lock:
+        t0 = time.perf_counter()
+        try:
+            data = await asyncio.wait_for(collect(), timeout=_TIMEOUT)
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"진단이 {_TIMEOUT}초 안에 끝나지 않았습니다.") from None
+        data["elapsed_ms"] = int((time.perf_counter() - t0) * 1000)
+        data["cached"] = False
+        _cache = (time.time(), data)
+        return data
+
+
+def reset_cache():
+    global _cache
+    _cache = None

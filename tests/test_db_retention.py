@@ -7,10 +7,18 @@
 import time
 
 import singcup_clips as sc
+import singcup_retention as sr
 
 import database
 
 HOUR = 3600
+
+
+async def _prune_all(now):
+    """검증을 통과한 시간대를 실제로 지운다(테스트용 헬퍼)."""
+    v = await sr.verify_rollup(now)
+    r = await sr.prune(now, v["safe_hours"], dry_run=False)
+    return r["deleted"]
 
 
 async def _add(owner, clip, hearts, rank, at, score=0.0):
@@ -44,8 +52,8 @@ def test_old_snapshots_are_rolled_up_then_pruned(db):
     db(_add("o1", "c1", 999, 1, now - HOUR))  # 보존 구간 — 남아야 한다
 
     assert db(_count("singcup_snapshots")) == 7
-    db(sc._rollup_snapshots(now))
-    db(sc._prune_snapshots(now))
+    db(sr.build_rollup(now, dry_run=False))
+    db(_prune_all(now))
 
     assert db(_count("singcup_snapshots")) == 1, "오래된 원본은 지워진다"
     h = db(_hourly())
@@ -59,8 +67,8 @@ def test_recent_snapshots_are_untouched(db):
     now = int(time.time())
     for h in (1, 12, 23, 25):
         db(_add("o1", "c1", h, 1, now - h * HOUR))
-    db(sc._rollup_snapshots(now))
-    db(sc._prune_snapshots(now))
+    db(sr.build_rollup(now, dry_run=False))
+    db(_prune_all(now))
     assert db(_count("singcup_snapshots")) == 4
     assert db(_hourly()) == []
 
@@ -71,8 +79,8 @@ def test_delta_still_works_after_pruning(db):
     db(_add("o1", "c1", 10, 5, now - 40 * HOUR))    # 지워질 구간
     db(_add("o1", "c1", 50, 4, now - 24 * HOUR))    # 24시간 비교용
     db(_add("o1", "c1", 80, 2, now - HOUR))         # 1시간 비교용
-    db(sc._rollup_snapshots(now))
-    db(sc._prune_snapshots(now))
+    db(sr.build_rollup(now, dry_run=False))
+    db(_prune_all(now))
     prev, day, ref = db(sc._delta_maps(now))
     assert ref is not None and prev["o1"][0] == 80
     assert day["o1"] == 50
@@ -82,8 +90,8 @@ def test_rollup_is_idempotent(db):
     now = int(time.time())
     old = now - 40 * HOUR
     db(_add("o1", "c1", 100, 3, old))
-    db(sc._rollup_snapshots(now))
-    db(sc._rollup_snapshots(now))            # 두 번 돌려도 결과가 같아야 한다
+    db(sr.build_rollup(now, dry_run=False))
+    db(sr.build_rollup(now, dry_run=False))            # 두 번 돌려도 결과가 같아야 한다
     assert len(db(_hourly())) == 1
 
 
@@ -92,25 +100,30 @@ def test_rollup_keeps_each_streamer_separately(db):
     old = now - 40 * HOUR
     for o in ("o1", "o2", "o3"):
         db(_add(o, f"c-{o}", 7, 1, old))
-    db(sc._rollup_snapshots(now))
+    db(sr.build_rollup(now, dry_run=False))
     assert len(db(_hourly())) == 3
 
 
-def test_prune_is_batched(db):
-    """대량 DELETE는 WAL을 급증시키고 봇 프로세스를 오래 막는다 → 나눠 지운다."""
+def test_prune_is_batched_with_commits(db):
+    """대량 DELETE를 한 트랜잭션으로 묶으면 그동안 봇 프로세스가 막힌다 → 나눠 커밋."""
     now = int(time.time())
     old = now - 40 * HOUR
     for i in range(25):
         db(_add(f"o{i}", "c1", 1, 1, old))
-    limit = sc.SNAPSHOT_PRUNE_BATCH
-    sc.SNAPSHOT_PRUNE_BATCH = 10
+    db(sr.build_rollup(now, dry_run=False))
+    v = db(sr.verify_rollup(now))
+    limit = sr.PRUNE_BATCH
+    sr.PRUNE_BATCH = 10
     try:
-        assert db(sc._prune_snapshots(now)) == 10
-        assert db(_count("singcup_snapshots")) == 15
+        r = db(sr.prune(now, v["safe_hours"], dry_run=False))
     finally:
-        sc.SNAPSHOT_PRUNE_BATCH = limit
+        sr.PRUNE_BATCH = limit
+    assert r["deleted"] == 25
+    assert r["batches"] >= 3, "10행씩 나눠 커밋해야 한다"
+    assert r["lock_retries"] == 0
+    assert db(_count("singcup_snapshots")) == 0
 
 
 def test_retention_covers_the_24h_lookback(db):
     """보존 시간이 24시간 비교보다 짧아지면 안 된다(설정 실수 방지)."""
-    assert sc.SNAPSHOT_RETENTION_HOURS >= 25
+    assert sr.RETENTION_HOURS >= 25

@@ -84,3 +84,33 @@ def test_endpoints_require_owner():
     client = TestClient(_load_app())
     for path in ("/api/admin/db/diagnostics", "/api/admin/db/integrity"):
         assert client.get(path).status_code in (401, 403)
+
+
+# ── 운영 부하 제한 ─────────────────────────────────────────────────────────
+def test_result_is_cached(db):
+    dg.reset_cache()
+    a = db(dg.collect_cached())
+    b = db(dg.collect_cached())
+    assert a["cached"] is False and b["cached"] is True
+    assert b["cache_age_seconds"] >= 0
+    dg.reset_cache()
+
+
+def test_force_bypasses_cache(db):
+    dg.reset_cache()
+    db(dg.collect_cached())
+    assert db(dg.collect_cached(force=True))["cached"] is False
+    dg.reset_cache()
+
+
+def test_elapsed_is_recorded(db):
+    dg.reset_cache()
+    assert db(dg.collect_cached())["elapsed_ms"] >= 0
+    dg.reset_cache()
+
+
+def test_quick_check_is_the_default(db):
+    r = db(dg.integrity_check())
+    assert r["mode"] == "quick" and r["ok"] is True
+    full = db(dg.integrity_check(quick=False))
+    assert full["mode"] == "full" and full["ok"] is True

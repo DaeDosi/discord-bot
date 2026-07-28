@@ -37,6 +37,7 @@ from routers.stats_router import router as stats_router
 from routers.verify_router import router as verify_router
 from singcup_clips import start_backfill_worker, start_clip_collector
 from singcup_collector import ADMIN_SECRET, start_singcup_collector
+from singcup_retention import start_retention_worker
 
 from database import init_db
 
@@ -56,6 +57,9 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(start_clip_collector())
     # 과거 적재는 성격이 달라 별도 워커가 완료될 때까지 연속 처리한다(커서는 DB에 저장)
     asyncio.create_task(start_backfill_worker())
+    # 보존정책 유지보수 — 기본은 dry-run이라 아무것도 지우지 않는다.
+    # 실제 삭제는 SINGCUP_SNAPSHOT_PRUNE_ENABLED=true + DRY_RUN=false 일 때만.
+    asyncio.create_task(start_retention_worker())
     yield
 
 

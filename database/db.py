@@ -758,8 +758,38 @@ async def init_db():
                rank             INTEGER NOT NULL DEFAULT 0,
                PRIMARY KEY (event_id, hour_ts, owner_channel_id)
            )""",
-        "CREATE INDEX IF NOT EXISTS idx_singcup_snap_hourly_owner "
+        # 재실행이 중복 INSERT가 아니라 UPSERT가 되도록 보장하는 유니크 제약.
+        # (PK는 hour_ts가 앞이라 시간 범위 조회에, 이쪽은 owner가 앞이라 개인 추이 조회에 쓴다)
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_singcup_snap_hourly_owner "
         "ON singcup_snapshot_hourly(event_id, owner_channel_id, hour_ts)",
+        # 시간별 롤업도 그대로 두면 또 하나의 무한 증가 테이블이 된다.
+        # 이벤트가 끝나고 일정 기간이 지나면 '하루의 마지막 값'으로 한 번 더 접는다.
+        """CREATE TABLE IF NOT EXISTS singcup_snapshot_daily (
+               event_id         TEXT    NOT NULL,
+               day_ts           INTEGER NOT NULL,        -- KST 자정 epoch
+               owner_channel_id TEXT    NOT NULL,
+               clip_uid         TEXT    NOT NULL DEFAULT '',
+               heart_count      INTEGER NOT NULL DEFAULT 0,
+               view_count       INTEGER NOT NULL DEFAULT 0,
+               follower_count   INTEGER NOT NULL DEFAULT 0,
+               score            REAL    NOT NULL DEFAULT 0,
+               rank             INTEGER NOT NULL DEFAULT 0,
+               PRIMARY KEY (event_id, day_ts, owner_channel_id)
+           )""",
+        # 최종 성적은 어떤 압축 단계에서도 지우지 않는다(영구 보존).
+        # 이벤트가 끝난 뒤 순위를 다시 물어볼 근거가 여기밖에 없다.
+        """CREATE TABLE IF NOT EXISTS singcup_final_standings (
+               event_id         TEXT    NOT NULL,
+               owner_channel_id TEXT    NOT NULL,
+               clip_uid         TEXT    NOT NULL DEFAULT '',
+               heart_count      INTEGER NOT NULL DEFAULT 0,
+               view_count       INTEGER NOT NULL DEFAULT 0,
+               follower_count   INTEGER NOT NULL DEFAULT 0,
+               score            REAL    NOT NULL DEFAULT 0,
+               rank             INTEGER NOT NULL DEFAULT 0,
+               collected_at     INTEGER NOT NULL,
+               PRIMARY KEY (event_id, owner_channel_id)
+           )""",
         # 수집 사이클 계측 — 주기를 줄여도 되는지 판단하려면 '한 사이클이 얼마나
         # 걸리는지'를 알아야 하는데, 지금까지 소요시간도 호출 수도 남기지 않아
         # p95를 계산할 방법이 아예 없었다(collected_at 간격은 sleep을 포함한 값이라

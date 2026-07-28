@@ -436,62 +436,6 @@ async def _save_snapshots(ranked: list[dict], now: int):
           r.get("follower_count", 0), r["score"], r["rank"], now) for r in ranked])
 
 
-# 원본 스냅샷 보존 시간. 이 값의 근거는 '무엇이 원본을 읽는가'를 역산한 것이다:
-#   _delta_maps의 24시간 비교(collected_at <= now-86400)가 가장 멀리 본다.
-#   그보다 오래된 원본을 읽는 코드는 없다 → 24시간 + 여유 2시간.
-SNAPSHOT_RETENTION_HOURS = float(os.getenv("SINGCUP_SNAPSHOT_RETENTION_HOURS", "26"))
-# 한 번에 지울 최대 행 수 — 대량 DELETE는 WAL을 급증시키고 다른 프로세스를 오래 막는다.
-# (봇과 백엔드가 같은 SQLite 파일을 쓰므로 잠금 시간이 곧 봇 지연이다.)
-SNAPSHOT_PRUNE_BATCH = int(os.getenv("SINGCUP_SNAPSHOT_PRUNE_BATCH", "5000"))
-
-
-async def _rollup_snapshots(now: int) -> int:
-    """곧 지워질 구간의 원본을 시간당 1행으로 접어 둔다.
-
-    한 시간 안의 '마지막' 스냅샷을 그 시간의 대표값으로 삼는다(순위·점수는 누적값이라
-    평균이 의미가 없다). 이미 만든 시간대는 덮어써도 결과가 같다(멱등).
-    """
-    db = await get_db()
-    cutoff = int(now - SNAPSHOT_RETENTION_HOURS * 3600)
-    cur = await db.execute(
-        """INSERT INTO singcup_snapshot_hourly
-               (event_id, hour_ts, owner_channel_id, clip_uid, heart_count,
-                view_count, follower_count, score, rank)
-           SELECT s.event_id, (s.collected_at/3600)*3600, s.owner_channel_id,
-                  s.clip_uid, s.heart_count, s.view_count, s.follower_count,
-                  s.score, s.rank
-             FROM singcup_snapshots s
-            WHERE s.event_id = ?
-              AND s.collected_at < ?
-              AND s.collected_at = (
-                    SELECT MAX(x.collected_at) FROM singcup_snapshots x
-                     WHERE x.event_id = s.event_id
-                       AND x.owner_channel_id = s.owner_channel_id
-                       AND x.collected_at/3600 = s.collected_at/3600)
-           ON CONFLICT(event_id, hour_ts, owner_channel_id) DO UPDATE SET
-                clip_uid=excluded.clip_uid, heart_count=excluded.heart_count,
-                view_count=excluded.view_count, follower_count=excluded.follower_count,
-                score=excluded.score, rank=excluded.rank""",
-        (EVENT_ID, cutoff))
-    await db.commit()
-    return cur.rowcount or 0
-
-
-async def _prune_snapshots(now: int) -> int:
-    """보존 시간이 지난 원본을 나눠서 지운다. 롤업이 끝난 뒤에만 호출해야 한다."""
-    db = await get_db()
-    cutoff = int(now - SNAPSHOT_RETENTION_HOURS * 3600)
-    cur = await db.execute(
-        "DELETE FROM singcup_snapshots WHERE id IN ("
-        "  SELECT id FROM singcup_snapshots WHERE event_id=? AND collected_at < ? LIMIT ?)",
-        (EVENT_ID, cutoff, SNAPSHOT_PRUNE_BATCH))
-    deleted = cur.rowcount or 0
-    await db.commit()
-    if deleted:
-        _log({"event": "snapshot_pruned", "deleted": deleted, "cutoff": cutoff})
-    return deleted
-
-
 async def _reconcile_missing_clips(seen: set, now: int) -> int:
     """전체 순회에 성공한 회차에서만 호출. 연속 2회 안 보이면 비활성(삭제 아님)."""
     db = await get_db()
@@ -567,9 +511,6 @@ async def recompute_ranking(now: int, *, client=None) -> list[dict]:
         }, now)
     await _save_snapshots(ranked, now)
     await db.commit()
-    # 롤업을 '먼저' 만들고 그 다음에 원본을 자른다 — 순서가 바뀌면 집계할 소스가 없다
-    await _rollup_snapshots(now)
-    await _prune_snapshots(now)
     return ranked
 
 
