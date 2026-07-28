@@ -523,19 +523,6 @@ export default function Singcup() {
             스트리머마다 가장 높은 하트를 받은 클립 하나만 집계합니다.
           </p>
           <div className="mt-1"><ScoreFormula /></div>
-          {ev && (
-            <p className="mt-1 text-[13px] text-muted/80">
-              <span className="tabular-nums">{fmtRange(ev.startAt, ev.endAt)}</span>
-              <span className="mx-2 text-border">·</span>
-              {/* 페이지 상단의 '라이브 집계'와 다른 수집기다 — 이름으로 구분한다 */}
-              <span title="#싱드컵 클립의 조회수·하트를 마지막으로 갱신한 시각입니다. 상단의 '라이브 집계'는 별개 수집기입니다.">
-                싱드컵 집계{" "}
-                <span className="tabular-nums">
-                  {fmtDateTime(data?.collector.lastSuccessAt ?? null)}
-                </span>
-              </span>
-            </p>
-          )}
         </div>
 
         {/* 모바일에서도 잘리지 않게 wrap */}
@@ -549,6 +536,21 @@ export default function Singcup() {
                   className="btn-secondary flex items-center gap-1.5 text-sm">
             <ClipboardList size={15} /> 자유게시판 홍보글
           </button>
+          {/* 집계 시각·수집 기간을 우측 상단으로 모은다. 페이지 헤더의 '라이브 집계'는
+              전체 라이브 스캔 시각이라 이 탭에서는 혼동만 주므로 숨긴다(page.tsx). */}
+          <div className="w-full text-right text-[12px] leading-relaxed text-muted/80">
+            <p title="#싱드컵 클립의 조회수·하트를 마지막으로 갱신한 시각입니다.">
+              싱드컵 집계{" "}
+              <span className="tabular-nums">
+                {fmtDateTime(data?.collector.lastSuccessAt ?? null)}
+              </span>
+            </p>
+            {ev && (
+              <p className="tabular-nums" title="이 기간에 올라온 클립만 집계합니다.">
+                수집 기간 {fmtRange(ev.startAt, ev.endAt)}
+              </p>
+            )}
+          </div>
         </div>
       </div>
 
