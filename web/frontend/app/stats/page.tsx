@@ -169,11 +169,23 @@ function StatTile({ label, value, unit, sub, accent, deltaPrev, rawValue }:
 
 type Metric = "viewers" | "lives";
 
-const RANGE_DESC = "최근 24시간 추이 · 10분 간격";
 const METRIC_OPTS: { k: Metric; label: string }[] = [
   { k: "viewers", label: "시청자" },
   { k: "lives",   label: "라이브" },
 ];
+
+// 창이 넓어질수록 버킷을 키운다 — 72시간을 10분 원본으로 그리면 432포인트라
+// 경로가 톱니처럼 뭉개져 추세가 오히려 안 보인다. 값은 백엔드 _TS_RANGES와 짝이다.
+const TS_RANGE_OPTS: { k: TimeRange; label: string }[] = [
+  { k: "live", label: "24시간" },
+  { k: "48h",  label: "2일" },
+  { k: "72h",  label: "3일" },
+];
+const TS_RANGE_DESC: Record<string, string> = {
+  live: "최근 24시간 추이 · 10분 간격",
+  "48h": "최근 48시간 추이 · 30분 구간 평균",
+  "72h": "최근 72시간 추이 · 1시간 구간 평균",
+};
 
 // 스트리머 검색 — 랭킹에 없는 스트리머도 검색해 개인 분석으로 이동
 function StreamerSearch() {
@@ -519,7 +531,7 @@ function StatsAbout() {
 
 // ── 개요 탭 ───────────────────────────────────────────────────────────────────
 function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | null }) {
-  const range: TimeRange = "live"; // 기간 옵션 제거 — 롤링 24시간(10분 간격)만 사용
+  const [range, setRange] = useState<TimeRange>("live");
   const [ts, setTs] = useState<RisingTimeseries | null>(null);
   const [tsLoading, setTsLoading] = useState(true);
 
@@ -541,11 +553,15 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
   // 뷰어쉽(hours watched) = 방송 시간 × 평균 시청자.
   // 스냅샷 1개 = 10분 구간으로 보고 Σ(동시 시청자) × (10/60)h 로 적분 — 집계 사이트의
   // hours watched와 동일한 정의. 수집 공백이 있으면 그만큼 과소 집계된다.
+  // 버킷 구간에서는 값이 '구간 평균'이므로 samples(그 버킷에 들어간 사이클 수)를 곱해야
+  // 원본 합과 같아진다. 원본(live)은 samples=1이라 식이 그대로 유지된다.
   const SNAP_HOURS = 10 / 60;
-  const viewership = Math.round((ts?.points ?? []).reduce((s, p) => s + p.total_viewers, 0) * SNAP_HOURS);
+  const viewership = Math.round(
+    (ts?.points ?? []).reduce((s, p) => s + p.total_viewers * (p.samples || 1), 0) * SNAP_HOURS);
   const dv = ov.deltas;
   const points = (ts?.points ?? []) as unknown as LinePoint[];
-  const rangeDesc = RANGE_DESC;
+  const rangeDesc = TS_RANGE_DESC[ts?.range ?? range] ?? TS_RANGE_DESC.live;
+  const rangeLabel = TS_RANGE_OPTS.find((o) => o.k === range)?.label ?? "24시간";
 
   const chartSeries: LineSeries = metric === "viewers"
     ? { key: "total_viewers", name: "시청자", color: GREEN, gradient: [GREEN, CYAN] }
@@ -562,7 +578,8 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
 
   // 인사이트: 피크(최고 시청자) 시각 + 골든타임(방송당 평균 최고) + 전체 평균 기준
   const insights = (() => {
-    const ps = ts?.points ?? [];
+    // 아직 채워지는 중인 버킷은 평균이 확정치가 아니라 피크·골든타임 후보에서 뺀다
+    const ps = (ts?.points ?? []).filter((p) => !p.partial);
     if (ps.length < 2) return null;
     const withAvg = ps.map((p) => ({ ...p, avg: p.total_viewers / Math.max(1, p.live_count) }));
     const peak   = withAvg.reduce((a, b) => (b.total_viewers > a.total_viewers ? b : a));
@@ -591,26 +608,57 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
           rawValue={totalV} deltaPrev={dv?.total_viewers.prev} />
         <StatTile label="방송당 평균 시청자" value={nf(avgV)} unit="명" sub="총 시청자 ÷ 방송 수" />
         <StatTile label="뷰어쉽" value={nf(viewership)} unit="시간"
-          sub="최근 24시간 시청 시간 (방송 시간 × 평균 시청자)" />
+          sub={`최근 ${rangeLabel} 시청 시간 (방송 시간 × 평균 시청자)`} />
       </div>
 
-      {/* 추이 차트 — 지표 필터(시청자/방송수) + 가변 Y축, 기간 선택은 좌측 아래 */}
+      {/* 추이 차트 — 기간(24시간/2일/3일) + 지표(시청자/방송수) + 가변 Y축 */}
       <div className="card">
         <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
           <h3 className="section-title">{chartTitle}</h3>
-          <Seg options={METRIC_OPTS} value={metric} onChange={setMetric} />
+          {/* 모바일에서 두 줄로 접히도록 wrap — 한 줄에 밀어 넣으면 칩이 잘린다 */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Seg options={TS_RANGE_OPTS} value={range} onChange={setRange} />
+            <Seg options={METRIC_OPTS} value={metric} onChange={setMetric} />
+          </div>
         </div>
-        <p className="text-xs text-muted mb-4">{rangeDesc}</p>
+        <p className="text-xs text-muted mb-1">{rangeDesc}</p>
+        {/* 이력이 짧아도 버튼을 막지 않는다 — 확보된 구간까지 그리고 사실을 알린다 */}
+        {ts?.truncated && (
+          <p className="text-xs mb-1" style={{ color: "#FFC24D" }}>
+            현재 수집 이력 {ts.history_hours}시간 — 선택한 기간보다 짧아 확보된 구간까지만 표시합니다.
+          </p>
+        )}
+        {!!ts?.excluded_points && (
+          <p className="text-[11px] text-muted/70 mb-1">
+            수집 실패·부분 수집 {nf(ts.excluded_points)}회는 값이 왜곡되므로 제외했습니다
+            (해당 구간은 선이 끊깁니다).
+          </p>
+        )}
+        <div className="mb-4" />
         {tsLoading ? <ChartSkeleton /> : (
           <LineChart points={points} series={[chartSeries]} area dynamicY unit={chartUnit}
-            tooltipItems={tooltipItems} showPeak />
+            tooltipItems={tooltipItems} showPeak
+            stepSeconds={ts?.step_seconds ?? 600}
+            tooltipNote={(p) => {
+              if (!ts?.bucket_seconds) return null;
+              const mins = Math.round(ts.bucket_seconds / 60);
+              const base = `${mins}분 구간 평균 (수집 ${p.samples}회)`;
+              return p.partial ? `${base} · 아직 집계 중인 구간입니다` : base;
+            }} />
         )}
-        {/* 피크 마커 범례 */}
-        <div className="mt-3 flex items-center justify-end">
+        {/* 범례 */}
+        <div className="mt-3 flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
           <span className="flex items-center gap-1.5 text-[11px] text-muted">
             <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#FF4FA3" }} />
             피크 타임(최고 시청자)
           </span>
+          {!!ts?.bucket_seconds && (
+            <span className="flex items-center gap-1.5 text-[11px] text-muted">
+              <span className="inline-block w-2.5 h-2.5 rounded-full border-2 border-dashed"
+                    style={{ borderColor: GREEN }} />
+              집계 중(미완성 구간)
+            </span>
+          )}
         </div>
       </div>
 

@@ -1,8 +1,22 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 
-export type LinePoint = { t: number } & Record<string, number>;
+// partial = 아직 채워지는 중인 마지막 버킷('집계 중'). 값은 확정치가 아니다.
+export type LinePoint = { t: number; partial?: boolean } & Record<string, number>;
 export interface LineSeries { key: string; name: string; color: string; gradient?: [string, string] }
+
+/** 수집 공백에서 경로를 끊는다 — 0으로 메우거나 양끝을 직선으로 이으면 없던 추세가 생긴다.
+ *  간격이 기대 간격의 1.5배를 넘으면 사이클이 최소 한 번 빠진 것으로 본다. */
+export function splitSegments(points: LinePoint[], step: number): LinePoint[][] {
+  if (!step || points.length === 0) return points.length ? [points] : [];
+  const gap = step * 1.5;
+  const out: LinePoint[][] = [[points[0]]];
+  for (let i = 1; i < points.length; i++) {
+    if (points[i].t - points[i - 1].t > gap) out.push([points[i]]);
+    else out[out.length - 1].push(points[i]);
+  }
+  return out;
+}
 
 const PAD  = { l: 14, r: 14, t: 16, b: 26 };
 
@@ -38,11 +52,15 @@ const fmtFull = (t: number) =>
 
 export default function LineChart({
   points, series, height = 220, area = false, unit = "", dynamicY = false,
-  tooltipItems, showPeak = false,
+  tooltipItems, showPeak = false, stepSeconds = 0, tooltipNote,
 }: {
   points: LinePoint[]; series: LineSeries[]; height?: number; area?: boolean; unit?: string; dynamicY?: boolean;
   tooltipItems?: (p: LinePoint) => { label: string; value: string; color?: string }[];
   showPeak?: boolean;
+  /** 기대 수집 간격(초). 주면 이보다 크게 벌어진 구간에서 선을 끊는다. */
+  stepSeconds?: number;
+  /** 툴팁 하단 보조 설명(구간 평균/집계 중 등) */
+  tooltipNote?: (p: LinePoint) => string | null;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -125,6 +143,7 @@ export default function LineChart({
   };
 
   const hp = hover !== null ? points[hover] : null;
+  const segments = splitSegments(points, stepSeconds);
 
   return (
     <div ref={wrapRef} className="relative w-full">
@@ -175,18 +194,49 @@ export default function LineChart({
                 fontSize="11" fill="rgb(var(--color-muted-rgb))">{fmtTime(t)}</text>
         ))}
 
-        {/* 시리즈 */}
+        {/* 시리즈 — 수집 공백에서 끊어진 구간별로 그린다 */}
         {series.map((s) => {
-          const pts = points.map((p) => `${X(p.t)},${Y(p[s.key] ?? 0)}`).join(" ");
+          const stroke = s.gradient ? `url(#stroke-${s.key})` : s.color;
+          const sw = s.gradient ? 2.5 : 2;
           const base = Y(yMin);
-          const areaPts = `${X(points[0].t)},${base} ${pts} ${X(points[points.length - 1].t)},${base}`;
           return (
             <g key={s.key}>
-              {area && <polygon points={areaPts} fill={`url(#grad-${s.key})`} />}
-              <polyline points={pts} fill="none"
-                        stroke={s.gradient ? `url(#stroke-${s.key})` : s.color}
-                        strokeWidth={s.gradient ? 2.5 : 2}
-                        strokeLinejoin="round" strokeLinecap="round" />
+              {segments.map((seg, si) => {
+                // 확정 구간과 '집계 중' 구간을 나눠 그린다 — 미완성 버킷까지 실선으로
+                // 이으면 아직 안 끝난 평균이 확정치처럼 보인다.
+                const solid = seg[seg.length - 1]?.partial ? seg.slice(0, -1) : seg;
+                const xy = (p: LinePoint) => `${X(p.t)},${Y(p[s.key] ?? 0)}`;
+                const dashed = seg[seg.length - 1]?.partial && seg.length >= 2
+                  ? seg.slice(-2).map(xy).join(" ") : "";
+                if (seg.length === 1) {
+                  // 앞뒤가 모두 공백인 외톨이 포인트 — 선으로는 보이지 않으므로 점을 찍는다
+                  return <circle key={si} cx={X(seg[0].t)} cy={Y(seg[0][s.key] ?? 0)}
+                                 r="2" fill={s.color} opacity={seg[0].partial ? 0.5 : 1} />;
+                }
+                const pts = solid.map(xy).join(" ");
+                return (
+                  <g key={si}>
+                    {area && solid.length >= 2 && (
+                      <polygon fill={`url(#grad-${s.key})`}
+                               points={`${X(solid[0].t)},${base} ${pts} ${X(solid[solid.length - 1].t)},${base}`} />
+                    )}
+                    {solid.length >= 2 && (
+                      <polyline points={pts} fill="none" stroke={stroke} strokeWidth={sw}
+                                strokeLinejoin="round" strokeLinecap="round" />
+                    )}
+                    {dashed && (
+                      <polyline points={dashed} fill="none" stroke={stroke} strokeWidth={sw}
+                                strokeDasharray="4 3" opacity="0.55" strokeLinecap="round" />
+                    )}
+                  </g>
+                );
+              })}
+              {/* '집계 중' 버킷 표식 — 속이 빈 점으로 확정 포인트와 구분한다 */}
+              {points.filter((p) => p.partial).map((p) => (
+                <circle key={`pt-${p.t}`} cx={X(p.t)} cy={Y(p[s.key] ?? 0)} r="3.5"
+                        fill="rgb(var(--color-bg-card-rgb))" stroke={s.color}
+                        strokeWidth="1.5" strokeDasharray="2 1.5" opacity="0.9" />
+              ))}
             </g>
           );
         })}
@@ -194,8 +244,13 @@ export default function LineChart({
         {/* 피크(최고치) 마커 — 축까지 내려가는 점선 + 발광 점 (피크 시각을 명확히 표시) */}
         {showPeak && (() => {
           const s0 = series[0];
-          let mi = 0, mv = -Infinity;
-          points.forEach((p, i) => { const v = p[s0.key] ?? 0; if (v > mv) { mv = v; mi = i; } });
+          let mi = -1, mv = -Infinity;
+          // 아직 채워지는 중인 버킷은 평균이 확정치가 아니라 피크 후보에서 뺀다
+          points.forEach((p, i) => {
+            if (p.partial) return;
+            const v = p[s0.key] ?? 0; if (v > mv) { mv = v; mi = i; }
+          });
+          if (mi < 0) return null;
           const px = X(points[mi].t), py = Y(mv);
           return (
             <g style={{ pointerEvents: "none" }}>
@@ -233,7 +288,15 @@ export default function LineChart({
             transform: X(hp.t) > VB_W / 2 ? "translate(-108%, 0)" : "translate(8px, 0)",
           }}
         >
-          <p className="text-muted mb-1 whitespace-nowrap">{fmtFull(hp.t)} 기준</p>
+          <p className="text-muted mb-1 whitespace-nowrap">
+            {stepSeconds && stepSeconds > 600
+              ? `${fmtFull(hp.t)} ~ ${fmtTime(hp.t + stepSeconds)}`
+              : `${fmtFull(hp.t)} 기준`}
+            {hp.partial && (
+              <span className="ml-1.5 rounded px-1 py-px text-[10px] font-semibold"
+                    style={{ background: "rgba(148,163,184,0.18)" }}>집계 중</span>
+            )}
+          </p>
           {tooltipItems ? tooltipItems(hp).map((it, i) => (
             <p key={i} className="flex items-center gap-1.5 tabular-nums whitespace-nowrap">
               <span className="w-2 h-2 rounded-full shrink-0" style={{ background: it.color ?? "transparent" }} />
@@ -247,6 +310,11 @@ export default function LineChart({
               <span className="text-fg ml-auto pl-4">{(hp[s.key] ?? 0).toLocaleString("ko-KR")}{unit}</span>
             </p>
           ))}
+          {tooltipNote?.(hp) && (
+            <p className="mt-1 border-t border-border pt-1 text-[11px] text-muted">
+              {tooltipNote(hp)}
+            </p>
+          )}
         </div>
       )}
     </div>

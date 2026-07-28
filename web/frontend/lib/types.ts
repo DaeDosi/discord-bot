@@ -238,15 +238,23 @@ export interface RisingStatus {
   server_time:     number;
 }
 
-export type TimeRange = "live" | "24h" | "7d";
+export type TimeRange = "live" | "24h" | "48h" | "72h" | "7d";
 export interface RisingTimeseriesPoint {
-  t:             number; // epoch seconds
+  t:             number; // epoch seconds (버킷이면 구간 시작)
   live_count:    number;
   total_viewers: number;
+  samples:       number;  // 이 버킷에 들어간 정상 수집 사이클 수 (원본은 1)
+  partial:       boolean; // 아직 채워지는 중인 마지막 버킷 = '집계 중'
 }
 export interface RisingTimeseries {
-  range:  string;
-  points: RisingTimeseriesPoint[];
+  range:           TimeRange;
+  window_seconds:  number;
+  bucket_seconds:  number;  // 0이면 원본 10분 간격
+  step_seconds:    number;  // 이 간격을 크게 벗어나면 수집 공백 → 선을 끊는다
+  history_hours:   number;  // 확보된 수집 이력
+  truncated:       boolean; // 이력이 요청 창보다 짧다
+  excluded_points: number;  // 실패·부분실패로 그래프에서 제외한 사이클 수
+  points:          RisingTimeseriesPoint[];
 }
 export interface RisingDelta { prev: number | null; d24h: number | null }
 

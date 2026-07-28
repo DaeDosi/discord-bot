@@ -176,44 +176,116 @@ async def overview():
 
 
 # 기간 필터: (윈도우 초, 버킷 초 — 0이면 원본 10분 그대로)
-_TS_RANGES = {
-    "live": (24 * 3600, 0),       # 롤링 24시간(NOW-24h ~ NOW), 원본 10분 간격
-    "24h":  (24 * 3600, 3600),    # 최근 24시간, 1시간 평균
-    "7d":   (7 * 86400, 3600),    # 최근 7일, 1시간 평균
+# 버킷을 나누는 기준은 '포인트 수'다. 원본 10분 그대로 72시간을 그리면 432포인트라
+# 경로가 톱니처럼 뭉개져 추세가 오히려 안 보인다(가독 상한은 150포인트 부근).
+_TS_RANGES: dict[str, tuple[int, int]] = {
+    "live": (24 * 3600, 0),       # 롤링 24시간, 원본 10분 간격 → 144포인트
+    "24h":  (24 * 3600, 3600),    # 최근 24시간, 1시간 평균     → 24포인트
+    "48h":  (48 * 3600, 1800),    # 최근 48시간, 30분 평균      → 96포인트
+    "72h":  (72 * 3600, 3600),    # 최근 72시간, 1시간 평균     → 72포인트
+    "7d":   (7 * 86400, 3600),    # 최근 7일, 1시간 평균        → 168포인트
 }
+_TS_RANGE_KEYS = tuple(_TS_RANGES)
+# 원본 수집 주기(초). 경로를 끊을 간격 판정에 쓴다.
+_TS_RAW_STEP = 600
+
+# 그래프에 넣을 수 있는 사이클의 조건.
+#   ok=0        : fetch 실패 / 라이브 0건 → (0,0)으로 기록된다
+#   live_count  : 성공 경로는 항상 1 이상. 0이면 비정상 기록이므로 뺀다
+#   note        : page_cap_reached = MAX_PAGES 상한에 걸려 목록이 잘린 부분 성공.
+#                 합계가 과소 집계되어 그래프에 '가짜 급락'을 만든다.
+# 이 조건으로 빠진 사이클은 0으로 메우지 않고 '구멍'으로 남긴다(경로를 끊는다).
+_TS_QUALITY = ("ok = 1 AND live_count > 0 AND total_viewers > 0 "
+               "AND note <> 'page_cap_reached'")
+
+_ts_cache: dict[str, tuple[float, dict]] = {}
+_TS_TTL = 60   # 수집 주기(기본 600초)보다 훨씬 짧아 최신성이 상하지 않는다
 
 
 @router.get("/timeseries")
-async def timeseries(range: str = "24h"):
+async def timeseries(
+    range: str = Query("24h", pattern=r"^(live|24h|48h|72h|7d)$",
+                       description="live|24h|48h|72h|7d"),
+):
     """전체 시청자·라이브 방송 수 시계열 — 꺾은선 그래프용.
 
     rising_collect_runs(사이클당 1행, 영구 보관)에서 읽으므로 이력이 계속 누적된다.
-    range=live(롤링 24h, 원본 10분) / 24h(1시간 평균) / 7d(1시간 평균).
+    rising_live_snapshots/rising_hourly_rollup과 달리 이 테이블은 프루닝하지 않아
+    48h/72h도 추가 수집 없이 바로 나온다.
+
+    정상 완료된 사이클만 포함한다(_TS_QUALITY). 빠진 구간은 0으로 채우지 않고
+    포인트 자체를 비워, 프론트가 step_seconds 간격을 보고 선을 끊게 한다.
     """
-    window, bucket = _TS_RANGES.get(range, _TS_RANGES["24h"])
-    since = int(time.time()) - window
+    # pattern 검증을 통과한 값만 오지만, 캐시 키는 정규화된 값으로 한 번 더 좁힌다
+    key = range if range in _TS_RANGES else "24h"
+    hit = _ts_cache.get(key)
+    now_s = time.time()
+    if hit and now_s - hit[0] < _TS_TTL:
+        return hit[1]
+
+    window, bucket = _TS_RANGES[key]
+    now = int(now_s)
+    since = now - window
     db = await get_db()
     if bucket == 0:
         rows = await (await db.execute(
-            """SELECT collected_at AS t, live_count, total_viewers
-               FROM rising_collect_runs
-               WHERE ok=1 AND collected_at >= ?
-               ORDER BY collected_at ASC""",
+            f"""SELECT collected_at AS t, live_count, total_viewers, 1 AS samples
+                FROM rising_collect_runs
+                WHERE {_TS_QUALITY} AND collected_at >= ?
+                ORDER BY collected_at ASC""",
             (since,)
         )).fetchall()
     else:
         rows = await (await db.execute(
-            """SELECT (collected_at/?)*?                     AS t,
-                      CAST(AVG(live_count) AS INTEGER)       AS live_count,
-                      CAST(AVG(total_viewers) AS INTEGER)    AS total_viewers
-               FROM rising_collect_runs
-               WHERE ok=1 AND collected_at >= ?
-               GROUP BY collected_at/?
-               ORDER BY t ASC""",
+            f"""SELECT (collected_at/?)*?                     AS t,
+                       CAST(AVG(live_count) AS INTEGER)       AS live_count,
+                       CAST(AVG(total_viewers) AS INTEGER)    AS total_viewers,
+                       COUNT(*)                               AS samples
+                FROM rising_collect_runs
+                WHERE {_TS_QUALITY} AND collected_at >= ?
+                GROUP BY collected_at/?
+                ORDER BY t ASC""",
             (bucket, bucket, since, bucket)
         )).fetchall()
-    points = [{"t": int(r["t"]), "live_count": r["live_count"], "total_viewers": r["total_viewers"]} for r in rows]
-    return {"range": range if range in _TS_RANGES else "24h", "points": points}
+
+    step = bucket or _TS_RAW_STEP
+    points = [{
+        "t": int(r["t"]),
+        "live_count": int(r["live_count"]),
+        "total_viewers": int(r["total_viewers"]),
+        "samples": int(r["samples"]),
+        # 마지막 버킷은 아직 채워지는 중이라 평균이 확정값이 아니다 → '집계 중'으로 구분
+        "partial": bool(bucket) and int(r["t"]) + bucket > now,
+    } for r in rows]
+
+    # 확보된 이력 — 요청 창보다 짧으면 있는 구간까지만 그리고 그 사실을 알린다
+    first = await (await db.execute(
+        f"SELECT MIN(collected_at) AS f FROM rising_collect_runs WHERE {_TS_QUALITY}"
+    )).fetchone()
+    first_at = int(first["f"]) if first and first["f"] is not None else None
+    history_hours = round((now - first_at) / 3600, 1) if first_at else 0.0
+
+    # 품질 조건으로 제외한 사이클 수 — 그래프의 빈 구간이 '수집 실패'였음을 설명한다
+    ex = await (await db.execute(
+        f"""SELECT COUNT(*) AS n FROM rising_collect_runs
+            WHERE collected_at >= ? AND NOT ({_TS_QUALITY})""", (since,)
+    )).fetchone()
+
+    result = {
+        "range": key,
+        "window_seconds": window,
+        "bucket_seconds": bucket,
+        "step_seconds": step,          # 이 간격을 크게 벗어나면 프론트가 선을 끊는다
+        "history_hours": history_hours,
+        # 이력이 요청 창보다 짧다 — 버튼을 막지 않고 확보된 구간까지만 보여준다
+        "truncated": bool(first_at) and first_at > since,
+        "excluded_points": int(ex["n"]) if ex else 0,
+        "points": points,
+    }
+    if len(_ts_cache) > len(_TS_RANGE_KEYS):
+        _ts_cache.clear()
+    _ts_cache[key] = (now_s, result)
+    return result
 
 
 @router.get("/live-ranking")
