@@ -3,7 +3,14 @@
 # DATABASE_URL=/data/bot.db (Railway Persistent Volume)
 
 echo "=== NexBot unified startup ==="
-echo "DATABASE_URL: ${DATABASE_URL:-not set, using ./bot.db}"
+# DATABASE_URL 전체를 찍지 않는다. 지금은 SQLite 파일 경로라 무해하지만, PostgreSQL로
+# 옮기면 같은 줄이 비밀번호가 든 접속 문자열을 배포 로그에 그대로 남기게 된다.
+# 진단에 필요한 건 '어떤 백엔드/어느 경로인가'뿐이라 스킴과 마지막 조각만 남긴다.
+if [ -z "${DATABASE_URL}" ]; then
+  echo "DATABASE_URL: not set (using ./bot.db)"
+else
+  echo "DATABASE_URL: $(printf '%s' "${DATABASE_URL}" | sed -E 's#^([a-z+]+://)?.*/#\1***/#')"
+fi
 
 # Discord 봇을 백그라운드에서 실행
 python /app/main.py &

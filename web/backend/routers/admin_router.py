@@ -513,3 +513,21 @@ async def leave_guild(guild_id: str, user: dict = Depends(_require_owner)):
     _guilds_cache = []
     _guilds_cache_ts = 0.0
     return {"ok": True}
+
+
+# ── DB 진단 (오너 전용, 읽기 전용) ───────────────────────────────────────────
+# 공개 API로 두지 않는다 — 테이블 구성과 증가 속도는 공격자에게 유용한 정보다.
+# 되돌리기 어려운 작업(VACUUM/DELETE/파일 조작)은 이 엔드포인트에 두지 않는다.
+
+@router.get("/db/diagnostics")
+async def db_diagnostics(user: dict = Depends(_require_owner)):
+    """DB 파일·페이지·테이블별 행 수와 증가 속도, 예상 소진일."""
+    from db_diagnostics import collect
+    return await collect()
+
+
+@router.get("/db/integrity")
+async def db_integrity(user: dict = Depends(_require_owner)):
+    """PRAGMA integrity_check. 백업 직후 검증용 — 큰 DB에서는 수십 초 걸린다."""
+    from db_diagnostics import integrity_check
+    return await integrity_check()

@@ -10,6 +10,14 @@ DB_PATH = _raw if os.path.isabs(_raw) else os.path.normpath(os.path.join(_PROJEC
 
 _db: aiosqlite.Connection | None = None
 
+# ── 동시 접근 튜닝 (봇 프로세스 + FastAPI 프로세스가 같은 파일을 공유한다) ──────
+# 값은 임의가 아니라 이 서비스의 쓰기 패턴에 맞춘 것이다:
+#   쓰기는 수집기가 몰아서 하고(사이클당 수천 행 executemany), 읽기는 API가 상시.
+#   가장 흔한 실패는 수집 커밋과 API 쓰기가 겹치는 순간의 'database is locked'다.
+BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "10000"))
+SYNCHRONOUS = os.getenv("SQLITE_SYNCHRONOUS", "NORMAL").upper()
+WAL_AUTOCHECKPOINT = int(os.getenv("SQLITE_WAL_AUTOCHECKPOINT", "1000"))
+
 # 프로세스 시작 시 DB 파일이 이미 있었는지(볼륨이 유지됨) 새로 생겼는지(볼륨 초기화됨)
 # 배포/재시작할 때마다 로그로 확인할 수 있도록 기록
 if os.path.exists(DB_PATH):
@@ -23,6 +31,15 @@ async def _new_connection() -> aiosqlite.Connection:
     conn.row_factory = aiosqlite.Row
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute("PRAGMA foreign_keys=ON")
+    # 봇과 백엔드가 같은 파일을 쓰므로 쓰기 잠금이 겹친다. 기본값(0)이면 잠긴 순간
+    # 바로 'database is locked'로 실패한다 → 그 시간만큼 기다렸다 재시도하게 한다.
+    await conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    # WAL에서 synchronous=NORMAL은 '체크포인트 시점에만 fsync'라 쓰기가 크게 빨라진다.
+    # 잃을 수 있는 건 OS 크래시 직전의 마지막 트랜잭션 몇 개뿐이고(파일 손상은 아니다),
+    # 이 DB의 쓰기 대부분은 재수집으로 복구되는 통계 스냅샷이라 그 절충이 맞다.
+    await conn.execute(f"PRAGMA synchronous={SYNCHRONOUS}")
+    # WAL이 이 페이지 수를 넘으면 자동으로 체크포인트(기본 1000페이지 ≈ 4MB).
+    await conn.execute(f"PRAGMA wal_autocheckpoint={WAL_AUTOCHECKPOINT}")
     return conn
 
 
@@ -725,6 +742,24 @@ async def init_db():
                locked_until INTEGER NOT NULL DEFAULT 0,
                owner        TEXT    NOT NULL DEFAULT ''
            )""",
+        # 싱드컵 스냅샷 시간 롤업 — 원본은 24시간만 쓰고 버리되, 이벤트 순위 추이는
+        # 남겨야 한다. 원본(참가자 800명 × 4분 주기 = 일 28.8만 행, 실측 198B/행이라
+        # 55MB/일)을 그대로 두면 21일 이벤트에서 1.1GB가 되어 500MB 볼륨을 넘긴다.
+        # 시간당 1행으로 줄이면 1/15(하루 1.9만 행 ≈ 3.7MB)이 된다.
+        """CREATE TABLE IF NOT EXISTS singcup_snapshot_hourly (
+               event_id         TEXT    NOT NULL,
+               hour_ts          INTEGER NOT NULL,        -- 정시 epoch
+               owner_channel_id TEXT    NOT NULL,
+               clip_uid         TEXT    NOT NULL DEFAULT '',
+               heart_count      INTEGER NOT NULL DEFAULT 0,
+               view_count       INTEGER NOT NULL DEFAULT 0,
+               follower_count   INTEGER NOT NULL DEFAULT 0,
+               score            REAL    NOT NULL DEFAULT 0,
+               rank             INTEGER NOT NULL DEFAULT 0,
+               PRIMARY KEY (event_id, hour_ts, owner_channel_id)
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_snap_hourly_owner "
+        "ON singcup_snapshot_hourly(event_id, owner_channel_id, hour_ts)",
         # 수집 사이클 계측 — 주기를 줄여도 되는지 판단하려면 '한 사이클이 얼마나
         # 걸리는지'를 알아야 하는데, 지금까지 소요시간도 호출 수도 남기지 않아
         # p95를 계산할 방법이 아예 없었다(collected_at 간격은 sleep을 포함한 값이라
