@@ -1,5 +1,6 @@
 "use client";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { BarChart3, ScatterChart, ChevronDown, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
 
@@ -47,10 +48,97 @@ const compact = (v: number) => {
 };
 const signed = (v: number) => (v > 0 ? `+${compact(v)}` : compact(v));
 
+// ── 막대 툴팁 ────────────────────────────────────────────────────────────────
+// 예전에는 행 안에 absolute + group-hover로 띄웠는데, 이 카드의 접기/펼치기
+// 애니메이터가 `overflow:hidden` + `max-height`를 걸고 있어서 9~10위처럼 아래쪽
+// 행의 툴팁이 그 경계에서 잘렸다. clipping context 안에서는 z-index를 아무리
+// 올려도 빠져나갈 수 없으므로, body로 Portal을 보내고 position:fixed로 띄운다.
+const TIP_GAP = 8;      // 앵커와의 간격
+const TIP_EDGE = 8;     // 뷰포트 가장자리 최소 여백
+
+function BarTooltip({ anchor, children }:
+  { anchor: HTMLElement | null; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  const place = useCallback(() => {
+    const el = ref.current;
+    if (!el || !anchor) return;
+    const a = anchor.getBoundingClientRect();
+    const { width: w, height: h } = el.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+
+    // 아래를 기본으로 하되 공간이 모자라면 위로 뒤집는다(8~10위 대응).
+    // 위도 모자라면 더 넓은 쪽에 붙이고 화면 안으로 clamp한다.
+    const below = a.bottom + TIP_GAP;
+    const above = a.top - h - TIP_GAP;
+    let top = below;
+    if (below + h > vh - TIP_EDGE) {
+      top = above >= TIP_EDGE
+        ? above
+        : (a.top > vh - a.bottom ? TIP_EDGE : vh - h - TIP_EDGE);
+    }
+    top = Math.max(TIP_EDGE, Math.min(top, vh - h - TIP_EDGE));
+
+    // 가로: 막대가 시작되는 지점에 맞추되 좌우로 삐져나가지 않게 clamp
+    const left = Math.max(TIP_EDGE, Math.min(a.left + 140, vw - w - TIP_EDGE));
+    setPos({ top, left });
+  }, [anchor]);
+
+  // 레이아웃 확정 직후 측정 → 첫 프레임부터 올바른 위치에 뜬다(깜빡임 없음)
+  useLayoutEffect(() => { setPos(null); place(); }, [place]);
+
+  // 스크롤·리사이즈로 앵커가 움직이면 다시 계산한다(fixed라 따라오지 않는다).
+  // 캡처 단계로 듣어 내부 스크롤 컨테이너의 스크롤도 놓치지 않는다.
+  useEffect(() => {
+    if (!anchor) return;
+    const on = () => place();
+    window.addEventListener("scroll", on, true);
+    window.addEventListener("resize", on);
+    return () => {
+      window.removeEventListener("scroll", on, true);
+      window.removeEventListener("resize", on);
+    };
+  }, [anchor, place]);
+
+  if (!anchor || typeof document === "undefined") return null;
+  return createPortal(
+    <div ref={ref} role="tooltip"
+      // pointer-events:none — 툴팁이 커서를 덮으면 hover가 풀렸다 걸렸다 하며 깜빡인다
+      className="pointer-events-none fixed whitespace-nowrap rounded-lg border border-border
+                 bg-bg-card px-3 py-2 text-[11px] leading-relaxed text-fg shadow-2xl"
+      style={{ top: pos?.top ?? 0, left: pos?.left ?? 0, zIndex: 60,
+               visibility: pos ? "visible" : "hidden" }}>
+      {children}
+    </div>,
+    document.body);
+}
+
 // ── 컴포넌트 1: Top 10 수평 막대 ─────────────────────────────────────────────
 function BarPanel({ rows, onPick, deltaName }:
   { rows: ChartRow[]; onPick: (id: string) => void; deltaName: string }) {
   const top = rows.slice(0, 10);
+  // 어떤 행의 툴팁을 띄울지 — 앵커 엘리먼트를 들고 있어야 스크롤 후 재계산이 된다
+  const [hot, setHot] = useState<{ id: string; el: HTMLElement } | null>(null);
+  const touching = useRef(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // 모바일: 바깥을 누르면 닫는다(마우스가 없어 mouseleave가 오지 않는다).
+  // 판정 기준은 '패널 바깥'이어야 한다. 눌린 행(hot.el)만 기준으로 삼으면, 다른 행을
+  // 탭했을 때 이 document 리스너가 행의 React 핸들러보다 나중에 돌면서 방금 연 툴팁을
+  // 곧바로 닫아버린다(행 간 전환이 안 되고 깜빡이기만 한다).
+  useEffect(() => {
+    if (!hot) return;
+    const close = (e: Event) => {
+      if (!panelRef.current?.contains(e.target as Node)) setHot(null);
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, [hot]);
+
+  // 목록이 바뀌어(정렬 변경 등) 앵커가 사라진 행을 가리키고 있을 수 있다
+  const hotRow = hot ? top.find((r) => r.chzzk_channel_id === hot.id) : null;
 
   // 막대 길이는 '상위 10명 안에서의 상대 위치'로 그린다.
   // 0부터 최대값까지 절대 스케일로 그리면 값이 서로 비슷할 때(예: 1위 1800% / 2위 1700%,
@@ -63,9 +151,23 @@ function BarPanel({ rows, onPick, deltaName }:
     max === min ? 100 : MIN_W + ((v - min) / (max - min)) * (100 - MIN_W);
 
   return (
-    <div className="space-y-3">
+    <div ref={panelRef} className="space-y-3">
       {top.map((r, i) => (
-        <div key={r.chzzk_channel_id} className="group relative flex items-center gap-2">
+        <div key={r.chzzk_channel_id} className="relative flex items-center gap-2"
+          // 마우스: 행에 들어오면 열고 나가면 닫는다. 행 사이를 빠르게 오가도
+          // 앵커(el)가 그 행으로 즉시 교체되므로 이전 스트리머가 남지 않는다.
+          onMouseEnter={(e) => {
+            if (touching.current) return;
+            setHot({ id: r.chzzk_channel_id, el: e.currentTarget });
+          }}
+          onMouseLeave={() => { if (!touching.current) setHot(null); }}
+          // 터치: 탭하면 열리고, 바깥을 누르면 닫힌다(위 useEffect)
+          onPointerDown={(e) => {
+            if (e.pointerType !== "touch") return;
+            touching.current = true;
+            const el = e.currentTarget;
+            setHot((p) => (p?.id === r.chzzk_channel_id ? null : { id: r.chzzk_channel_id, el }));
+          }}>
           <span className="w-5 shrink-0 text-right text-[11px] tabular-nums text-muted">{i + 1}</span>
           <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full bg-bg-hover">
             {r.channel_image_url && (
@@ -74,35 +176,52 @@ function BarPanel({ rows, onPick, deltaName }:
             )}
           </span>
           <button type="button" onClick={() => onPick(r.chzzk_channel_id)}
-            className="w-[104px] shrink-0 truncate text-left text-xs font-semibold text-fg transition-colors hover:text-accent">
+            className="w-[64px] shrink-0 truncate text-left text-xs font-semibold text-fg
+                       transition-colors hover:text-accent sm:w-[88px] md:w-[104px]">
             {r.channel_name}
           </button>
 
-          <div className="h-3.5 flex-1 overflow-hidden rounded bg-bg-hover">
+          {/* min-w — 고정폭(이름 + 우측 지표)의 합이 좁은 화면의 카드 폭을 넘으면
+              flex-1인 이 트랙이 0px로 짜부라져 막대가 아예 사라진다. */}
+          <div className="h-3.5 min-w-[36px] flex-1 overflow-hidden rounded bg-bg-hover">
             <div className="h-full rounded transition-all"
                  style={{ width: `${barPct(r.concurrent_viewers)}%`,
                           background: `linear-gradient(90deg, ${GREEN}, ${CYAN})` }} />
           </div>
 
-          <span className="flex w-[116px] shrink-0 items-center justify-end gap-1 text-right tabular-nums">
-            {r.deltaPct != null && (
-              <span className="text-[10px] font-semibold" style={{ color: r.deltaPct >= 0 ? UP : DOWN }}>
-                {r.deltaPct >= 0 ? "▲" : "▼"} {Math.abs(r.deltaPct).toFixed(1)}%
-              </span>
-            )}
-            <span className="text-xs font-bold text-fg">{nf(r.concurrent_viewers)}명</span>
-          </span>
-
-          <div className="pointer-events-none absolute left-[140px] top-full z-30 mt-1 hidden whitespace-nowrap
-                          rounded-lg border border-border bg-bg-card px-3 py-2 text-[11px] leading-relaxed
-                          text-fg shadow-2xl group-hover:block">
-            <b className="block">{r.channel_name}</b>
-            방송 시간 {r.dur.label} · 팔로워 {r.follower_count > 0 ? `${nf(r.follower_count)}명` : "미집계"}
-            {r.deltaPct != null && <> · {deltaName} {r.deltaPct >= 0 ? "+" : ""}{r.deltaPct.toFixed(1)}%</>}
-            {r.category_name && <><br />카테고리 {r.category_name}</>}
+          {/* 증감률과 시청자 수는 별도 요소 + gap으로 띄운다(문자열 공백 금지).
+              폭은 '고정'이어야 한다 — min-width로 두면 1위처럼 여섯 자리(128,400명)인
+              행만 이 칸이 넓어지고, 그만큼 flex-1인 막대 트랙이 짧아져 1위 막대만
+              안쪽에서 끝난다. 칸을 고정하면 모든 행의 막대 길이 기준이 같아진다. */}
+          <div className="flex w-[112px] shrink-0 items-center justify-end gap-2
+                          tabular-nums sm:w-[150px] sm:gap-3 md:w-[176px] md:gap-4">
+            <span className="flex-1 whitespace-nowrap text-right text-[11px] font-semibold
+                             sm:text-[13px] md:text-sm"
+                  style={{ color: r.deltaPct == null || r.deltaPct === 0
+                                  ? "rgb(var(--color-muted-rgb))"
+                                  : r.deltaPct > 0 ? UP : DOWN }}>
+              {r.deltaPct == null ? "-"
+                : r.deltaPct === 0 ? "0.0%"
+                : `${r.deltaPct > 0 ? "▲" : "▼"} ${Math.abs(r.deltaPct).toFixed(1)}%`}
+            </span>
+            <span className="w-[60px] shrink-0 whitespace-nowrap text-right text-[12px]
+                             font-extrabold text-fg sm:w-[72px] sm:text-sm
+                             md:w-[86px] md:text-[15px]">
+              {nf(r.concurrent_viewers)}명
+            </span>
           </div>
         </div>
       ))}
+
+      {hotRow && (
+        <BarTooltip anchor={hot!.el}>
+          <b className="block">{hotRow.channel_name}</b>
+          방송 시간 {hotRow.dur.label} · 팔로워{" "}
+          {hotRow.follower_count > 0 ? `${nf(hotRow.follower_count)}명` : "미집계"}
+          {hotRow.deltaPct != null && <> · {deltaName} {hotRow.deltaPct >= 0 ? "+" : ""}{hotRow.deltaPct.toFixed(1)}%</>}
+          {hotRow.category_name && <><br />카테고리 {hotRow.category_name}</>}
+        </BarTooltip>
+      )}
     </div>
   );
 }
