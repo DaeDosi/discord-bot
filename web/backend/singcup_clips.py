@@ -535,6 +535,8 @@ BACKFILL_LOCK_TTL = int(os.getenv("SINGCUP_BACKFILL_LOCK_TTL", "300"))
 # 신규 탐색: 안전장치용 상한(정상적으로는 1~2페이지에서 끝난다)
 DISCOVER_MAX_PAGES = int(os.getenv("SINGCUP_DISCOVER_MAX_PAGES", "20"))
 # 지표 갱신 — 대표 클립은 자주, 나머지는 느리게
+# 화면의 '1시간' 증감 기준. 회차 간격(4분)으로 비교하면 대부분 0이라 의미가 없다.
+DELTA_WINDOW_SECONDS = int(float(os.getenv("SINGCUP_DELTA_WINDOW_MINUTES", "60")) * 60)
 REP_METRICS_TTL_MINUTES = float(os.getenv("SINGCUP_REP_METRICS_TTL_MINUTES", "5"))
 METRICS_TTL_MINUTES = float(os.getenv("SINGCUP_METRICS_TTL_MINUTES", "45"))
 REFRESH_PER_CYCLE = int(os.getenv("SINGCUP_REFRESH_PER_CYCLE", "80"))
@@ -1059,20 +1061,21 @@ async def retry_failed_clips(limit: int = 50) -> dict:
 
 # ── 조회 (API용) ────────────────────────────────────────────────────────────
 async def _delta_maps(now: int) -> tuple[dict, dict]:
-    """(직전 회차 스냅샷, 24시간 전 스냅샷) — owner_channel_id 기준."""
-    db = await get_db()
-    prev_run = await (await db.execute(
-        "SELECT MAX(collected_at) c FROM singcup_snapshots "
-        "WHERE event_id=? AND collected_at < (SELECT MAX(collected_at) "
-        "FROM singcup_snapshots WHERE event_id=?)", (EVENT_ID, EVENT_ID))).fetchone()
-    prev_ts = prev_run["c"] if prev_run else None
+    """(1시간 전 스냅샷, 24시간 전 스냅샷) — owner_channel_id 기준.
 
+    예전에는 '직전 수집 회차'와 비교했는데, 회차 간격이 4분이라 변화량이 대부분 0이고
+    기준 시점도 들쭉날쭉했다(갱신 대상이 없는 회차는 스냅샷을 남기지 않는다).
+    24시간과 같은 방식으로 '1시간 전 이하의 마지막 스냅샷'을 기준으로 잡는다.
+    """
+    db = await get_db()
     prev: dict = {}
-    if prev_ts:
-        for r in await (await db.execute(
-            "SELECT owner_channel_id, heart_count, rank FROM singcup_snapshots "
-            "WHERE event_id=? AND collected_at=?", (EVENT_ID, prev_ts))).fetchall():
-            prev[r["owner_channel_id"]] = (int(r["heart_count"]), int(r["rank"]))
+    for r in await (await db.execute(
+        "SELECT owner_channel_id, heart_count, rank FROM singcup_snapshots s "
+        "WHERE event_id=? AND collected_at = (SELECT MAX(collected_at) "
+        "FROM singcup_snapshots WHERE event_id=s.event_id "
+        "AND owner_channel_id=s.owner_channel_id AND collected_at <= ?) "
+        "GROUP BY owner_channel_id", (EVENT_ID, now - DELTA_WINDOW_SECONDS))).fetchall():
+        prev[r["owner_channel_id"]] = (int(r["heart_count"]), int(r["rank"]))
 
     day: dict = {}
     for r in await (await db.execute(
@@ -1150,14 +1153,33 @@ async def load_main(limit: int = 200) -> dict:
         "SELECT MAX(collected_at) c FROM singcup_snapshots WHERE event_id=?",
         (EVENT_ID,))).fetchone()
     last_at = last_run["c"] if last_run and last_run["c"] else None
+    # KPI 증감 — 지금과 1시간 전을 '같은 소스(singcup_clips)'에서 세야 뺄셈이 성립한다.
+    # first_collected_at은 그 클립을 처음 확인한 시각이라, 그 이하만 세면 1시간 전 상태다.
+    cnt = await (await db.execute(
+        """SELECT COUNT(*)                                              AS clips,
+                  COUNT(DISTINCT owner_channel_id)                      AS streamers,
+                  SUM(CASE WHEN first_collected_at <= ? THEN 1 ELSE 0 END) AS clips_before
+           FROM singcup_clips WHERE event_id=? AND active=1""",
+        (now - DELTA_WINDOW_SECONDS, EVENT_ID))).fetchone()
+    before = await (await db.execute(
+        """SELECT COUNT(DISTINCT owner_channel_id) AS n FROM singcup_clips
+           WHERE event_id=? AND active=1 AND first_collected_at <= ?""",
+        (EVENT_ID, now - DELTA_WINDOW_SECONDS))).fetchone()
+    clips_now = int(cnt["clips"] or 0)
+    streamers_before = int(before["n"] or 0)
+
     return {
         "event": event_meta(),
         "summary": {
-            "taggedClipCount": (await (await db.execute(
-                "SELECT COUNT(*) n FROM singcup_clips WHERE event_id=? AND active=1",
-                (EVENT_ID,))).fetchone())["n"],
+            "taggedClipCount": clips_now,
             "streamerCount": len(ranked),
             "liveCount": sum(1 for r in out if r["live"]),
+            # 수집을 시작한 지 1시간이 안 됐으면 '전부 신규'라 증감이 무의미하다 → null
+            "taggedClipDelta": (clips_now - int(cnt["clips_before"] or 0))
+                               if int(cnt["clips_before"] or 0) > 0 else None,
+            "streamerDelta": (int(cnt["streamers"] or 0) - streamers_before)
+                             if streamers_before > 0 else None,
+            "deltaWindowMinutes": DELTA_WINDOW_SECONDS // 60,
         },
         "collector": {
             "lastSuccessAt": datetime.fromtimestamp(last_at, _KST).isoformat()

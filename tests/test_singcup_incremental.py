@@ -400,3 +400,84 @@ def test_main_limit_argument_is_still_honored(db):
     """상한만 올렸을 뿐, 요청한 개수는 그대로 지킨다."""
     db(_seed_streamers(600))
     assert len(db(sc.load_main(limit=50))["streamers"]) == 50
+
+
+# ── 변화량 기준: 직전 회차가 아니라 1시간 전 ───────────────────────────────
+async def _snap(owner, hearts, rank, at):
+    c = await database.get_db()
+    await c.execute(
+        "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
+        " heart_count, view_count, follower_count, score, rank, collected_at)"
+        " VALUES (?,?,?,?,0,0,0,?,?)",
+        (sc.EVENT_ID, f"u-{owner}", owner, hearts, rank, int(at)))
+    await c.commit()
+
+
+def test_delta_compares_against_one_hour_ago(db):
+    """회차 간격(4분)으로 비교하면 변화량이 대부분 0이라 의미가 없다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    now = int(time.time())
+    owner = db(sc.load_main())["streamers"][0]["channelId"]
+    db(_snap(owner, 10, 5, now - 3900))      # 65분 전 = 1시간 기준점
+    db(_snap(owner, 90, 2, now - 300))       # 5분 전(직전 회차) — 기준이 되면 안 된다
+    s = next(x for x in db(sc.load_main())["streamers"] if x["channelId"] == owner)
+    # 현재 하트는 카드 응답의 3
+    assert s["heartDelta"] == 3 - 10, "1시간 전(10) 기준이어야 한다"
+    assert s["rankDelta"] == 5 - s["rank"]
+
+
+def test_delta_window_is_configurable_and_one_hour_by_default():
+    assert sc.DELTA_WINDOW_SECONDS == 3600
+
+
+def test_delta_is_none_without_old_enough_history(db):
+    """1시간 이전 기록이 없으면 비교 대상이 없다 → isNew."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    now = int(time.time())
+    owner = db(sc.load_main())["streamers"][0]["channelId"]
+    db(_snap(owner, 50, 1, now - 600))       # 10분 전뿐 — 1시간 기준에는 안 잡힌다
+    s = next(x for x in db(sc.load_main())["streamers"] if x["channelId"] == owner)
+    assert s["heartDelta"] is None and s["isNew"] is True
+
+
+# ── KPI 증감(태그 클립 / 참가 스트리머) ─────────────────────────────────────
+async def _age_clip(uid, first_at):
+    c = await database.get_db()
+    await c.execute("UPDATE singcup_clips SET first_collected_at=? WHERE clip_uid=?",
+                    (int(first_at), uid))
+    await c.commit()
+
+
+def test_kpi_delta_counts_only_the_last_hour(db):
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    now = int(time.time())
+    # t1, t2는 1시간 전부터 있었고 t3만 방금 들어왔다 → 클립 +1, 스트리머 +1
+    db(_age_clip("t1", now - 7200))
+    db(_age_clip("t2", now - 7200))
+    db(_age_clip("t3", now - 60))
+    s = db(sc.load_main())["summary"]
+    assert s["taggedClipCount"] == 3
+    assert s["taggedClipDelta"] == 1
+    assert s["streamerDelta"] == 1
+    assert s["deltaWindowMinutes"] == 60
+
+
+def test_kpi_delta_is_none_when_everything_is_brand_new(db):
+    """수집을 막 시작하면 전부 신규라 '증가분'이 의미가 없다 → null."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    s = db(sc.load_main())["summary"]
+    assert s["taggedClipDelta"] is None and s["streamerDelta"] is None
+
+
+def test_kpi_delta_zero_when_nothing_new(db):
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    now = int(time.time())
+    for uid in ("t1", "t2", "t3", "plain"):
+        db(_age_clip(uid, now - 7200))
+    s = db(sc.load_main())["summary"]
+    assert s["taggedClipDelta"] == 0 and s["streamerDelta"] == 0

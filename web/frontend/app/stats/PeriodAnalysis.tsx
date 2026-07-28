@@ -404,25 +404,47 @@ function BarBlock({
 }) {
   const max = Math.max(1, ...bars.map((b) => b.value));
   const best = bars.reduce((a, b) => (b.value > a.value ? b : a), bars[0]);
+  // 예전에는 네이티브 title 속성을 썼는데, 브라우저가 1~2초 가만히 둬야 띄워준다.
+  // 막대에 닿는 즉시 값을 보여주려면 직접 그리는 수밖에 없다.
+  const [hi, setHi] = useState<number | null>(null);
+  const hb = hi != null ? bars[hi] : null;
   return (
     <div className="rounded-2xl border border-gray-800/80 p-5" style={{ background: PANEL }}>
       <h3 className="section-title">{title}</h3>
       <p className="mt-1 text-sm text-muted">{desc}</p>
-      <div className="mt-4 flex h-[150px] items-end gap-[3px]">
-        {bars.map((b) => {
+      <div className="relative mt-4 flex h-[150px] items-end gap-[3px]"
+           onMouseLeave={() => setHi(null)}>
+        {bars.map((b, i) => {
           const on = b.label === best?.label && b.value > 0;
+          const hot = hi === i;
           return (
-            <div key={b.label} className="group relative flex h-full flex-1 flex-col justify-end"
-                 title={b.samples === 0 ? `${b.label}: 집계 없음` : `${b.label}: 평균 ${nf(b.value)}명`}>
+            <div key={b.label} className="relative flex h-full flex-1 flex-col justify-end"
+                 onMouseEnter={() => setHi(i)}>
               <div className="w-full rounded-t transition-all"
                    style={{
                      height: `${Math.max(b.value > 0 ? 3 : 0, (b.value / max) * 100)}%`,
                      background: on ? `linear-gradient(180deg, ${GREEN}, ${CYAN})`
-                                    : "rgba(0,255,163,0.28)",
+                                    : hot ? "rgba(0,255,163,0.55)" : "rgba(0,255,163,0.28)",
                    }} />
             </div>
           );
         })}
+        {hb && (
+          <div className="pointer-events-none absolute bottom-full z-20 mb-1.5 whitespace-nowrap
+                          rounded-lg border border-border bg-bg-card px-2.5 py-1.5 text-[11px]
+                          leading-snug text-fg shadow-xl"
+               // 막대가 24개라 양끝에서는 가운데 정렬하면 패널 밖으로 나간다
+               style={{ left: `${((hi! + 0.5) / bars.length) * 100}%`,
+                        transform: hi! < bars.length * 0.15 ? "translateX(0)"
+                                 : hi! > bars.length * 0.85 ? "translateX(-100%)"
+                                 : "translateX(-50%)" }}>
+            <b className="text-fg">{hb.label}</b>
+            <span className="mx-1 text-border">·</span>
+            {hb.samples === 0
+              ? <span className="text-muted">집계 없음</span>
+              : <>평균 <b style={{ color: GREEN }}>{nf(hb.value)}</b>명</>}
+          </div>
+        )}
       </div>
       <div className="mt-1.5 flex gap-[3px]">
         {bars.map((b, i) => (

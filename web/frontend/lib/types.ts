@@ -599,7 +599,12 @@ export interface SingcupStreamer {
 }
 export interface SingcupMain {
   event: { id: string; startAt: string; endAt: string; status: SingcupStatus };
-  summary: { taggedClipCount: number; streamerCount: number; liveCount: number };
+  summary: {
+    taggedClipCount: number; streamerCount: number; liveCount: number;
+    /** 1시간 전 대비 증가분 — 수집 이력이 그만큼 없으면 null */
+    taggedClipDelta: number | null; streamerDelta: number | null;
+    deltaWindowMinutes: number;
+  };
   collector: { lastSuccessAt: string | null; stale: boolean };
   streamers: SingcupStreamer[];
 }

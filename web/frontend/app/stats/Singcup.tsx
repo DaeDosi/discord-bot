@@ -26,8 +26,10 @@ const SORTS: { k: SortKey; label: string }[] = [
   { k: "follower", label: "팔로워 많은 순" },
 ];
 
-function Tile({ label, value, unit, accent }:
-  { label: string; value: string; unit?: string; accent?: boolean }) {
+function Tile({ label, value, unit, accent, delta, windowMin }:
+  { label: string; value: string; unit?: string; accent?: boolean;
+    /** 1시간 전 대비 증가분. null이면 비교할 이력이 아직 없다 */
+    delta?: number | null; windowMin?: number }) {
   return (
     <div className="card !p-4">
       <p className="text-sm text-muted">{label}</p>
@@ -41,6 +43,18 @@ function Tile({ label, value, unit, accent }:
         </span>
         {unit && <span className="ml-1 text-sm font-normal text-muted">{unit}</span>}
       </p>
+      {/* 이 이벤트는 값이 늘기만 한다(클립·참가자는 줄지 않는다) → 0은 '변화 없음'으로만 */}
+      {delta !== undefined && (
+        <p className="mt-1 whitespace-nowrap text-xs tabular-nums"
+           title={`최근 ${windowMin ?? 60}분 동안 새로 확인된 수입니다`}>
+          {delta == null
+            ? <span className="text-muted/60">집계 중</span>
+            : delta > 0
+              ? <><span className="font-bold" style={{ color: GREEN }}>+{nf(delta)}</span>
+                  <span className="ml-1 text-muted">1시간</span></>
+              : <span className="text-muted">1시간 변화 없음</span>}
+        </p>
+      )}
     </div>
   );
 }
@@ -119,8 +133,8 @@ function Row({ s, index }: { s: SingcupStreamer; index: number }) {
           여백을 넉넉히 준다. 구분선이 없으면 버튼 쪽에 붙어 보인다. */}
       <span className="flex shrink-0 items-center justify-center gap-5 border-border
                        px-4 sm:min-w-[172px] sm:border-x">
-        <span className="text-center" title="직전 수집 회차와 비교한 하트 증감입니다. '-'는 변화가 없거나 비교할 직전 기록이 아직 없다는 뜻입니다.">
-          <span className="block whitespace-nowrap text-xs text-muted">직전</span>
+        <span className="text-center" title="1시간 전과 비교한 하트 증감입니다. '-'는 변화가 없거나 비교할 기록이 아직 없다는 뜻입니다.">
+          <span className="block whitespace-nowrap text-xs text-muted">1시간</span>
           <span className="mt-0.5 block whitespace-nowrap text-[15px]">
             <Delta value={s.heartDelta} />
           </span>
@@ -391,8 +405,13 @@ export default function Singcup() {
 
       {/* 요약 */}
       <div className="grid grid-cols-3 gap-3">
-        <Tile label="태그 클립" value={nf(data?.summary.taggedClipCount ?? 0)} unit="개" />
-        <Tile label="참가 스트리머" value={nf(data?.summary.streamerCount ?? 0)} unit="명" accent />
+        <Tile label="태그 클립" value={nf(data?.summary.taggedClipCount ?? 0)} unit="개"
+              delta={data?.summary.taggedClipDelta ?? null}
+              windowMin={data?.summary.deltaWindowMinutes} />
+        <Tile label="참가 스트리머" value={nf(data?.summary.streamerCount ?? 0)} unit="명" accent
+              delta={data?.summary.streamerDelta ?? null}
+              windowMin={data?.summary.deltaWindowMinutes} />
+        {/* 라이브는 늘고 줄기를 반복하므로 '증가분' 개념이 맞지 않는다 → 증감 표기 없음 */}
         <Tile label="현재 라이브" value={nf(data?.summary.liveCount ?? 0)} unit="명" />
       </div>
 
@@ -454,9 +473,9 @@ export default function Singcup() {
         </p>
       )}
 
-      {/* 표기 안내 — '직전 -' / '24시간 NEW'가 무슨 뜻인지 화면에서 바로 알 수 있게 */}
+      {/* 표기 안내 — '1시간 -' / '24시간 NEW'가 무슨 뜻인지 화면에서 바로 알 수 있게 */}
       <p className="text-[11px] leading-relaxed text-muted/80">
-        <b className="text-muted">직전</b>은 마지막 수집 회차와 비교한 하트 증감,{" "}
+        <b className="text-muted">1시간</b>은 1시간 전과 비교한 하트 증감,{" "}
         <b className="text-muted">24시간</b>은 하루 전 대비 하트 증가율입니다.{" "}
         <span className="text-muted">-</span> 는 변화가 없거나 비교할 기록이 아직 없다는 뜻이고,{" "}
         <b style={{ color: GOLD }}>NEW</b> 는 24시간 전 기록이 없어(또는 그때 하트가 0이라)
