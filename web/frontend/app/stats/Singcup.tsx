@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Trophy, ExternalLink, Play, Eye, Heart, Loader2, Radio, ClipboardList, X,
@@ -18,16 +18,16 @@ import {
 // 썸네일 카드로 둘러보는 화면은 '싱드컵 라이브'(/stats/singcup/live),
 // 자유게시판 버프 목록은 '자유게시판 홍보글' 드로어(?view=board)로 나가 있다.
 
-type SortKey = "score" | "heart" | "heart24h" | "view" | "follower" | "rankmove";
+type SortKey = "score" | "heart" | "heart1h" | "heart24h" | "view" | "follower";
 type SortDir = "desc" | "asc";
 const SORTS: { k: SortKey; label: string }[] = [
   { k: "score",    label: "예상 인기점수" },
   { k: "heart",    label: "하트 많은 순" },
+  // 최근 1시간 '증가량' 기준. 24시간은 증가'율'이라 기준이 다르므로 이름을 나눠 둔다.
+  { k: "heart1h",  label: "1시간 하트 급상승" },
   { k: "heart24h", label: "24시간 하트 급상승" },
   { k: "view",     label: "조회수 많은 순" },
   { k: "follower", label: "팔로워 많은 순" },
-  // '변동이 많은 순'이면 하트인지 점수인지 알 수 없다 → 무엇의 변동인지 이름에 넣는다
-  { k: "rankmove", label: "순위 변동 많은 순" },
 ];
 const isSort = (v: string | null): v is SortKey =>
   !!v && SORTS.some((s) => s.k === v);
@@ -406,7 +406,65 @@ function BoardDrawer({ onClose }: { onClose: () => void }) {
   );
 }
 
-const PAGE_SIZE = 100;
+const PAGE_SIZE = 50;
+// 한 번에 보여줄 페이지 번호 개수. 참가자가 수백 명이면 페이지가 10개를 넘으므로
+// 전부 늘어놓지 않고 현재 페이지 주변만 보여준다(모바일에서 줄이 넘치지 않게).
+const PAGE_WINDOW = 5;
+
+/** 페이지 번호 이동 — 좌우 끝에 처음/마지막으로 가는 버튼을 둔다. */
+function Pager({ page, total, onChange, rangeFrom, rangeTo, totalRows }:
+  { page: number; total: number; onChange: (p: number) => void;
+    rangeFrom: number; rangeTo: number; totalRows: number }) {
+  if (total <= 1) return null;
+  const half = Math.floor(PAGE_WINDOW / 2);
+  let start = Math.max(1, page - half);
+  const end = Math.min(total, start + PAGE_WINDOW - 1);
+  start = Math.max(1, end - PAGE_WINDOW + 1);   // 끝에서도 창 크기를 유지한다
+  const nums = Array.from({ length: end - start + 1 }, (_, i) => start + i);
+
+  const btn = "flex h-9 min-w-9 items-center justify-center rounded-lg border px-2.5" +
+              " text-sm tabular-nums transition-colors disabled:opacity-35" +
+              " disabled:cursor-not-allowed";
+  const plain = { borderColor: "rgb(var(--color-border-rgb))",
+                  color: "rgb(var(--color-muted-rgb))" };
+  const active = { background: `${GOLD}1a`, borderColor: `${GOLD}59`, color: GOLD };
+
+  return (
+    <nav className="mt-4 flex flex-col items-center gap-2" aria-label="페이지 이동">
+      <div className="flex flex-wrap items-center justify-center gap-1.5">
+        <button onClick={() => onChange(1)} disabled={page === 1}
+                className={btn} style={plain} aria-label="첫 페이지로" title="첫 페이지">
+          «
+        </button>
+        <button onClick={() => onChange(page - 1)} disabled={page === 1}
+                className={btn} style={plain} aria-label="이전 페이지" title="이전">
+          ‹
+        </button>
+        {/* 창 밖의 앞쪽이 있으면 1페이지가 있다는 걸 알려준다 */}
+        {start > 1 && <span className="px-1 text-sm text-muted/60">…</span>}
+        {nums.map((n) => (
+          <button key={n} onClick={() => onChange(n)}
+                  className={`${btn} font-bold`} style={n === page ? active : plain}
+                  aria-current={n === page ? "page" : undefined}>
+            {n}
+          </button>
+        ))}
+        {end < total && <span className="px-1 text-sm text-muted/60">…</span>}
+        <button onClick={() => onChange(page + 1)} disabled={page === total}
+                className={btn} style={plain} aria-label="다음 페이지" title="다음">
+          ›
+        </button>
+        <button onClick={() => onChange(total)} disabled={page === total}
+                className={btn} style={plain} aria-label="마지막 페이지로" title="마지막 페이지">
+          »
+        </button>
+      </div>
+      <p className="text-[11px] tabular-nums text-muted/70">
+        {nf(rangeFrom)}–{nf(rangeTo)} / 전체 {nf(totalRows)}명 · {page}/{total} 페이지
+      </p>
+    </nav>
+  );
+}
 
 export default function Singcup() {
   const [data, setData] = useState<SingcupMain | null>(null);
@@ -475,13 +533,13 @@ export default function Singcup() {
     else if (sort === "heart24h") {
       list.sort((a, b) => (b.heartChangeRate24h ?? -1e9) - (a.heartChangeRate24h ?? -1e9));
     }
-    else if (sort === "rankmove") {
-      // '얼마나 움직였나'가 기준이므로 상승·하락을 절대값으로 함께 본다.
-      // 비교 기록이 없는 항목(NEW)은 변동폭 0으로 치지 않고 정상 비교 항목 뒤로 보낸다.
-      const mv = (s: SingcupStreamer) => (s.rankDelta == null ? -1 : Math.abs(s.rankDelta));
+    else if (sort === "heart1h") {
+      // 최근 1시간 동안 하트를 가장 많이 받은 순. 비교 기록이 없으면(대표 클립 교체 등)
+      // 0으로 치지 않고 정상 비교 항목 뒤로 보낸다 — 0과 '모름'은 다르다.
+      const d = (s: SingcupStreamer) => (s.heartDelta == null ? -1 : s.heartDelta);
       list.sort((a, b) =>
-        mv(b) - mv(a)
-        || Math.abs(b.scoreDelta ?? 0) - Math.abs(a.scoreDelta ?? 0)
+        d(b) - d(a)
+        || b.heartCount - a.heartCount
         || b.score - a.score
         || a.channelId.localeCompare(b.channelId));
     }
@@ -492,9 +550,19 @@ export default function Singcup() {
 
   // 참가자를 전원 받아오므로 한 번에 다 그리면 첫 화면이 무거워진다. 목록은 나눠서
   // 보여주되, 검색·정렬은 항상 전체를 대상으로 한다(잘라놓고 찾으면 안 나온다).
-  const [visible, setVisible] = useState(PAGE_SIZE);
-  useEffect(() => { setVisible(PAGE_SIZE); }, [query, sort, dir]);
-  const shown = rows.slice(0, visible);
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  // 검색·정렬이 바뀌면 목록이 통째로 달라지므로 1페이지로 되돌린다
+  useEffect(() => { setPage(1); }, [query, sort, dir]);
+  // 목록이 줄어 현재 페이지가 사라진 경우(검색 등) 마지막 페이지로 당긴다
+  useEffect(() => { setPage((p) => Math.min(p, totalPages)); }, [totalPages]);
+  const shown = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const listTop = useRef<HTMLDivElement>(null);
+  const goPage = useCallback((p: number) => {
+    setPage(p);
+    // 페이지만 바뀌고 화면은 목록 끝에 머물면 뭐가 바뀐 건지 알 수 없다
+    listTop.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, []);
 
   const ev = data?.event;
   const ended = ev?.status === "ENDED";
@@ -683,21 +751,20 @@ export default function Singcup() {
           )}
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-2" ref={listTop}>
           {/* 메달은 '점수 내림차순 + 검색 없음'일 때만 — 그 외에는 목록 순서가
               실제 1~3위와 다르므로 강조하면 오해를 준다 */}
           {shown.map((s, i) => (
             <Row key={s.channelId} s={s}
-                 index={sort === "score" && dir === "desc" && !query ? i : -1} />
+                 // 메달은 '점수 내림차순 + 검색 없음'의 1페이지에서만.
+                 // 2페이지 첫 줄에 금메달이 붙으면 그 사람이 1위처럼 보인다.
+                 index={sort === "score" && dir === "desc" && !query && page === 1
+                        ? i : -1} />
           ))}
-          {rows.length > shown.length && (
-            <button onClick={() => setVisible((v) => v + PAGE_SIZE)}
-                    className="btn-secondary w-full py-3 text-sm">
-              더 보기 <span className="tabular-nums text-muted">
-                ({shown.length}/{rows.length})
-              </span>
-            </button>
-          )}
+          <Pager page={page} total={totalPages} onChange={goPage}
+                 rangeFrom={(page - 1) * PAGE_SIZE + 1}
+                 rangeTo={(page - 1) * PAGE_SIZE + shown.length}
+                 totalRows={rows.length} />
         </div>
       )}
 

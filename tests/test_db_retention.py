@@ -46,7 +46,8 @@ async def _hourly():
 
 def test_old_snapshots_are_rolled_up_then_pruned(db):
     now = int(time.time())
-    old = now - 40 * HOUR
+    # 정시에 맞춰 시작한다 — 실행 시각에 따라 6개가 두 시간대로 갈리면 롤업이 2행이 된다
+    old = ((now - 40 * HOUR) // HOUR) * HOUR + 60
     for i in range(6):                       # 같은 시간대 안의 6개 회차
         db(_add("o1", "c1", 100 + i, 3, old + i * 240))
     db(_add("o1", "c1", 999, 1, now - HOUR))  # 보존 구간 — 남아야 한다
