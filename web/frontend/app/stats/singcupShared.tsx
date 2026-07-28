@@ -120,15 +120,23 @@ export function Delta({ value, suffix = "" }: { value: number | null; suffix?: s
   );
 }
 
+/** 순위 변동 — 하트 변화와 헷갈리지 않도록 툴팁에 '무엇의 순위인지'를 밝힌다.
+ *  기준은 항상 예상 인기점수 순위다(화면 정렬 옵션을 바꿔도 달라지지 않는다). */
+const RANK_TIP = "1시간 전 비공식 예상 인기점수 순위와 비교한 변화입니다.";
+
 export function RankDelta({ value, isNew }: { value: number | null; isNew: boolean }) {
   if (isNew) {
-    return <span className="text-[11px] font-bold" style={{ color: GOLD }}>NEW</span>;
+    return <span className="text-[11px] font-bold" style={{ color: GOLD }}
+                 title="1시간 전 순위 기록이 없어 비교할 수 없습니다">NEW</span>;
   }
-  if (value === null || value === 0) return <span className="text-muted">-</span>;
+  if (value === null || value === 0) {
+    return <span className="text-muted" title={`${RANK_TIP} 변화 없음`}>-</span>;
+  }
   const up = value > 0;
   return (
     <span className="text-[11px] font-bold tabular-nums"
-          style={{ color: up ? GREEN : "#EF4444" }}>
+          style={{ color: up ? GREEN : "#EF4444" }}
+          title={`${RANK_TIP} ${up ? "상승" : "하락"} ${Math.abs(value)}단계`}>
       {up ? "▲" : "▼"} {Math.abs(value)}
     </span>
   );

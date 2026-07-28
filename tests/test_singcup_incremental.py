@@ -310,7 +310,8 @@ def test_load_main_shape(db):
     db(sc.run_backfill())
     d = db(sc.load_main())
 
-    assert set(d) == {"event", "summary", "collector", "live", "streamers"}
+    assert set(d) == {"event", "summary", "collector", "live",
+                      "topHeartMovers1h", "streamers"}
     # 라이브 신선도 — 화면이 '언제 확인한 라이브인지' 표시할 수 있어야 한다
     assert set(d["live"]) == {"collectedAt", "nextExpectedAt", "intervalSeconds", "isStale"}
     assert d["summary"]["streamerCount"] == 3
@@ -404,15 +405,23 @@ def test_main_limit_argument_is_still_honored(db):
     assert len(db(sc.load_main(limit=50))["streamers"]) == 50
 
 
-# ── 변화량 기준: 직전 회차가 아니라 1시간 전 ───────────────────────────────
-async def _snap(owner, hearts, rank, at):
+
+# ── 변화량 기준: '기준 시각 ±허용오차 안의 실제 회차' ───────────────────────
+async def _snap(owner, clip_uid, hearts, rank, at, score=0.0):
+    """그 시각에 수집 회차가 있었던 것처럼 스냅샷 한 줄을 넣는다."""
     c = await database.get_db()
     await c.execute(
         "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
         " heart_count, view_count, follower_count, score, rank, collected_at)"
-        " VALUES (?,?,?,?,0,0,0,?,?)",
-        (sc.EVENT_ID, f"u-{owner}", owner, hearts, rank, int(at)))
+        " VALUES (?,?,?,?,0,0,?,?,?)",
+        (sc.EVENT_ID, clip_uid, owner, hearts, score, rank, int(at)))
     await c.commit()
+
+
+def _top(db):
+    """백필 후 1위 스트리머의 (channelId, clipUid)."""
+    s = db(sc.load_main())["streamers"][0]
+    return s["channelId"], s["clipUid"]
 
 
 def test_delta_compares_against_one_hour_ago(db):
@@ -420,28 +429,51 @@ def test_delta_compares_against_one_hour_ago(db):
     _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
     db(sc.run_backfill())
     now = int(time.time())
-    owner = db(sc.load_main())["streamers"][0]["channelId"]
-    db(_snap(owner, 10, 5, now - 3900))      # 65분 전 = 1시간 기준점
-    db(_snap(owner, 90, 2, now - 300))       # 5분 전(직전 회차) — 기준이 되면 안 된다
-    s = next(x for x in db(sc.load_main())["streamers"] if x["channelId"] == owner)
-    # 현재 하트는 카드 응답의 3
+    cid, uid = _top(db)
+    db(_snap(cid, uid, 10, 5, now - 3900))     # 65분 전 — 기준 시각(60분) 안
+    db(_snap(cid, uid, 90, 2, now - 300))      # 5분 전(직전 회차) — 기준이 되면 안 된다
+    s = next(x for x in db(sc.load_main())["streamers"] if x["channelId"] == cid)
     assert s["heartDelta"] == 3 - 10, "1시간 전(10) 기준이어야 한다"
     assert s["rankDelta"] == 5 - s["rank"]
 
 
-def test_delta_window_is_configurable_and_one_hour_by_default():
-    assert sc.DELTA_WINDOW_SECONDS == 3600
-
-
-def test_delta_is_none_without_old_enough_history(db):
-    """1시간 이전 기록이 없으면 비교 대상이 없다 → isNew."""
+def test_reference_run_must_be_within_tolerance(db):
+    """기준 시각에서 너무 떨어진 회차와 비교해 놓고 '1시간'이라고 하면 거짓말이다."""
     _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
     db(sc.run_backfill())
     now = int(time.time())
-    owner = db(sc.load_main())["streamers"][0]["channelId"]
-    db(_snap(owner, 50, 1, now - 600))       # 10분 전뿐 — 1시간 기준에는 안 잡힌다
-    s = next(x for x in db(sc.load_main())["streamers"] if x["channelId"] == owner)
+    cid, uid = _top(db)
+    db(_snap(cid, uid, 10, 5, now - 3600 - sc.DELTA_TOLERANCE_SECONDS - 120))
+    s = next(x for x in db(sc.load_main())["streamers"] if x["channelId"] == cid)
     assert s["heartDelta"] is None and s["isNew"] is True
+
+
+def test_reference_run_picks_the_nearest(db):
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    now = int(time.time())
+    cid, uid = _top(db)
+    db(_snap(cid, uid, 10, 9, now - 4400))     # 기준에서 800초
+    db(_snap(cid, uid, 20, 7, now - 3700))     # 기준에서 100초 → 이쪽
+    s = next(x for x in db(sc.load_main())["streamers"] if x["channelId"] == cid)
+    assert s["heartDelta"] == 3 - 20
+
+
+def test_heart_delta_is_none_when_representative_clip_changed(db):
+    """대표 클립이 바뀌면 서로 다른 영상의 하트를 빼게 된다 → 비교하지 않는다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    now = int(time.time())
+    cid, uid = _top(db)
+    db(_snap(cid, "old-rep-clip", 1, 3, now - 3700))
+    s = next(x for x in db(sc.load_main())["streamers"] if x["channelId"] == cid)
+    assert s["heartDelta"] is None
+    assert s["rankDelta"] == 3 - s["rank"], "순위 변동은 클립과 무관하므로 남아 있어야 한다"
+
+
+def test_delta_window_defaults(db):
+    assert sc.DELTA_WINDOW_SECONDS == 3600
+    assert sc.DELTA_TOLERANCE_SECONDS == 900
 
 
 # ── KPI 증감(태그 클립 / 참가 스트리머) ─────────────────────────────────────
@@ -456,30 +488,148 @@ def test_kpi_delta_counts_only_the_last_hour(db):
     _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
     db(sc.run_backfill())
     now = int(time.time())
-    # t1, t2는 1시간 전부터 있었고 t3만 방금 들어왔다 → 클립 +1, 스트리머 +1
+    cid, uid = _top(db)
+    db(_snap(cid, uid, 1, 1, now - 3700))          # 1시간 전 회차가 실제로 있었다
     db(_age_clip("t1", now - 7200))
     db(_age_clip("t2", now - 7200))
-    db(_age_clip("t3", now - 60))
+    db(_age_clip("t3", now - 60))                  # 최근 1시간에 새로 들어온 것
     s = db(sc.load_main())["summary"]
     assert s["taggedClipCount"] == 3
     assert s["taggedClipDelta"] == 1
     assert s["streamerDelta"] == 1
     assert s["deltaWindowMinutes"] == 60
+    assert s["deltaBaseAt"], "실제 비교한 회차 시각을 알려줘야 한다"
 
 
-def test_kpi_delta_is_none_when_everything_is_brand_new(db):
-    """수집을 막 시작하면 전부 신규라 '증가분'이 의미가 없다 → null."""
+def test_kpi_delta_is_none_without_reference_run(db):
+    """1시간 전 근처에 수집 회차가 없으면 0이 아니라 '비교 데이터 없음'이다."""
     _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
     db(sc.run_backfill())
-    s = db(sc.load_main())["summary"]
+    now = int(time.time())
+    for uid in ("t1", "t2", "t3", "plain"):
+        db(_age_clip(uid, now - 7200))             # 클립은 오래됐지만
+    s = db(sc.load_main())["summary"]              # 기준 회차가 없다
     assert s["taggedClipDelta"] is None and s["streamerDelta"] is None
+    assert s["deltaBaseAt"] is None
 
 
 def test_kpi_delta_zero_when_nothing_new(db):
     _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
     db(sc.run_backfill())
     now = int(time.time())
-    for uid in ("t1", "t2", "t3", "plain"):
-        db(_age_clip(uid, now - 7200))
+    cid, uid = _top(db)
+    db(_snap(cid, uid, 1, 1, now - 3700))
+    for u in ("t1", "t2", "t3", "plain"):
+        db(_age_clip(u, now - 7200))
     s = db(sc.load_main())["summary"]
     assert s["taggedClipDelta"] == 0 and s["streamerDelta"] == 0
+
+
+def test_streamer_count_is_distinct_channels(db):
+    """참가 스트리머는 클립 수가 아니라 고유 채널 수여야 한다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    d = db(sc.load_main())
+    assert d["summary"]["streamerCount"] == 3          # t1,t2,t3 -> o1,o2,o4
+    assert d["summary"]["taggedClipCount"] == 3
+    assert len({s["channelId"] for s in d["streamers"]}) == 3
+
+
+# ── 최근 1시간 하트 급상승 Top 5 ────────────────────────────────────────────
+def test_top_movers_ranks_by_heart_increase(db):
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    now = int(time.time())
+    d = db(sc.load_main())
+    by = {s["channelId"]: s for s in d["streamers"]}
+    ids = list(by)
+    # 현재 하트는 전원 3. 1시간 전 값을 다르게 줘서 증가량 차이를 만든다
+    db(_snap(ids[0], by[ids[0]]["clipUid"], 1, 1, now - 3700))   # +2
+    db(_snap(ids[1], by[ids[1]]["clipUid"], 2, 2, now - 3700))   # +1
+    db(_snap(ids[2], by[ids[2]]["clipUid"], 3, 3, now - 3700))   # 0 -> 제외
+    m = db(sc.load_main())["topHeartMovers1h"]
+    assert [x["channelId"] for x in m] == [ids[0], ids[1]]
+    assert [x["heartDelta1h"] for x in m] == [2, 1]
+    assert [x["rank"] for x in m] == [1, 2]
+
+
+def test_top_movers_excludes_new_and_non_positive(db):
+    """비교 기록이 없거나(NEW) 증가량이 0 이하면 순위에 넣지 않는다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    now = int(time.time())
+    d = db(sc.load_main())
+    ids = [s["channelId"] for s in d["streamers"]]
+    uid0 = next(s["clipUid"] for s in d["streamers"] if s["channelId"] == ids[0])
+    db(_snap(ids[0], uid0, 9, 1, now - 3700))      # 하트가 줄었다 -> 제외
+    assert db(sc.load_main())["topHeartMovers1h"] == []
+
+
+def test_top_movers_ignores_other_clips_of_same_streamer(db):
+    """대표 클립이 바뀌었으면 다른 영상끼리 빼지 않는다 -> 급상승에서 제외."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    now = int(time.time())
+    ids = [s["channelId"] for s in db(sc.load_main())["streamers"]]
+    db(_snap(ids[0], "another-clip", 0, 1, now - 3700))
+    assert db(sc.load_main())["topHeartMovers1h"] == []
+
+
+def test_top_movers_is_capped_at_five(db):
+    db(_seed_streamers(12))
+    now = int(time.time())
+    for i, s in enumerate(db(sc.load_main())["streamers"]):
+        db(_snap(s["channelId"], s["clipUid"], 0, i + 1, now - 3700))
+    m = db(sc.load_main())["topHeartMovers1h"]
+    assert len(m) == 5
+    assert [x["rank"] for x in m] == [1, 2, 3, 4, 5]
+    assert all(x["heartDelta1h"] > 0 for x in m)
+
+
+def test_top_movers_tiebreak_is_stable(db):
+    """증가량이 같으면 현재 하트 -> 점수 -> channelId 순으로 안정 정렬한다."""
+    db(_seed_streamers(4))
+    now = int(time.time())
+    for s in db(sc.load_main())["streamers"]:
+        db(_snap(s["channelId"], s["clipUid"], s["heartCount"] - 5, 1, now - 3700))
+    a = [x["channelId"] for x in db(sc.load_main())["topHeartMovers1h"]]
+    b = [x["channelId"] for x in db(sc.load_main())["topHeartMovers1h"]]
+    assert a == b and len(a) == 4
+    hearts = [x["heartCount"] for x in db(sc.load_main())["topHeartMovers1h"]]
+    assert hearts == sorted(hearts, reverse=True), "동률이면 현재 하트 내림차순"
+
+
+def test_top_movers_empty_without_reference(db):
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    assert db(sc.load_main())["topHeartMovers1h"] == []
+
+
+# ── 순위 변동 ───────────────────────────────────────────────────────────────
+def test_rank_delta_direction(db):
+    """12위 -> 5위면 +7(상승)."""
+    db(_seed_streamers(12))
+    now = int(time.time())
+    d = db(sc.load_main())
+    target = next(s for s in d["streamers"] if s["rank"] == 5)
+    db(_snap(target["channelId"], target["clipUid"], 0, 12, now - 3700))
+    s = next(x for x in db(sc.load_main())["streamers"]
+             if x["channelId"] == target["channelId"])
+    assert s["rankDelta"] == 7 and s["rank"] == 5
+
+
+def test_rank_delta_negative_when_dropped(db):
+    """3위 -> 8위면 -5(하락)."""
+    db(_seed_streamers(12))
+    now = int(time.time())
+    target = next(s for s in db(sc.load_main())["streamers"] if s["rank"] == 8)
+    db(_snap(target["channelId"], target["clipUid"], 0, 3, now - 3700))
+    s = next(x for x in db(sc.load_main())["streamers"]
+             if x["channelId"] == target["channelId"])
+    assert s["rankDelta"] == -5
+
+
+def test_rank_delta_is_none_for_new(db):
+    db(_seed_streamers(3))
+    for s in db(sc.load_main())["streamers"]:
+        assert s["rankDelta"] is None and s["isNew"] is True

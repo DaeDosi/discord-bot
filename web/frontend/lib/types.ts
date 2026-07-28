@@ -570,6 +570,18 @@ export interface SingcupLive {
   concurrentViewers: number;
   categoryName:      string;
 }
+export interface SingcupHeartMover {
+  rank: number;
+  channelId: string; channelName: string; channelImageUrl: string;
+  clipUid: string; clipTitle: string; clipThumbnailUrl: string;
+  heartCount: number;
+  /** 동일 clipUid의 약 1시간 전 하트와의 차이(양수만 노출된다) */
+  heartDelta1h: number;
+  heartDelta24h: number | null;
+  score: number;
+  live: SingcupLive | null;
+}
+
 export interface SingcupStreamer {
   rank:               number;
   channelId:          string;
@@ -590,8 +602,12 @@ export interface SingcupStreamer {
   heartScore:         number;
   /** 비공식 예상 인기점수(0~100) */
   score:              number;
+  /** 1시간 전 하트와의 차이. 그 사이 대표 클립이 바뀌었으면 null(다른 영상끼리 뺄 수 없다) */
   heartDelta:         number | null;
+  /** 1시간 전 예상 인기점수 순위 - 현재 순위. 양수면 순위 상승 */
   rankDelta:          number | null;
+  /** 1시간 전 예상 인기점수와의 차이 */
+  scoreDelta:         number | null;
   heartDelta24h:      number | null;
   heartChangeRate24h: number | null;
   isNew:              boolean;
@@ -601,10 +617,14 @@ export interface SingcupMain {
   event: { id: string; startAt: string; endAt: string; status: SingcupStatus };
   summary: {
     taggedClipCount: number; streamerCount: number; liveCount: number;
-    /** 1시간 전 대비 증가분 — 수집 이력이 그만큼 없으면 null */
+    /** 1시간 전 대비 증가분 — 기준 시각 근처에 수집 회차가 없으면 null(0이 아니다) */
     taggedClipDelta: number | null; streamerDelta: number | null;
     deltaWindowMinutes: number;
+    /** 실제로 비교한 수집 회차 시각 */
+    deltaBaseAt: string | null;
   };
+  /** 최근 1시간 하트 급상승 — 스트리머당 현재 대표 클립 하나만, 동일 clipUid끼리 비교 */
+  topHeartMovers1h: SingcupHeartMover[];
   /** 라이브 표시의 신선도. 싱드컵 수집기가 아니라 전체 라이브 스캔 주기에 묶여 있다. */
   live: {
     collectedAt: string | null; nextExpectedAt: string | null;

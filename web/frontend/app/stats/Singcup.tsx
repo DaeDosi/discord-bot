@@ -6,17 +6,19 @@ import {
   Search, ArrowDown, ArrowUp,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { SingcupMain, SingcupStreamer, SingcupRankings } from "@/lib/types";
+import type {
+  SingcupHeartMover, SingcupMain, SingcupStreamer, SingcupRankings,
+} from "@/lib/types";
 import {
   Delta, Disclaimer, EventBadge, GOLD, GREEN, MEDAL, RankDelta, SCORE_GRAD, ScoreFormula,
-  ScoreText, StaleBadge, StatusChip, fmtDateTime, fmtRange, hideBrokenImage, nf,
+  ScoreText, StaleBadge, StatusChip, VERMILION, fmtDateTime, fmtRange, hideBrokenImage, nf,
 } from "./singcupShared";
 
 // 싱드컵 메인 = 랭킹 화면.
 // 썸네일 카드로 둘러보는 화면은 '싱드컵 라이브'(/stats/singcup/live),
 // 자유게시판 버프 목록은 '자유게시판 홍보글' 드로어(?view=board)로 나가 있다.
 
-type SortKey = "score" | "heart" | "heart24h" | "view" | "follower";
+type SortKey = "score" | "heart" | "heart24h" | "view" | "follower" | "rankmove";
 type SortDir = "desc" | "asc";
 const SORTS: { k: SortKey; label: string }[] = [
   { k: "score",    label: "예상 인기점수" },
@@ -24,7 +26,11 @@ const SORTS: { k: SortKey; label: string }[] = [
   { k: "heart24h", label: "24시간 하트 급상승" },
   { k: "view",     label: "조회수 많은 순" },
   { k: "follower", label: "팔로워 많은 순" },
+  // '변동이 많은 순'이면 하트인지 점수인지 알 수 없다 → 무엇의 변동인지 이름에 넣는다
+  { k: "rankmove", label: "순위 변동 많은 순" },
 ];
+const isSort = (v: string | null): v is SortKey =>
+  !!v && SORTS.some((s) => s.k === v);
 
 /** '이 라이브 숫자는 언제 확인한 것인가' — 60초 폴링과 실제 갱신 주기가 다르다는 걸 알린다 */
 function LiveFreshness({ live }: { live?: SingcupMain["live"] }) {
@@ -42,33 +48,53 @@ function LiveFreshness({ live }: { live?: SingcupMain["live"] }) {
   );
 }
 
-function Tile({ label, value, unit, accent, delta, windowMin, foot }:
+/** KPI 증감 배지 — 비교 기록이 없는 것(—)과 변화가 없는 것(±0)을 구분해서 보여준다 */
+function DeltaBadge({ delta, base }: { delta: number | null; base?: string | null }) {
+  const tip = delta == null
+    ? "약 1시간 전 수집값이 없어 비교할 수 없습니다"
+    : "현재 수집값과 약 1시간 전 수집값의 차이입니다"
+      + (base ? ` (기준 ${new Date(base).toLocaleTimeString("ko-KR",
+          { hour: "2-digit", minute: "2-digit" })})` : "");
+  const [txt, color] =
+    delta == null ? ["—", "rgb(var(--color-muted-rgb))"] as const
+    : delta > 0 ? [`▲ ${nf(delta)}`, GREEN] as const
+    : delta < 0 ? [`▼ ${nf(Math.abs(delta))}`, "#EF4444"] as const
+    : ["±0", "rgb(var(--color-muted-rgb))"] as const;
+  return (
+    <span className="whitespace-nowrap rounded-md px-1.5 py-0.5 text-xs font-bold tabular-nums"
+          style={{ color, background: "rgb(var(--color-bg-hover-rgb) / 0.6)" }} title={tip}>
+      {txt}
+    </span>
+  );
+}
+
+function Tile({ label, value, unit, accent, delta, windowMin, baseAt, foot }:
   { label: string; value: string; unit?: string; accent?: boolean;
     /** 1시간 전 대비 증가분. null이면 비교할 이력이 아직 없다 */
-    delta?: number | null; windowMin?: number; foot?: React.ReactNode }) {
+    delta?: number | null; windowMin?: number; baseAt?: string | null;
+    foot?: React.ReactNode }) {
   return (
     <div className="card !p-4">
       <p className="text-sm text-muted">{label}</p>
-      <p className="mt-1.5 tracking-tight">
-        <span className="text-xl font-extrabold tabular-nums md:text-2xl"
-              style={accent
-                ? { background: SCORE_GRAD, WebkitBackgroundClip: "text",
-                    backgroundClip: "text", color: "transparent" }
-                : { color: "rgb(var(--color-fg-rgb))" }}>
-          {value}
+      {/* 값 + 단위 + 증감 배지를 한 flex 행으로. 배지는 단위 오른쪽에 두되 본래 값과
+          혼동되지 않게 작게 쓴다. 좁은 화면에서는 배지가 다음 줄로 내려간다. */}
+      <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 tracking-tight">
+        <span className="whitespace-nowrap">
+          <span className="text-xl font-extrabold tabular-nums md:text-2xl"
+                style={accent
+                  ? { background: SCORE_GRAD, WebkitBackgroundClip: "text",
+                      backgroundClip: "text", color: "transparent" }
+                  : { color: "rgb(var(--color-fg-rgb))" }}>
+            {value}
+          </span>
+          {unit && <span className="ml-1 text-sm font-normal text-muted">{unit}</span>}
         </span>
-        {unit && <span className="ml-1 text-sm font-normal text-muted">{unit}</span>}
-      </p>
-      {/* 이 이벤트는 값이 늘기만 한다(클립·참가자는 줄지 않는다) → 0은 '변화 없음'으로만 */}
+        {delta !== undefined && <DeltaBadge delta={delta} base={baseAt} />}
+      </div>
+      {/* 비교 기준은 배지와 떨어지지 않게 바로 아래에 둔다 */}
       {delta !== undefined && (
-        <p className="mt-1 whitespace-nowrap text-xs tabular-nums"
-           title={`최근 ${windowMin ?? 60}분 동안 새로 확인된 수입니다`}>
-          {delta == null
-            ? <span className="text-muted/60">집계 중</span>
-            : delta > 0
-              ? <><span className="font-bold" style={{ color: GREEN }}>+{nf(delta)}</span>
-                  <span className="ml-1 text-muted">1시간</span></>
-              : <span className="text-muted">1시간 변화 없음</span>}
+        <p className="mt-0.5 whitespace-nowrap text-[11px] text-muted/70">
+          {delta == null ? "비교 데이터 없음" : `${windowMin ?? 60}분 전 대비`}
         </p>
       )}
       {foot && <p className="mt-1 whitespace-nowrap text-xs tabular-nums">{foot}</p>}
@@ -76,11 +102,102 @@ function Tile({ label, value, unit, accent, delta, windowMin, foot }:
   );
 }
 
-// 랭킹 한 줄 — 데스크톱은 가로 배치, 모바일은 자연스럽게 접힌다.
+/** 최근 1시간 하트 급상승 Top 5. 백엔드가 이미 골라 보낸 목록을 그대로 그린다
+ *  (프론트에서 전체 배열로 다시 계산하면 대표 클립 교체 같은 조건이 누락된다). */
+function HeartMovers({ movers, collectedAt }:
+  { movers: SingcupHeartMover[]; collectedAt: string | null }) {
+  return (
+    <section className="card !p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          {/* '실시간'이라고 하면 초 단위로 갱신되는 것처럼 오해된다 */}
+          <h2 className="flex items-center gap-1.5 text-base font-extrabold">
+            <Heart size={15} style={{ color: VERMILION }} /> 최근 1시간 하트 급상승
+          </h2>
+          <p className="mt-0.5 text-[12px] text-muted">
+            대표 클립의 하트가 1시간 동안 가장 많이 증가한 스트리머입니다.
+          </p>
+        </div>
+        <span className="text-[11px] text-muted/70 tabular-nums">
+          싱드컵 집계 {fmtDateTime(collectedAt)}
+        </span>
+      </div>
+
+      {movers.length === 0 ? (
+        <p className="py-6 text-center text-sm text-muted">
+          최근 1시간 동안 확인된 하트 증가가 없습니다.
+        </p>
+      ) : (
+        // 데스크톱 5열 → 태블릿 3열 → 모바일 2열. 카드 내용이 잘리지 않게 최소 폭을 준다.
+        <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
+          {movers.map((m) => (
+            <article key={m.channelId}
+              className={`nb-rainbow-border rounded-xl p-2.5 ${m.rank === 1 ? "nb-rainbow-top" : ""}`}
+              style={{ background: "rgb(var(--color-bg-card-rgb))" }}>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-extrabold tabular-nums"
+                      style={{ color: m.rank === 1 ? GOLD : "rgb(var(--color-muted-rgb))" }}>
+                  #{m.rank}
+                </span>
+                <span className="flex items-center gap-0.5 text-xs font-extrabold tabular-nums"
+                      style={{ color: GREEN }} title="최근 1시간 하트 증가량">
+                  ▲ {nf(m.heartDelta1h)}
+                </span>
+              </div>
+
+              <a href={`https://chzzk.naver.com/clips/${m.clipUid}`} target="_blank"
+                 rel="noopener noreferrer"
+                 className="mt-1.5 block aspect-video w-full overflow-hidden rounded bg-bg-hover">
+                {m.clipThumbnailUrl && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={m.clipThumbnailUrl} alt="" loading="lazy" onError={hideBrokenImage}
+                       className="h-full w-full object-cover" />
+                )}
+              </a>
+
+              <div className="mt-1.5 flex items-center gap-1.5">
+                <span className="h-5 w-5 shrink-0 overflow-hidden rounded-full bg-bg-hover">
+                  {m.channelImageUrl && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={m.channelImageUrl} alt="" width={20} height={20} loading="lazy"
+                         onError={hideBrokenImage} className="h-full w-full object-cover" />
+                  )}
+                </span>
+                <a href={`https://chzzk.naver.com/${m.channelId}`} target="_blank"
+                   rel="noopener noreferrer" title={m.channelName}
+                   className="truncate text-[13px] font-bold text-fg hover:text-accent">
+                  {m.channelName || "-"}
+                </a>
+                {m.live && (
+                  <span className="shrink-0 rounded px-1 text-[9px] font-bold"
+                        style={{ background: "rgba(255,77,77,0.15)", color: "#FF4D4D" }}>
+                    LIVE
+                  </span>
+                )}
+              </div>
+              <p className="mt-0.5 truncate text-[11px] text-muted" title={m.clipTitle}>
+                {m.clipTitle}
+              </p>
+              <p className="mt-1 flex items-center gap-1 text-[11px] tabular-nums text-muted">
+                <Heart size={10} /> 현재 {nf(m.heartCount)}
+                {m.heartDelta24h != null && m.heartDelta24h > 0 && (
+                  <span className="ml-auto text-muted/70">24h +{nf(m.heartDelta24h)}</span>
+                )}
+              </p>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// 랭킹 한 줄 — 한 줄 배치는 lg(1024px)부터. sm(640px)부터 nowrap을 걸면
+// 태블릿(~820px)에서 오른쪽 점수·변동·버튼 묶음이 카드 밖으로 45px가량 삐져나간다.
 function Row({ s, index }: { s: SingcupStreamer; index: number }) {
   const medal = index >= 0 && index < 3 ? MEDAL[index] : null;
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-xl border p-3 sm:flex-nowrap"
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border p-3 lg:flex-nowrap"
          style={{ borderColor: medal ? `${medal}66` : "rgb(var(--color-border-rgb))",
                   background: medal ? `${medal}0d` : undefined }}>
       <span className="flex w-12 shrink-0 flex-col items-center">
@@ -93,7 +210,7 @@ function Row({ s, index }: { s: SingcupStreamer; index: number }) {
 
       <a href={`https://chzzk.naver.com/clips/${s.clipUid}`} target="_blank"
          rel="noopener noreferrer"
-         className="hidden h-12 w-20 shrink-0 overflow-hidden rounded bg-bg-hover sm:block">
+         className="hidden h-12 w-20 shrink-0 overflow-hidden rounded bg-bg-hover lg:block">
         {s.clipThumbnailUrl && (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={s.clipThumbnailUrl} alt="" loading="lazy" onError={hideBrokenImage}
@@ -101,7 +218,7 @@ function Row({ s, index }: { s: SingcupStreamer; index: number }) {
         )}
       </a>
 
-      <span className="min-w-0 flex-1 basis-full sm:basis-auto">
+      <span className="min-w-0 flex-1 basis-full lg:basis-auto">
         <span className="flex items-center gap-1.5">
           <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full bg-bg-hover">
             {s.channelImageUrl && (
@@ -166,7 +283,7 @@ function Row({ s, index }: { s: SingcupStreamer; index: number }) {
         </span>
       </span>
 
-      <span className="flex shrink-0 items-center gap-1.5 sm:pl-1">
+      <span className="flex shrink-0 items-center gap-1.5 lg:pl-1">
         <a href={`https://chzzk.naver.com/clips/${s.clipUid}`} target="_blank"
            rel="noopener noreferrer"
            className="flex items-center gap-1 rounded-lg px-2.5 py-2 text-xs font-bold text-[#04140d]"
@@ -304,10 +421,24 @@ export default function Singcup() {
   const [query, setQuery] = useState("");
   const [boardOpen, setBoardOpen] = useState(false);
 
-  // ?view=board 로 상태를 유지한다(새로고침·공유에도 드로어가 열리도록)
+  // ?view=board / ?sort= 로 상태를 유지한다(새로고침·뒤로가기·공유에도 그대로)
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
     setBoardOpen(p.get("view") === "board");
+    const s = p.get("sort");
+    if (isSort(s)) setSort(s);
+    if (p.get("dir") === "asc") setDir("asc");
+  }, []);
+
+  const pickSort = useCallback((k: SortKey, d: SortDir) => {
+    setSort(k); setDir(d);
+    const url = new URL(window.location.href);
+    // 기본값은 URL에 남기지 않는다 — 공유 링크가 불필요하게 길어진다
+    if (k === "score") url.searchParams.delete("sort");
+    else url.searchParams.set("sort", k);
+    if (d === "desc") url.searchParams.delete("dir");
+    else url.searchParams.set("dir", d);
+    window.history.replaceState(null, "", url.toString());
   }, []);
 
   const setView = useCallback((open: boolean) => {
@@ -348,6 +479,16 @@ export default function Singcup() {
     else if (sort === "follower") list.sort((a, b) => b.followerCount - a.followerCount);
     else if (sort === "heart24h") {
       list.sort((a, b) => (b.heartChangeRate24h ?? -1e9) - (a.heartChangeRate24h ?? -1e9));
+    }
+    else if (sort === "rankmove") {
+      // '얼마나 움직였나'가 기준이므로 상승·하락을 절대값으로 함께 본다.
+      // 비교 기록이 없는 항목(NEW)은 변동폭 0으로 치지 않고 정상 비교 항목 뒤로 보낸다.
+      const mv = (s: SingcupStreamer) => (s.rankDelta == null ? -1 : Math.abs(s.rankDelta));
+      list.sort((a, b) =>
+        mv(b) - mv(a)
+        || Math.abs(b.scoreDelta ?? 0) - Math.abs(a.scoreDelta ?? 0)
+        || b.score - a.score
+        || a.channelId.localeCompare(b.channelId));
     }
     // score는 백엔드가 매긴 순서 그대로(동점 타이브레이커까지 반영돼 있다)
     // 위 정렬은 전부 내림차순이므로, 오름차순은 뒤집기만 하면 된다.
@@ -420,14 +561,22 @@ export default function Singcup() {
         </div>
       )}
 
+      {/* 최근 1시간 하트 급상승 — KPI 위에 둔다(제목/설명 바로 다음) */}
+      {data && (
+        <HeartMovers movers={data.topHeartMovers1h}
+                     collectedAt={data.collector.lastSuccessAt} />
+      )}
+
       {/* 요약 */}
       <div className="grid grid-cols-3 gap-3">
         <Tile label="태그 클립" value={nf(data?.summary.taggedClipCount ?? 0)} unit="개"
               delta={data?.summary.taggedClipDelta ?? null}
-              windowMin={data?.summary.deltaWindowMinutes} />
+              windowMin={data?.summary.deltaWindowMinutes}
+              baseAt={data?.summary.deltaBaseAt} />
         <Tile label="참가 스트리머" value={nf(data?.summary.streamerCount ?? 0)} unit="명" accent
               delta={data?.summary.streamerDelta ?? null}
-              windowMin={data?.summary.deltaWindowMinutes} />
+              windowMin={data?.summary.deltaWindowMinutes}
+              baseAt={data?.summary.deltaBaseAt} />
         {/* 라이브는 늘고 줄기를 반복하므로 '증가분' 개념이 맞지 않는다.
             대신 '언제 확인한 값인지'를 보여준다 — 화면은 60초마다 새로 받지만 이 값은
             전체 라이브 스캔 주기(기본 10분)에 묶여 있어 그 사이에는 바뀌지 않는다. */}
@@ -460,7 +609,7 @@ export default function Singcup() {
           {SORTS.map((s) => {
             const on = sort === s.k;
             return (
-              <button key={s.k} onClick={() => setSort(s.k)}
+              <button key={s.k} onClick={() => pickSort(s.k, dir)}
                 className="rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
                 style={{ background: on ? `${GOLD}1a` : "transparent",
                          borderColor: on ? `${GOLD}59` : "rgb(var(--color-border-rgb))",
@@ -470,7 +619,7 @@ export default function Singcup() {
             );
           })}
           {/* 모든 정렬은 내림차순 기준이라 오름차순은 순서를 뒤집는다 */}
-          <button onClick={() => setDir((d) => (d === "desc" ? "asc" : "desc"))}
+          <button onClick={() => pickSort(sort, dir === "desc" ? "asc" : "desc")}
             title={dir === "desc" ? "내림차순 (높은 순) — 누르면 오름차순"
                                   : "오름차순 (낮은 순) — 누르면 내림차순"}
             aria-label={dir === "desc" ? "내림차순 정렬 중" : "오름차순 정렬 중"}

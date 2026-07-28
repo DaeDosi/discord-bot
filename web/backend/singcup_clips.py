@@ -537,6 +537,10 @@ DISCOVER_MAX_PAGES = int(os.getenv("SINGCUP_DISCOVER_MAX_PAGES", "20"))
 # 지표 갱신 — 대표 클립은 자주, 나머지는 느리게
 # 화면의 '1시간' 증감 기준. 회차 간격(4분)으로 비교하면 대부분 0이라 의미가 없다.
 DELTA_WINDOW_SECONDS = int(float(os.getenv("SINGCUP_DELTA_WINDOW_MINUTES", "60")) * 60)
+# 기준 시각(now-1시간)에서 이만큼 안에 실제 수집 회차가 있어야 비교한다.
+# 수집이 멈춰 있었으면 훨씬 오래된 회차와 비교하게 되는데, 그걸 '1시간 증감'이라고
+# 표시하면 거짓말이 된다 → 회차가 없으면 '비교 데이터 없음'(null)으로 둔다.
+DELTA_TOLERANCE_SECONDS = int(float(os.getenv("SINGCUP_DELTA_TOLERANCE_MINUTES", "15")) * 60)
 REP_METRICS_TTL_MINUTES = float(os.getenv("SINGCUP_REP_METRICS_TTL_MINUTES", "5"))
 METRICS_TTL_MINUTES = float(os.getenv("SINGCUP_METRICS_TTL_MINUTES", "45"))
 REFRESH_PER_CYCLE = int(os.getenv("SINGCUP_REFRESH_PER_CYCLE", "80"))
@@ -1060,22 +1064,41 @@ async def retry_failed_clips(limit: int = 50) -> dict:
 
 
 # ── 조회 (API용) ────────────────────────────────────────────────────────────
-async def _delta_maps(now: int) -> tuple[dict, dict]:
-    """(1시간 전 스냅샷, 24시간 전 스냅샷) — owner_channel_id 기준.
+async def find_reference_run(now: int, window: int,
+                             tolerance: int = DELTA_TOLERANCE_SECONDS) -> int | None:
+    """기준 시각(now-window)에 가장 가까운 수집 회차. 허용 오차를 벗어나면 None.
 
-    예전에는 '직전 수집 회차'와 비교했는데, 회차 간격이 4분이라 변화량이 대부분 0이고
-    기준 시점도 들쭉날쭉했다(갱신 대상이 없는 회차는 스냅샷을 남기지 않는다).
-    24시간과 같은 방식으로 '1시간 전 이하의 마지막 스냅샷'을 기준으로 잡는다.
+    한 회차는 참가자 '전원'을 같은 collected_at으로 저장하므로(_save_snapshots),
+    회차 하나를 고르면 그 시점의 순위·점수 기준이 통째로 일관된다. 스트리머마다
+    제각기 다른 시점과 비교하는 일이 없다.
+    """
+    ref = now - window
+    row = await (await (await get_db()).execute(
+        "SELECT collected_at AS t FROM singcup_snapshots WHERE event_id=? "
+        "AND collected_at BETWEEN ? AND ? "
+        "ORDER BY ABS(collected_at - ?) ASC LIMIT 1",
+        (EVENT_ID, ref - tolerance, ref + tolerance, ref))).fetchone()
+    return int(row["t"]) if row else None
+
+
+async def _delta_maps(now: int) -> tuple[dict, dict, int | None]:
+    """(1시간 전 스냅샷, 24시간 전 스냅샷, 1시간 기준 회차 시각).
+
+    1시간 쪽은 '기준 시각 ±허용오차 안의 실제 회차' 하나를 골라 그 회차의 행만 읽는다.
+    예전처럼 owner별 MAX(collected_at)<=기준 으로 뽑으면, 수집이 멈춰 있던 구간에서
+    며칠 전 값과 비교해 놓고 '1시간 증감'이라고 표시하게 된다.
     """
     db = await get_db()
     prev: dict = {}
-    for r in await (await db.execute(
-        "SELECT owner_channel_id, heart_count, rank FROM singcup_snapshots s "
-        "WHERE event_id=? AND collected_at = (SELECT MAX(collected_at) "
-        "FROM singcup_snapshots WHERE event_id=s.event_id "
-        "AND owner_channel_id=s.owner_channel_id AND collected_at <= ?) "
-        "GROUP BY owner_channel_id", (EVENT_ID, now - DELTA_WINDOW_SECONDS))).fetchall():
-        prev[r["owner_channel_id"]] = (int(r["heart_count"]), int(r["rank"]))
+    ref_ts = await find_reference_run(now, DELTA_WINDOW_SECONDS)
+    if ref_ts is not None:
+        for r in await (await db.execute(
+            "SELECT owner_channel_id, clip_uid, heart_count, rank, score "
+            "FROM singcup_snapshots WHERE event_id=? AND collected_at=?",
+            (EVENT_ID, ref_ts))).fetchall():
+            # clip_uid까지 들고 있어야 '같은 대표 클립끼리만' 하트를 뺄 수 있다
+            prev[r["owner_channel_id"]] = (int(r["heart_count"]), int(r["rank"]),
+                                           str(r["clip_uid"]), float(r["score"] or 0))
 
     day: dict = {}
     for r in await (await db.execute(
@@ -1085,7 +1108,7 @@ async def _delta_maps(now: int) -> tuple[dict, dict]:
         "AND collected_at <= ?) GROUP BY owner_channel_id",
         (EVENT_ID, now - 86400))).fetchall():
         day[r["owner_channel_id"]] = int(r["heart_count"])
-    return prev, day
+    return prev, day, ref_ts
 
 
 async def load_main(limit: int = 200) -> dict:
@@ -1104,7 +1127,7 @@ async def load_main(limit: int = 200) -> dict:
     ranked = compute_scores(reps)
 
     now = int(time.time())
-    prev, day = await _delta_maps(now)
+    prev, day, ref_ts = await _delta_maps(now)
 
     # 현재 라이브 — 기존 수집 데이터(rising_live_snapshots)의 최신 사이클과 연결한다
     live: dict = {}
@@ -1154,8 +1177,11 @@ async def load_main(limit: int = 200) -> dict:
             "createdAt": datetime.fromtimestamp(r["created_at"], _KST).isoformat(),
             "viewScore": r["view_score"], "heartScore": r["heart_score"],
             "score": r["score"],
-            "heartDelta": (r["heart_count"] - p[0]) if p else None,
+            # 하트 증감은 '같은 대표 클립'끼리만 뺀다. 그 사이 대표 클립이 바뀌었다면
+            # 서로 다른 영상의 하트를 빼는 셈이라 증가/감소가 통째로 가짜가 된다.
+            "heartDelta": (r["heart_count"] - p[0]) if p and p[2] == r["clip_uid"] else None,
             "rankDelta": (p[1] - r["rank"]) if p else None,
+            "scoreDelta": round(r["score"] - p[3], 2) if p else None,
             "heartDelta24h": (r["heart_count"] - d24) if d24 is not None else None,
             "heartChangeRate24h": heart_change_rate(r["heart_count"], d24)
                                   if d24 is not None else None,
@@ -1169,18 +1195,51 @@ async def load_main(limit: int = 200) -> dict:
     last_at = last_run["c"] if last_run and last_run["c"] else None
     # KPI 증감 — 지금과 1시간 전을 '같은 소스(singcup_clips)'에서 세야 뺄셈이 성립한다.
     # first_collected_at은 그 클립을 처음 확인한 시각이라, 그 이하만 세면 1시간 전 상태다.
+    # (스냅샷은 스트리머당 대표 클립 1건만 남기므로 '그때의 전체 클립 수'를 알 수 없다.)
+    #
+    # 다만 기준 시각 근처에 실제 수집 회차가 없었다면(수집 중단 등) 비교 자체를 하지
+    # 않는다 — 그 구간에 안 들어온 클립까지 '1시간 사이 증가'로 잡히기 때문이다.
+    ref_for_kpi = ref_ts if ref_ts is not None else None
     cnt = await (await db.execute(
-        """SELECT COUNT(*)                                              AS clips,
-                  COUNT(DISTINCT owner_channel_id)                      AS streamers,
-                  SUM(CASE WHEN first_collected_at <= ? THEN 1 ELSE 0 END) AS clips_before
+        """SELECT COUNT(*)                         AS clips,
+                  COUNT(DISTINCT owner_channel_id) AS streamers,
+                  SUM(CASE WHEN first_collected_at <= ? THEN 1 ELSE 0 END) AS clips_before,
+                  COUNT(DISTINCT CASE WHEN first_collected_at <= ?
+                                      THEN owner_channel_id END)           AS streamers_before
            FROM singcup_clips WHERE event_id=? AND active=1""",
-        (now - DELTA_WINDOW_SECONDS, EVENT_ID))).fetchone()
-    before = await (await db.execute(
-        """SELECT COUNT(DISTINCT owner_channel_id) AS n FROM singcup_clips
-           WHERE event_id=? AND active=1 AND first_collected_at <= ?""",
-        (EVENT_ID, now - DELTA_WINDOW_SECONDS))).fetchone()
+        (ref_for_kpi or 0, ref_for_kpi or 0, EVENT_ID))).fetchone()
     clips_now = int(cnt["clips"] or 0)
-    streamers_before = int(before["n"] or 0)
+
+    # 기준 회차가 없으면(수집 시작 1시간 이내 / 수집 중단) 비교하지 않는다 → null.
+    # 이때 0으로 표시하면 '변화 없음'과 구분되지 않는다.
+    has_ref = ref_for_kpi is not None and int(cnt["clips_before"] or 0) > 0
+
+    # ── 최근 1시간 하트 급상승 Top 5 ────────────────────────────────────────
+    # 스트리머당 '현재 대표 클립' 하나만 본다. 여러 클립의 증가량을 합치면 클립을 많이
+    # 올린 사람이 유리해지고, 대표 클립이 바뀐 경우 다른 영상끼리 빼는 일이 생긴다.
+    movers = []
+    for r in ranked:
+        p = prev.get(r["channel_id"])
+        if not p or p[2] != r["clip_uid"]:      # 비교 기록 없음 / 대표 클립이 바뀜
+            continue
+        d = int(r["heart_count"]) - int(p[0])
+        if d <= 0:
+            continue
+        movers.append((d, r))
+    movers.sort(key=lambda t: (-t[0], -int(t[1]["heart_count"]), -float(t[1]["score"]),
+                               str(t[1]["channel_id"])))
+    top_movers = [{
+        "rank": i + 1,
+        "channelId": r["channel_id"], "channelName": r["channel_name"],
+        "channelImageUrl": r["channel_image_url"],
+        "clipUid": r["clip_uid"], "clipTitle": r["clip_title"],
+        "clipThumbnailUrl": r["thumbnail_image_url"],
+        "heartCount": int(r["heart_count"]), "heartDelta1h": d,
+        "heartDelta24h": (int(r["heart_count"]) - day[r["channel_id"]])
+                         if r["channel_id"] in day else None,
+        "score": r["score"],
+        "live": live.get(r["channel_id"]),
+    } for i, (d, r) in enumerate(movers[:5])]
 
     return {
         "event": event_meta(),
@@ -1188,13 +1247,15 @@ async def load_main(limit: int = 200) -> dict:
             "taggedClipCount": clips_now,
             "streamerCount": len(ranked),
             "liveCount": sum(1 for r in out if r["live"]),
-            # 수집을 시작한 지 1시간이 안 됐으면 '전부 신규'라 증감이 무의미하다 → null
-            "taggedClipDelta": (clips_now - int(cnt["clips_before"] or 0))
-                               if int(cnt["clips_before"] or 0) > 0 else None,
-            "streamerDelta": (int(cnt["streamers"] or 0) - streamers_before)
-                             if streamers_before > 0 else None,
+            "taggedClipDelta": (clips_now - int(cnt["clips_before"] or 0)) if has_ref else None,
+            "streamerDelta": (int(cnt["streamers"] or 0) - int(cnt["streamers_before"] or 0))
+                             if has_ref else None,
             "deltaWindowMinutes": DELTA_WINDOW_SECONDS // 60,
+            # 실제로 비교한 회차 시각 — 툴팁에서 '약 1시간 전'의 실체를 보여줄 수 있다
+            "deltaBaseAt": (datetime.fromtimestamp(ref_for_kpi, _KST).isoformat()
+                            if has_ref else None),
         },
+        "topHeartMovers1h": top_movers,
         "live": live_info,
         "collector": {
             "lastSuccessAt": datetime.fromtimestamp(last_at, _KST).isoformat()
