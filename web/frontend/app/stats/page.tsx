@@ -2150,9 +2150,13 @@ export default function StatsPage() {
             <p className="text-muted text-sm md:text-base">
               치지직 라이브 방송의 시청자·카테고리 트렌드를 실시간으로 분석합니다.
             </p>
+            {/* 싱드컵 탭에도 '마지막 집계'가 따로 있다. 둘은 수집기가 다르므로(이쪽은
+                라이브 스냅샷, 저쪽은 싱드컵 클립) 무엇을 집계한 시각인지 이름에 넣는다.
+                같은 이름으로 다른 시각이 두 개 뜨면 어느 쪽이 맞는지 알 수 없다. */}
             {collectedLabel && (
-              <span className="inline-flex items-center gap-1 text-muted/70 text-sm shrink-0 ml-auto">
-                <Circle size={7} className="fill-current" style={{ color: GREEN }} /> 마지막 집계 {collectedLabel}
+              <span className="inline-flex items-center gap-1 text-muted/70 text-sm shrink-0 ml-auto"
+                    title="치지직 라이브 방송 스냅샷을 마지막으로 수집한 시각입니다. 싱드컵 순위는 별도 수집기로 갱신됩니다.">
+                <Circle size={7} className="fill-current" style={{ color: GREEN }} /> 라이브 집계 {collectedLabel}
               </span>
             )}
           </div>

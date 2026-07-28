@@ -188,8 +188,15 @@ html.light .hero-grid {
   0%, 100% { opacity: 0.30; }
   50%      { opacity: 0.80; }
 }
+/* 색은 --nb-glow-from/--nb-glow-to 로 바꿀 수 있다(기본값은 치지직 네온).
+   홈 히어로의 '봇 초대하기'처럼 브랜드 색을 써야 하는 곳에서 인라인으로 덮어쓴다. */
 .nb-neon-border.nb-neon-glow::before {
-  background: linear-gradient(135deg, #00FFA3 0%, #06B6D4 55%, rgba(6,182,212,0.25) 100%);
+  background: linear-gradient(
+    135deg,
+    var(--nb-glow-from, #00FFA3) 0%,
+    var(--nb-glow-to, #06B6D4) 55%,
+    color-mix(in srgb, var(--nb-glow-to, #06B6D4) 25%, transparent) 100%
+  );
   animation: nb-border-breathe 3.2s ease-in-out infinite;
 }
 

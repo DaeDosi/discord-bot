@@ -333,11 +333,13 @@ export default function HomePage() {
             className="flex flex-wrap items-center justify-center gap-3 animate-fade-up"
             style={{ animationDelay: "0.2s" }}
           >
+            {/* 보조 버튼 2개는 테두리에 은은한 발광(nb-neon-glow)을 상시로 준다.
+                주 CTA는 accent 채움이라 이 정도로는 가려지지 않는다. */}
             <Link
               href="/stats"
-              className="flex items-center gap-2 px-6 py-3 border border-border
-                         hover:border-accent/40 text-fg rounded-xl transition-colors
-                         hover:bg-bg-hover font-medium"
+              className="nb-neon-border nb-neon-glow flex items-center gap-2 px-6 py-3
+                         border border-border hover:border-accent/40 text-fg rounded-xl
+                         transition-colors hover:bg-bg-hover font-medium"
             >
               <Radio size={16} style={{ color: "#00FFA3" }} /> 치지직 통계
             </Link>
@@ -357,12 +359,15 @@ export default function HomePage() {
                                   font-semibold rounded-xl cursor-wait select-none">
                     Discord로 시작하기 <ArrowRight size={16} />
                   </div>}
+            {/* 통계는 치지직 네온(기본값), 초대는 브랜드 색 — 목적지가 다름을 색으로 구분 */}
             <a
               href={INVITE_URL}
               target="_blank" rel="noreferrer"
-              className="flex items-center gap-2 px-6 py-3 border border-border
-                         hover:border-accent/40 text-fg rounded-xl transition-colors
-                         hover:bg-bg-hover font-medium"
+              className="nb-neon-border nb-neon-glow flex items-center gap-2 px-6 py-3
+                         border border-border hover:border-accent/40 text-fg rounded-xl
+                         transition-colors hover:bg-bg-hover font-medium"
+              style={{ "--nb-glow-from": "#38BDF8",
+                       "--nb-glow-to": "#C084FC" } as React.CSSProperties}
             >
               봇 초대하기
             </a>

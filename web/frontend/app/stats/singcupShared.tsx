@@ -87,12 +87,20 @@ export function Disclaimer() {
   );
 }
 
-/** 점수 산식 설명 — 랭킹 화면 상단에 둔다 */
+/** 점수 산식 설명 — 랭킹 화면 상단에 둔다.
+ *  순위의 근거라 그냥 흘려보내면 안 되지만, 제목보다 튀어도 안 된다.
+ *  왼쪽 다홍 라인 + 옅은 배경으로 '읽을 거리'라는 신호만 준다. */
 export function ScoreFormula() {
+  const num = { color: AMBER, fontWeight: 700 };
   return (
-    <p className="text-[11px] leading-relaxed text-muted/80">
-      비공식 예상 인기점수 = (대표 클립 조회수 ÷ 전체 최고 조회수) × 70
-      + (대표 클립 하트 ÷ 전체 최고 하트) × 30
+    <p className="rounded-r-md border-l-2 py-1.5 pl-2.5 pr-3 text-[12px] leading-relaxed text-muted"
+       style={{ borderColor: VERMILION,
+                background: `linear-gradient(90deg, ${VERMILION}14, transparent 70%)` }}>
+      <ScoreText>비공식 예상 인기점수</ScoreText>
+      <span className="mx-1 text-muted/60">=</span>
+      (대표 클립 조회수 ÷ 전체 최고 조회수) × <span style={num}>70</span>
+      <span className="mx-1 text-muted/60">+</span>
+      (대표 클립 하트 ÷ 전체 최고 하트) × <span style={num}>30</span>
     </p>
   );
 }

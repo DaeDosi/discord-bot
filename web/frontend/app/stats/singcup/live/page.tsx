@@ -274,7 +274,7 @@ export default function SingcupLivePage() {
               <p className="mt-1 text-[13px] text-muted/80">
                 <span className="tabular-nums">{fmtRange(ev.startAt, ev.endAt)}</span>
                 <span className="mx-2 text-border">·</span>
-                마지막 집계{" "}
+                싱드컵 집계{" "}
                 <span className="tabular-nums">
                   {fmtDateTime(data?.collector.lastSuccessAt ?? null)}
                 </span>

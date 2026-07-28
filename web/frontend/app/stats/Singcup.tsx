@@ -355,9 +355,12 @@ export default function Singcup() {
             <p className="mt-1 text-[13px] text-muted/80">
               <span className="tabular-nums">{fmtRange(ev.startAt, ev.endAt)}</span>
               <span className="mx-2 text-border">·</span>
-              마지막 집계{" "}
-              <span className="tabular-nums">
-                {fmtDateTime(data?.collector.lastSuccessAt ?? null)}
+              {/* 페이지 상단의 '라이브 집계'와 다른 수집기다 — 이름으로 구분한다 */}
+              <span title="#싱드컵 클립의 조회수·하트를 마지막으로 갱신한 시각입니다. 상단의 '라이브 집계'는 별개 수집기입니다.">
+                싱드컵 집계{" "}
+                <span className="tabular-nums">
+                  {fmtDateTime(data?.collector.lastSuccessAt ?? null)}
+                </span>
               </span>
             </p>
           )}
