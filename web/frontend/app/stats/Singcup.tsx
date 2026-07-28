@@ -263,6 +263,8 @@ function BoardDrawer({ onClose }: { onClose: () => void }) {
   );
 }
 
+const PAGE_SIZE = 100;
+
 export default function Singcup() {
   const [data, setData] = useState<SingcupMain | null>(null);
   const [loading, setLoading] = useState(true);
@@ -287,7 +289,9 @@ export default function Singcup() {
 
   useEffect(() => {
     let alive = true;
-    const load = () => api.singcup.main(200)
+    // 참가자 전원을 받는다 — 검색이 이 응답 안에서만 이뤄지므로, 여기서 자르면
+    // 잘린 뒤쪽 스트리머는 닉네임을 정확히 쳐도 "없습니다"가 뜬다.
+    const load = () => api.singcup.main(3000)
       .then((d) => { if (alive) setData(d); })
       .catch(() => { /* 실패해도 마지막 정상 데이터를 유지한다 */ })
       .finally(() => { if (alive) setLoading(false); });
@@ -318,6 +322,12 @@ export default function Singcup() {
     // 위 정렬은 전부 내림차순이므로, 오름차순은 뒤집기만 하면 된다.
     return dir === "asc" ? list.reverse() : list;
   }, [matched, sort, dir]);
+
+  // 참가자를 전원 받아오므로 한 번에 다 그리면 첫 화면이 무거워진다. 목록은 나눠서
+  // 보여주되, 검색·정렬은 항상 전체를 대상으로 한다(잘라놓고 찾으면 안 나온다).
+  const [visible, setVisible] = useState(PAGE_SIZE);
+  useEffect(() => { setVisible(PAGE_SIZE); }, [query, sort, dir]);
+  const shown = rows.slice(0, visible);
 
   const ev = data?.event;
   const ended = ev?.status === "ENDED";
@@ -486,10 +496,18 @@ export default function Singcup() {
         <div className="space-y-2">
           {/* 메달은 '점수 내림차순 + 검색 없음'일 때만 — 그 외에는 목록 순서가
               실제 1~3위와 다르므로 강조하면 오해를 준다 */}
-          {rows.map((s, i) => (
+          {shown.map((s, i) => (
             <Row key={s.channelId} s={s}
                  index={sort === "score" && dir === "desc" && !query ? i : -1} />
           ))}
+          {rows.length > shown.length && (
+            <button onClick={() => setVisible((v) => v + PAGE_SIZE)}
+                    className="btn-secondary w-full py-3 text-sm">
+              더 보기 <span className="tabular-nums text-muted">
+                ({shown.length}/{rows.length})
+              </span>
+            </button>
+          )}
         </div>
       )}
 

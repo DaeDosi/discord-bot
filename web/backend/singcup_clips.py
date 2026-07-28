@@ -358,12 +358,21 @@ async def _upsert_clip(c: dict, now: int) -> bool:
         """INSERT INTO singcup_clips
                (clip_uid, event_id, owner_channel_id, video_id, rec_id, clip_title,
                 thumbnail_image_url, description, created_at, heart_count, view_count,
-                duration, adult, blind_type, metrics_ok, active, missing_scan_count,
+                duration, adult, blind_type, metrics_ok,
+                owner_channel_name, owner_channel_image_url, owner_verified,
+                active, missing_scan_count,
                 first_collected_at, last_collected_at, row_updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?)
            ON CONFLICT(clip_uid) DO UPDATE SET
                rec_id              = CASE WHEN excluded.rec_id != '' THEN excluded.rec_id
                                           ELSE rec_id END,
+               owner_channel_name  = CASE WHEN excluded.owner_channel_name != ''
+                                          THEN excluded.owner_channel_name
+                                          ELSE owner_channel_name END,
+               owner_channel_image_url = CASE WHEN excluded.owner_channel_image_url != ''
+                                          THEN excluded.owner_channel_image_url
+                                          ELSE owner_channel_image_url END,
+               owner_verified      = excluded.owner_verified,
                clip_title          = excluded.clip_title,
                thumbnail_image_url = excluded.thumbnail_image_url,
                description         = excluded.description,
@@ -382,7 +391,9 @@ async def _upsert_clip(c: dict, now: int) -> bool:
          c.get("rec_id", ""), c["clip_title"],
          c["thumbnail_image_url"], c["description"], c["created_at"], c["heart_count"],
          c["view_count"], c["duration"], c["adult"], c["blind_type"],
-         1 if c["metrics_ok"] else 0, now, now, now))
+         1 if c["metrics_ok"] else 0,
+         c.get("owner_channel_name", ""), c.get("owner_channel_image_url", ""),
+         c.get("owner_verified", 0), now, now, now))
     return exists is None
 
 
@@ -469,15 +480,31 @@ async def recompute_ranking(now: int, *, client=None) -> list[dict]:
     ranked = compute_scores(_build_reps(rows))
 
     client = client or _get_client()
+
+    # 팔로워만 채널 API가 필요하다. 참가자가 수백 명이라 순차로 부르면 루프가 몇 분씩
+    # 멈추므로 동시성을 제한해 병렬로 부른다(캐시에 있으면 요청이 나가지 않는다).
+    sem = asyncio.Semaphore(max(1, CARD_CONCURRENCY))
+    infos: dict[str, dict] = {}
+
+    async def load_channel(cid: str):
+        async with sem:
+            infos[cid] = await fetch_channel(client, cid) or {}
+
+    await asyncio.gather(*[load_channel(r["owner_channel_id"]) for r in ranked])
+
     for r in ranked:
-        info = await fetch_channel(client, r["owner_channel_id"]) or {}
+        info = infos.get(r["owner_channel_id"]) or {}
+        # 닉네임·이미지는 목록 응답(ownerChannel)을 우선한다 — 채널 API가 실패해도
+        # 이름이 비지 않아야 한다. 비면 화면에 '-'로 뜨고 검색에도 걸리지 않는다.
+        name = r.get("owner_channel_name") or info.get("channel_name", "")
+        image = r.get("owner_channel_image_url") or info.get("channel_image_url", "")
         r["follower_count"] = info.get("follower_count", 0)
         await _upsert_streamer({
             "channel_id": r["owner_channel_id"],
-            "channel_name": info.get("channel_name", ""),
-            "channel_image_url": info.get("channel_image_url", ""),
+            "channel_name": name,
+            "channel_image_url": image,
             "follower_count": info.get("follower_count", 0),
-            "verified_mark": info.get("verified_mark", 0),
+            "verified_mark": r.get("owner_verified") or info.get("verified_mark", 0),
             "representative_clip_uid": r["clip_uid"],
             "tagged_clip_count": r["tagged_clip_count"],
             "last_channel_updated_at": now if info else 0,
@@ -623,7 +650,13 @@ async def _clear_retry(clip_uid: str):
 
 def _to_clip_row(item: dict, card: dict) -> dict:
     d = parse_clip_date(item.get("createdDate"))
+    oc = item.get("ownerChannel") or {}
     return {
+        # 목록 응답이 이미 채널명·이미지·인증마크를 준다 — 채널 API가 실패해도
+        # 닉네임이 비지 않도록 여기서 함께 저장해 둔다(추가 요청이 필요 없다)
+        "owner_channel_name": str(oc.get("channelName") or ""),
+        "owner_channel_image_url": str(oc.get("channelImageUrl") or ""),
+        "owner_verified": 1 if oc.get("verifiedMark") else 0,
         "clip_uid": str(item["clipUID"]),
         "owner_channel_id": str(item["ownerChannelId"]),
         "video_id": str(item.get("videoId") or ""),
@@ -1087,7 +1120,9 @@ async def load_main(limit: int = 200) -> dict:
             }
 
     out = []
-    for r in ranked[:max(1, min(500, limit))]:
+    # 상한이 참가자 수보다 낮으면 잘린 뒤쪽 사람들은 화면 검색에 아예 걸리지 않는다
+    # (검색은 이 응답 안에서만 이뤄진다). 참가자 전원이 담기도록 넉넉히 잡는다.
+    for r in ranked[:max(1, min(3000, limit))]:
         cid = r["channel_id"]
         p = prev.get(cid)
         d24 = day.get(cid)

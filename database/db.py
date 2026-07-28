@@ -683,6 +683,11 @@ async def init_db():
         "ALTER TABLE singcup_clips ADD COLUMN last_metrics_at INTEGER NOT NULL DEFAULT 0",
         # 카드 API 재조회에 필요한 값 — 지표 갱신 때 목록을 다시 훑지 않기 위해 저장한다
         "ALTER TABLE singcup_clips ADD COLUMN rec_id TEXT NOT NULL DEFAULT ''",
+        # 목록 응답의 ownerChannel — 채널 API가 실패해도 닉네임이 비지 않게 하는 근거값.
+        # (이름이 비면 화면에 '-'로 뜨고 검색에도 절대 걸리지 않는다)
+        "ALTER TABLE singcup_clips ADD COLUMN owner_channel_name TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE singcup_clips ADD COLUMN owner_channel_image_url TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE singcup_clips ADD COLUMN owner_verified INTEGER NOT NULL DEFAULT 0",
         # ── 과거 데이터 백필 상태 ──────────────────────────────────────────
         # 초기 적재(이벤트 시작일까지 거슬러 가기)는 정기 수집과 성격이 다르다.
         # 커서와 진행 수치를 DB에 두어 재배포/재시작 후에도 이어서 처리한다.

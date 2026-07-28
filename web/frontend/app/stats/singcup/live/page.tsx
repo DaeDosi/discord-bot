@@ -207,7 +207,8 @@ export default function SingcupLivePage() {
 
   useEffect(() => {
     let alive = true;
-    const load = () => api.singcup.main(200)
+    // 라이브 여부는 순위와 무관하다 — 상위 N명만 받으면 하위권 라이브가 통째로 빠진다
+    const load = () => api.singcup.main(3000)
       .then((d) => { if (alive) setData(d); })
       .catch(() => { /* 실패해도 마지막 정상 데이터를 유지한다 */ })
       .finally(() => { if (alive) setLoading(false); });

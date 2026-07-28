@@ -318,3 +318,85 @@ def test_load_main_shape(db):
                 "taggedClipCount", "heartDelta", "rankDelta", "isNew", "live"):
         assert key in top
     assert 0 <= top["score"] <= 100
+
+
+# ── 닉네임이 비지 않아야 한다(검색 가능 조건) ───────────────────────────────
+def test_nickname_falls_back_to_list_owner_channel(db):
+    """채널 API가 실패해도 목록 응답의 ownerChannel로 닉네임을 채운다.
+
+    이름이 비면 화면에 '-'로 뜨고 검색에도 절대 걸리지 않는다.
+    """
+    def no_channel_api(request):
+        url = str(request.url)
+        if "/categories/" in url:
+            cur = request.url.params.get("clipUID")
+            items, nxt = PAGES.get(cur, ([], None))
+            page = {"next": {"clipUID": nxt}} if nxt else {}
+            return httpx.Response(200, json={"code": 200,
+                                             "content": {"data": items, "page": page}})
+        if "/service/v1/channels/" in url:
+            return httpx.Response(503, json={"code": 503})   # 채널 API 장애
+        uid = request.url.params.get("referer", "").rsplit("/", 1)[-1]
+        return httpx.Response(200, json=card(
+            "#싱드컵" if uid in TAGGED else "#노래", likes=3, views=10))
+
+    _install(no_channel_api)
+    db(sc.run_backfill())
+
+    d = db(sc.load_main())
+    assert d["summary"]["streamerCount"] == 3
+    # clip() 헬퍼의 ownerChannel.channelName == "가수"
+    assert all(s["channelName"] == "가수" for s in d["streamers"])
+    assert all(s["channelName"] for s in d["streamers"]), "닉네임이 비면 검색이 불가능하다"
+
+
+def test_list_owner_channel_wins_over_channel_api(db):
+    """목록의 ownerChannel을 우선한다(둘 다 있을 때 이름이 비는 일이 없도록)."""
+    calls = []
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
+    db(sc.run_backfill())
+    d = db(sc.load_main())
+    assert all(s["channelName"] == "가수" for s in d["streamers"])
+
+
+# ── 목록 상한이 검색 범위를 깎지 않는다 ─────────────────────────────────────
+async def _seed_streamers(n):
+    """대표 클립을 가진 참가자 n명을 직접 넣는다(카드/목록 API 없이)."""
+    c = await database.get_db()
+    now = int(time.time())
+    created = int(sc.START_AT.timestamp()) + 3600
+    for i in range(n):
+        cid, uid = f"bulk{i}", f"bu{i}"
+        await c.execute(
+            "INSERT INTO singcup_clips (clip_uid, event_id, owner_channel_id, video_id,"
+            " rec_id, clip_title, thumbnail_image_url, description, created_at,"
+            " heart_count, view_count, duration, adult, blind_type, metrics_ok,"
+            " owner_channel_name, active, missing_scan_count, first_collected_at,"
+            " last_collected_at, row_updated_at)"
+            " VALUES (?,?,?,?,'','제목','','#싱드컵',?,?,?,60,0,'',1,?,1,0,?,?,?)",
+            (uid, sc.EVENT_ID, cid, f"v{i}", created, i, i, f"참가자{i}", now, now, now))
+        await c.execute(
+            "INSERT INTO singcup_streamers (channel_id, event_id, channel_name,"
+            " channel_image_url, follower_count, verified_mark, tagged_clip_count,"
+            " representative_clip_uid, row_updated_at) VALUES (?,?,?,'',0,0,1,?,?)",
+            (cid, sc.EVENT_ID, f"참가자{i}", uid, now))
+    await c.commit()
+
+
+def test_main_returns_every_participant_at_frontend_limit(db):
+    """화면이 쓰는 상한에서는 참가자가 한 명도 잘리지 않아야 한다.
+
+    검색은 이 응답 안에서만 이뤄지므로, 잘려나간 뒤쪽 스트리머는 닉네임을 정확히
+    쳐도 "없습니다"가 뜬다(참가자 수 > 상한이었던 실제 버그).
+    """
+    db(_seed_streamers(600))
+    d = db(sc.load_main(limit=3000))
+    assert d["summary"]["streamerCount"] == 600
+    assert len(d["streamers"]) == 600            # 예전 상한(500)이면 여기서 깎였다
+    assert d["streamers"][-1]["channelName"]     # 꼬리쪽도 닉네임이 있어야 검색된다
+
+
+def test_main_limit_argument_is_still_honored(db):
+    """상한만 올렸을 뿐, 요청한 개수는 그대로 지킨다."""
+    db(_seed_streamers(600))
+    assert len(db(sc.load_main(limit=50))["streamers"]) == 50
