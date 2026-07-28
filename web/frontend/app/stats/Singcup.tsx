@@ -26,10 +26,26 @@ const SORTS: { k: SortKey; label: string }[] = [
   { k: "follower", label: "팔로워 많은 순" },
 ];
 
-function Tile({ label, value, unit, accent, delta, windowMin }:
+/** '이 라이브 숫자는 언제 확인한 것인가' — 60초 폴링과 실제 갱신 주기가 다르다는 걸 알린다 */
+function LiveFreshness({ live }: { live?: SingcupMain["live"] }) {
+  if (!live?.collectedAt) return <span className="text-muted/60">집계 대기</span>;
+  const min = Math.max(0, Math.round((Date.now() - new Date(live.collectedAt).getTime()) / 60000));
+  return (
+    <span className={live.isStale ? "text-amber-400" : "text-muted"}
+          title={`전체 라이브 목록을 약 ${Math.round(live.intervalSeconds / 60)}분 주기로 확인합니다.`
+                 + (live.nextExpectedAt
+                    ? ` 다음 예상: ${new Date(live.nextExpectedAt).toLocaleTimeString("ko-KR",
+                        { hour: "2-digit", minute: "2-digit" })}`
+                    : "")}>
+      {min < 1 ? "방금 확인" : `${min}분 전 확인`}{live.isStale && " · 지연"}
+    </span>
+  );
+}
+
+function Tile({ label, value, unit, accent, delta, windowMin, foot }:
   { label: string; value: string; unit?: string; accent?: boolean;
     /** 1시간 전 대비 증가분. null이면 비교할 이력이 아직 없다 */
-    delta?: number | null; windowMin?: number }) {
+    delta?: number | null; windowMin?: number; foot?: React.ReactNode }) {
   return (
     <div className="card !p-4">
       <p className="text-sm text-muted">{label}</p>
@@ -55,6 +71,7 @@ function Tile({ label, value, unit, accent, delta, windowMin }:
               : <span className="text-muted">1시간 변화 없음</span>}
         </p>
       )}
+      {foot && <p className="mt-1 whitespace-nowrap text-xs tabular-nums">{foot}</p>}
     </div>
   );
 }
@@ -411,8 +428,11 @@ export default function Singcup() {
         <Tile label="참가 스트리머" value={nf(data?.summary.streamerCount ?? 0)} unit="명" accent
               delta={data?.summary.streamerDelta ?? null}
               windowMin={data?.summary.deltaWindowMinutes} />
-        {/* 라이브는 늘고 줄기를 반복하므로 '증가분' 개념이 맞지 않는다 → 증감 표기 없음 */}
-        <Tile label="현재 라이브" value={nf(data?.summary.liveCount ?? 0)} unit="명" />
+        {/* 라이브는 늘고 줄기를 반복하므로 '증가분' 개념이 맞지 않는다.
+            대신 '언제 확인한 값인지'를 보여준다 — 화면은 60초마다 새로 받지만 이 값은
+            전체 라이브 스캔 주기(기본 10분)에 묶여 있어 그 사이에는 바뀌지 않는다. */}
+        <Tile label="현재 라이브" value={nf(data?.summary.liveCount ?? 0)} unit="명"
+              foot={<LiveFreshness live={data?.live} />} />
       </div>
 
       {/* 컨트롤 — 좌: 참가자 검색 / 우: 정렬 + 오름·내림 전환 */}

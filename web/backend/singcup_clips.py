@@ -1122,6 +1122,20 @@ async def load_main(limit: int = 200) -> dict:
                 "categoryName": r["category_name"] or "",
             }
 
+    # 라이브 신선도 — 이 값은 싱드컵 수집기가 아니라 전체 라이브 스캔 주기에 묶여 있다.
+    # 화면이 60초마다 새로 받아도 여기가 안 바뀌면 같은 값이므로, '언제 확인한
+    # 라이브인지'를 같이 내려 화면에서 오해가 없게 한다.
+    from rising_collector import COLLECT_INTERVAL as _LIVE_INTERVAL
+    live_at = int(latest["collected_at"]) if latest else None
+    live_info = {
+        "collectedAt": datetime.fromtimestamp(live_at, _KST).isoformat() if live_at else None,
+        "nextExpectedAt": (datetime.fromtimestamp(live_at + _LIVE_INTERVAL, _KST).isoformat()
+                           if live_at else None),
+        "intervalSeconds": int(_LIVE_INTERVAL),
+        # 한 주기를 훌쩍 넘겼으면(1.5배) 수집이 밀리고 있다는 뜻
+        "isStale": live_at is None or (now - live_at) > _LIVE_INTERVAL * 1.5,
+    }
+
     out = []
     # 상한이 참가자 수보다 낮으면 잘린 뒤쪽 사람들은 화면 검색에 아예 걸리지 않는다
     # (검색은 이 응답 안에서만 이뤄진다). 참가자 전원이 담기도록 넉넉히 잡는다.
@@ -1181,6 +1195,7 @@ async def load_main(limit: int = 200) -> dict:
                              if streamers_before > 0 else None,
             "deltaWindowMinutes": DELTA_WINDOW_SECONDS // 60,
         },
+        "live": live_info,
         "collector": {
             "lastSuccessAt": datetime.fromtimestamp(last_at, _KST).isoformat()
                              if last_at else None,

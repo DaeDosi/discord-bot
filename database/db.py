@@ -725,6 +725,14 @@ async def init_db():
                locked_until INTEGER NOT NULL DEFAULT 0,
                owner        TEXT    NOT NULL DEFAULT ''
            )""",
+        # 수집 사이클 계측 — 주기를 줄여도 되는지 판단하려면 '한 사이클이 얼마나
+        # 걸리는지'를 알아야 하는데, 지금까지 소요시간도 호출 수도 남기지 않아
+        # p95를 계산할 방법이 아예 없었다(collected_at 간격은 sleep을 포함한 값이라
+        # 사이클 자체의 소요시간이 아니다).
+        "ALTER TABLE rising_collect_runs ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE rising_collect_runs ADD COLUMN pages INTEGER NOT NULL DEFAULT 0",
+        # 목록 API 실제 호출 횟수(재시도 포함) — 주기를 절반으로 줄일 때 늘어날 부하의 근거
+        "ALTER TABLE rising_collect_runs ADD COLUMN api_calls INTEGER NOT NULL DEFAULT 0",
     ]:
         try:
             await db.execute(sql)

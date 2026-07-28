@@ -605,6 +605,11 @@ export interface SingcupMain {
     taggedClipDelta: number | null; streamerDelta: number | null;
     deltaWindowMinutes: number;
   };
+  /** 라이브 표시의 신선도. 싱드컵 수집기가 아니라 전체 라이브 스캔 주기에 묶여 있다. */
+  live: {
+    collectedAt: string | null; nextExpectedAt: string | null;
+    intervalSeconds: number; isStale: boolean;
+  };
   collector: { lastSuccessAt: string | null; stale: boolean };
   streamers: SingcupStreamer[];
 }

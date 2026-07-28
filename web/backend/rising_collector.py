@@ -30,6 +30,9 @@ HEADERS = {
 
 # 수집 주기(초). 기본 10분 — 너무 짧으면 원천 테이블이 급팽창하고 API 부담이 커진다.
 COLLECT_INTERVAL = int(os.getenv("RISING_COLLECT_INTERVAL", "600"))
+# 사이클이 주기를 넘겼을 때 다음 시작까지 최소한 비워 둘 시간(초).
+# 0이면 외부 API를 쉬는 구간 없이 계속 때리게 된다.
+MIN_GAP_SECONDS = int(os.getenv("RISING_MIN_GAP_SECONDS", "30"))
 # 한 사이클에서 순회할 최대 페이지 수(페이지당 PAGE_SIZE개) — 폭주 방지 안전장치.
 #
 # 실측(2026-07-26): 치지직 동시 라이브 총 5,754개 = 117페이지에서 목록 소진.
@@ -165,7 +168,7 @@ async def _enrich_top(client: httpx.AsyncClient, lives: list[dict]):
     await asyncio.gather(*[one(l) for l in top])
 
 
-async def _fetch_all_lives(client: httpx.AsyncClient) -> tuple[list[dict], str]:
+async def _fetch_all_lives(client: httpx.AsyncClient) -> tuple[list[dict], str, dict]:
     """커서 페이지네이션으로 현재 라이브 목록 전체(최대 MAX_PAGES*PAGE_SIZE)를 수집한다.
 
     치지직 응답: content.data[](방송 목록), content.page.next(다음 페이지 커서 dict).
@@ -182,6 +185,9 @@ async def _fetch_all_lives(client: httpx.AsyncClient) -> tuple[list[dict], str]:
     seen: set[str] = set()
     params: dict = {"size": PAGE_SIZE, "sortType": "POPULAR"}
     note = "page_cap_reached"  # 루프를 다 돌면(=상한 도달) 이 값이 남는다
+    # 계측 — 주기를 줄여도 되는지는 '한 사이클이 외부 API를 몇 번 부르고 얼마나
+    # 걸리는가'로 판단해야 한다. 재시도까지 포함해 실제 호출 수를 센다.
+    stats = {"pages": 0, "api_calls": 0}
 
     for page in range(MAX_PAGES):
         if page and PAGE_DELAY_MS > 0:
@@ -191,6 +197,7 @@ async def _fetch_all_lives(client: httpx.AsyncClient) -> tuple[list[dict], str]:
         last_err: Exception | None = None
         for attempt in range(PAGE_RETRIES):
             try:
+                stats["api_calls"] += 1
                 resp = await client.get(LIVES_URL, params=params, headers=HEADERS, timeout=15)
                 break
             except Exception as e:  # 읽기/연결 타임아웃 등 일시적 오류
@@ -198,14 +205,15 @@ async def _fetch_all_lives(client: httpx.AsyncClient) -> tuple[list[dict], str]:
                 await asyncio.sleep(0.8 * (attempt + 1))
         if resp is None:
             if lives:  # 부분 성공 — 여기까지 모은 것은 살린다
-                return (lives, f"partial: page {page + 1} 재시도 실패 ({type(last_err).__name__})")
+                return (lives, f"partial: page {page + 1} 재시도 실패 ({type(last_err).__name__})", stats)
             raise RuntimeError(f"page {page + 1} 재시도 실패: {last_err}")
 
         if resp.status_code != 200:
             if lives:
-                return (lives, f"partial: page {page + 1} HTTP {resp.status_code}")
+                return (lives, f"partial: page {page + 1} HTTP {resp.status_code}", stats)
             raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:150]}")
 
+        stats["pages"] += 1
         content = (resp.json() or {}).get("content") or {}
         data = content.get("data") or []
         if not data:
@@ -225,16 +233,19 @@ async def _fetch_all_lives(client: httpx.AsyncClient) -> tuple[list[dict], str]:
         # 다음 페이지 커서를 그대로 쿼리 파라미터로 승계
         params = {"size": PAGE_SIZE, "sortType": "POPULAR", **nxt}
 
-    return (lives, note)
+    return (lives, note, stats)
 
 
-async def _record_run(collected_at: int, live_count: int, total_viewers: int, ok: int, note: str = ""):
+async def _record_run(collected_at: int, live_count: int, total_viewers: int, ok: int,
+                      note: str = "", duration_ms: int = 0, pages: int = 0, api_calls: int = 0):
     db = await get_db()
     await db.execute(
         """INSERT OR IGNORE INTO rising_collect_runs
-               (collected_at, live_count, total_viewers, ok, note)
-           VALUES (?,?,?,?,?)""",
-        (collected_at, live_count, total_viewers, ok, note[:500]),
+               (collected_at, live_count, total_viewers, ok, note,
+                duration_ms, pages, api_calls)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (collected_at, live_count, total_viewers, ok, note[:500],
+         int(duration_ms), int(pages), int(api_calls)),
     )
     await db.commit()
 
@@ -299,21 +310,26 @@ async def _prune_old(now: int):
 async def collect_once() -> tuple[int, str]:
     """한 번의 수집 사이클. (수집된 라이브 수, 상태 메모) 반환."""
     now = int(time.time())
+    t0 = time.perf_counter()
+    stats = {"pages": 0, "api_calls": 0}
+    el = lambda: int((time.perf_counter() - t0) * 1000)   # noqa: E731
     try:
         async with httpx.AsyncClient() as client:
-            lives, fetch_note = await _fetch_all_lives(client)
+            lives, fetch_note, stats = await _fetch_all_lives(client)
             if lives:
                 # 팔로워 수는 목록 API에 없으므로 상위 채널만 상세 API로 보강
                 await _enrich_top(client, lives)
     except Exception as e:
         note = f"fetch 실패: {e}"
         _log(note)
-        await _record_run(now, 0, 0, ok=0, note=note)
+        await _record_run(now, 0, 0, ok=0, note=note, duration_ms=el(),
+                          pages=stats["pages"], api_calls=stats["api_calls"])
         return (0, note)
 
     if not lives:
         note = "라이브 0건 (API 응답 비었거나 방송 없음)"
-        await _record_run(now, 0, 0, ok=0, note=note)
+        await _record_run(now, 0, 0, ok=0, note=note, duration_ms=el(),
+                          pages=stats["pages"], api_calls=stats["api_calls"])
         return (0, note)
 
     # 프로필 이미지는 메모리에 누적(사이클마다 갱신)하고, 매일 00시 이후 첫 수집에 DB로 저장.
@@ -340,7 +356,10 @@ async def collect_once() -> tuple[int, str]:
     )
     await db.commit()
     # 종료 사유를 note에 남긴다 — page_cap_reached면 MAX_PAGES를 더 올려야 한다는 신호다.
-    await _record_run(now, len(lives), total_viewers, ok=1, note=fetch_note)
+    # 소요시간은 여기까지(수집 + 보강 + 원본 저장). 롤업/prune은 아래에서 따로 잰다.
+    fetch_ms = el()
+    await _record_run(now, len(lives), total_viewers, ok=1, note=fetch_note,
+                      duration_ms=fetch_ms, pages=stats["pages"], api_calls=stats["api_calls"])
     # 롤업은 prune '전에' 만들어야 한다 — prune이 원본을 지운 뒤면 집계할 소스가 없다.
     await _build_rollup(now)
     await _prune_old(now)
@@ -348,7 +367,11 @@ async def collect_once() -> tuple[int, str]:
     if fetch_note == "page_cap_reached":
         _log(f"경고: MAX_PAGES({MAX_PAGES}) 상한에 도달 — 목록이 잘렸을 수 있습니다. "
              f"RISING_MAX_PAGES를 올리세요.")
-    _log(f"수집 완료: {len(lives)}개 라이브, 총 시청자 {total_viewers:,}명 ({fetch_note})")
+    total_ms = el()
+    # 주기 단축 판단에 필요한 값 — 사이클 전체 소요시간과 외부 호출 수를 매번 남긴다
+    _log(f"수집 완료: {len(lives)}개 라이브, 총 시청자 {total_viewers:,}명 ({fetch_note}) "
+         f"| {stats['pages']}페이지 {stats['api_calls']}호출 "
+         f"| 수집 {fetch_ms}ms 롤업·정리 포함 {total_ms}ms")
     return (len(lives), "ok")
 
 
@@ -357,8 +380,19 @@ async def start_collector():
     _log(f"시작 (interval={COLLECT_INTERVAL}s, page_size={PAGE_SIZE}, max_pages={MAX_PAGES})")
     await _load_profiles()  # DB에 저장된 프로필 이미지를 메모리로 복원(재시작 대응)
     while True:
+        started = time.perf_counter()
         try:
             await collect_once()
         except Exception as e:
             _log(f"수집 루프 예외: {e}")
-        await asyncio.sleep(COLLECT_INTERVAL)
+        # '완료 후 COLLECT_INTERVAL 대기'가 아니라 '시작 간격 고정'이다.
+        # 예전 방식은 사이클이 2분 걸리면 실제 시작 간격이 interval+2분이 되어,
+        # 환경변수를 300으로 낮춰도 5분 주기가 되지 않는다(약 7분).
+        elapsed = time.perf_counter() - started
+        # 사이클이 주기를 넘겨도 곧바로 다시 시작하지는 않는다 — 외부 API를 쉬지 않고
+        # 때리게 되므로 최소 간격을 남긴다.
+        wait = max(MIN_GAP_SECONDS, COLLECT_INTERVAL - elapsed)
+        if elapsed > COLLECT_INTERVAL:
+            _log(f"경고: 사이클 {elapsed:.0f}s > 주기 {COLLECT_INTERVAL}s "
+                 f"— 주기가 너무 짧습니다(다음 시작까지 {wait:.0f}s 대기)")
+        await asyncio.sleep(wait)

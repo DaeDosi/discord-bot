@@ -53,6 +53,12 @@ async def _latest_run_ts() -> int | None:
     return int(row["collected_at"]) if row else None
 
 
+def _collect_interval() -> int:
+    """수집기의 현재 주기(초). 수집기 모듈이 import 시점에 확정한 값을 그대로 읽는다."""
+    from rising_collector import COLLECT_INTERVAL
+    return int(COLLECT_INTERVAL)
+
+
 @router.get("/status")
 async def status():
     """수집기 헬스체크 — 마지막 수집 시각/건수/성공 여부와 누적 스냅샷 수."""
@@ -67,10 +73,41 @@ async def status():
     runs = await (await db.execute(
         "SELECT COUNT(*) AS c FROM rising_collect_runs WHERE ok=1"
     )).fetchone()
+    # 수집 주기를 줄여도 되는지 판단할 근거 — 사이클 소요시간 분포와 외부 호출 수.
+    # 주기(초)보다 p95가 크면 주기를 줄이면 안 된다(사이클이 겹치거나 계속 밀린다).
+    since = int(time.time()) - 24 * 3600
+    dur = [int(r["d"]) for r in await (await db.execute(
+        "SELECT duration_ms AS d FROM rising_collect_runs "
+        "WHERE ok=1 AND duration_ms > 0 AND collected_at >= ? ORDER BY duration_ms",
+        (since,))).fetchall()]
+
+    def pct(p: float) -> int | None:
+        if not dur:
+            return None
+        return dur[min(len(dur) - 1, int(len(dur) * p))]
+
+    calls = await (await db.execute(
+        "SELECT AVG(api_calls) AS a, MAX(api_calls) AS m, AVG(pages) AS p "
+        "FROM rising_collect_runs WHERE ok=1 AND api_calls > 0 AND collected_at >= ?",
+        (since,))).fetchone()
+    interval = _collect_interval()
+    p95 = pct(0.95)
     return {
         "last_run": dict(last) if last else None,
         "total_snapshots": total_snap["c"] if total_snap else 0,
         "successful_runs": runs["c"] if runs else 0,
+        "cycle_24h": {
+            "samples": len(dur),
+            "interval_seconds": interval,
+            "duration_ms": {"p50": pct(0.5), "p95": p95, "max": dur[-1] if dur else None},
+            "avg_api_calls": round(calls["a"], 1) if calls and calls["a"] else None,
+            "max_api_calls": int(calls["m"]) if calls and calls["m"] else None,
+            "avg_pages": round(calls["p"], 1) if calls and calls["p"] else None,
+            # 주기를 절반으로 줄였을 때 p95가 여전히 안전한지 — 판단을 화면에 맡기지 않는다
+            "p95_uses_pct_of_interval": round(p95 / 10 / interval, 1) if p95 and interval else None,
+            "safe_to_halve": (p95 is not None and interval > 0
+                              and p95 / 1000 < interval / 2 * 0.5),
+        },
         "server_time": int(time.time()),
     }
 
