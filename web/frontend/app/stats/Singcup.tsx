@@ -104,23 +104,18 @@ function Tile({ label, value, unit, accent, delta, windowMin, baseAt, foot }:
 
 /** 최근 1시간 하트 급상승 Top 5. 백엔드가 이미 골라 보낸 목록을 그대로 그린다
  *  (프론트에서 전체 배열로 다시 계산하면 대표 클립 교체 같은 조건이 누락된다). */
-function HeartMovers({ movers, collectedAt }:
-  { movers: SingcupHeartMover[]; collectedAt: string | null }) {
+function HeartMovers({ movers }: { movers: SingcupHeartMover[] }) {
   return (
     <section className="card !p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          {/* '실시간'이라고 하면 초 단위로 갱신되는 것처럼 오해된다 */}
-          <h2 className="flex items-center gap-1.5 text-base font-extrabold">
-            <Heart size={15} style={{ color: VERMILION }} /> 최근 1시간 하트 급상승
-          </h2>
-          <p className="mt-0.5 text-[12px] text-muted">
-            대표 클립의 하트가 1시간 동안 가장 많이 증가한 스트리머입니다.
-          </p>
-        </div>
-        <span className="text-[11px] text-muted/70 tabular-nums">
-          싱드컵 집계 {fmtDateTime(collectedAt)}
-        </span>
+      <div>
+        {/* '실시간'이라고 하면 초 단위로 갱신되는 것처럼 오해된다 */}
+        <h2 className="flex items-center gap-1.5 text-base font-extrabold">
+          <Heart size={15} style={{ color: VERMILION }} /> 최근 1시간 하트 급상승
+        </h2>
+        {/* 집계 시각은 페이지 우측 상단에 하나만 둔다 — 같은 값을 두 번 보이면 잡음이다 */}
+        <p className="mt-0.5 text-[12px] text-muted">
+          대표 클립의 하트가 1시간 동안 가장 많이 증가한 스트리머입니다.
+        </p>
       </div>
 
       {movers.length === 0 ? (
@@ -525,20 +520,11 @@ export default function Singcup() {
           <div className="mt-1"><ScoreFormula /></div>
         </div>
 
-        {/* 모바일에서도 잘리지 않게 wrap */}
-        <div className="flex flex-wrap items-center gap-2">
-          <Link href="/stats/singcup/live"
-                className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-bold text-[#1a1400]"
-                style={{ background: GOLD }}>
-            <Radio size={15} /> 싱드컵 라이브
-          </Link>
-          <button onClick={() => setView(true)}
-                  className="btn-secondary flex items-center gap-1.5 text-sm">
-            <ClipboardList size={15} /> 자유게시판 홍보글
-          </button>
-          {/* 집계 시각·수집 기간을 우측 상단으로 모은다. 페이지 헤더의 '라이브 집계'는
-              전체 라이브 스캔 시각이라 이 탭에서는 혼동만 주므로 숨긴다(page.tsx). */}
-          <div className="w-full text-right text-[12px] leading-relaxed text-muted/80">
+        {/* 우측 열: 집계 시각·수집 기간이 위, 버튼 묶음이 아래.
+            페이지 헤더의 '라이브 집계'는 전체 라이브 스캔 시각이라 이 탭에서는
+            혼동만 주므로 숨긴다(page.tsx). */}
+        <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
+          <div className="text-[12px] leading-relaxed text-muted/80 sm:text-right">
             <p title="#싱드컵 클립의 조회수·하트를 마지막으로 갱신한 시각입니다.">
               싱드컵 집계{" "}
               <span className="tabular-nums">
@@ -550,6 +536,18 @@ export default function Singcup() {
                 수집 기간 {fmtRange(ev.startAt, ev.endAt)}
               </p>
             )}
+          </div>
+          {/* 모바일에서도 잘리지 않게 wrap */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href="/stats/singcup/live"
+                  className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-bold text-[#1a1400]"
+                  style={{ background: GOLD }}>
+              <Radio size={15} /> 싱드컵 라이브
+            </Link>
+            <button onClick={() => setView(true)}
+                    className="btn-secondary flex items-center gap-1.5 text-sm">
+              <ClipboardList size={15} /> 자유게시판 홍보글
+            </button>
           </div>
         </div>
       </div>
@@ -565,8 +563,7 @@ export default function Singcup() {
 
       {/* 최근 1시간 하트 급상승 — KPI 위에 둔다(제목/설명 바로 다음) */}
       {data && (
-        <HeartMovers movers={data.topHeartMovers1h}
-                     collectedAt={data.collector.lastSuccessAt} />
+        <HeartMovers movers={data.topHeartMovers1h} />
       )}
 
       {/* 요약 */}
