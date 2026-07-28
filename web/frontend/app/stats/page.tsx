@@ -265,22 +265,33 @@ function StreamerSearch() {
 }
 
 // 범용 세그먼트 버튼 그룹 (지표 필터 / 기간 선택 공용)
-function Seg<T extends string>({ options, value, onChange }:
-  { options: { k: T; label: string }[]; value: T; onChange: (v: T) => void }) {
+//
+// 칩마다 테두리를 두르면 그룹이 둘 이상 나란히 놓일 때(기간 + 지표) 똑같이 생긴
+// 버튼이 한 줄로 늘어서 어디까지가 한 컨트롤인지 알 수 없다. 그래서 그룹 전체를
+// 하나의 '트랙'으로 감싸고, 안쪽 버튼은 테두리 없이 선택된 것만 채운다.
+function Seg<T extends string>({ options, value, onChange, label }:
+  { options: { k: T; label: string }[]; value: T; onChange: (v: T) => void;
+    /** 무엇을 고르는 그룹인지 — 그룹이 둘 이상 나란히 놓일 때만 붙인다 */
+    label?: string }) {
   return (
-    <div className="flex items-center gap-1">
-      {options.map((o) => {
-        const active = value === o.k;
-        return (
-          <button key={o.k} onClick={() => onChange(o.k)}
-            className="text-xs px-2.5 py-1 rounded-md border transition-colors"
-            style={{ background: active ? "rgba(0,255,163,0.1)" : "transparent",
-                     borderColor: active ? "rgba(0,194,255,0.4)" : "rgb(var(--color-border-rgb))",
-                     color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
-            {o.label}
-          </button>
-        );
-      })}
+    <div className="flex items-center gap-1.5">
+      {label && <span className="text-[11px] text-muted/60 shrink-0">{label}</span>}
+      <div className="flex items-center gap-0.5 rounded-lg border border-border
+                      bg-bg-hover/40 p-0.5">
+        {options.map((o) => {
+          const active = value === o.k;
+          return (
+            <button key={o.k} onClick={() => onChange(o.k)}
+              aria-pressed={active}
+              className="text-xs px-2.5 py-1 rounded-md transition-colors"
+              style={{ background: active ? "rgba(0,255,163,0.12)" : "transparent",
+                       boxShadow: active ? "inset 0 0 0 1px rgba(0,194,255,0.4)" : "none",
+                       color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -615,10 +626,11 @@ function OverviewTab({ ov, stars }: { ov: RisingOverview; stars: RisingStars | n
       <div className="card">
         <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
           <h3 className="section-title">{chartTitle}</h3>
-          {/* 모바일에서 두 줄로 접히도록 wrap — 한 줄에 밀어 넣으면 칩이 잘린다 */}
-          <div className="flex flex-wrap items-center gap-2">
-            <Seg options={TS_RANGE_OPTS} value={range} onChange={setRange} />
-            <Seg options={METRIC_OPTS} value={metric} onChange={setMetric} />
+          {/* 기간과 지표는 성격이 다른 두 컨트롤이다 — 트랙으로 묶고 간격을 벌려
+              한 줄짜리 칩 5개로 읽히지 않게 한다. 모바일에서는 두 줄로 접힌다. */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <Seg options={TS_RANGE_OPTS} value={range} onChange={setRange} label="기간" />
+            <Seg options={METRIC_OPTS} value={metric} onChange={setMetric} label="지표" />
           </div>
         </div>
         <p className="text-xs text-muted mb-1">{rangeDesc}</p>
