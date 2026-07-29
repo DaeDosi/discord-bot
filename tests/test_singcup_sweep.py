@@ -427,3 +427,22 @@ def test_rate_is_recomputed_when_target_count_grows():
     # 55분 안에 끝내려면 각각 이 속도가 필요하다(상한에 걸리면 behind_schedule)
     assert abs(a - 5022 / (sw.TARGET_MINUTES * 60)) < 1e-6
     assert abs(b - 8000 / (sw.TARGET_MINUTES * 60)) < 1e-6
+
+
+def test_status_exposes_429_and_overlap_risk_mid_run(db):
+    """진행 중에도 429·실패율·다음 정각 침범 여부가 보인다(단계적 상향 판단용)."""
+    db(_seed(2, 2))
+    sched = sw.floor_hour(time.time())
+    rid = db(sw._claim(sched))
+    # 10분에 100건 = 0.17건/초 → 5,000건이면 한 시간을 한참 넘긴다
+    db(sw._progress(rid, started_at=int(time.time()) - 600, total_targets=5000,
+                    processed=100, http_429=3, failed=2, success=98, rate_limit=1.0))
+
+    st = db(sw.sweep_status())
+    cur = st["current_run"]
+    assert cur["http_429"] == 3
+    assert cur["failed"] == 2 and cur["failure_rate"] == 0.02
+    assert cur["rate_limit"] == 1.0
+    # 5,000건을 이 페이스로 끝내면 한 시간을 넘긴다 → 다음 회차가 밀린다
+    assert cur["behind_schedule"] is True
+    assert cur["will_overlap_next_hour"] is True

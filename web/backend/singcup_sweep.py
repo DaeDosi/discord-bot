@@ -293,8 +293,11 @@ async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = Non
             done += 1
             if done % PROGRESS_EVERY == 0:
                 await (await get_db()).commit()
+                # 429·호출 수도 같이 흘려 둔다 — 회차가 끝나야만 보이면 단계적
+                # 상향을 판단할 수 없다(한 회차가 한 시간이다).
                 await _progress(run_id, processed=done, rate_limit=round(bucket.rate, 3),
-                                **tally)
+                                http_429=sc._api_counter["http_429"],
+                                api_calls=sc._api_counter["calls"], **tally)
 
     try:
         await asyncio.gather(*[one(t) for t in targets])
@@ -405,10 +408,21 @@ async def sweep_status() -> dict:
             "processed": proc, "total_targets": total,
             "progress_percent": round(proc / total * 100, 1) if total else 0.0,
             "rate_per_second": round(speed, 2),
+            "rate_limit": round(float(cur["rate_limit"] or 0), 3),
             "estimated_completion_at": kst(eta),
             # 55분 안에 못 끝날 페이스면 운영이 바로 알아야 한다
             "behind_schedule": bool(
                 eta and eta > int(cur["scheduled_at"]) + TARGET_MINUTES * 60),
+            # 단계적 상향(1.0 → 1.5 → 1.7 → 2.0)을 회차가 끝나기 전에 판단하려면
+            # 진행 중에도 429·실패율이 보여야 한다. secret 없이 볼 수 있게 여기 둔다.
+            "success": int(cur["success"] or 0),
+            "partial": int(cur["partial"] or 0),
+            "failed": int(cur["failed"] or 0),
+            "http_429": int(cur["http_429"] or 0),
+            "failure_rate": round(int(cur["failed"] or 0) / proc, 4) if proc else 0.0,
+            # 이 회차가 다음 정각을 넘기면 21:00 회차가 skipped_overlap으로 밀린다
+            "will_overlap_next_hour": bool(
+                eta and eta > int(cur["scheduled_at"]) + 3600),
         }
     oldest = int(agg["oldest"] or 0)
     return {
