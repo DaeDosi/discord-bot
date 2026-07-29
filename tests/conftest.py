@@ -30,6 +30,9 @@ os.environ.setdefault("SINGCUP_PAGE_DELAY_SECONDS", "0")
 os.environ.setdefault("SINGCUP_START_DELAY_SECONDS", "0")
 # 정각 스윕은 토큰 버킷으로 요청을 고르게 흘린다 — 테스트에서 실제 초를 기다리지
 # 않도록 속도 제한만 사실상 해제한다(로직은 그대로 검증된다).
+# /main 캐시는 운영 부하 대책이다. 대부분의 테스트는 쓰기 직후 값을 확인하므로
+# 기본은 꺼 두고, 캐시 동작 자체를 보는 테스트만 TTL을 켠다.
+os.environ.setdefault("SINGCUP_MAIN_CACHE_SECONDS", "0")
 os.environ.setdefault("SINGCUP_SWEEP_MIN_RATE", "10000")
 os.environ.setdefault("SINGCUP_SWEEP_MAX_RATE", "10000")
 

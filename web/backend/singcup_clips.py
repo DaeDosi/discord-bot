@@ -230,6 +230,7 @@ async def reset_state():
             pass
     _client = None
     _channel_cache.clear()
+    _main_cache.clear()
 
 
 class FetchError(RuntimeError):
@@ -660,6 +661,9 @@ async def recompute_ranking(now: int, *, client=None) -> list[dict]:
         }, now)
     await _save_snapshots(ranked, now)
     await db.commit()
+    # 순위가 바뀌었으니 /main 캐시를 즉시 버린다 — TTL이 만료될 때까지 옛 순위를
+    # 보여주면 "갱신했는데 화면이 안 바뀐다"는 바로 그 증상이 다시 생긴다.
+    _main_cache.clear()
     return ranked
 
 
@@ -2135,7 +2139,32 @@ async def _delta_maps(now: int) -> tuple[dict, dict, int | None]:
     return prev, day, ref_ts
 
 
+# /main은 프론트가 아주 자주 부르는데(운영 로그 기준 초당 수 회), 매번 스트리머
+# 전원을 조인·정렬하고 증감까지 계산해 1~4초가 걸렸다. 원본 데이터는 4분(탐색)
+# 또는 1시간(정각 스윕)에 한 번만 바뀌므로 짧은 TTL 캐시로 충분하다.
+# single-flight까지 두어 캐시가 만료된 순간 요청이 몰려도 계산은 한 번만 한다.
+MAIN_CACHE_TTL = float(os.getenv("SINGCUP_MAIN_CACHE_SECONDS", "20"))
+_main_cache: dict[int, tuple[float, dict]] = {}
+_main_lock = asyncio.Lock()
+
+
 async def load_main(limit: int = 200) -> dict:
+    """메인/랭킹 공용 데이터. 짧은 TTL 캐시를 태운다."""
+    hit = _main_cache.get(limit)
+    now_m = time.monotonic()
+    if hit and now_m - hit[0] < MAIN_CACHE_TTL:
+        return hit[1]
+    async with _main_lock:
+        hit = _main_cache.get(limit)          # 대기 중에 다른 요청이 채웠을 수 있다
+        now_m = time.monotonic()
+        if hit and now_m - hit[0] < MAIN_CACHE_TTL:
+            return hit[1]
+        data = await _load_main_uncached(limit)
+        _main_cache[limit] = (time.monotonic(), data)
+        return data
+
+
+async def _load_main_uncached(limit: int = 200) -> dict:
     """메인/랭킹 공용 데이터 — 스트리머별 대표 클립 + 점수 + 변화량 + 현재 라이브."""
     db = await get_db()
     rows = [dict(r) for r in await (await db.execute(

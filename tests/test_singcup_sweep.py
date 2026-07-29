@@ -1148,3 +1148,78 @@ def test_reconcile_lock_blocks_concurrent_runs(db):
                                     sc.reconcile_from_list())
     a, b = db(go())
     assert sum(1 for r in (a, b) if r["status"] == sc.ST_SKIPPED) == 1
+
+
+# ── /main 캐시 ─────────────────────────────────────────────────────────────
+# 운영 로그 기준 프론트가 /main을 초당 수 회 부르는데 매번 전원을 조인·정렬해
+# 1~4초가 걸렸다. 원본은 4분~1시간에 한 번만 바뀌므로 짧은 TTL로 충분하다.
+def test_main_is_cached_within_ttl(db, monkeypatch):
+    monkeypatch.setattr(sc, "MAIN_CACHE_TTL", 60.0)
+    db(_seed(2, 2))
+    _install(_cards())
+    db(sw.run_sweep(sw.floor_hour(time.time())))
+
+    calls = []
+    orig = sc._load_main_uncached
+
+    async def counted(limit=200):
+        calls.append(limit)
+        return await orig(limit)
+    monkeypatch.setattr(sc, "_load_main_uncached", counted)
+    sc._main_cache.clear()
+
+    a = db(sc.load_main())
+    b = db(sc.load_main())
+    assert len(calls) == 1, "TTL 안에서는 다시 계산하지 않는다"
+    assert a is b
+
+
+def test_main_cache_expires(db, monkeypatch):
+    db(_seed(1, 1))
+    _install(_cards())
+    monkeypatch.setattr(sc, "MAIN_CACHE_TTL", 0.0)
+    sc._main_cache.clear()
+
+    calls = []
+    orig = sc._load_main_uncached
+
+    async def counted(limit=200):
+        calls.append(limit)
+        return await orig(limit)
+    monkeypatch.setattr(sc, "_load_main_uncached", counted)
+
+    db(sc.load_main())
+    db(sc.load_main())
+    assert len(calls) == 2
+
+
+def test_main_cache_is_per_limit(db, monkeypatch):
+    db(_seed(2, 1))
+    _install(_cards())
+    sc._main_cache.clear()
+    a = db(sc.load_main(limit=1))
+    b = db(sc.load_main(limit=3000))
+    assert len(a["streamers"]) == 1 and len(b["streamers"]) == 2
+
+
+def test_main_cache_single_flight(db, monkeypatch):
+    """캐시가 빈 순간 동시 요청이 몰려도 계산은 한 번만."""
+    import asyncio
+    monkeypatch.setattr(sc, "MAIN_CACHE_TTL", 60.0)
+    db(_seed(2, 2))
+    _install(_cards())
+    sc._main_cache.clear()
+    calls = []
+    orig = sc._load_main_uncached
+
+    async def slow(limit=200):
+        calls.append(limit)
+        await asyncio.sleep(0.05)
+        return await orig(limit)
+    monkeypatch.setattr(sc, "_load_main_uncached", slow)
+
+    async def go():
+        return await asyncio.gather(*[sc.load_main() for _ in range(5)])
+    res = db(go())
+    assert len(calls) == 1, f"동시 5건인데 {len(calls)}번 계산했다"
+    assert all(r is res[0] for r in res)
