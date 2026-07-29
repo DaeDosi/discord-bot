@@ -890,6 +890,20 @@ async def init_db():
         "WHERE first_checked_at IS NULL",
         "CREATE INDEX IF NOT EXISTS idx_singcup_sweep_runs_status "
         "ON singcup_sweep_runs(event_id, status, scheduled_at DESC)",
+        # 스냅샷은 recompute_ranking이 불릴 때마다(코드 9곳, 최대 4분 간격) 스트리머
+        # 전원분이 무조건 INSERT돼 왔다. 값이 그대로여도 쌓이므로 최악 하루 37만 행.
+        # 시간 버킷(KST 정시 절삭)을 도입해 버킷당 한 세트만 남긴다.
+        #
+        # NULL 허용으로 추가하는 이유: 기존 행에는 버킷이 없고 중복도 있을 수 있다.
+        # 부분 유니크 인덱스(WHERE snapshot_bucket IS NOT NULL)라 **신규 데이터에만**
+        # 적용되고 기존 행은 건드리지 않는다. 기존 정리는 별도 승인 후 진행한다.
+        # 롤백: 인덱스만 DROP하면 된다(컬럼은 남아도 무해).
+        "ALTER TABLE singcup_snapshots ADD COLUMN snapshot_bucket INTEGER",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_singcup_snapshots_bucket "
+        "ON singcup_snapshots(event_id, owner_channel_id, snapshot_bucket) "
+        "WHERE snapshot_bucket IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_snapshots_bucket "
+        "ON singcup_snapshots(event_id, snapshot_bucket)",
     ]:
         try:
             await db.execute(sql)

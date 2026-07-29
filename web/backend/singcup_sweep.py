@@ -318,7 +318,9 @@ async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = Non
         # 대표 클립 재선정·점수·순위·스냅샷은 배치가 끝난 뒤 한 번만 계산한다.
         # 일반 클립이 대표를 추월했다면 여기서 대표가 바뀐다(_build_reps가 전체
         # 클립에서 스트리머별 최고 하트를 다시 고른다).
-        await sc.recompute_ranking(int(time.time()), client=client)
+        # 이력 스냅샷은 **여기서만** 남긴다(시간 버킷당 한 세트).
+        # 다른 경로는 순위만 즉시 맞추고 이력은 건드리지 않는다.
+        await sc.recompute_ranking(int(time.time()), client=client, save_snapshot=True)
     except Exception as e:
         api = sc._take_api_counters()
         await _progress(run_id, status=FAILED, processed=done,

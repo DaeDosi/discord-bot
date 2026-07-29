@@ -577,13 +577,61 @@ async def _upsert_streamer(s: dict, now: int):
          s["tagged_clip_count"], s["last_channel_updated_at"], now))
 
 
-async def _save_snapshots(ranked: list[dict], now: int):
+def snapshot_bucket(ts: int) -> int:
+    """스냅샷 시간 버킷 — KST 정시 절삭. KST는 UTC+9 정시라 epoch 절삭으로 같다."""
+    return int(ts) - int(ts) % 3600
+
+
+async def _save_snapshots(ranked: list[dict], now: int) -> int:
+    """이력 저장. **시간 버킷당 한 세트만** 남는다.
+
+    예전에는 recompute_ranking이 불릴 때마다(코드 9곳, 최대 4분 간격) 전원분을
+    무조건 INSERT했다. 값이 그대로여도 쌓여 최악 하루 37만 행이 된다.
+    이제 UNIQUE(event_id, owner_channel_id, snapshot_bucket) + INSERT OR IGNORE라
+    같은 시간에 몇 번을 불러도 첫 세트만 남는다(동시 실행도 DB가 막는다).
+    반환값은 실제로 들어간 행 수.
+    """
     db = await get_db()
-    await db.executemany(
-        "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id, heart_count,"
-        " view_count, follower_count, score, rank, collected_at) VALUES (?,?,?,?,?,?,?,?,?)",
+    bucket = snapshot_bucket(now)
+    cur = await db.executemany(
+        "INSERT OR IGNORE INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
+        " heart_count, view_count, follower_count, score, rank, collected_at,"
+        " snapshot_bucket) VALUES (?,?,?,?,?,?,?,?,?,?)",
         [(EVENT_ID, r["clip_uid"], r["owner_channel_id"], r["heart_count"], r["view_count"],
-          r.get("follower_count", 0), r["score"], r["rank"], now) for r in ranked])
+          r.get("follower_count", 0), r["score"], r["rank"], now, bucket) for r in ranked])
+    return max(0, cur.rowcount or 0)
+
+
+async def snapshot_duplicate_report() -> dict:
+    """기존 스냅샷 중복 현황(read-only). 삭제하지 않는다.
+
+    버킷 컬럼 도입 전 행은 snapshot_bucket이 NULL이라 유니크 제약 밖에 있다.
+    실제로 얼마나 중복인지 먼저 눈으로 본 뒤에 정리 여부를 결정하기 위한 보고다.
+    """
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT COUNT(*) total,"
+        " SUM(CASE WHEN snapshot_bucket IS NULL THEN 1 ELSE 0 END) legacy,"
+        " COUNT(DISTINCT collected_at) runs,"
+        " MIN(collected_at) oldest, MAX(collected_at) newest"
+        " FROM singcup_snapshots WHERE event_id=?", (EVENT_ID,))).fetchone()
+    dup = await (await db.execute(
+        "SELECT COUNT(*) buckets, SUM(n) rows_in_dup FROM ("
+        "  SELECT COUNT(*) n FROM singcup_snapshots WHERE event_id=?"
+        "  AND snapshot_bucket IS NULL"
+        "  GROUP BY owner_channel_id, (collected_at - collected_at % 3600)"
+        "  HAVING n > 1)", (EVENT_ID,))).fetchone()
+    total = int(row["total"] or 0)
+    legacy = int(row["legacy"] or 0)
+    return {
+        "total_rows": total, "legacy_rows_without_bucket": legacy,
+        "bucketed_rows": total - legacy,
+        "distinct_collected_at": int(row["runs"] or 0),
+        "legacy_duplicate_buckets": int(dup["buckets"] or 0),
+        "legacy_rows_in_duplicate_buckets": int(dup["rows_in_dup"] or 0),
+        "oldest": _iso(row["oldest"]), "newest": _iso(row["newest"]),
+        "note": "기존 행은 삭제하지 않았습니다. 정리는 별도 승인 후 진행하세요.",
+    }
 
 
 async def _reconcile_missing_clips(seen: set, now: int) -> int:
@@ -621,8 +669,15 @@ def _build_reps(tagged: list[dict]) -> list[dict]:
 # (예전의 collect_clips_once는 백필 워커(run_backfill)로 대체됐다 —
 #  과거 적재와 신규 탐색을 한 작업으로 처리하던 구조를 분리했다.)
 
-async def recompute_ranking(now: int, *, client=None) -> list[dict]:
-    """DB의 활성 클립으로 대표 클립·점수·순위를 다시 계산하고 스냅샷을 남긴다."""
+async def recompute_ranking(now: int, *, client=None,
+                            save_snapshot: bool = False) -> list[dict]:
+    """대표 클립·점수·순위를 다시 계산한다.
+
+    **이력(스냅샷) 저장은 기본으로 하지 않는다.** 순위 재계산은 화면을 바로
+    맞추기 위해 자주 불러야 하지만, 이력은 시간당 한 세트면 충분하다. 예전에는
+    둘이 붙어 있어서 재계산 빈도가 그대로 DB 증가율이 됐다.
+    스냅샷은 정각 전체 회차(singcup_sweep)만 save_snapshot=True로 남긴다.
+    """
     db = await get_db()
     rows = [dict(r) for r in await (await db.execute(
         "SELECT * FROM singcup_clips WHERE event_id=? AND active=1", (EVENT_ID,)
@@ -659,7 +714,8 @@ async def recompute_ranking(now: int, *, client=None) -> list[dict]:
             "tagged_clip_count": r["tagged_clip_count"],
             "last_channel_updated_at": now if info else 0,
         }, now)
-    await _save_snapshots(ranked, now)
+    if save_snapshot:
+        await _save_snapshots(ranked, now)
     await db.commit()
     # 순위가 바뀌었으니 /main 캐시를 즉시 버린다 — TTL이 만료될 때까지 옛 순위를
     # 보여주면 "갱신했는데 화면이 안 바뀐다"는 바로 그 증상이 다시 생긴다.
@@ -693,7 +749,13 @@ DELTA_WINDOW_SECONDS = int(float(os.getenv("SINGCUP_DELTA_WINDOW_MINUTES", "60")
 # 기준 시각(now-1시간)에서 이만큼 안에 실제 수집 회차가 있어야 비교한다.
 # 수집이 멈춰 있었으면 훨씬 오래된 회차와 비교하게 되는데, 그걸 '1시간 증감'이라고
 # 표시하면 거짓말이 된다 → 회차가 없으면 '비교 데이터 없음'(null)으로 둔다.
-DELTA_TOLERANCE_SECONDS = int(float(os.getenv("SINGCUP_DELTA_TOLERANCE_MINUTES", "15")) * 60)
+# 1시간 전 기준 회차를 찾을 때 허용하는 오차.
+# 스냅샷이 시간 버킷당 한 세트(= 시간당 1회)로 줄면서 ±15분으로는 기준 회차를
+# 못 찾는 구간이 생긴다(예: 21:30에 20:30±15분을 보면 20:00·21:00 둘 다 밖).
+# 35분이면 어떤 시각에서 보더라도 직전 버킷 하나는 반드시 들어온다.
+# 실제로 비교한 시각은 응답의 summary.deltaBaseAt으로 그대로 내려간다.
+DELTA_TOLERANCE_SECONDS = int(float(
+    os.getenv("SINGCUP_DELTA_TOLERANCE_MINUTES", "35")) * 60)
 REP_METRICS_TTL_MINUTES = float(os.getenv("SINGCUP_REP_METRICS_TTL_MINUTES", "5"))
 METRICS_TTL_MINUTES = float(os.getenv("SINGCUP_METRICS_TTL_MINUTES", "45"))
 REFRESH_PER_CYCLE = int(os.getenv("SINGCUP_REFRESH_PER_CYCLE", "80"))

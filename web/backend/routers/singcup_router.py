@@ -24,6 +24,7 @@ from singcup_clips import (
     reset_backfill,
     retag_stats,
     run_backfill,
+    snapshot_duplicate_report,
 )
 from singcup_collector import (
     ADMIN_SECRET,
@@ -200,6 +201,17 @@ async def clips_retag_stats(x_singcup_secret: str | None = Header(default=None))
     """재확인 큐 건전성 — 남은 대상·상태별 건수·소진 예상 시간."""
     _require_secret(x_singcup_secret)
     return await retag_stats()
+
+
+@router.get("/snapshots/duplicates")
+async def snapshot_duplicates(x_singcup_secret: str | None = Header(default=None)):
+    """기존 스냅샷 중복 현황(read-only). 아무것도 삭제하지 않는다.
+
+    버킷 도입 전 행은 snapshot_bucket이 NULL이라 유니크 제약 밖에 있다.
+    정리 여부는 이 보고를 보고 별도로 판단한다.
+    """
+    _require_secret(x_singcup_secret)
+    return await snapshot_duplicate_report()
 
 
 @router.get("/sweep/status")

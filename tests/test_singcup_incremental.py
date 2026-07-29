@@ -534,7 +534,11 @@ def test_heart_delta_is_none_when_representative_clip_changed(db):
 
 def test_delta_window_defaults(db):
     assert sc.DELTA_WINDOW_SECONDS == 3600
-    assert sc.DELTA_TOLERANCE_SECONDS == 900
+    # 스냅샷이 시간 버킷당 한 세트가 되면서 ±15분으로는 기준 회차를 못 찾는
+    # 구간이 생긴다(21:30에 20:30±15분 → 20:00·21:00 둘 다 밖). 35분이면
+    # 어느 시각에서 보더라도 직전 버킷 하나는 반드시 들어온다.
+    assert sc.DELTA_TOLERANCE_SECONDS == 2100
+    assert sc.DELTA_TOLERANCE_SECONDS > 1800, "시간 버킷 간격의 절반은 넘어야 한다"
 
 
 # ── KPI 증감(태그 클립 / 참가 스트리머) ─────────────────────────────────────

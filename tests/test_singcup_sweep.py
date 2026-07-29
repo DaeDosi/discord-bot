@@ -1223,3 +1223,133 @@ def test_main_cache_single_flight(db, monkeypatch):
     res = db(go())
     assert len(calls) == 1, f"동시 5건인데 {len(calls)}번 계산했다"
     assert all(r is res[0] for r in res)
+
+
+# ── 1단계: 스냅샷 폭증 방지 ────────────────────────────────────────────────
+# 예전에는 recompute_ranking이 불릴 때마다(코드 9곳, 최대 4분 간격) 스트리머
+# 전원분을 무조건 INSERT했다. 값이 그대로여도 쌓여 최악 하루 37만 행이 된다.
+async def _snap_rows():
+    c = await database.get_db()
+    rows = await (await c.execute(
+        "SELECT owner_channel_id, snapshot_bucket, collected_at, heart_count "
+        "FROM singcup_snapshots ORDER BY id")).fetchall()
+    return [dict(r) for r in rows]
+
+
+def test_recompute_does_not_write_snapshots_by_default(db):
+    """순위 재계산은 이력을 남기지 않는다 — 화면만 즉시 맞춘다."""
+    db(_seed(3, 1))
+    _install(_cards())
+    db(sc.recompute_ranking(int(time.time())))
+    assert db(_snap_rows()) == []
+    # 그래도 대표·순위는 갱신돼 있다
+    assert len(db(sc.load_main())["streamers"]) == 3
+
+
+def test_ten_recomputes_in_one_bucket_write_one_set(db):
+    """같은 시간 버킷에서 10번 재계산해도 스냅샷은 한 세트."""
+    db(_seed(3, 1))
+    _install(_cards())
+    now = sc.snapshot_bucket(int(time.time())) + 120
+    for i in range(10):
+        db(sc.recompute_ranking(now + i * 5, save_snapshot=True))
+    rows = db(_snap_rows())
+    assert len(rows) == 3, f"스트리머 3명인데 {len(rows)}행이 쌓였다"
+    assert len({r["snapshot_bucket"] for r in rows}) == 1
+
+
+def test_concurrent_recompute_does_not_duplicate(db):
+    """동시 재계산도 DB UNIQUE가 막는다(앱 레벨 체크에 기대지 않는다)."""
+    import asyncio
+    db(_seed(4, 1))
+    _install(_cards())
+    now = sc.snapshot_bucket(int(time.time())) + 60
+
+    async def go():
+        return await asyncio.gather(
+            *[sc.recompute_ranking(now, save_snapshot=True) for _ in range(4)])
+    db(go())
+    assert len(db(_snap_rows())) == 4
+
+
+def test_next_bucket_writes_a_new_set(db):
+    """다음 시간 버킷에서는 새 세트가 생긴다(증감 계산에 필요)."""
+    db(_seed(2, 1))
+    _install(_cards())
+    base = sc.snapshot_bucket(int(time.time()))
+    db(sc.recompute_ranking(base + 60, save_snapshot=True))
+    db(sc.recompute_ranking(base + 3600 + 60, save_snapshot=True))
+    rows = db(_snap_rows())
+    assert len(rows) == 4
+    assert len({r["snapshot_bucket"] for r in rows}) == 2
+
+
+def test_only_the_hourly_sweep_writes_snapshots(db):
+    """정각 회차만 이력을 남긴다 — 탐색·retag·rediscover는 남기지 않는다."""
+    db(_seed(2, 2))
+    _install(_cards())
+    db(sw.run_sweep(sw.floor_hour(time.time())))
+    after_sweep = len(db(_snap_rows()))
+    assert after_sweep == 2, "정각 회차는 스트리머당 1행을 남겨야 한다"
+
+    # 같은 버킷에서 다른 경로가 재계산해도 늘지 않는다
+    _install(_retag_handler())
+    db(sc.rediscover_clip("late1"))
+    assert len(db(_snap_rows())) == after_sweep
+
+
+def test_snapshot_bucket_is_hour_aligned():
+    from datetime import datetime
+    t = datetime(2026, 7, 29, 21, 47, 13, tzinfo=sw.KST).timestamp()
+    b = sc.snapshot_bucket(int(t))
+    assert b % 3600 == 0
+    assert datetime.fromtimestamp(b, sw.KST).strftime("%H:%M:%S") == "21:00:00"
+
+
+def test_hourly_snapshots_still_support_deltas(db):
+    """시간당 1세트로 줄여도 1시간·24시간 증감이 계산된다."""
+    db(_seed(1, 1))
+    _install(_cards())
+    now = int(time.time())
+
+    async def hourly_history():
+        c = await database.get_db()
+        for ago, heart in ((25 * 3600, 5), (3600, 10)):
+            ts = sc.snapshot_bucket(now - ago) + 30
+            await c.execute(
+                "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
+                " heart_count, view_count, follower_count, score, rank, collected_at,"
+                " snapshot_bucket) VALUES (?,?,?,?,1,0,0,1,?,?)",
+                (sc.EVENT_ID, "c0_0", "own0", heart, ts, sc.snapshot_bucket(ts)))
+        await c.execute("UPDATE singcup_clips SET heart_count=30, "
+                        "last_metrics_at=? WHERE clip_uid='c0_0'", (now - 300,))
+        await c.commit()
+    db(hourly_history())
+
+    me = db(sc.load_main())["streamers"][0]
+    assert me["heartDelta"] == 20, "1시간 기준 회차를 찾지 못했다"
+    assert me["heartDelta24h"] == 25
+
+
+def test_duplicate_report_is_read_only(db):
+    """기존 중복 현황 보고는 아무것도 지우지 않는다."""
+    db(_seed(1, 1))
+    now = int(time.time())
+
+    async def legacy():
+        c = await database.get_db()
+        for i in range(3):                       # 버킷 없는 옛 행 3개(같은 시간대)
+            await c.execute(
+                "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
+                " heart_count, view_count, follower_count, score, rank, collected_at)"
+                " VALUES (?,?,?,?,1,0,0,1,?)",
+                (sc.EVENT_ID, "c0_0", "own0", i, now - i * 60))
+        await c.commit()
+    db(legacy())
+
+    rep = db(sc.snapshot_duplicate_report())
+    assert rep["total_rows"] == 3
+    assert rep["legacy_rows_without_bucket"] == 3
+    assert rep["legacy_duplicate_buckets"] == 1
+    assert rep["legacy_rows_in_duplicate_buckets"] == 3
+    assert len(db(_snap_rows())) == 3, "보고가 행을 지웠다"
