@@ -31,6 +31,7 @@ from singcup_collector import (
     load_status,
     prune_out_of_range,
 )
+from singcup_sweep import recent_runs, run_sweep, sweep_status
 
 router = APIRouter(prefix="/api/singcup", tags=["singcup"])
 
@@ -163,6 +164,31 @@ async def clips_refresh_one(clip_uid: str,
     if res.get("status") == ST_FAILED and "DB에 없" in note:
         raise HTTPException(status_code=404, detail=note)
     return res
+
+
+@router.get("/sweep/status")
+async def sweep_status_ep():
+    """매시 정각 전체 갱신의 진행 상황(공개).
+
+    화면에 '다음 전체 갱신 / 현재 회차 진행률 / 마지막 완료'를 그리는 데 쓴다.
+    """
+    return await sweep_status()
+
+
+@router.get("/sweep/runs")
+async def sweep_runs(limit: int = 24,
+                     x_singcup_secret: str | None = Header(default=None)):
+    """최근 회차 이력 — 누락(missed)·중복(skipped_overlap)·429를 한눈에 본다."""
+    _require_secret(x_singcup_secret)
+    return await recent_runs(limit)
+
+
+@router.post("/sweep/run")
+async def sweep_run_now(scheduled_at: int | None = None,
+                        x_singcup_secret: str | None = Header(default=None)):
+    """회차 1개를 수동 실행한다(기본은 현재 정각). 이미 실행된 회차는 건너뛴다."""
+    _require_secret(x_singcup_secret)
+    return await run_sweep(scheduled_at)
 
 
 @router.get("/clips/sweep-stats")

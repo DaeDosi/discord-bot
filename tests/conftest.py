@@ -28,6 +28,10 @@ os.environ.setdefault("SINGCUP_END_AT", "2026-08-09T23:59:59+09:00")
 os.environ.setdefault("SINGCUP_BACKOFF_BASE_SECONDS", "0")
 os.environ.setdefault("SINGCUP_PAGE_DELAY_SECONDS", "0")
 os.environ.setdefault("SINGCUP_START_DELAY_SECONDS", "0")
+# 정각 스윕은 토큰 버킷으로 요청을 고르게 흘린다 — 테스트에서 실제 초를 기다리지
+# 않도록 속도 제한만 사실상 해제한다(로직은 그대로 검증된다).
+os.environ.setdefault("SINGCUP_SWEEP_MIN_RATE", "10000")
+os.environ.setdefault("SINGCUP_SWEEP_MAX_RATE", "10000")
 
 # 루트(database 패키지)와 web/backend(chzzk_channel_history) 둘 다 import 가능해야 한다.
 for p in (str(_ROOT), str(_ROOT / "web" / "backend")):
@@ -61,7 +65,8 @@ def db(request):
                   "singcup_clip_scan", "singcup_clip_retry",
                   "singcup_backfill_state", "singcup_locks",
                   "singcup_snapshot_hourly", "singcup_snapshot_daily",
-                  "singcup_final_standings"):
+                  "singcup_final_standings", "singcup_refresh_runs",
+                  "singcup_sweep_runs"):
             await conn.execute(f"DELETE FROM {t}")
         # 락은 지우지 말고 풀어 둔다(행 자체는 id=1 하나만 존재해야 한다)
         await conn.execute("UPDATE singcup_collect_lock SET locked_until=0, owner=''")

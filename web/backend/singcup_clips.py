@@ -1744,8 +1744,10 @@ async def start_clip_collector():
         try:
             st = event_status()
             if st == "LIVE":
+                # 지표 갱신은 여기서 하지 않는다 — singcup_sweep이 KST 매시 정각에
+                # 대표·일반을 가리지 않고 전체를 한 번씩 훑는다. 이 루프는 새 클립을
+                # 빨리 찾는 역할만 남긴다(정각까지 기다리면 신규 등장이 늦어진다).
                 await discover_new_clips()
-                await refresh_metrics()
                 await retry_failed_clips()
             elif st == "UPCOMING":
                 wait = 30.0

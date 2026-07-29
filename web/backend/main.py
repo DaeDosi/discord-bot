@@ -36,6 +36,7 @@ from routers.singcup_router import router as singcup_router
 from routers.stats_router import router as stats_router
 from routers.verify_router import router as verify_router
 from singcup_clips import start_backfill_worker, start_clip_collector
+from singcup_sweep import start_sweep_worker
 from singcup_collector import ADMIN_SECRET, start_singcup_collector
 from singcup_retention import start_retention_worker
 
@@ -53,8 +54,11 @@ async def lifespan(app: FastAPI):
     # 싱드컵 이벤트 수집 — 이벤트 기간에만 돌고, 여러 replica가 떠도 DB 락으로
     # 한 번에 하나만 실행된다. 실패해도 메인 통계 서비스에는 영향이 없다.
     asyncio.create_task(start_singcup_collector())
-    # 싱드컵 클립(메인/랭킹) — 신규 탐색 + 지표 갱신(가벼운 정기 루프)
+    # 싱드컵 클립(메인/랭킹) — 신규 탐색 전용 루프(지표 갱신은 아래 정각 스윕이 맡는다)
     asyncio.create_task(start_clip_collector())
+    # 지표 전체 갱신 — KST 매시 정각 1회차로 대표·일반 클립 전부를 한 번씩 훑는다.
+    # 예전처럼 4분마다 상위 N건만 집으면 클립이 수천 건일 때 한 바퀴가 몇 시간이었다.
+    asyncio.create_task(start_sweep_worker())
     # 과거 적재는 성격이 달라 별도 워커가 완료될 때까지 연속 처리한다(커서는 DB에 저장)
     asyncio.create_task(start_backfill_worker())
     # 보존정책 유지보수 — 기본은 dry-run이라 아무것도 지우지 않는다.

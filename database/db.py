@@ -825,6 +825,37 @@ async def init_db():
            )""",
         "CREATE INDEX IF NOT EXISTS idx_singcup_refresh_runs_at "
         "ON singcup_refresh_runs(event_id, collected_at DESC)",
+        # ── 매시 정각 전체 순회 회차 ────────────────────────────────────────
+        # 4분마다 상위 N건만 훑던 구조를 KST 매시 정각 전체 갱신으로 바꾼다.
+        # scheduled_at(정각 epoch)에 UNIQUE를 걸어 멱등성을 DB가 보장한다 —
+        # 여러 워커가 동시에 깨어나도 INSERT에 성공한 하나만 그 회차를 실행한다.
+        # 롤백: 이 테이블을 읽는 코드만 되돌리면 된다(테이블은 남아도 무해).
+        """CREATE TABLE IF NOT EXISTS singcup_sweep_runs (
+               run_id        TEXT    PRIMARY KEY,
+               event_id      TEXT    NOT NULL,
+               scheduled_at  INTEGER NOT NULL,
+               started_at    INTEGER,
+               completed_at  INTEGER,
+               heartbeat_at  INTEGER,
+               total_targets INTEGER NOT NULL DEFAULT 0,
+               processed     INTEGER NOT NULL DEFAULT 0,
+               success       INTEGER NOT NULL DEFAULT 0,
+               partial       INTEGER NOT NULL DEFAULT 0,
+               failed        INTEGER NOT NULL DEFAULT 0,
+               fetch_failed  INTEGER NOT NULL DEFAULT 0,
+               http_429      INTEGER NOT NULL DEFAULT 0,
+               api_calls     INTEGER NOT NULL DEFAULT 0,
+               duration_ms   INTEGER NOT NULL DEFAULT 0,
+               rate_limit    REAL    NOT NULL DEFAULT 0,
+               p50_ms        INTEGER NOT NULL DEFAULT 0,
+               p95_ms        INTEGER NOT NULL DEFAULT 0,
+               status        TEXT    NOT NULL DEFAULT 'running',
+               note          TEXT
+           )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_singcup_sweep_runs_sched "
+        "ON singcup_sweep_runs(event_id, scheduled_at)",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_sweep_runs_status "
+        "ON singcup_sweep_runs(event_id, status, scheduled_at DESC)",
     ]:
         try:
             await db.execute(sql)
