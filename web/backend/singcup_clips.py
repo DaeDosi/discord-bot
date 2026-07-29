@@ -823,6 +823,74 @@ async def renew_named_lock(name: str, token: str, ttl: int) -> bool:
     return cur.rowcount == 1
 
 
+# ── 클립 단위 락 ────────────────────────────────────────────────────────────
+# 같은 clip_uid의 지표를 고치는 경로가 여럿이다(정기 스윕 / 수동 전체 갱신 /
+# 관리자 단건 / 신규 탐색·재시도·reconcile / retag·rediscover). 전역 락을 한
+# 사이클 내내 잡으면 그동안 수동 조작이 전면 차단되므로, 클립 하나에만 짧게 건다.
+# 프로세스 간에 유효해야 하므로 asyncio.Lock이 아니라 DB named lock을 쓴다.
+def _worst_clip_seconds() -> float:
+    """클립 하나를 잡고 있을 수 있는 최대 시간 — **상수에서 유도한다**.
+
+    락을 쥔 채 벌어지는 일:
+      토큰 대기 → 카드 조회 → 토큰 대기 → 상세 조회 → DB 쓰기
+    각 HTTP는 MAX_RETRIES회까지 타임아웃을 다 쓸 수 있고, DB 쓰기는 시도마다
+    sqlite busy_timeout까지 기다릴 수 있다. 임의로 정한 TTL을 쓰면 상수를 바꿨을 때
+    조용히 만료돼 두 작업이 같은 클립을 동시에 만지게 된다.
+    """
+    from database.db import BUSY_TIMEOUT_MS
+    backoff = sum(min(BACKOFF_MAX, BACKOFF_BASE * (2 ** a)) + BACKOFF_BASE
+                  for a in range(max(0, MAX_RETRIES - 1)))
+    http_once = MAX_RETRIES * REQUEST_TIMEOUT + backoff
+    # 토큰 버킷은 최저 속도일 때 가장 오래 기다린다(1건/최저속도)
+    min_rate = max(0.01, float(os.getenv("SINGCUP_SWEEP_MIN_RATE", "0.2")))
+    token_wait = 1.0 / min_rate
+    db_attempts = max(1, int(os.getenv("SINGCUP_DB_RETRY_ATTEMPTS", "4")))
+    db_base = float(os.getenv("SINGCUP_DB_RETRY_BASE_SECONDS", "0.05"))
+    db_wait = (db_attempts * (BUSY_TIMEOUT_MS / 1000.0)
+               + sum(db_base * (2 ** i) * 2 for i in range(db_attempts - 1)))
+    return 2 * (token_wait + http_once) + db_wait
+
+
+# 유도값의 1.5배(안전계수). 계산 기준 약 121초 → 182초.
+# 상수를 바꾸면 이 값도 따라 움직이고, tests가 TTL ≥ 최악×1.2 를 강제한다.
+CLIP_LOCK_TTL = int(os.getenv(
+    "SINGCUP_CLIP_LOCK_TTL", str(int(_worst_clip_seconds() * 1.5) + 1)))
+
+
+async def renew_clip_lock(clip_uid: str, token: str) -> bool:
+    """소유 토큰이 맞을 때만 임대를 연장한다(owner 기반 lease).
+
+    유도 TTL이 최악을 덮지만, 상수가 바뀌거나 예외적으로 늘어질 때를 위한
+    안전장치로 남겨 둔다.
+    """
+    return await renew_named_lock(clip_lock_name(clip_uid), token, CLIP_LOCK_TTL)
+CLIP_LOCK_WAIT_SECONDS = float(os.getenv("SINGCUP_CLIP_LOCK_WAIT", "2.0"))
+CLIP_LOCK_POLL_SECONDS = float(os.getenv("SINGCUP_CLIP_LOCK_POLL", "0.2"))
+
+
+def clip_lock_name(clip_uid: str) -> str:
+    return f"singcup_clip:{clip_uid}"
+
+
+async def acquire_clip_lock(clip_uid: str, *, wait: float | None = None) -> str | None:
+    """clip_uid 락. 충돌 시 곧바로 포기하지 않고 잠깐 기다렸다 None을 돌려준다."""
+    name = clip_lock_name(clip_uid)
+    deadline = time.monotonic() + max(
+        0.0, CLIP_LOCK_WAIT_SECONDS if wait is None else wait)
+    while True:
+        token = await acquire_named_lock(name, CLIP_LOCK_TTL)
+        if token is not None:
+            return token
+        if time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(CLIP_LOCK_POLL_SECONDS)
+
+
+async def release_clip_lock(clip_uid: str, token: str | None):
+    if token:
+        await release_named_lock(clip_lock_name(clip_uid), token)
+
+
 async def release_named_lock(name: str, token: str):
     db = await get_db()
     await db.execute(
@@ -1068,8 +1136,13 @@ async def _scan_batch(client, items: list[dict], now: int) -> tuple[int, int, in
         row = _to_clip_row(it, card)
         if await _upsert_clip(row, now):
             inserted += 1
-        await _apply_metrics(uid, row["heart_count"], row["view_count"],
-                             card["heart_ok"], card["view_ok"], now)
+        # 같은 클립을 정기 스윕이 만지고 있으면 기다렸다 쓴다
+        tok = await acquire_clip_lock(uid)
+        try:
+            await _apply_metrics(uid, row["heart_count"], row["view_count"],
+                                 card["heart_ok"], card["view_ok"], now)
+        finally:
+            await release_clip_lock(uid, tok)
     await (await get_db()).commit()
     return tagged, inserted, failed
 
@@ -1596,13 +1669,18 @@ async def refresh_metrics(limit: int | None = None) -> dict:
             before = await _metrics_snapshot(uid) if uid == DEBUG_CLIP_UID else None
             async with sem:
                 card = await fetch_card(client, item)
-            if card is None:
-                tally["fetch_failed"] += 1
-                tally["failed"] += 1
-                await _apply_metrics(uid, 0, 0, False, False, now)
-                return
-            state = await _apply_metrics(uid, card["heart_count"], card["view_count"],
-                                         card["heart_ok"], card["view_ok"], now)
+            tok = await acquire_clip_lock(uid)
+            try:
+                if card is None:
+                    tally["fetch_failed"] += 1
+                    tally["failed"] += 1
+                    await _apply_metrics(uid, 0, 0, False, False, now)
+                    return
+                state = await _apply_metrics(
+                    uid, card["heart_count"], card["view_count"],
+                    card["heart_ok"], card["view_ok"], now)
+            finally:
+                await release_clip_lock(uid, tok)
             tally[state] += 1
             if not card["heart_ok"]:
                 no_heart += 1
@@ -1677,6 +1755,12 @@ async def refresh_one_clip(clip_uid: str, *, actor: str = "admin") -> dict:
         return {"status": ST_SKIPPED, "note": "다른 갱신 작업이 실행 중입니다."}
 
     now = int(time.time())
+    # 정기 스윕이 같은 클립을 처리 중이면 기다렸다 진행한다(같은 DB named lock).
+    clip_token = await acquire_clip_lock(clip_uid, wait=5.0)
+    if clip_token is None:
+        await release_named_lock("singcup_metrics", token)
+        return {"status": ST_SKIPPED,
+                "note": "이 클립을 다른 갱신 작업이 처리 중입니다."}
     before = await _metrics_snapshot(clip_uid)
     _log({"event": "single_refresh_start", "clip_uid": clip_uid, "actor": actor,
           "db_before": before})
@@ -1706,6 +1790,7 @@ async def refresh_one_clip(clip_uid: str, *, actor: str = "admin") -> dict:
               "clip_uid": clip_uid, "actor": actor, "detail": str(e)[:200]})
         return {"status": ST_FAILED, "note": str(e)[:200]}
     finally:
+        await release_clip_lock(clip_uid, clip_token)
         await release_named_lock("singcup_metrics", token)
 
     after = await _metrics_snapshot(clip_uid)
@@ -1889,9 +1974,13 @@ async def _register_from_card(uid: str, card: dict, meta: dict | None,
             "duration": meta.get("duration", 0), "adult": meta.get("adult", False),
             "blindType": meta.get("blind_type") or None,
             "createdDate": meta.get("created_date")}
-    await _upsert_clip(_to_clip_row(item, card), now)
-    await _apply_metrics(uid, card["heart_count"], card["view_count"],
-                         card["heart_ok"], card["view_ok"], now)
+    tok = await acquire_clip_lock(uid)
+    try:
+        await _upsert_clip(_to_clip_row(item, card), now)
+        await _apply_metrics(uid, card["heart_count"], card["view_count"],
+                             card["heart_ok"], card["view_ok"], now)
+    finally:
+        await release_clip_lock(uid, tok)
     await _scan_upsert(uid, SCAN_REGISTERED, now, item=item, owner=owner)
     _log({"event": "retag_found", "clip_uid": uid, "owner": owner,
           "hearts": card["heart_count"], "views": card["view_count"]})

@@ -18,6 +18,7 @@
 """
 import asyncio
 import os
+import random
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -191,6 +192,32 @@ async def _claim(scheduled_at: int) -> str | None:
         return None
 
 
+async def reap_stale_runs() -> int:
+    """heartbeat가 끊긴 running 행을 failed로 닫는다.
+
+    최종 상태 저장 자체가 잠금으로 실패하면(final_status_persist_failed) 그 행이
+    running으로 남아 새 사이클을 영구 차단한다. 스케줄러가 매 틱 이 정리를 돌려
+    그 상황에서 자력 복구되게 한다.
+    """
+    cutoff = int(time.time()) - STALE_RUN_SECONDS
+
+    async def work(db):
+        await db.execute(
+            "UPDATE singcup_sweep_runs SET status=?, note=?, completed_at=? "
+            "WHERE event_id=? AND status=? AND COALESCE(heartbeat_at,0) < ?",
+            (FAILED, "heartbeat 끊김 — 스케줄러가 정리", int(time.time()),
+             EVENT_ID, RUNNING, cutoff))
+    db = await get_db()
+    before = (await (await db.execute(
+        "SELECT COUNT(*) c FROM singcup_sweep_runs WHERE event_id=? AND status=? "
+        "AND COALESCE(heartbeat_at,0) < ?", (EVENT_ID, RUNNING, cutoff)
+    )).fetchone())["c"]
+    if before:
+        await db_write(work, what="reap_stale_runs")
+        sc._log({"event": "sweep_reaped_stale", "level": "warning", "runs": before})
+    return int(before or 0)
+
+
 async def _active_run(scheduled_at: int) -> dict | None:
     """아직 살아 있는(heartbeat 최신) 이전 회차. 있으면 새 회차를 겹쳐 돌리지 않는다."""
     db = await get_db()
@@ -222,6 +249,124 @@ async def _record(scheduled_at: int, status: str, note: str):
         await db.commit()
     except Exception:
         pass                              # 이미 있으면 그대로 둔다
+
+
+# ── DB 쓰기 (짧은 트랜잭션 + 잠금 재시도) ──────────────────────────────────
+# aiosqlite 기본 isolation_level에서는 첫 쓰기가 암묵적 트랜잭션을 열고 commit까지
+# 유지된다. 예전 구조는 25건마다 커밋하면서 그 사이 외부 API를 기다려, 쓰기 잠금이
+# 25~30초 유지됐다. busy_timeout이 10초라 봇 프로세스와 rising_collector가
+# 'database is locked'로 실패했다. 이제 쓰기는 이 헬퍼로만 하고, 열자마자 커밋한다.
+DB_RETRY_ATTEMPTS = int(os.getenv("SINGCUP_DB_RETRY_ATTEMPTS", "4"))
+DB_RETRY_BASE_SECONDS = float(os.getenv("SINGCUP_DB_RETRY_BASE_SECONDS", "0.05"))
+# 클립별 락 — 자동 스윕과 수동 갱신이 같은 clip_uid를 동시에 건드리지 않게 한다.
+# 전역 락을 70분 잡으면 그동안 수동 갱신이 전면 차단되므로 쓰지 않는다.
+# 클립 락 설정은 singcup_clips가 소유한다(CLIP_LOCK_TTL / _WAIT / _POLL).
+
+
+# 롤백 호출 횟수 — 테스트가 "잠길 때마다 롤백했는가"를 직접 확인한다
+_rollbacks = {"n": 0}
+
+
+async def _rollback(db) -> None:
+    try:
+        await db.rollback()
+        _rollbacks["n"] += 1
+    except Exception:                               # noqa: BLE001
+        pass
+
+
+def _is_locked(e: Exception) -> bool:
+    m = str(e).lower()
+    return "database is locked" in m or "database is busy" in m
+
+
+async def db_write(fn, *, what: str, attempts: int = DB_RETRY_ATTEMPTS) -> bool:
+    """쓰기 한 단위를 열고 즉시 커밋한다. 잠금이면 지수 백오프+jitter로 재시도.
+
+    성공하면 True. 재시도를 소진하면 **예외를 올리지 않고** False를 돌려준다 —
+    한 클립의 잠금 실패가 스윕 전체를 끝내면 안 된다. 잠금이 아닌 오류는 그대로
+    올려 상위에서 클립 단위로 처리하게 둔다.
+    """
+    delay = DB_RETRY_BASE_SECONDS
+    last: Exception | None = None
+    for i in range(max(1, attempts)):
+        db = await get_db()
+        try:
+            await fn(db)
+            await db.commit()
+            return True
+        except Exception as e:                      # noqa: BLE001
+            # 잠금이든 아니든 **반드시** 롤백한다. 되돌리지 않으면 부분 실행된
+            # 문장이 다음 시도나 다른 작업의 커밋에 묻어 들어간다.
+            await _rollback(db)
+            if not _is_locked(e):
+                raise
+            last = e
+            if i + 1 >= attempts:
+                break                               # 소진 — 위에서 이미 롤백했다
+            # jitter를 넣어 여러 워커가 같은 순간에 몰려 재충돌하는 것을 막는다
+            await asyncio.sleep(delay + random.uniform(0, delay))
+            delay *= 2
+    sc._log({"event": "db_locked_giveup", "level": "warning", "what": what,
+             "attempts": attempts, "detail": str(last)[:160]})
+    return False
+
+
+# 클립 락은 singcup_clips가 소유한다(같은 키를 쓰는 경로가 그쪽에 더 많다).
+acquire_clip_lock = sc.acquire_clip_lock
+
+
+async def _persist_clip(t: dict, card: dict | None, detail: dict | None,
+                        now: int) -> tuple[str, bool, bool]:
+    """클립 한 건의 DB 반영. (상태, 쓰기 성공, 썸네일 실제 보수 여부).
+
+    네트워크는 이미 끝난 뒤에 불린다 — 이 안에서는 어떤 외부 호출도 하지 않는다.
+    """
+    state = "failed"
+    fixed = False
+
+    async def work(_db):
+        nonlocal state, fixed
+        if card is None:
+            await sc._apply_metrics(t["clip_uid"], 0, 0, False, False, now)
+            await sc._queue_retry({"clipUID": t["clip_uid"],
+                                   "videoId": t["video_id"],
+                                   "recId": t["rec_id"] or "{}"},
+                                  "sweep card fetch failed", now)
+            state = "failed"
+            return
+        state = await sc._apply_metrics(
+            t["clip_uid"], card["heart_count"], card["view_count"],
+            card["heart_ok"], card["view_ok"], now)
+        await sc._clear_retry(t["clip_uid"])
+        if detail:
+            # 상세가 빈 썸네일을 줬거나 이미 값이 있으면 False — 그때는 세지 않는다
+            fixed = await sc.repair_clip_media(t["clip_uid"], detail)
+
+    ok = await db_write(work, what=f"sweep_clip({t['clip_uid']})")
+    return (state if ok else "db_error"), ok, (fixed and ok)
+
+
+async def _progress_safe(run_id: str, **f) -> bool:
+    """진행/상태 기록. **절대 예외를 올리지 않는다.**
+
+    예전에는 실패 경로에서 _progress가 다시 잠금에 걸리면 그 예외가 그대로
+    스케줄러까지 올라가(sweep_loop_error) 사이클 자체가 끝나 버렸다. 상태를 못
+    남기는 것보다 스윕이 계속 도는 쪽이 낫다.
+    """
+    f = {k: v for k, v in f.items() if v is not None}
+    f["heartbeat_at"] = int(time.time())
+
+    async def work(db):
+        sets = ", ".join(f"{k}=?" for k in f)
+        await db.execute(f"UPDATE singcup_sweep_runs SET {sets} WHERE run_id=?",
+                         (*f.values(), run_id))
+    try:
+        return await db_write(work, what=f"sweep_progress({run_id[:8]})")
+    except Exception as e:                          # noqa: BLE001
+        sc._log({"event": "sweep_progress_error", "level": "warning",
+                 "run_id": run_id, "detail": str(e)[:160]})
+        return False
 
 
 async def _progress(run_id: str, **f):
@@ -272,7 +417,7 @@ async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = Non
     total = len(targets)
     rate = min(MAX_RATE, max(MIN_RATE, required_rate(total)))
     bucket = TokenBucket(rate, MAX_RATE)
-    await _progress(run_id, total_targets=total, rate_limit=round(rate, 3))
+    await _progress_safe(run_id, total_targets=total, rate_limit=round(rate, 3))
     sc._log({"event": "sweep_start", "run_id": run_id,
              "scheduled_at": kst(scheduled_at), "total_targets": total,
              "rate_per_second": round(rate, 3), "concurrency": CONCURRENCY,
@@ -283,110 +428,185 @@ async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = Non
     lat: list[int] = []
     changed_owners: set[str] = set()
     done = 0
+    db_giveup = 0
+    skipped = 0        # 클립별 락 충돌로 이번 사이클에 건너뛴 수(DB 컬럼 없음)
     sc._take_api_counters()
     client = sc._get_client()
     sem = asyncio.Semaphore(max(1, CONCURRENCY))
     lock = asyncio.Lock()
 
     async def one(t: dict):
-        nonlocal done, repaired
-        await bucket.acquire()
-        item = {"clipUID": t["clip_uid"], "videoId": t["video_id"],
-                "recId": t["rec_id"] or "{}"}
-        t0 = time.monotonic()
-        before_429 = sc._api_counter["http_429"]
-        async with sem:
-            card = await sc.fetch_card(client, item)
-        dt = int((time.monotonic() - t0) * 1000)
-        now = int(time.time())
-        async with lock:
-            lat.append(dt)
-            if sc._api_counter["http_429"] > before_429:
-                bucket.slow_down("http_429")
-            elif card is None:
-                bucket.slow_down("fetch_failed")
-            else:
-                bucket.recover()
-            if card is None:
-                tally["fetch_failed"] += 1
-                tally["failed"] += 1
-                # last_metrics_at을 올려 이 회차에서 무한 재시도하지 않게 하고,
-                # 실패 큐에 넣어 백오프로 따로 다시 시도한다.
-                await sc._apply_metrics(t["clip_uid"], 0, 0, False, False, now)
-                await sc._queue_retry({"clipUID": t["clip_uid"],
-                                       "videoId": t["video_id"],
-                                       "recId": t["rec_id"] or "{}"},
-                                      "sweep card fetch failed", now)
-            else:
-                state = await sc._apply_metrics(
-                    t["clip_uid"], card["heart_count"], card["view_count"],
-                    card["heart_ok"], card["view_ok"], now)
-                tally["success" if state == "ok" else state] += 1
-                if state != "failed":
-                    changed_owners.add(t["owner_channel_id"])
-                await sc._clear_retry(t["clip_uid"])
-        # 썸네일이 비어 있으면 이 기회에 메운다. 카드 API는 썸네일을 주지 않고
-        # 목록 재스캔은 아는 페이지에서 멈추므로, 전체를 도는 여기가 유일한 기회다.
-        # 이미 값이 있는 클립에는 추가 요청이 나가지 않는다.
-        if not t["thumbnail_image_url"]:
-            await bucket.acquire()
-            detail = await sc.fetch_clip_detail(client, t["clip_uid"])
+        """클립 한 건. **예외를 밖으로 내보내지 않는다.**
+
+        한 건이 던지면 asyncio.gather가 즉시 그 예외로 완료되는데, 남은 코루틴은
+        취소되지 않고 계속 돌아 '고아 워커'가 된다(실측: run_sweep이 반환한 뒤에도
+        processed가 300 → 1500까지 증가). 그래서 여기서 전부 삼키고 결과는 tally로만
+        남긴다.
+        """
+        nonlocal done, repaired, db_giveup
+        counted = False                             # 결과를 두 번 세지 않기 위한 표시
+
+        async def record(outcome: str):
+            """이 클립의 결과를 **정확히 한 번** 집계한다.
+
+            skipped는 singcup_sweep_runs에 컬럼이 없다(스키마 변경 금지). 그래서
+            **failed의 부분집합**으로 둔다 — DB에는 failed로 들어가고, 로그·응답에만
+            내역으로 따로 보인다. 그래야 저장된 행에서도 영구 불변식
+            processed = success + partial + failed 가 성립한다.
+            """
+            nonlocal done, counted, skipped
+            if counted:
+                return None
+            counted = True
             async with lock:
-                if detail and await sc.repair_clip_media(t["clip_uid"], detail):
+                if outcome == "skipped":
+                    skipped += 1
+                    tally["failed"] += 1        # 부분집합: skipped ⊆ failed
+                else:
+                    tally[outcome] += 1
+                done += 1
+                return (done, dict(tally), round(bucket.rate, 3))
+
+        lock_token = None
+        try:
+            # 같은 clip_uid를 수동 갱신이 처리 중이면 건드리지 않는다. 전역 락이
+            # 아니라 이 클립에만, 짧게(CLIP_LOCK_TTL) 걸린다.
+            lock_token = await acquire_clip_lock(t["clip_uid"])
+            if lock_token is None:
+                # **DB를 건드리지 않고** 넘어간다. last_attempt_at이 그대로라
+                # 다음 사이클 대상에 자동으로 다시 들어온다.
+                await record("skipped")
+                return
+            # ── 1) 네트워크 구간 — DB를 절대 건드리지 않는다 ──────────────
+            # 예전에는 _apply_metrics로 트랜잭션을 연 채 다음 클립의 토큰 대기와
+            # 카드 조회를 기다렸고, 25건마다 커밋했다. 그 사이 쓰기 잠금이 25~30초
+            # 유지돼 봇 프로세스(chzzk_chat, chzzk_monitor)와 rising_collector가
+            # busy_timeout(10초)을 넘겨 'database is locked'로 실패했다.
+            await bucket.acquire()
+            item = {"clipUID": t["clip_uid"], "videoId": t["video_id"],
+                    "recId": t["rec_id"] or "{}"}
+            t0 = time.monotonic()
+            before_429 = sc._api_counter["http_429"]
+            async with sem:
+                card = await sc.fetch_card(client, item)
+            dt = int((time.monotonic() - t0) * 1000)
+
+            detail = None
+            if card is not None and not t["thumbnail_image_url"]:
+                # 썸네일 보수도 네트워크 구간에서 미리 받아 둔다
+                await bucket.acquire()
+                async with sem:
+                    detail = await sc.fetch_clip_detail(client, t["clip_uid"])
+
+            # ── 2) DB 구간 — 짧게 열고 즉시 커밋 ────────────────────────
+            now = int(time.time())
+            state, wrote, fixed = await _persist_clip(t, card, detail, now)
+
+            async with lock:
+                lat.append(dt)
+                if sc._api_counter["http_429"] > before_429:
+                    bucket.slow_down("http_429")
+                elif card is None:
+                    bucket.slow_down("fetch_failed")
+                else:
+                    bucket.recover()
+                if not wrote:
+                    db_giveup += 1
+                if card is None:
+                    tally["fetch_failed"] += 1
+                elif state != "db_error" and state != "failed":
+                    changed_owners.add(t["owner_channel_id"])
+                if fixed:
                     repaired += 1
+            outcome = ("failed" if (card is None or state == "db_error")
+                       else ("success" if state == "ok" else state))
+            snapshot = await record(outcome)
+            if snapshot and snapshot[0] % PROGRESS_EVERY == 0:
+                await _progress_safe(
+                    run_id, processed=snapshot[0], rate_limit=snapshot[2],
+                    http_429=sc._api_counter["http_429"],
+                    api_calls=sc._api_counter["calls"], **snapshot[1])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:                      # noqa: BLE001 — 고아 방지가 목적
+            # record()가 이미 셌으면 무시된다 — 한 클립이 두 번 집계되지 않는다.
+            await record("failed")
+            sc._log({"event": "sweep_clip_error", "level": "warning",
+                     "run_id": run_id, "clip_uid": t.get("clip_uid"),
+                     "detail": str(e)[:160]})
+        finally:
+            await sc.release_clip_lock(t["clip_uid"], lock_token)
 
-        async with lock:
-            done += 1
-            if done % PROGRESS_EVERY == 0:
-                await (await get_db()).commit()
-                # 429·호출 수도 같이 흘려 둔다 — 회차가 끝나야만 보이면 단계적
-                # 상향을 판단할 수 없다(한 회차가 한 시간이다).
-                await _progress(run_id, processed=done, rate_limit=round(bucket.rate, 3),
-                                http_429=sc._api_counter["http_429"],
-                                api_calls=sc._api_counter["calls"], **tally)
-
+    status, note, remaining = FAILED, "", None
+    tasks = [asyncio.create_task(one(t)) for t in targets]
     try:
-        await asyncio.gather(*[one(t) for t in targets])
-        await (await get_db()).commit()
-        # 대표 클립 재선정·점수·순위·스냅샷은 배치가 끝난 뒤 한 번만 계산한다.
-        # 일반 클립이 대표를 추월했다면 여기서 대표가 바뀐다(_build_reps가 전체
-        # 클립에서 스트리머별 최고 하트를 다시 고른다).
-        # 이력 스냅샷은 **여기서만** 남긴다(시간 버킷당 한 세트).
-        # 다른 경로는 순위만 즉시 맞추고 이력은 건드리지 않는다.
-        await sc.recompute_ranking(int(time.time()), client=client, save_snapshot=True)
+        # one()이 예외를 삼키므로 gather가 깨지지 않는다. return_exceptions까지
+        # 두어 어떤 경우에도 **모든 태스크가 끝날 때까지 기다린다** → 고아 0.
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await sc.recompute_ranking(int(time.time()), client=client,
+                                   save_snapshot=True)
+        left = await sweep_targets(cutoff)
+        remaining = len(left)
+        # 락 충돌로 건너뛴 클립은 이번 사이클이 끝내지 못한 것이다 — completed로
+        # 보고하면 "전부 갱신됐다"는 잘못된 신호가 된다. 다음 사이클이 다시 집는다.
+        status = COMPLETED if (not remaining and not skipped) else PARTIAL
+        parts = []
+        if remaining:
+            parts.append(f"{remaining}건 미처리")
+        if skipped:
+            parts.append(f"{skipped}건 락 충돌로 건너뜀")
+        note = ", ".join(parts)
+    except asyncio.CancelledError:
+        status, note = FAILED, "취소됨"
+        for tk in tasks:
+            tk.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
     except Exception as e:
-        api = sc._take_api_counters()
-        await _progress(run_id, status=FAILED, processed=done,
-                        completed_at=int(time.time()), note=str(e)[:200],
-                        api_calls=api["calls"], http_429=api["http_429"], **tally)
+        status, note = FAILED, str(e)[:200]
         sc._log({"event": "sweep_failed", "level": "warning", "run_id": run_id,
                  "processed": done, "detail": str(e)[:200]})
-        return {"status": FAILED, "run_id": run_id, "processed": done,
-                "note": str(e)[:200]}
+    finally:
+        # 어떤 경로로 나가든 남은 태스크를 정리하고 최종 상태를 남긴다.
+        # 이 블록은 절대 예외를 내보내지 않는다 — 실패 기록의 실패가 스케줄러까지
+        # 전파되면 그 사이클뿐 아니라 루프 전체가 무너진다(실측 sweep_loop_error).
+        stragglers = [tk for tk in tasks if not tk.done()]
+        if stragglers:
+            for tk in stragglers:
+                tk.cancel()
+            await asyncio.gather(*stragglers, return_exceptions=True)
+        api = sc._take_api_counters()
+        dur = int((time.monotonic() - started) * 1000)
+        saved = await _progress_safe(
+            run_id, status=status, processed=done,
+            completed_at=int(time.time()), duration_ms=dur,
+            api_calls=api["calls"], http_429=api["http_429"],
+            p50_ms=_pct(lat, 0.5), p95_ms=_pct(lat, 0.95),
+            rate_limit=round(bucket.rate, 3), note=note[:200] or None, **tally)
+        if not saved:
+            # 이 행은 running으로 남는다. 다음 스케줄러 틱의 reap_stale_runs가
+            # heartbeat 만료 뒤 정리하므로 새 사이클이 영구 차단되지는 않는다.
+            sc._log({"event": "final_status_persist_failed", "level": "warning",
+                     "run_id": run_id, "intended_status": status,
+                     "processed": done})
+        sc._log({"event": "sweep_done", "run_id": run_id, "status": status,
+                 "scheduled_at": kst(scheduled_at), "total_targets": total,
+                 "processed": done, **tally,
+                 "duration_seconds": round(dur / 1000, 1),
+                 "p50_ms": _pct(lat, 0.5), "p95_ms": _pct(lat, 0.95),
+                 "api_calls": api["calls"], "http_429": api["http_429"],
+                 "throttled": bucket.throttled, "db_locked_giveup": db_giveup,
+                 "skipped": skipped, "remaining": remaining,
+                 "thumbnails_repaired": repaired, "stragglers": len(stragglers),
+                 "changed_streamers": len(changed_owners)})
 
-    api = sc._take_api_counters()
-    dur = int((time.monotonic() - started) * 1000)
-    left = await sweep_targets(cutoff)
-    status = COMPLETED if not left else PARTIAL
-    await _progress(run_id, status=status, processed=done,
-                    completed_at=int(time.time()), duration_ms=dur,
-                    api_calls=api["calls"], http_429=api["http_429"],
-                    p50_ms=_pct(lat, 0.5), p95_ms=_pct(lat, 0.95),
-                    rate_limit=round(bucket.rate, 3),
-                    note=("" if not left else f"{len(left)}건 미처리"), **tally)
-    sc._log({"event": "sweep_done", "run_id": run_id, "status": status,
-             "scheduled_at": kst(scheduled_at), "total_targets": total,
-             "processed": done, "remaining": len(left), **tally,
-             "duration_seconds": round(dur / 1000, 1),
-             "p50_ms": _pct(lat, 0.5), "p95_ms": _pct(lat, 0.95),
-             "api_calls": api["calls"], "http_429": api["http_429"],
-             "throttled": bucket.throttled, "thumbnails_repaired": repaired,
-             "changed_streamers": len(changed_owners)})
     return {"status": status, "run_id": run_id, "scheduled_at": kst(scheduled_at),
-            "total_targets": total, "processed": done, "remaining": len(left),
+            "total_targets": total, "processed": done, "note": note,
             "duration_seconds": round(dur / 1000, 1),
             "p50_ms": _pct(lat, 0.5), "p95_ms": _pct(lat, 0.95),
-            "http_429": api["http_429"], "thumbnails_repaired": repaired, **tally}
+            "http_429": api["http_429"], "thumbnails_repaired": repaired,
+            "db_locked_giveup": db_giveup, "skipped": skipped,
+            "remaining": remaining, "stragglers": len(stragglers), **tally}
 
 
 # ── 스케줄러 ───────────────────────────────────────────────────────────────
@@ -424,8 +644,12 @@ async def sweep_scheduler():
             if event_status() != "LIVE":
                 pause = 300.0                         # 이벤트 기간 밖에서는 쉰다
             elif HOURLY_MODE:
+                # 최종 상태 저장이 실패해 running으로 남은 행을 먼저 정리한다.
+                # 이게 없으면 그 행이 새 사이클을 영구 차단한다.
+                await reap_stale_runs()
                 pause = await _hourly_tick()
             else:
+                await reap_stale_runs()
                 res = await run_cycle()
                 # 갱신할 대상이 없으면 잠깐 쉰다(빈 사이클을 계속 만들지 않는다)
                 if res.get("status") == SKIPPED_OVERLAP or not res.get("total_targets"):
