@@ -277,6 +277,67 @@ def test_card_failure_keeps_previous_metrics(db):
     assert db(read("t1")) == before                # 0으로 덮지 않는다
 
 
+def _read_metrics(uid):
+    async def go():
+        c = await database.get_db()
+        r = await (await c.execute(
+            "SELECT heart_count, view_count FROM singcup_clips WHERE clip_uid=?",
+            (uid,))).fetchone()
+        return (r["heart_count"], r["view_count"])
+    return go()
+
+
+def _partial_cards(**card_kw):
+    def handler(request):
+        url = str(request.url)
+        if "/service/v1/channels/" in url:
+            return httpx.Response(200, json=CHANNEL_JSON)
+        if "/categories/" in url:
+            return httpx.Response(200, json={"code": 200,
+                                             "content": {"data": [], "page": {}}})
+        return httpx.Response(200, json=card("#싱드컵", **card_kw))
+    return handler
+
+
+def test_missing_view_still_updates_hearts(db):
+    """조회수만 못 읽어도 하트는 갱신된다 — 예전엔 둘 다 멈춰 값이 굳었다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    assert db(_read_metrics("t1")) == (3, 10)
+
+    db(_age_metrics())
+    _install(_partial_cards(likes=99, views=0, vod=False))
+    res = db(sc.refresh_metrics())
+
+    assert db(_read_metrics("t1")) == (99, 10)     # 하트는 새 값, 조회수는 보존
+    assert res["partial"] == 3 and res["refreshed"] == 0 and res["failed"] == 0
+
+
+def test_missing_heart_still_updates_views(db):
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+
+    db(_age_metrics())
+    _install(_partial_cards(likes=0, views=77, reactions=False))
+    res = db(sc.refresh_metrics())
+
+    assert db(_read_metrics("t1")) == (3, 77)
+    assert res["partial"] == 3
+
+
+def test_both_metrics_missing_counts_as_failed(db):
+    """부분 실패도 전체 실패도 refreshed로 세지 않는다(failed=0 착시 방지)."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+
+    db(_age_metrics())
+    _install(_partial_cards(likes=0, views=0, reactions=False, vod=False))
+    res = db(sc.refresh_metrics())
+
+    assert db(_read_metrics("t1")) == (3, 10)      # 둘 다 보존
+    assert res["failed"] == 3 and res["refreshed"] == 0 and res["partial"] == 0
+
+
 # ── 실패 재시도 큐 ─────────────────────────────────────────────────────────
 def test_failed_cards_are_queued_and_retried(db):
     calls = []
@@ -633,3 +694,362 @@ def test_rank_delta_is_none_for_new(db):
     db(_seed_streamers(3))
     for s in db(sc.load_main())["streamers"]:
         assert s["rankDelta"] is None and s["isNew"] is True
+
+
+# ── 갱신 큐 공정성 (굶주림 회귀) ──────────────────────────────────────────────
+# 사고 원인: ORDER BY is_rep DESC, heart_count DESC 였다. 정렬 키가 곧 갱신 대상
+# 값이라 하트 0인 클립은 큐 맨 뒤 → 갱신 못 받음 → 계속 0 → 영원히 맨 뒤.
+async def _seed(n, *, hearts, aged=0):
+    """대표 클립 n개를 직접 넣는다(카드 API를 타지 않는 큐 단위 검증용)."""
+    c = await database.get_db()
+    now = int(time.time())
+    for i in range(n):
+        uid = f"q{i:03d}"
+        await c.execute(
+            "INSERT INTO singcup_clips (clip_uid, event_id, owner_channel_id, video_id,"
+            " rec_id, clip_title, thumbnail_image_url, description, created_at,"
+            " heart_count, view_count, duration, adult, blind_type, metrics_ok, active,"
+            " missing_scan_count, first_collected_at, last_collected_at, row_updated_at,"
+            " last_metrics_at)"
+            " VALUES (?,?,?,?,'','t','','#tag',?,?,0,60,0,'',1,1,0,?,?,?,?)",
+            (uid, sc.EVENT_ID, f"o{i:03d}", f"v{i}", now, hearts(i), now, now, now, aged))
+        await c.execute(
+            "INSERT INTO singcup_streamers (channel_id, event_id, channel_name,"
+            " channel_image_url, follower_count, verified_mark, representative_clip_uid,"
+            " tagged_clip_count, last_channel_updated_at, row_updated_at)"
+            " VALUES (?,?,'name','',0,0,?,1,?,?)",
+            (f"o{i:03d}", sc.EVENT_ID, uid, now, now))
+    await c.commit()
+
+
+def test_zero_heart_clip_is_not_starved(db):
+    """하트 0인 클립이 상위 하트 클립에 영원히 밀리지 않는다(핵심 회귀)."""
+    # q000만 하트 0, 나머지 199개는 하트가 많다. 예산은 20건뿐.
+    db(_seed(200, hearts=lambda i: 0 if i == 0 else 1000 - i))
+    due = db(sc._metrics_due(int(time.time()), 20))
+    uids = [r["clip_uid"] for r in due]
+    assert "q000" in uids, "하트 0 클립이 갱신 대기열에 들어와야 한다"
+    assert len(uids) == 20
+
+
+def test_sweep_covers_every_clip_over_repeated_cycles(db):
+    """예산보다 대상이 많아도 사이클을 반복하면 전원이 한 번씩 갱신된다."""
+    db(_seed(100, hearts=lambda i: 1000 - i))
+    now = int(time.time())
+    seen, cursor = set(), now
+
+    async def mark(uids, at):
+        c = await database.get_db()
+        qs = ",".join("?" for _ in uids)
+        await c.execute(
+            f"UPDATE singcup_clips SET last_metrics_at=? WHERE clip_uid IN ({qs})",
+            (at, *uids))
+        await c.commit()
+
+    for _ in range(10):                       # 10 사이클 × 10건 = 100건
+        batch = [r["clip_uid"] for r in db(sc._metrics_due(cursor, 10))]
+        assert batch, "아직 대상이 남았는데 큐가 비었다"
+        seen.update(batch)
+        db(mark(batch, cursor))
+        cursor += 1                           # 갱신된 것은 큐 뒤로 밀린다
+    assert len(seen) == 100, f"{100 - len(seen)}건이 한 번도 선택되지 않았다"
+
+
+def test_queue_is_deterministic_across_restarts(db):
+    """재시작해도 항상 같은 앞머리만 집지 않는다 — 갱신되면 뒤로 밀린다."""
+    db(_seed(50, hearts=lambda i: 1000 - i))
+    now = int(time.time())
+    first = [r["clip_uid"] for r in db(sc._metrics_due(now, 10))]
+    again = [r["clip_uid"] for r in db(sc._metrics_due(now, 10))]
+    assert first == again                     # 결정적 순서(clip_uid 타이브레이커)
+
+    async def refresh(uids):
+        c = await database.get_db()
+        qs = ",".join("?" for _ in uids)
+        await c.execute(
+            f"UPDATE singcup_clips SET last_metrics_at=? WHERE clip_uid IN ({qs})",
+            (now, *uids))
+        await c.commit()
+    db(refresh(first))
+    nxt = [r["clip_uid"] for r in db(sc._metrics_due(now, 10))]
+    assert not set(nxt) & set(first), "갱신한 건이 다음 사이클에 또 잡혔다"
+
+
+def test_sweep_stats_flags_starvation(db):
+    """가장 오래된 클립이 한 바퀴 SLA를 크게 넘으면 starving으로 보고한다."""
+    db(_seed(10, hearts=lambda i: 1, aged=1))      # last_metrics_at=1 (사실상 1970)
+    st = db(sc.metrics_sweep_stats())
+    assert st["clips"] == 10 and st["never_refreshed"] == 0
+    assert st["full_sweep_hours"] is not None
+    assert st["starving"] is True
+
+
+# ── 문제 클립(k1DqN2X3Mh) 형태 회귀 ─────────────────────────────────────────
+def test_new_low_heart_clip_gets_refreshed_and_reranked(db):
+    """신규·하트 0으로 들어온 클립이 갱신되어 하트 52가 반영되고 순위에 반영된다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+
+    async def make_it_look_like_the_bug():
+        c = await database.get_db()
+        # 최초 수집값에서 멈춘 상태 재현: 하트 0, 조회수 1
+        await c.execute("UPDATE singcup_clips SET heart_count=0, view_count=1, "
+                        "last_metrics_at=0 WHERE clip_uid='t1'")
+        await c.commit()
+    db(make_it_look_like_the_bug())
+
+    # 카드는 하트 52를 주지만 조회수 필드가 없다(= 이번 사고의 응답 형태)
+    _install(_partial_cards(likes=52, views=0, vod=False))
+    res = db(sc.refresh_metrics())
+    assert res["partial"] >= 1
+
+    assert db(_read_metrics("t1")) == (52, 1)      # 하트 반영, 조회수 보존
+    main = db(sc.load_main())
+    me = next(s for s in main["streamers"] if s["clipUid"] == "t1")
+    assert me["heartCount"] == 52
+    assert me["score"] > 0                         # 예상 인기점수 재계산됨
+
+
+def test_recovered_clip_is_excluded_from_1h_surge(db):
+    """긴 공백 뒤 복구된 값이 '1시간 +52 급상승'으로 둔갑하지 않는다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    now = int(time.time())
+
+    async def stale_with_baseline():
+        c = await database.get_db()
+        # 1시간 전 비교 기준 회차를 만들어 둔다(하트 0 시점)
+        await c.execute(
+            "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
+            " heart_count, view_count, follower_count, score, rank, collected_at)"
+            " VALUES (?,?,?,0,1,0,0,1,?)", (sc.EVENT_ID, "t1", "o1", now - 3600))
+        # 20시간 동안 갱신이 멈춰 있었다
+        await c.execute("UPDATE singcup_clips SET heart_count=0, view_count=1, "
+                        "last_metrics_at=? WHERE clip_uid='t1'", (now - 20 * 3600,))
+        await c.commit()
+    db(stale_with_baseline())
+
+    _install(_partial_cards(likes=52, views=0, vod=False))
+    db(sc.refresh_metrics())
+
+    main = db(sc.load_main())
+    me = next(s for s in main["streamers"] if s["clipUid"] == "t1")
+    assert me["heartCount"] == 52                  # 현재 하트·랭킹에는 즉시 반영
+    assert me["deltaState"] == "recovering"
+    assert me["heartDelta"] is None                # 단기 증감은 계산하지 않는다
+    assert all(m["clipUid"] != "t1" for m in main["topHeartMovers1h"])
+
+
+def test_normal_update_still_reports_1h_delta(db):
+    """복구 가드가 정상 갱신의 1시간 증감까지 막지는 않는다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    now = int(time.time())
+
+    async def fresh_baseline():
+        c = await database.get_db()
+        await c.execute(
+            "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
+            " heart_count, view_count, follower_count, score, rank, collected_at)"
+            " VALUES (?,?,?,3,10,0,0,1,?)", (sc.EVENT_ID, "t1", "o1", now - 3600))
+        # 공백 없이 최근까지 갱신되던 클립
+        await c.execute("UPDATE singcup_clips SET last_metrics_at=? "
+                        "WHERE clip_uid='t1'", (now - 600,))
+        await c.commit()
+    db(fresh_baseline())
+
+    _install(_partial_cards(likes=20, views=10))
+    db(sc.refresh_metrics(limit=200))
+
+    main = db(sc.load_main())
+    me = next(s for s in main["streamers"] if s["clipUid"] == "t1")
+    assert me["deltaState"] == "ok" and me["heartDelta"] == 17
+
+
+def test_list_zero_does_not_overwrite_card_metrics(db):
+    """목록 응답의 축약/기본값 0이 카드로 받은 정상 수치를 덮지 않는다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    assert db(_read_metrics("t1")) == (3, 10)
+
+    # 목록을 다시 훑되 카드는 실패시킨다 → 기존 수치가 0으로 덮이면 안 된다
+    db(_age_metrics())
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[], card_status=500))
+    db(sc.discover_new_clips())
+    assert db(_read_metrics("t1")) == (3, 10)
+
+
+def test_partial_clip_returns_to_the_queue(db):
+    """부분 성공 클립도 TTL이 지나면 다시 대상에 들어온다(영구 제외 아님)."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    db(_age_metrics())
+    _install(_partial_cards(likes=99, views=0, vod=False))
+    assert db(sc.refresh_metrics())["partial"] == 3
+
+    db(_age_metrics())                             # TTL 경과
+    assert "t1" in [r["clip_uid"] for r in db(sc._metrics_due(int(time.time()), 80))]
+
+
+# ── 단건 강제 갱신 ─────────────────────────────────────────────────────────
+def test_single_clip_refresh_uses_normal_path(db):
+    """단건 갱신이 카드 조회 → 수치 반영 → 대표/점수/순위 재계산까지 태운다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+
+    async def freeze():
+        c = await database.get_db()
+        await c.execute("UPDATE singcup_clips SET heart_count=0, view_count=1, "
+                        "last_metrics_at=0 WHERE clip_uid='t1'")
+        await c.commit()
+    db(freeze())
+
+    calls = []
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=calls))
+    res = db(sc.refresh_one_clip("t1", actor="test"))
+
+    assert calls == ["t1"], "그 클립의 카드만 조회해야 한다"
+    assert res["apply_result"] == "ok"
+    assert res["db_before"]["heart_count"] == 0
+    assert res["db_after"]["heart_count"] == 3 and res["db_after"]["view_count"] == 10
+    assert res["fetched"]["heart"] == 3 and res["fetched"]["heart_ok"] is True
+    # 순위·점수가 다시 계산되어 화면 응답에 반영된다
+    me = next(s for s in db(sc.load_main())["streamers"] if s["clipUid"] == "t1")
+    assert me["heartCount"] == 3 and me["score"] > 0
+
+
+def test_single_clip_refresh_reports_partial(db):
+    """조회수 필드가 없으면 partial로 보고하고 조회수는 보존한다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    _install(_partial_cards(likes=52, views=0, vod=False))
+    res = db(sc.refresh_one_clip("t1"))
+    assert res["apply_result"] == "partial"
+    assert res["fetched"]["view"] is None and res["fetched"]["view_ok"] is False
+    assert res["db_after"]["heart_count"] == 52 and res["db_after"]["view_count"] == 10
+
+
+def test_single_clip_refresh_validates_uid(db):
+    assert db(sc.refresh_one_clip("bad uid!"))["status"] == sc.ST_FAILED
+    assert db(sc.refresh_one_clip("a" * 100))["status"] == sc.ST_FAILED
+    assert "없" in db(sc.refresh_one_clip("nosuchclip"))["note"]
+
+
+def test_single_clip_refresh_respects_the_lock(db):
+    """정기 갱신과 같은 락을 쓴다 — 동시에 같은 행을 건드리지 않는다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+
+    async def go():
+        tok = await sc.acquire_named_lock("singcup_metrics", 60)
+        try:
+            return await sc.refresh_one_clip("t1")
+        finally:
+            await sc.release_named_lock("singcup_metrics", tok)
+    assert db(go())["status"] == sc.ST_SKIPPED
+
+
+def test_single_clip_refresh_survives_card_failure(db):
+    """카드 조회가 실패해도 기존 수치를 0으로 덮지 않는다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[], card_status=503))
+    res = db(sc.refresh_one_clip("t1"))
+    assert res["status"] == sc.ST_FAILED and res["apply_result"] == "fetch_failed"
+    assert db(_read_metrics("t1")) == (3, 10)
+
+
+# ── 24시간 급상승 오염 ─────────────────────────────────────────────────────
+def test_recovered_clip_is_excluded_from_24h_delta(db):
+    """복구된 값이 24시간 증감에도 잘못 포함되지 않는다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    now = int(time.time())
+
+    async def stale():
+        c = await database.get_db()
+        for ago, h in ((25 * 3600, 0), (3600, 0)):     # 24h 기준 + 1h 기준 모두 0
+            await c.execute(
+                "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
+                " heart_count, view_count, follower_count, score, rank, collected_at)"
+                " VALUES (?,?,?,?,1,0,0,1,?)",
+                (sc.EVENT_ID, "t1", "o1", h, now - ago))
+        await c.execute("UPDATE singcup_clips SET heart_count=0, view_count=1, "
+                        "last_metrics_at=? WHERE clip_uid='t1'", (now - 20 * 3600,))
+        await c.commit()
+    db(stale())
+
+    _install(_partial_cards(likes=52, views=10))
+    db(sc.refresh_metrics())
+
+    me = next(s for s in db(sc.load_main())["streamers"] if s["clipUid"] == "t1")
+    assert me["heartCount"] == 52                  # 현재 값·순위는 즉시 반영
+    assert me["delta24hState"] == "recovering"
+    assert me["heartDelta24h"] is None             # 24h 증감은 집계 복구 상태
+    assert me["heartChangeRate24h"] is None
+
+
+def test_normal_clip_still_reports_24h_delta(db):
+    """복구 가드가 정상 클립의 24시간 증감까지 막지는 않는다."""
+    _install(_handler(PAGES, tagged_uids=TAGGED, calls=[]))
+    db(sc.run_backfill())
+    now = int(time.time())
+
+    async def baseline():
+        c = await database.get_db()
+        await c.execute(
+            "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
+            " heart_count, view_count, follower_count, score, rank, collected_at)"
+            " VALUES (?,?,?,1,1,0,0,1,?)", (sc.EVENT_ID, "t1", "o1", now - 25 * 3600))
+        await c.execute("UPDATE singcup_clips SET last_metrics_at=? "
+                        "WHERE clip_uid='t1'", (now - 600,))
+        await c.commit()
+    db(baseline())
+
+    _install(_partial_cards(likes=21, views=10))
+    db(sc.refresh_metrics(limit=200))
+    me = next(s for s in db(sc.load_main())["streamers"] if s["clipUid"] == "t1")
+    assert me["delta24hState"] == "ok" and me["heartDelta24h"] == 20
+
+
+# ── 레인별 oldest-first ────────────────────────────────────────────────────
+def test_each_lane_keeps_oldest_first(db):
+    """대표 할당량과 일반 할당량 각각에서 가장 오래된 것부터 나온다."""
+    db(_seed(40, hearts=lambda i: 1000 - i))       # 40개 전부 대표
+    now = int(time.time())
+
+    async def spread():
+        c = await database.get_db()
+        # 대표에서 뺀 20개를 일반 클립으로 만든다(대표 지정 해제)
+        await c.execute("UPDATE singcup_streamers SET representative_clip_uid=NULL "
+                        "WHERE channel_id >= 'o020'")
+        # last_metrics_at을 역순으로 흩뿌린다 — uid 순서와 일부러 어긋나게
+        for i in range(40):
+            await c.execute("UPDATE singcup_clips SET last_metrics_at=? "
+                            "WHERE clip_uid=?", (100 + (40 - i), f"q{i:03d}"))
+        await c.commit()
+    db(spread())
+
+    due = db(sc._metrics_due(now, 10))
+    reps = [r["last_metrics_at"] for r in due if r["is_rep"]]
+    others = [r["last_metrics_at"] for r in due if not r["is_rep"]]
+    assert reps and others, "두 레인 모두에서 뽑혀야 한다"
+    assert reps == sorted(reps), "대표 레인이 oldest-first가 아니다"
+    assert others == sorted(others), "일반 레인이 oldest-first가 아니다"
+
+
+def test_never_refreshed_clips_come_first(db):
+    """한 번도 갱신 못 받은 행(last_metrics_at=0)이 항상 맨 앞이다."""
+    db(_seed(30, hearts=lambda i: 1000 - i))
+    now = int(time.time())
+
+    async def mixed():
+        c = await database.get_db()
+        await c.execute("UPDATE singcup_clips SET last_metrics_at=?", (now - 3 * 3600,))
+        await c.execute("UPDATE singcup_clips SET last_metrics_at=0 "
+                        "WHERE clip_uid IN ('q029','q015')")
+        await c.commit()
+    db(mixed())
+
+    head = [r["clip_uid"] for r in db(sc._metrics_due(now, 5))][:2]
+    assert sorted(head) == ["q015", "q029"]

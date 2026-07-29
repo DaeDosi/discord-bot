@@ -67,6 +67,9 @@ PAGE_DELAY = float(os.getenv("SINGCUP_PAGE_DELAY_SECONDS", "0.3"))
 CHANNEL_TTL_MINUTES = float(os.getenv("SINGCUP_CHANNEL_TTL_MINUTES", "20"))
 MAX_RUN_SECONDS = int(os.getenv("SINGCUP_CLIP_MAX_RUN_SECONDS", "600"))
 MISSING_SCANS_TO_DEACTIVATE = int(os.getenv("SINGCUP_MISSING_SCANS", "2"))
+# 특정 클립 1건만 '갱신 전 DB값 / 새로 읽은 값 / 갱신 후 DB값'을 통째로 로그에 남긴다.
+# 값이 안 도는 클립을 지목해 추적할 때만 켠다(빈 값이면 꺼짐).
+DEBUG_CLIP_UID = os.getenv("SINGCUP_METRICS_DEBUG_UID", "").strip()
 
 # 정확히 '#싱드컵' 태그만 인정한다. 제목/본문에 '싱드컵'이라는 단어만 있는 건 제외.
 _TAG_RE = re.compile(r"(^|\s)#싱드컵(?=\s|$)")
@@ -241,6 +244,7 @@ def _retry_delay(attempt: int, retry_after: str | None) -> float:
 async def _get_json(client, url, *, params=None, headers=None, what="request"):
     """408/429/5xx/timeout만 재시도. 400/401/403/404는 즉시 실패."""
     for attempt in range(MAX_RETRIES):
+        _api_counter["calls"] += 1
         try:
             r = await client.get(url, params=params, headers=headers or _HEADERS,
                                  timeout=REQUEST_TIMEOUT)
@@ -262,12 +266,25 @@ async def _get_json(client, url, *, params=None, headers=None, what="request"):
         if code == 404:
             raise FetchError(ST_SCHEMA, f"{what}: HTTP 404")
         if code in (408, 429) or 500 <= code < 600:
+            if code == 429:
+                _api_counter["http_429"] += 1
             if attempt + 1 >= MAX_RETRIES:
                 raise FetchError(ST_FAILED, f"{what}: HTTP {code}")
             await asyncio.sleep(_retry_delay(attempt, r.headers.get("Retry-After")))
             continue
         raise FetchError(ST_FAILED, f"{what}: HTTP {code}")
     raise FetchError(ST_FAILED, f"{what}: 재시도 소진")
+
+
+# 사이클당 외부 호출 수와 429 횟수 — 갱신 예산을 올려도 되는지 판단하는 근거.
+# 짐작으로 REFRESH_PER_CYCLE을 올리면 429를 맞고 나서야 알게 된다.
+_api_counter = {"calls": 0, "http_429": 0}
+
+
+def _take_api_counters() -> dict:
+    out = dict(_api_counter)
+    _api_counter["calls"] = _api_counter["http_429"] = 0
+    return out
 
 
 async def fetch_clip_page(client, cursor: str | None) -> tuple[list[dict], str | None]:
@@ -316,11 +333,33 @@ async def fetch_card(client, item: dict) -> dict | None:
     heart, heart_ok = extract_heart(card)
     view, view_ok = extract_view(card)
     if not heart_ok or not view_ok:
-        # 실제 0과 '못 읽음'을 구분해 남긴다
+        # 실제 0과 '못 읽음'을 구분해 남긴다.
+        # 어느 쪽이 왜 비었는지까지 남겨야 '카드가 원래 안 주는 값'인지
+        # '스키마가 바뀐 것'인지 로그만 보고 판단할 수 있다.
         _log({"event": "card_metrics_missing", "level": "warning", "clip_uid": clip_uid,
-              "heart_ok": heart_ok, "view_ok": view_ok})
+              "heart_ok": heart_ok, "view_ok": view_ok,
+              "reason": _missing_reason(card, heart_ok, view_ok)})
     return {"description": extract_description(card), "heart_count": heart,
-            "view_count": view, "metrics_ok": bool(heart_ok and view_ok)}
+            "view_count": view, "heart_ok": heart_ok, "view_ok": view_ok,
+            "metrics_ok": bool(heart_ok and view_ok)}
+
+
+def _missing_reason(card: dict, heart_ok: bool, view_ok: bool) -> str:
+    """어느 단계에서 값이 끊겼는지 짧게 표기한다(로그 전용)."""
+    parts = []
+    if not heart_ok:
+        inter = card.get("interaction")
+        emo = inter.get("emotion") if isinstance(inter, dict) else None
+        parts.append("heart:no_interaction" if not isinstance(inter, dict)
+                     else "heart:no_emotion" if not isinstance(emo, dict)
+                     else "heart:no_reactions")
+    if not view_ok:
+        content = card.get("content")
+        vod = content.get("vod") if isinstance(content, dict) else None
+        parts.append("view:no_content" if not isinstance(content, dict)
+                     else "view:no_vod" if not isinstance(vod, dict)
+                     else "view:no_count")
+    return ",".join(parts)
 
 
 # 채널 정보는 clip마다 반복 조회하지 않는다 — channelId 기준 메모리 캐시 + DB 기록
@@ -544,6 +583,12 @@ DELTA_TOLERANCE_SECONDS = int(float(os.getenv("SINGCUP_DELTA_TOLERANCE_MINUTES",
 REP_METRICS_TTL_MINUTES = float(os.getenv("SINGCUP_REP_METRICS_TTL_MINUTES", "5"))
 METRICS_TTL_MINUTES = float(os.getenv("SINGCUP_METRICS_TTL_MINUTES", "45"))
 REFRESH_PER_CYCLE = int(os.getenv("SINGCUP_REFRESH_PER_CYCLE", "80"))
+# 한 사이클 예산 중 대표 클립에 예약하는 비율. 나머지는 대표든 아니든
+# "가장 오래 갱신 안 된 순"으로 채워, 뒤쪽 클립이 굶지 않게 한다.
+# 이 시간 이상 갱신이 비어 있다가 값이 바뀌면 "복구"로 본다(단기 증감에서 제외).
+STALE_RECOVERY_SECONDS = int(float(
+    os.getenv("SINGCUP_STALE_RECOVERY_MINUTES", "90")) * 60)
+REP_SHARE = min(0.9, max(0.0, float(os.getenv("SINGCUP_REP_SHARE", "0.5"))))
 RESCAN_UNTAGGED_HOURS = float(os.getenv("SINGCUP_RESCAN_UNTAGGED_HOURS", "24"))
 RETRY_MAX_ATTEMPTS = int(os.getenv("SINGCUP_RETRY_MAX_ATTEMPTS", "3"))
 
@@ -611,20 +656,74 @@ async def _record_scan(clip_uid: str, tagged: bool, now: int):
         "checked_at=excluded.checked_at", (clip_uid, 1 if tagged else 0, now))
 
 
-async def _apply_metrics(clip_uid: str, heart: int, view: int, ok: bool, now: int):
-    """카드에서 읽은 수치를 반영한다. 못 읽었으면(ok=False) 기존 값을 건드리지 않는다."""
+async def _metrics_snapshot(clip_uid: str) -> dict | None:
+    """디버그용 — 그 클립의 현재 DB 수치와 24h 증감 기준값을 함께 읽는다.
+
+    화면의 '24h 증감'은 heart_count가 아니라 (heart_count - 24시간 전 스냅샷)이라
+    heart_count가 굳어 있어도 기준 스냅샷이 흘러가면 값이 계속 변한다.
+    두 값을 같이 봐야 그 착시를 구분할 수 있다.
+    """
     db = await get_db()
-    if ok:
-        await db.execute(
-            "UPDATE singcup_clips SET heart_count=?, view_count=?, metrics_ok=1, "
-            "last_metrics_at=?, last_collected_at=?, row_updated_at=? WHERE clip_uid=?",
-            (heart, view, now, now, now, clip_uid))
-    else:
-        # 실패한 회차도 last_metrics_at은 올려 같은 클립만 계속 재시도하지 않게 한다
-        await db.execute(
-            "UPDATE singcup_clips SET metrics_ok=0, last_metrics_at=?, "
-            "last_collected_at=?, row_updated_at=? WHERE clip_uid=?",
-            (now, now, now, clip_uid))
+    row = await (await db.execute(
+        "SELECT heart_count, view_count, metrics_ok, last_metrics_at, owner_channel_id "
+        "FROM singcup_clips WHERE clip_uid=?", (clip_uid,))).fetchone()
+    if row is None:
+        return None
+    base = await (await db.execute(
+        "SELECT heart_count FROM singcup_snapshots WHERE event_id=? AND owner_channel_id=? "
+        "AND collected_at <= ? ORDER BY collected_at DESC LIMIT 1",
+        (EVENT_ID, row["owner_channel_id"], int(time.time()) - 86400))).fetchone()
+    b = int(base["heart_count"]) if base else None
+    return {"heart_count": int(row["heart_count"] or 0),
+            "view_count": int(row["view_count"] or 0),
+            "metrics_ok": int(row["metrics_ok"] or 0),
+            "last_metrics_at": row["last_metrics_at"],
+            "baseline_24h": b,
+            "heart_delta_24h": (int(row["heart_count"] or 0) - b) if b is not None else None}
+
+
+async def _apply_metrics(clip_uid: str, heart: int, view: int,
+                         heart_ok: bool, view_ok: bool, now: int) -> str:
+    """카드에서 읽은 수치를 반영한다. **읽은 필드만** 쓴다.
+
+    예전에는 heart/view 둘 다 성공했을 때만 UPDATE를 돌렸다. 그래서 카드가
+    조회수만 안 주는 클립은 하트까지 통째로 갱신이 멈춰 화면에 옛날 값이
+    박혀 있었다(24h 증감은 24시간 전 스냅샷 쪽이 흘러가서 계속 변하니
+    '하트만 안 변한다'로 보였다). 이제 필드 단위로 나눠 쓴다.
+
+    반환값: "ok" | "partial" | "failed" — 호출부 집계에 그대로 쓴다.
+    """
+    db = await get_db()
+    sets, params = [], []
+    # 갱신 공백이 길었는데 하트가 움직였다면, 그 차이는 '최근 1시간 증가'가 아니라
+    # 공백 동안 누적된 양이다. 복구 시각을 남겨 단기 증감 계산에서 빼도록 한다.
+    prev = await (await db.execute(
+        "SELECT heart_count, last_metrics_at FROM singcup_clips WHERE clip_uid=?",
+        (clip_uid,))).fetchone()
+    if (heart_ok and prev is not None
+            and now - int(prev["last_metrics_at"] or 0) > STALE_RECOVERY_SECONDS
+            and heart != int(prev["heart_count"] or 0)):
+        sets.append("metrics_recovered_at=?")
+        params.append(now)
+        _log({"event": "metrics_recovered", "level": "warning", "clip_uid": clip_uid,
+              "gap_hours": round((now - int(prev["last_metrics_at"] or 0)) / 3600, 2),
+              "heart_from": int(prev["heart_count"] or 0), "heart_to": heart})
+    if heart_ok:
+        sets.append("heart_count=?")
+        params.append(heart)
+    if view_ok:
+        sets.append("view_count=?")
+        params.append(view)
+    # metrics_ok는 지금까지처럼 '둘 다 온전한가'를 뜻한다(스키마 의미 유지)
+    sets.append("metrics_ok=?")
+    params.append(1 if (heart_ok and view_ok) else 0)
+    # 못 읽은 회차도 last_metrics_at은 올려 같은 클립만 계속 재시도하지 않게 한다
+    sets += ["last_metrics_at=?", "last_collected_at=?", "row_updated_at=?"]
+    params += [now, now, now, clip_uid]
+    await db.execute(
+        f"UPDATE singcup_clips SET {', '.join(sets)} WHERE clip_uid=?", params)
+    return "ok" if (heart_ok and view_ok) else "failed" if not (heart_ok or view_ok) \
+        else "partial"
 
 
 async def _queue_retry(item: dict, err: str, now: int):
@@ -709,7 +808,7 @@ async def _scan_batch(client, items: list[dict], now: int) -> tuple[int, int, in
         if await _upsert_clip(row, now):
             inserted += 1
         await _apply_metrics(uid, row["heart_count"], row["view_count"],
-                             row["metrics_ok"], now)
+                             card["heart_ok"], card["view_ok"], now)
     await (await get_db()).commit()
     return tagged, inserted, failed
 
@@ -975,27 +1074,233 @@ async def discover_new_clips() -> dict:
 
 
 # ── ③ 지표 갱신 (목록을 훑지 않는다) ────────────────────────────────────────
-async def _metrics_due(now: int, limit: int) -> list[dict]:
-    """갱신 대상 — 대표 클립을 먼저, 그다음 하트가 많은 것, 오래된 것 순.
+_DUE_SQL = """SELECT c.clip_uid, c.video_id, c.rec_id, c.last_metrics_at,
+                     (s.representative_clip_uid IS NOT NULL) AS is_rep
+              FROM singcup_clips c
+              LEFT JOIN singcup_streamers s ON s.representative_clip_uid = c.clip_uid
+              WHERE c.event_id=? AND c.active=1
+                AND c.last_metrics_at < (CASE WHEN s.representative_clip_uid IS NOT NULL
+                                              THEN ? ELSE ? END)
+                {extra}
+              -- 한 번도 갱신 못 받은 행(NULL/0)을 무조건 맨 앞으로 명시한다.
+              -- 컬럼이 NOT NULL DEFAULT 0이라 지금은 NULL이 안 나오지만, 정렬에서
+              -- NULL의 위치는 방언마다 달라 의도를 SQL에 박아 둔다.
+              -- 그다음은 가장 오래 방치된 것부터. clip_uid는 동률일 때 순서를
+              -- 고정해 재시작 후에도 같은 앞머리만 반복해 집지 않게 한다.
+              ORDER BY CASE WHEN c.last_metrics_at IS NULL THEN 0
+                            WHEN c.last_metrics_at = 0    THEN 0
+                            ELSE 1 END ASC,
+                       c.last_metrics_at ASC, c.clip_uid ASC
+              LIMIT ?"""
 
-    대표 클립은 순위를 직접 좌우하므로 짧은 주기(REP_METRICS_TTL)로,
-    나머지는 긴 주기(METRICS_TTL)로 돌린다.
+
+async def _metrics_due(now: int, limit: int) -> list[dict]:
+    """갱신 대상 — **가장 오래 갱신되지 않은 순**. 대표 클립에 일부 몫을 예약한다.
+
+    예전에는 `ORDER BY is_rep DESC, heart_count DESC` 였다. 이게 이번 사고의
+    직접 원인이다: 정렬 키(heart_count)가 곧 갱신 대상 값이라, 하트가 0인
+    클립은 큐 맨 뒤로 밀리고 → 갱신을 못 받고 → 계속 0으로 남아 → 영원히 맨
+    뒤인 자기강화 굶주림(starvation)이 생긴다. 대상이 사이클 상한보다 많으면
+    하위 클립은 확률적으로 늦는 게 아니라 **결코** 선택되지 않았다.
+
+    이제 두 레인으로 나눈다.
+      · 대표 레인(REP_SHARE 비율) — 순위를 직접 좌우하므로 짧은 TTL로 우선 확보
+      · 공정 레인(나머지)         — 대표든 아니든 가장 오래된 것부터
+
+    두 레인 모두 last_metrics_at ASC이므로, 어떤 클립도 자기보다 최근에 갱신된
+    클립에게 계속 추월당하지 않는다(= 굶주림 없음). 갱신되면 last_metrics_at이
+    now가 되어 큐 맨 뒤로 가므로 전체 순회가 보장된다.
     """
     db = await get_db()
+    limit = max(0, limit)
+    if limit == 0:
+        return []
+    rep_ttl = now - int(REP_METRICS_TTL_MINUTES * 60)
+    ttl = now - int(METRICS_TTL_MINUTES * 60)
+
+    rep_budget = min(limit, max(1, int(limit * REP_SHARE)))
     rows = await (await db.execute(
-        """SELECT c.clip_uid, c.video_id, c.rec_id,
-                  (s.representative_clip_uid IS NOT NULL) AS is_rep
-           FROM singcup_clips c
-           LEFT JOIN singcup_streamers s ON s.representative_clip_uid = c.clip_uid
-           WHERE c.event_id=? AND c.active=1
-             AND c.last_metrics_at < (CASE WHEN s.representative_clip_uid IS NOT NULL
-                                           THEN ? ELSE ? END)
-           ORDER BY is_rep DESC, c.heart_count DESC, c.last_metrics_at ASC
-           LIMIT ?""",
-        (EVENT_ID, now - int(REP_METRICS_TTL_MINUTES * 60),
-         now - int(METRICS_TTL_MINUTES * 60), max(0, limit))
-    )).fetchall()
-    return [dict(r) for r in rows]
+        _DUE_SQL.format(extra="AND s.representative_clip_uid IS NOT NULL"),
+        (EVENT_ID, rep_ttl, ttl, rep_budget))).fetchall()
+    picked = [dict(r) for r in rows]
+
+    rest = limit - len(picked)
+    if rest > 0:
+        seen = {r["clip_uid"] for r in picked}
+        # 대표 레인에서 이미 집은 만큼 넉넉히 받아 와 중복만 걸러낸다
+        rows = await (await db.execute(
+            _DUE_SQL.format(extra=""),
+            (EVENT_ID, rep_ttl, ttl, rest + len(picked)))).fetchall()
+        picked += [dict(r) for r in rows if r["clip_uid"] not in seen][:rest]
+    return picked
+
+
+async def _record_refresh_run(now: int, dur_ms: int, due: int,
+                              tally: dict, api: dict):
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO singcup_refresh_runs (event_id, collected_at, duration_ms, due,"
+        " ok, partial, failed, api_calls, http_429) VALUES (?,?,?,?,?,?,?,?,?)",
+        (EVENT_ID, now, dur_ms, due, tally["ok"], tally["partial"], tally["failed"],
+         api["calls"], api["http_429"]))
+    # 계측은 최근 구간만 있으면 된다 — 무한 증가를 막는다
+    await db.execute(
+        "DELETE FROM singcup_refresh_runs WHERE event_id=? AND collected_at < ?",
+        (EVENT_ID, now - 7 * 86400))
+    await db.commit()
+
+
+def _p95(values: list[int]) -> int | None:
+    if not values:
+        return None
+    s = sorted(values)
+    return s[min(len(s) - 1, int(len(s) * 0.95))]
+
+
+async def metrics_sweep_stats() -> dict:
+    """전체 순회가 실제로 도는지 판정하는 운영 지표.
+
+    '한 바퀴 도는 데 몇 시간 걸리는가'와 '가장 오래 방치된 클립은 몇 시간째인가'가
+    핵심이다. 후자가 전자보다 훨씬 크면 어딘가에서 굶고 있다는 뜻이다.
+    """
+    db = await get_db()
+    now = int(time.time())
+    row = await (await db.execute(
+        """SELECT COUNT(*) AS clips,
+                  SUM(CASE WHEN last_metrics_at=0 THEN 1 ELSE 0 END) AS never,
+                  MIN(last_metrics_at) AS oldest,
+                  SUM(CASE WHEN last_metrics_at >= ? THEN 1 ELSE 0 END) AS h1,
+                  SUM(CASE WHEN last_metrics_at >= ? THEN 1 ELSE 0 END) AS h6,
+                  SUM(CASE WHEN last_metrics_at >= ? THEN 1 ELSE 0 END) AS h24,
+                  SUM(CASE WHEN metrics_ok=0 THEN 1 ELSE 0 END) AS not_ok
+           FROM singcup_clips WHERE event_id=? AND active=1""",
+        (now - 3600, now - 6 * 3600, now - 86400, EVENT_ID))).fetchone()
+    reps = await (await db.execute(
+        "SELECT COUNT(*) c FROM singcup_streamers WHERE event_id=? "
+        "AND representative_clip_uid IS NOT NULL", (EVENT_ID,))).fetchone()
+    due = len(await _metrics_due(now, 10 ** 6))
+    clips = int(row["clips"] or 0)
+    per_hour = REFRESH_PER_CYCLE * (60.0 / max(1e-9, CLIP_INTERVAL_MINUTES))
+    oldest = int(row["oldest"] or 0)
+    return {
+        "clips": clips, "representatives": int(reps["c"] or 0), "due_now": due,
+        "never_refreshed": int(row["never"] or 0),
+        "metrics_not_ok": int(row["not_ok"] or 0),
+        "refreshed_last_1h": int(row["h1"] or 0),
+        "refreshed_last_6h": int(row["h6"] or 0),
+        "refreshed_last_24h": int(row["h24"] or 0),
+        "per_cycle": REFRESH_PER_CYCLE,
+        "cycle_minutes": CLIP_INTERVAL_MINUTES,
+        "throughput_per_hour": round(per_hour, 1),
+        # 이론상 한 바퀴(SLA). 실측 지연(oldest_age_hours)이 이 값보다 크게 길면
+        # 정렬/예산 문제로 뒤쪽이 굶고 있다는 신호다.
+        "full_sweep_hours": round(clips / per_hour, 2) if per_hour else None,
+        "oldest_age_hours": round((now - oldest) / 3600, 2) if oldest else None,
+        "starving": bool(oldest and clips
+                         and (now - oldest) / 3600 > 2 * (clips / per_hour)),
+        # 예산을 올려도 되는지의 근거 — 추측 대신 최근 24시간 실측치를 본다
+        "recent_runs": await _refresh_run_stats(now),
+    }
+
+
+async def _refresh_run_stats(now: int) -> dict:
+    """최근 24시간 갱신 사이클의 p95 소요시간·429·실패율·API 호출 수."""
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT duration_ms, due, ok, partial, failed, api_calls, http_429 "
+        "FROM singcup_refresh_runs WHERE event_id=? AND collected_at >= ?",
+        (EVENT_ID, now - 86400))).fetchall()
+    if not rows:
+        return {"runs": 0}
+    due = sum(int(r["due"]) for r in rows)
+    failed = sum(int(r["failed"]) for r in rows)
+    calls = sum(int(r["api_calls"]) for r in rows)
+    return {
+        "runs": len(rows),
+        "p95_duration_ms": _p95([int(r["duration_ms"]) for r in rows]),
+        "max_duration_ms": max(int(r["duration_ms"]) for r in rows),
+        "http_429_total": sum(int(r["http_429"]) for r in rows),
+        "api_calls_total": calls,
+        "api_calls_per_run": round(calls / len(rows), 1),
+        "processed": due,
+        "failure_rate": round(failed / due, 4) if due else 0.0,
+        "partial_rate": round(sum(int(r["partial"]) for r in rows) / due, 4)
+                        if due else 0.0,
+        # 사이클 간격(분)보다 p95가 길면 사이클이 겹쳐 락 경합이 생긴다는 신호
+        "cycle_budget_ms": int(CLIP_INTERVAL_MINUTES * 60 * 1000),
+    }
+
+
+async def clip_diagnosis(clip_uid: str) -> dict:
+    """문제 클립 1건의 DB 상태 · 갱신 대기열 위치 · 제외 사유를 한 번에 본다."""
+    db = await get_db()
+    now = int(time.time())
+    row = await (await db.execute(
+        "SELECT * FROM singcup_clips WHERE clip_uid=?", (clip_uid,))).fetchone()
+    if row is None:
+        return {"clip_uid": clip_uid, "found": False,
+                "excluded_reason": "singcup_clips에 행이 없음(수집 자체가 안 됨)"}
+    r = dict(row)
+    rep = await (await db.execute(
+        "SELECT channel_id FROM singcup_streamers WHERE representative_clip_uid=?",
+        (clip_uid,))).fetchone()
+    is_rep = rep is not None
+    ttl_min = REP_METRICS_TTL_MINUTES if is_rep else METRICS_TTL_MINUTES
+    due = r["last_metrics_at"] < now - int(ttl_min * 60)
+
+    reason = None
+    if not r["active"]:
+        reason = "active=0 (목록에서 연속 누락돼 비활성)"
+    elif r["event_id"] != EVENT_ID:
+        reason = f"event_id 불일치({r['event_id']} != {EVENT_ID})"
+    elif not due:
+        reason = f"TTL({ttl_min}분) 이내라 아직 대상 아님"
+    pos = None
+    if due and reason is None:
+        # 공정 레인 기준 대기열 위치 — 몇 사이클 뒤에 처리되는지 바로 환산된다
+        q = await (await db.execute(
+            """SELECT COUNT(*) c FROM singcup_clips c2
+               LEFT JOIN singcup_streamers s ON s.representative_clip_uid = c2.clip_uid
+               WHERE c2.event_id=? AND c2.active=1
+                 AND c2.last_metrics_at < (CASE WHEN s.representative_clip_uid
+                                                IS NOT NULL THEN ? ELSE ? END)
+                 AND (c2.last_metrics_at, c2.clip_uid) < (?, ?)""",
+            (EVENT_ID, now - int(REP_METRICS_TTL_MINUTES * 60),
+             now - int(METRICS_TTL_MINUTES * 60),
+             r["last_metrics_at"], clip_uid))).fetchone()
+        pos = int(q["c"] or 0)
+
+    snap = await _metrics_snapshot(clip_uid)
+    return {
+        "clip_uid": clip_uid, "found": True,
+        "owner_channel_id": r["owner_channel_id"],
+        "db_before": {
+            "heart_count": r["heart_count"], "view_count": r["view_count"],
+            "metrics_ok": r["metrics_ok"], "active": r["active"],
+            "last_metrics_at": _iso(r["last_metrics_at"]),
+            "last_collected_at": _iso(r["last_collected_at"]),
+            "first_collected_at": _iso(r["first_collected_at"]),
+            "created_at": _iso(r["created_at"]),
+            "age_hours": round((now - (r["last_metrics_at"] or 0)) / 3600, 2)
+                         if r["last_metrics_at"] else None,
+        },
+        "baseline_24h": snap.get("baseline_24h") if snap else None,
+        "heart_delta_24h": snap.get("heart_delta_24h") if snap else None,
+        "is_representative": is_rep,
+        "refresh_due": due,
+        # 대기열 위치를 사이클 수로 환산 — '몇 시간 뒤에나 차례가 오는지'가 보인다
+        "refresh_queue_position": pos,
+        "eta_hours": (round(pos / REFRESH_PER_CYCLE * CLIP_INTERVAL_MINUTES / 60, 2)
+                      if pos is not None else None),
+        "excluded_reason": reason,
+        "retry": dict(await (await db.execute(
+            "SELECT attempts, next_try_at, last_error FROM singcup_clip_retry "
+            "WHERE clip_uid=?", (clip_uid,))).fetchone() or {}) or None,
+    }
+
+
+def _iso(ts) -> str | None:
+    return datetime.fromtimestamp(int(ts), _KST).isoformat() if ts else None
 
 
 async def refresh_metrics(limit: int | None = None) -> dict:
@@ -1012,32 +1317,145 @@ async def refresh_metrics(limit: int | None = None) -> dict:
             return {"status": ST_OK, "refreshed": 0, "failed": 0}
 
         sem = asyncio.Semaphore(max(1, CARD_CONCURRENCY))
-        ok = fail = 0
+        # 부분 성공을 성공으로 세지 않는다 — failed=0인데 화면 값이 안 도는
+        # 상황을 로그만 보고 알아채려면 이 구분이 있어야 한다.
+        tally = {"ok": 0, "partial": 0, "failed": 0, "fetch_failed": 0}
+        no_heart = no_view = 0
 
         async def one(r):
-            nonlocal ok, fail
-            item = {"clipUID": r["clip_uid"], "videoId": r["video_id"],
+            nonlocal no_heart, no_view
+            uid = r["clip_uid"]
+            item = {"clipUID": uid, "videoId": r["video_id"],
                     "recId": r["rec_id"] or "{}"}
+            before = await _metrics_snapshot(uid) if uid == DEBUG_CLIP_UID else None
             async with sem:
                 card = await fetch_card(client, item)
             if card is None:
-                fail += 1
-                await _apply_metrics(r["clip_uid"], 0, 0, False, now)
+                tally["fetch_failed"] += 1
+                tally["failed"] += 1
+                await _apply_metrics(uid, 0, 0, False, False, now)
                 return
-            await _apply_metrics(r["clip_uid"], card["heart_count"],
-                                 card["view_count"], card["metrics_ok"], now)
-            ok += 1
+            state = await _apply_metrics(uid, card["heart_count"], card["view_count"],
+                                         card["heart_ok"], card["view_ok"], now)
+            tally[state] += 1
+            if not card["heart_ok"]:
+                no_heart += 1
+            if not card["view_ok"]:
+                no_view += 1
+            if state != "ok":
+                _log({"event": "metrics_partial", "level": "warning", "clip_uid": uid,
+                      "state": state, "heart_ok": card["heart_ok"],
+                      "view_ok": card["view_ok"],
+                      "kept_heart": not card["heart_ok"], "kept_view": not card["view_ok"]})
+            if before is not None:
+                # 지정한 클립 1건만 DB(전)·카드(신규)·DB(후)를 한 줄에 붙여 남긴다
+                await (await get_db()).commit()
+                _log({"event": "metrics_debug", "clip_uid": uid, "state": state,
+                      "db_before": before, "fetched": {
+                          "heart_count": card["heart_count"], "view_count": card["view_count"],
+                          "heart_ok": card["heart_ok"], "view_ok": card["view_ok"]},
+                      "db_after": await _metrics_snapshot(uid)})
 
+        started = time.monotonic()
+        _take_api_counters()                       # 이 사이클분만 세도록 초기화
         await asyncio.gather(*[one(r) for r in due])
         await (await get_db()).commit()
         await recompute_ranking(now, client=client)
-        _log({"event": "refresh_metrics", "due": len(due), "ok": ok, "failed": fail})
-        return {"status": ST_OK, "refreshed": ok, "failed": fail, "due": len(due)}
+        api = _take_api_counters()
+        dur = int((time.monotonic() - started) * 1000)
+        await _record_refresh_run(now, dur, len(due), tally, api)
+        _log({"event": "refresh_metrics", "due": len(due), "ok": tally["ok"],
+              "partial": tally["partial"], "failed": tally["failed"],
+              "fetch_failed": tally["fetch_failed"],
+              "no_heart": no_heart, "no_view": no_view,
+              "duration_ms": dur, "api_calls": api["calls"],
+              "http_429": api["http_429"]})
+        return {"status": ST_OK, "refreshed": tally["ok"], "partial": tally["partial"],
+                "failed": tally["failed"], "fetch_failed": tally["fetch_failed"],
+                "due": len(due), "duration_ms": dur, "api_calls": api["calls"],
+                "http_429": api["http_429"]}
     except (FetchError, SchemaError) as e:
         _log({"event": "refresh_failed", "level": "warning", "detail": str(e)[:200]})
         return {"status": ST_FAILED, "note": str(e)[:200]}
     finally:
         await release_named_lock("singcup_metrics", token)
+
+
+_CLIP_UID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# 단건 갱신은 관리자가 손으로 부르는 경로다. 카드 1건 + 순위 재계산이라 짧지만,
+# 외부 API가 늘어질 때 요청을 무한정 붙잡지 않도록 상한을 둔다.
+SINGLE_REFRESH_TIMEOUT = float(os.getenv("SINGCUP_SINGLE_REFRESH_TIMEOUT", "30"))
+
+
+async def refresh_one_clip(clip_uid: str, *, actor: str = "admin") -> dict:
+    """클립 1건만 정상 수집 경로로 갱신한다(DB 직접 수정 아님).
+
+    fetch_card → _apply_metrics → recompute_ranking(대표·점수·순위·스냅샷)까지
+    정기 사이클과 **완전히 같은 함수**를 탄다. 여기서만 쓰는 우회 경로를 만들면
+    "손으로는 되는데 자동으로는 안 되는" 상태를 검증할 수 없게 된다.
+    """
+    if not _CLIP_UID_RE.match(clip_uid or ""):
+        return {"status": ST_FAILED, "note": "clip_uid 형식이 올바르지 않습니다."}
+
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT clip_uid, video_id, rec_id, active, event_id FROM singcup_clips "
+        "WHERE clip_uid=?", (clip_uid,))).fetchone()
+    if row is None:
+        return {"status": ST_FAILED, "note": "해당 클립이 DB에 없습니다."}
+
+    # 정기 갱신과 같은 락을 쓴다 — 같은 행을 동시에 UPDATE하고 순위를 두 번
+    # 겹쳐 계산하는 것을 막는다(둘 다 recompute_ranking을 부른다).
+    token = await acquire_named_lock("singcup_metrics", 120)
+    if token is None:
+        return {"status": ST_SKIPPED, "note": "다른 갱신 작업이 실행 중입니다."}
+
+    now = int(time.time())
+    before = await _metrics_snapshot(clip_uid)
+    _log({"event": "single_refresh_start", "clip_uid": clip_uid, "actor": actor,
+          "db_before": before})
+    try:
+        async def work():
+            client = _get_client()
+            item = {"clipUID": clip_uid, "videoId": row["video_id"],
+                    "recId": row["rec_id"] or "{}"}
+            card = await fetch_card(client, item)
+            if card is None:
+                return card, "fetch_failed"
+            state = await _apply_metrics(clip_uid, card["heart_count"],
+                                         card["view_count"], card["heart_ok"],
+                                         card["view_ok"], now)
+            await db.commit()
+            # 대표 클립·예상 인기점수·순위·스냅샷을 정기 경로 그대로 다시 계산
+            await recompute_ranking(now, client=client)
+            return card, state
+
+        card, state = await asyncio.wait_for(work(), timeout=SINGLE_REFRESH_TIMEOUT)
+    except asyncio.TimeoutError:
+        _log({"event": "single_refresh_timeout", "level": "warning",
+              "clip_uid": clip_uid, "actor": actor})
+        return {"status": ST_FAILED, "note": f"{SINGLE_REFRESH_TIMEOUT}초 안에 끝나지 않았습니다."}
+    except (FetchError, SchemaError) as e:
+        _log({"event": "single_refresh_failed", "level": "warning",
+              "clip_uid": clip_uid, "actor": actor, "detail": str(e)[:200]})
+        return {"status": ST_FAILED, "note": str(e)[:200]}
+    finally:
+        await release_named_lock("singcup_metrics", token)
+
+    after = await _metrics_snapshot(clip_uid)
+    fetched = None if card is None else {
+        "heart": card["heart_count"], "heart_ok": card["heart_ok"],
+        "view": card["view_count"] if card["view_ok"] else None,
+        "view_ok": card["view_ok"],
+        "missing_reason": None if card["metrics_ok"] else "카드 응답에 필드 없음",
+    }
+    # 감사 로그 — 누가, 어떤 클립을, 어떤 값으로 바꿨는지 한 줄에 남긴다
+    _log({"event": "single_refresh", "clip_uid": clip_uid, "actor": actor,
+          "apply_result": state, "db_before": before, "fetched": fetched,
+          "db_after": after})
+    return {"status": ST_OK if state != "fetch_failed" else ST_FAILED,
+            "clip_uid": clip_uid, "apply_result": state,
+            "db_before": before, "fetched": fetched, "db_after": after}
 
 
 async def retry_failed_clips(limit: int = 50) -> dict:
@@ -1100,14 +1518,17 @@ async def _delta_maps(now: int) -> tuple[dict, dict, int | None]:
             prev[r["owner_channel_id"]] = (int(r["heart_count"]), int(r["rank"]),
                                            str(r["clip_uid"]), float(r["score"] or 0))
 
+    # 24시간 쪽도 기준 회차 '시각'을 함께 들고 나온다 — 그 시각 이후에 복구된
+    # 클립은 24h 증감 역시 며칠치 누적이라 그대로 보여주면 안 된다.
     day: dict = {}
     for r in await (await db.execute(
-        "SELECT owner_channel_id, heart_count FROM singcup_snapshots s WHERE event_id=? "
+        "SELECT owner_channel_id, heart_count, collected_at FROM singcup_snapshots s "
+        "WHERE event_id=? "
         "AND collected_at = (SELECT MAX(collected_at) FROM singcup_snapshots "
         "WHERE event_id=s.event_id AND owner_channel_id=s.owner_channel_id "
         "AND collected_at <= ?) GROUP BY owner_channel_id",
         (EVENT_ID, now - 86400))).fetchall():
-        day[r["owner_channel_id"]] = int(r["heart_count"])
+        day[r["owner_channel_id"]] = (int(r["heart_count"]), int(r["collected_at"]))
     return prev, day, ref_ts
 
 
@@ -1118,7 +1539,7 @@ async def load_main(limit: int = 200) -> dict:
         """SELECT s.channel_id, s.channel_name, s.channel_image_url, s.follower_count,
                   s.verified_mark, s.tagged_clip_count,
                   c.clip_uid, c.clip_title, c.thumbnail_image_url, c.heart_count,
-                  c.view_count, c.created_at, c.duration
+                  c.view_count, c.created_at, c.duration, c.metrics_recovered_at
            FROM singcup_streamers s
            JOIN singcup_clips c ON c.clip_uid = s.representative_clip_uid
            WHERE s.event_id=? AND c.active=1""", (EVENT_ID,))).fetchall()]
@@ -1165,7 +1586,15 @@ async def load_main(limit: int = 200) -> dict:
     for r in ranked[:max(1, min(3000, limit))]:
         cid = r["channel_id"]
         p = prev.get(cid)
-        d24 = day.get(cid)
+        d24_row = day.get(cid)
+        d24 = d24_row[0] if d24_row else None
+        rec_at = int(r["metrics_recovered_at"] or 0)
+        # 비교 기준 회차 이후에 '복구'된 클립이면 그 사이 증가분은 신뢰할 수 없다.
+        # 신선한 스냅샷이 기준 시각을 넘겨 다시 쌓이면 자연히 해제된다.
+        # 1시간과 24시간은 기준 시각이 다르므로 각각 따로 판정한다 — 24시간 쪽이
+        # 창이 넓어 오염이 더 오래 남는다.
+        recovered = bool(ref_ts and rec_at >= ref_ts)
+        recovered24 = bool(d24_row and rec_at >= d24_row[1])
         out.append({
             "rank": r["rank"], "channelId": cid,
             "channelName": r["channel_name"], "channelImageUrl": r["channel_image_url"],
@@ -1179,12 +1608,19 @@ async def load_main(limit: int = 200) -> dict:
             "score": r["score"],
             # 하트 증감은 '같은 대표 클립'끼리만 뺀다. 그 사이 대표 클립이 바뀌었다면
             # 서로 다른 영상의 하트를 빼는 셈이라 증가/감소가 통째로 가짜가 된다.
-            "heartDelta": (r["heart_count"] - p[0]) if p and p[2] == r["clip_uid"] else None,
+            # 또 갱신이 오래 멈췄다가 복구된 클립은 그 차이가 며칠치 누적이므로
+            # 단기 증감에서 뺀다(0 → 52를 '1시간에 +52'로 보여주지 않기 위해).
+            "heartDelta": (r["heart_count"] - p[0])
+                          if p and p[2] == r["clip_uid"] and not recovered else None,
+            "deltaState": "recovering" if recovered else ("new" if p is None else "ok"),
             "rankDelta": (p[1] - r["rank"]) if p else None,
-            "scoreDelta": round(r["score"] - p[3], 2) if p else None,
-            "heartDelta24h": (r["heart_count"] - d24) if d24 is not None else None,
+            "scoreDelta": round(r["score"] - p[3], 2) if p and not recovered else None,
+            "heartDelta24h": (r["heart_count"] - d24)
+                             if d24 is not None and not recovered24 else None,
             "heartChangeRate24h": heart_change_rate(r["heart_count"], d24)
-                                  if d24 is not None else None,
+                                  if d24 is not None and not recovered24 else None,
+            "delta24hState": ("recovering" if recovered24
+                              else "new" if d24 is None else "ok"),
             "isNew": p is None,
             "live": live.get(cid),
         })
@@ -1222,6 +1658,10 @@ async def load_main(limit: int = 200) -> dict:
         p = prev.get(r["channel_id"])
         if not p or p[2] != r["clip_uid"]:      # 비교 기록 없음 / 대표 클립이 바뀜
             continue
+        # 갱신 공백 뒤 복구된 클립은 며칠치 누적이 1시간 급상승으로 둔갑한다 —
+        # 급상승 랭킹은 이 오염에 특히 취약하므로 아예 제외한다.
+        if ref_ts and int(r["metrics_recovered_at"] or 0) >= ref_ts:
+            continue
         d = int(r["heart_count"]) - int(p[0])
         if d <= 0:
             continue
@@ -1235,8 +1675,11 @@ async def load_main(limit: int = 200) -> dict:
         "clipUid": r["clip_uid"], "clipTitle": r["clip_title"],
         "clipThumbnailUrl": r["thumbnail_image_url"],
         "heartCount": int(r["heart_count"]), "heartDelta1h": d,
-        "heartDelta24h": (int(r["heart_count"]) - day[r["channel_id"]])
-                         if r["channel_id"] in day else None,
+        # 급상승 목록에서도 복구된 클립의 24h 증감은 내리지 않는다
+        "heartDelta24h": (int(r["heart_count"]) - day[r["channel_id"]][0])
+                         if (r["channel_id"] in day
+                             and int(r["metrics_recovered_at"] or 0)
+                             < day[r["channel_id"]][1]) else None,
         "score": r["score"],
         "live": live.get(r["channel_id"]),
     } for i, (d, r) in enumerate(movers[:5])]

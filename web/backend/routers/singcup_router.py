@@ -12,16 +12,20 @@ import hmac
 from fastapi import APIRouter, Header, HTTPException
 from singcup_clips import (
     backfill_status,
+    clip_diagnosis,
     discover_new_clips,
     load_main,
     load_streamer_clips,
+    metrics_sweep_stats,
     refresh_metrics,
+    refresh_one_clip,
     reset_backfill,
     run_backfill,
 )
 from singcup_collector import (
     ADMIN_SECRET,
     MODES,
+    ST_FAILED,
     collect_once,
     load_rankings,
     load_status,
@@ -141,3 +145,40 @@ async def clips_refresh(limit: int | None = None,
     """기존 클립의 하트·조회수 갱신 1회. 목록은 훑지 않는다."""
     _require_secret(x_singcup_secret)
     return await refresh_metrics(limit=limit)
+
+
+@router.post("/clips/{clip_uid}/refresh")
+async def clips_refresh_one(clip_uid: str,
+                            x_singcup_secret: str | None = Header(default=None)):
+    """클립 1건만 즉시 갱신한다 — 전체 갱신이 그 클립을 집을 때까지 기다리지 않는다.
+
+    DB를 직접 쓰지 않고 fetch_card → _apply_metrics → 대표/점수/순위 재계산까지
+    정기 사이클과 같은 경로를 탄다. 응답에 db_before/fetched/db_after가 함께 온다.
+    """
+    _require_secret(x_singcup_secret)
+    res = await refresh_one_clip(clip_uid)
+    note = str(res.get("note", ""))
+    if res.get("status") == ST_FAILED and "형식" in note:
+        raise HTTPException(status_code=400, detail=note)
+    if res.get("status") == ST_FAILED and "DB에 없" in note:
+        raise HTTPException(status_code=404, detail=note)
+    return res
+
+
+@router.get("/clips/sweep-stats")
+async def clips_sweep_stats(x_singcup_secret: str | None = Header(default=None)):
+    """전체 순회 건전성 — 한 바퀴 SLA vs 실제 최장 방치 시간.
+
+    oldest_age_hours가 full_sweep_hours를 크게 넘으면(starving=true) 어떤 클립이
+    갱신 큐에서 굶고 있다는 뜻이다. 정렬/예산 회귀를 잡는 1차 지표다.
+    """
+    _require_secret(x_singcup_secret)
+    return await metrics_sweep_stats()
+
+
+@router.get("/clips/{clip_uid}/diagnose")
+async def clips_diagnose(clip_uid: str,
+                         x_singcup_secret: str | None = Header(default=None)):
+    """클립 1건의 DB 수치·대기열 위치·제외 사유. 값이 안 도는 클립을 지목해 본다."""
+    _require_secret(x_singcup_secret)
+    return await clip_diagnosis(clip_uid)

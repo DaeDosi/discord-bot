@@ -84,7 +84,9 @@ def test_delta_still_works_after_pruning(db):
     db(_prune_all(now))
     prev, day, ref = db(sc._delta_maps(now))
     assert ref is not None and prev["o1"][0] == 80
-    assert day["o1"] == 50
+    # day는 (하트, 기준 회차 시각) — 시각은 '복구된 클립인가' 판정에 쓴다
+    assert day["o1"][0] == 50
+    assert day["o1"][1] <= now - 24 * HOUR
 
 
 def test_rollup_is_idempotent(db):

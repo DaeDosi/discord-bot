@@ -798,6 +798,33 @@ async def init_db():
         "ALTER TABLE rising_collect_runs ADD COLUMN pages INTEGER NOT NULL DEFAULT 0",
         # 목록 API 실제 호출 횟수(재시도 포함) — 주기를 절반으로 줄일 때 늘어날 부하의 근거
         "ALTER TABLE rising_collect_runs ADD COLUMN api_calls INTEGER NOT NULL DEFAULT 0",
+        # 오랜 갱신 공백 뒤 수치가 한 번에 복구된 시각. 갱신이 멈춰 있던 클립이
+        # 0 → 52처럼 튀면 그 차이는 '1시간 증가량'이 아니라 며칠치 누적이다.
+        # 이 시각이 비교 기준 회차보다 나중이면 단기 증감을 계산하지 않는다.
+        # 롤백: 이 컬럼을 읽는 코드만 되돌리면 된다(DEFAULT 0이라 남아 있어도 무해).
+        "ALTER TABLE singcup_clips ADD COLUMN metrics_recovered_at INTEGER NOT NULL DEFAULT 0",
+        # 갱신 대기열은 '가장 오래된 것부터'로 스캔한다 — 이 순서의 인덱스가 없으면
+        # 클립이 수천 건일 때 매 사이클 전체 정렬이 걸린다.
+        "CREATE INDEX IF NOT EXISTS idx_singcup_clips_metrics_due "
+        "ON singcup_clips(event_id, active, last_metrics_at, clip_uid)",
+        # 지표 갱신 사이클 계측 — 사이클당 예산(REFRESH_PER_CYCLE)을 올려도 되는지는
+        # 추측이 아니라 p95 소요시간·API 호출 수·429·실패율로 판단해야 한다.
+        # 롤백: 이 테이블을 읽는 코드만 되돌리면 된다(테이블은 남아도 무해).
+        """CREATE TABLE IF NOT EXISTS singcup_refresh_runs (
+               id          INTEGER PRIMARY KEY AUTOINCREMENT,
+               event_id    TEXT    NOT NULL,
+               collected_at INTEGER NOT NULL,
+               duration_ms INTEGER NOT NULL DEFAULT 0,
+               due         INTEGER NOT NULL DEFAULT 0,
+               ok          INTEGER NOT NULL DEFAULT 0,
+               partial     INTEGER NOT NULL DEFAULT 0,
+               failed      INTEGER NOT NULL DEFAULT 0,
+               api_calls   INTEGER NOT NULL DEFAULT 0,
+               http_429    INTEGER NOT NULL DEFAULT 0,
+               lock_retries INTEGER NOT NULL DEFAULT 0
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_refresh_runs_at "
+        "ON singcup_refresh_runs(event_id, collected_at DESC)",
     ]:
         try:
             await db.execute(sql)
