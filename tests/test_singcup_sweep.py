@@ -159,14 +159,25 @@ def test_only_one_worker_claims_a_run(db):
     assert sum(1 for g in got if g is not None) == 1
 
 
-def test_running_previous_run_blocks_the_next_hour(db):
-    """이전 회차가 살아 있으면 다음 정각은 skipped_overlap으로 남긴다."""
+def test_running_previous_run_blocks_the_next_one(db):
+    """이전 사이클이 살아 있으면 새 사이클은 시작하지 않는다(single-flight)."""
     db(_seed(1, 1))
     prev = sw.floor_hour(time.time()) - KST_HOUR
     db(sw._claim(prev))                                # running 상태로 남겨 둔다
     _install(_cards())
     res = db(sw.run_sweep(sw.floor_hour(time.time())))
     assert res["status"] == sw.SKIPPED_OVERLAP
+    # 연속 모드에서는 겹침을 행으로 남기지 않는다 — 매 사이클 쌓이면 잡음이다
+    assert all(r["status"] != sw.SKIPPED_OVERLAP for r in db(sw.recent_runs(5)))
+
+
+def test_hourly_mode_records_the_skipped_hour(db, monkeypatch):
+    """정각 모드에서는 '이번 시간을 건너뛰었다'가 기록으로 남는다."""
+    monkeypatch.setattr(sw, "HOURLY_MODE", True)
+    db(_seed(1, 1))
+    db(sw._claim(sw.floor_hour(time.time()) - KST_HOUR))
+    _install(_cards())
+    assert db(sw.run_sweep(sw.floor_hour(time.time())))["status"] == sw.SKIPPED_OVERLAP
     assert db(sw.recent_runs(5))[0]["status"] == sw.SKIPPED_OVERLAP
 
 
@@ -397,8 +408,11 @@ def test_status_reports_schedule_and_staleness(db):
     _install(_cards())
     db(sw.run_sweep(sw.floor_hour(time.time())))
     st = db(sw.sweep_status())
-    assert st["timezone"] == "Asia/Seoul" and st["schedule"] == "0 * * * *"
-    assert st["next_scheduled_at"].endswith("+09:00")
+    assert st["timezone"] == "Asia/Seoul"
+    # 기본은 연속 모드 — '다음 예정 시각'이라는 개념이 없다
+    assert st["mode"] == "continuous" and st["schedule"] == "continuous"
+    assert st["next_scheduled_at"] is None
+    assert st["staleness_minutes"] == sw.STALENESS_MINUTES
     assert st["last_completed_run"]["status"] == sw.COMPLETED
     assert st["last_completed_run"]["processed"] == 4
     assert st["starving"] is False
@@ -1676,3 +1690,81 @@ def test_delta_moves_while_a_sweep_is_still_running(db):
     assert me["heartDelta"] == 30, "회차 완료를 기다리지 않고도 증감이 나와야 한다"
     assert len(main["topHeartMovers1h"]) == 1
     assert main["topHeartMovers1h"][0]["heartDelta1h"] == 30
+
+
+# ── 연속 갱신 모드 ─────────────────────────────────────────────────────────
+# 정각에 한 번씩 돌리면 회차가 한 시간을 넘기는 순간 다음 정각이 통째로
+# 건너뛰어져 실효 주기가 두 시간이 된다(실측: 회차 100분 → 완료 0회).
+def test_cycle_targets_by_staleness_not_the_hour(db, monkeypatch):
+    """대상 기준이 '정각'이 아니라 '마지막 시도가 N분보다 오래됨'이다."""
+    monkeypatch.setattr(sw, "STALENESS_MINUTES", 30.0)
+    db(_seed(2, 1))
+    now = int(time.time())
+
+    async def ages(fresh_uid, stale_uid):
+        c = await database.get_db()
+        await c.execute("UPDATE singcup_clips SET last_attempt_at=? WHERE clip_uid=?",
+                        (now - 300, fresh_uid))       # 5분 전 → 아직 신선
+        await c.execute("UPDATE singcup_clips SET last_attempt_at=? WHERE clip_uid=?",
+                        (now - 3600, stale_uid))      # 1시간 전 → 대상
+        await c.commit()
+    db(ages("c0_0", "c1_0"))
+
+    _install(_cards())
+    res = db(sw.run_cycle())
+    assert res["total_targets"] == 1 and res["processed"] == 1
+
+
+def test_cycle_runs_without_waiting_for_the_hour(db, monkeypatch):
+    """정각이 아니어도 사이클이 즉시 돈다."""
+    monkeypatch.setattr(sw, "STALENESS_MINUTES", 0.0)
+    db(_seed(3, 1))
+    _install(_cards())
+    res = db(sw.run_cycle())
+    assert res["status"] == sw.COMPLETED and res["processed"] == 3
+    # 회차 식별자는 정각이 아니라 사이클 시작 시각이다
+    runs = db(sw.recent_runs(1))
+    assert runs[0]["scheduled_at"] and runs[0]["status"] == sw.COMPLETED
+
+
+def test_consecutive_cycles_do_not_collide(db, monkeypatch):
+    """사이클을 연달아 돌려도 회차 식별자가 겹치지 않는다."""
+    monkeypatch.setattr(sw, "STALENESS_MINUTES", 0.0)
+    db(_seed(2, 1))
+    _install(_cards())
+    a = db(sw.run_cycle())
+    time.sleep(1.1)
+    _install(_cards())
+    b = db(sw.run_cycle())
+    assert a["status"] == b["status"] == sw.COMPLETED
+    runs = db(sw.recent_runs(5))
+    assert len({r["scheduled_at"] for r in runs}) == 2
+
+
+def test_cycle_with_nothing_due_is_a_noop(db, monkeypatch):
+    """대상이 없으면 빈 사이클로 끝난다(스케줄러가 쉬는 신호)."""
+    monkeypatch.setattr(sw, "STALENESS_MINUTES", 600.0)
+    db(_seed(2, 1))
+    now = int(time.time())
+
+    async def fresh():
+        c = await database.get_db()
+        await c.execute("UPDATE singcup_clips SET last_attempt_at=?", (now,))
+        await c.commit()
+    db(fresh())
+    _install(_cards())
+    res = db(sw.run_cycle())
+    assert res.get("total_targets", 0) == 0
+
+
+def test_hourly_mode_is_still_available_for_rollback(db, monkeypatch):
+    """SINGCUP_SWEEP_HOURLY=true 면 예전 정각 동작으로 돌아간다."""
+    monkeypatch.setattr(sw, "HOURLY_MODE", True)
+    db(_seed(2, 1))
+    _install(_cards())
+    sched = sw.floor_hour(time.time())
+    res = db(sw.run_sweep(sched))
+    assert res["status"] == sw.COMPLETED
+    st = db(sw.sweep_status())
+    assert st["mode"] == "hourly" and st["schedule"] == "0 * * * *"
+    assert st["next_scheduled_at"].endswith("+09:00")

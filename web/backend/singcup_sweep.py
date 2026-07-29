@@ -41,6 +41,14 @@ GRACE_SECONDS = int(os.getenv("SINGCUP_SWEEP_GRACE_SECONDS", "300"))
 STALE_RUN_SECONDS = int(os.getenv("SINGCUP_SWEEP_STALE_SECONDS", "600"))
 PROGRESS_EVERY = int(os.getenv("SINGCUP_SWEEP_PROGRESS_EVERY", "25"))
 NEW_CLIP_WINDOW = int(os.getenv("SINGCUP_SWEEP_NEW_HOURS", "48")) * 3600
+# 연속 모드 — 정각 경계 없이 사이클을 이어 붙인다.
+# 대상은 "마지막 시도가 이 시간보다 오래된 클립". 처리량이 이보다 빠르면 그만큼
+# 자주 갱신되고, 느리면 가장 오래된 것부터 처리되므로 굶는 클립은 없다.
+STALENESS_MINUTES = float(os.getenv("SINGCUP_SWEEP_STALENESS_MINUTES", "60"))
+CYCLE_GAP_SECONDS = float(os.getenv("SINGCUP_SWEEP_CYCLE_GAP_SECONDS", "5"))
+IDLE_SLEEP_SECONDS = float(os.getenv("SINGCUP_SWEEP_IDLE_SECONDS", "60"))
+# 예전 정각 모드로 되돌리는 스위치(롤백용)
+HOURLY_MODE = os.getenv("SINGCUP_SWEEP_HOURLY", "false").lower() in ("1", "true", "yes")
 
 RUNNING, COMPLETED, PARTIAL = "running", "completed", "partial"
 FAILED, MISSED, SKIPPED_OVERLAP = "failed", "missed", "skipped_overlap"
@@ -223,16 +231,26 @@ def _pct(values: list[int], p: float) -> int:
 
 
 # ── 회차 실행 ──────────────────────────────────────────────────────────────
-async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = None) -> dict:
-    """한 회차 — 대상 전체를 속도 제한 아래 갱신하고 마지막에 순위를 재계산한다."""
+async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = None,
+                    cutoff: int | None = None) -> dict:
+    """한 사이클 — 대상 전체를 속도 제한 아래 갱신하고 마지막에 순위를 재계산한다.
+
+    scheduled_at 은 **회차 식별자**(UNIQUE 키)이고, cutoff 는 **대상 기준 시각**이다.
+    정각 모드에서는 둘이 같지만, 연속 모드에서는 식별자는 사이클 시작 시각이고
+    기준은 "now - 허용 신선도"라 서로 다르다.
+    """
     scheduled_at = scheduled_at or floor_hour(time.time())
+    cutoff = scheduled_at if cutoff is None else cutoff
     if run_id is None:
         busy = await _active_run(scheduled_at)
         if busy:
-            await _record(scheduled_at, SKIPPED_OVERLAP,
-                          f"이전 회차({kst(busy['scheduled_at'])})가 아직 실행 중")
-            sc._log({"event": "sweep_skipped_overlap", "level": "warning",
-                     "scheduled_at": kst(scheduled_at)})
+            # 정각 모드에서 '이번 시간을 건너뛰었다'는 기록은 의미가 있지만,
+            # 연속 모드에서는 그냥 앞 사이클이 도는 중이라 매번 남기면 행만 쌓인다.
+            if HOURLY_MODE:
+                await _record(scheduled_at, SKIPPED_OVERLAP,
+                              f"이전 회차({kst(busy['scheduled_at'])})가 아직 실행 중")
+                sc._log({"event": "sweep_skipped_overlap", "level": "warning",
+                         "scheduled_at": kst(scheduled_at)})
             return {"status": SKIPPED_OVERLAP, "scheduled_at": kst(scheduled_at)}
         run_id = await _claim(scheduled_at)
         if run_id is None:
@@ -240,7 +258,7 @@ async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = Non
                     "note": "다른 워커가 이미 이 회차를 소유"}
 
     started = time.monotonic()
-    targets = await sweep_targets(scheduled_at)
+    targets = await sweep_targets(cutoff)
     total = len(targets)
     rate = min(MAX_RATE, max(MIN_RATE, required_rate(total)))
     bucket = TokenBucket(rate, MAX_RATE)
@@ -338,7 +356,7 @@ async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = Non
 
     api = sc._take_api_counters()
     dur = int((time.monotonic() - started) * 1000)
-    left = await sweep_targets(scheduled_at)
+    left = await sweep_targets(cutoff)
     status = COMPLETED if not left else PARTIAL
     await _progress(run_id, status=status, processed=done,
                     completed_at=int(time.time()), duration_ms=dur,
@@ -362,31 +380,65 @@ async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = Non
 
 
 # ── 스케줄러 ───────────────────────────────────────────────────────────────
+async def run_cycle() -> dict:
+    """연속 갱신 한 사이클 — 정각을 기다리지 않는다.
+
+    대상은 "마지막 시도가 STALENESS 보다 오래된 클립" 전부다. 한 사이클이 끝나면
+    곧바로 다음 사이클이 시작되므로, 처리량이 허락하는 만큼 계속 돈다.
+    회차 식별자는 사이클 시작 시각이라 매번 고유하고, 이전 사이클이 아직 살아
+    있으면 _active_run 이 막는다(다중 워커 포함 single-flight).
+    """
+    now = int(time.time())
+    return await run_sweep(now, cutoff=now - int(STALENESS_MINUTES * 60))
+
+
 async def sweep_scheduler():
-    """KST 매시 정각(0 * * * *)에 회차를 시작한다. 시작하자마자 돌지 않는다."""
+    """지표 갱신 루프.
+
+    기본은 **연속 모드**다. 정각에 맞춰 한 번씩 돌리면 회차가 한 시간을 넘기는
+    순간 다음 정각이 통째로 건너뛰어져 실효 주기가 두 시간이 된다(실측: 회차
+    100분 → 매 정각 skipped_overlap → 완료 0회). 연속 모드는 회차 경계가 없어
+    그 함정이 없고, 끝나는 대로 다음 사이클이 이어진다.
+
+    SINGCUP_SWEEP_HOURLY=true 로 두면 예전 정각 모드로 되돌아간다(롤백용).
+    """
     if os.getenv("SINGCUP_ENABLED", "true").lower() in ("0", "false", "no"):
+        return
+    if os.getenv("SINGCUP_SWEEP_ENABLED", "true").lower() in ("0", "false", "no"):
+        sc._log({"event": "sweep_disabled"})
         return
     await asyncio.sleep(float(os.getenv("SINGCUP_SWEEP_START_DELAY", "20")))
     while True:
-        now = time.time()
-        sched = floor_hour(now)
+        pause = CYCLE_GAP_SECONDS
         try:
             if event_status() != "LIVE":
-                pass                                  # 이벤트 기간 밖에서는 쉰다
-            elif now - sched <= GRACE_SECONDS:
-                # 배포/재시작이 정각 직후에 걸린 경우까지 그 회차를 살린다
-                await run_sweep(sched)
-            elif not await _exists(sched):
-                # 정각을 놓쳤다 — 몰아서 실행하지 않고 기록만 남기고 다음 정각을 기다린다
-                await _record(sched, MISSED,
-                              f"정각 이후 {int(now - sched)}초 뒤 기동 — 이번 회차 건너뜀")
-                sc._log({"event": "sweep_missed", "level": "warning",
-                         "scheduled_at": kst(sched),
-                         "late_seconds": int(now - sched)})
+                pause = 300.0                         # 이벤트 기간 밖에서는 쉰다
+            elif HOURLY_MODE:
+                pause = await _hourly_tick()
+            else:
+                res = await run_cycle()
+                # 갱신할 대상이 없으면 잠깐 쉰다(빈 사이클을 계속 만들지 않는다)
+                if res.get("status") == SKIPPED_OVERLAP or not res.get("total_targets"):
+                    pause = IDLE_SLEEP_SECONDS
         except Exception as e:
             sc._log({"event": "sweep_loop_error", "level": "warning",
                      "detail": str(e)[:200]})
-        await asyncio.sleep(max(5.0, (sched + 3600) - time.time() + 1.0))
+            pause = IDLE_SLEEP_SECONDS
+        await asyncio.sleep(pause)
+
+
+async def _hourly_tick() -> float:
+    """예전 정각 모드 한 틱. 다음 대기 시간을 돌려준다."""
+    now = time.time()
+    sched = floor_hour(now)
+    if now - sched <= GRACE_SECONDS:
+        await run_sweep(sched)
+    elif not await _exists(sched):
+        await _record(sched, MISSED,
+                      f"정각 이후 {int(now - sched)}초 뒤 기동 — 이번 회차 건너뜀")
+        sc._log({"event": "sweep_missed", "level": "warning",
+                 "scheduled_at": kst(sched), "late_seconds": int(now - sched)})
+    return max(5.0, (sched + 3600) - time.time() + 1.0)
 
 
 async def _exists(scheduled_at: int) -> bool:
@@ -431,8 +483,10 @@ async def sweep_status() -> dict:
             "rate_limit": round(float(cur["rate_limit"] or 0), 3),
             "estimated_completion_at": kst(eta),
             # 55분 안에 못 끝날 페이스면 운영이 바로 알아야 한다
+            # 연속 모드에서는 '이 사이클이 허용 신선도 안에 못 끝난다'는 뜻이다.
             "behind_schedule": bool(
-                eta and eta > int(cur["scheduled_at"]) + TARGET_MINUTES * 60),
+                eta and eta > int(cur["scheduled_at"])
+                + (TARGET_MINUTES if HOURLY_MODE else STALENESS_MINUTES) * 60),
             # 단계적 상향(1.0 → 1.5 → 1.7 → 2.0)을 회차가 끝나기 전에 판단하려면
             # 진행 중에도 429·실패율이 보여야 한다. secret 없이 볼 수 있게 여기 둔다.
             "success": int(cur["success"] or 0),
@@ -447,8 +501,11 @@ async def sweep_status() -> dict:
     oldest = int(agg["oldest"] or 0)
     return {
         "timezone": "Asia/Seoul",
-        "schedule": "0 * * * *",
-        "next_scheduled_at": kst(floor_hour(now) + 3600),
+        "mode": "hourly" if HOURLY_MODE else "continuous",
+        "schedule": "0 * * * *" if HOURLY_MODE else "continuous",
+        # 연속 모드에는 '다음 예정 시각'이 없다 — 앞 사이클이 끝나는 대로 이어진다.
+        "next_scheduled_at": kst(floor_hour(now) + 3600) if HOURLY_MODE else None,
+        "staleness_minutes": STALENESS_MINUTES,
         "target_minutes": TARGET_MINUTES,
         "max_rate_per_second": MAX_RATE,
         "concurrency": CONCURRENCY,
