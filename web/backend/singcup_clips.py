@@ -602,6 +602,31 @@ async def _save_snapshots(ranked: list[dict], now: int) -> int:
     return max(0, cur.rowcount or 0)
 
 
+async def ensure_hourly_snapshot(now: int | None = None) -> bool:
+    """이 시간 버킷의 이력이 아직 없으면 한 세트 남긴다. 저장했으면 True.
+
+    이력 저장을 '정각 회차 완료'에 묶어 두면, 회차가 한 시간을 넘기는 순간
+    이력이 통째로 끊긴다(실측: 회차 소요 117분 → 완료 0회 → 새 스냅샷 0건).
+    그러면 1시간 증감의 기준 회차가 사라져 화면의 증감이 전부 굳는다.
+
+    그래서 저장은 **시각**에만 묶는다 — 가벼운 정기 루프가 매 시간 버킷의 첫 틱에
+    한 번 남긴다. 버킷당 유니크라 몇 번을 불러도 한 세트다.
+    시각 기준이라 회차가 늦어져도 기준선은 제때 생기고, 회차가 도는 동안
+    현재값이 그 기준선에서 멀어지므로 증감이 실제로 관측된다.
+    """
+    now = now or int(time.time())
+    bucket = snapshot_bucket(now)
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT 1 FROM singcup_snapshots WHERE event_id=? AND snapshot_bucket=? LIMIT 1",
+        (EVENT_ID, bucket))).fetchone()
+    if row is not None:
+        return False
+    await recompute_ranking(now, save_snapshot=True)
+    _log({"event": "hourly_snapshot", "bucket": _iso(bucket)})
+    return True
+
+
 async def snapshot_duplicate_report() -> dict:
     """기존 스냅샷 중복 현황(read-only). 삭제하지 않는다.
 
@@ -2534,6 +2559,9 @@ async def start_clip_collector():
                 await recheck_untagged_clips()
                 # 어떤 이유로든 양쪽 표에 다 없는 '고아'를 되찾는다(주기적 전체 대조)
                 await maybe_reconcile()
+                # 1시간 증감의 기준선. 정각 회차 완료에 묶으면 회차가 한 시간을
+                # 넘길 때 이력이 끊겨 증감이 통째로 굳는다 — 시각에만 묶는다.
+                await ensure_hourly_snapshot()
             elif st == "UPCOMING":
                 wait = 30.0
             else:

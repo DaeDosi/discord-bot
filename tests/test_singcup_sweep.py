@@ -1611,3 +1611,68 @@ def test_fresh_movers_overwrite_the_saved_one(db):
     assert main["topHeartMovers1h"][0]["heartDelta1h"] == 199
     saved, _b, _a = db(sc._last_top_movers())
     assert saved[0]["heartDelta1h"] == 199
+
+
+# ── 시간 버킷 기준선은 회차 완료와 무관하게 생겨야 한다 ────────────────────
+# 이력 저장을 '정각 회차 완료'에만 묶었더니, 회차가 117분 걸려 완료되지 않는
+# 동안 새 스냅샷이 0건이 됐다. 기준 회차가 사라져 1시간 증감이 전부 굳었다.
+def test_hourly_snapshot_is_written_without_a_completed_sweep(db):
+    db(_seed(3, 1))
+    _install(_cards())
+    assert db(_snap_rows()) == []
+    assert db(sc.ensure_hourly_snapshot()) is True
+    rows = db(_snap_rows())
+    assert len(rows) == 3
+    assert rows[0]["snapshot_bucket"] == sc.snapshot_bucket(int(time.time()))
+
+
+def test_hourly_snapshot_is_idempotent_within_a_bucket(db):
+    """4분 루프가 계속 불러도 버킷당 한 세트."""
+    db(_seed(3, 1))
+    _install(_cards())
+    now = sc.snapshot_bucket(int(time.time())) + 30
+    assert db(sc.ensure_hourly_snapshot(now)) is True
+    for _ in range(5):
+        assert db(sc.ensure_hourly_snapshot(now + 60)) is False
+    assert len(db(_snap_rows())) == 3
+
+
+def test_hourly_snapshot_starts_a_new_set_next_bucket(db):
+    db(_seed(2, 1))
+    _install(_cards())
+    base = sc.snapshot_bucket(int(time.time()))
+    db(sc.ensure_hourly_snapshot(base + 30))
+    db(sc.ensure_hourly_snapshot(base + 3600 + 30))
+    rows = db(_snap_rows())
+    assert len(rows) == 4 and len({r["snapshot_bucket"] for r in rows}) == 2
+
+
+def test_delta_moves_while_a_sweep_is_still_running(db):
+    """기준선이 시각에 묶이면, 회차가 끝나지 않아도 증감이 관측된다."""
+    db(_seed(1, 1))
+    _install(_cards())
+    now = int(time.time())
+    base = sc.snapshot_bucket(now)
+
+    async def set_heart(v, at):
+        c = await database.get_db()
+        await c.execute("UPDATE singcup_clips SET heart_count=?, last_metrics_at=?,"
+                        " last_attempt_at=?, last_heart_at=?, last_view_at=?"
+                        " WHERE clip_uid='c0_0'", (v, at, at, at, at))
+        await c.commit()
+
+    # 운영처럼 매 시간 버킷마다 기준선이 쌓여 있다(회차 완료와 무관하게).
+    # 두 버킷을 다 만들어 두면 지금이 정시 직후든 정시 직전이든 허용오차 안에
+    # 기준선이 하나는 들어온다 — 벽시계 위치에 흔들리지 않게 한다.
+    db(set_heart(10, base - 3600 + 30))
+    db(sc.ensure_hourly_snapshot(base - 3600 + 30))
+    db(sc.ensure_hourly_snapshot(base + 30))
+    # 그 뒤 회차가 도는 동안 하트가 오른다
+    db(set_heart(40, now - 60))
+    sc._main_cache.clear()
+
+    main = db(sc.load_main())
+    me = main["streamers"][0]
+    assert me["heartDelta"] == 30, "회차 완료를 기다리지 않고도 증감이 나와야 한다"
+    assert len(main["topHeartMovers1h"]) == 1
+    assert main["topHeartMovers1h"][0]["heartDelta1h"] == 30
