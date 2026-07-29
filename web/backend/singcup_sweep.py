@@ -107,10 +107,11 @@ def required_rate(total: int) -> float:
 #   0 한 번도 정상 갱신 안 됨 / 1 대표 / 2 최근 48시간 신규
 #   3 대표를 추월할 가능성(대표 하트의 절반 이상) / 4 나머지 일반 클립
 _TARGET_SQL = """
-SELECT c.clip_uid, c.video_id, c.rec_id, c.last_metrics_at, c.owner_channel_id,
+SELECT c.clip_uid, c.video_id, c.rec_id, c.last_attempt_at, c.owner_channel_id,
        c.thumbnail_image_url,
        (s.representative_clip_uid IS NOT NULL) AS is_rep,
        CASE
+         -- 우선순위 0은 '한 번도 정상 수신한 적 없음'이다(시도 여부가 아니라)
          WHEN c.last_metrics_at IS NULL              THEN 0
          WHEN c.last_metrics_at = 0                  THEN 0
          WHEN s.representative_clip_uid IS NOT NULL  THEN 1
@@ -124,10 +125,12 @@ LEFT JOIN singcup_streamers s  ON s.representative_clip_uid = c.clip_uid
 LEFT JOIN singcup_streamers so ON so.channel_id = c.owner_channel_id
 LEFT JOIN singcup_clips rc     ON rc.clip_uid = so.representative_clip_uid
 WHERE c.event_id = ? AND c.active = 1
-  AND (c.last_metrics_at IS NULL OR c.last_metrics_at < ?)
+  -- **시도** 시각 기준이다. last_metrics_at(둘 다 정상)으로 걸면 계속 실패하는
+  -- 클립은 영원히 대상에 남아 한 회차 안에서 무한 재호출된다.
+  AND (c.last_attempt_at IS NULL OR c.last_attempt_at < ?)
 ORDER BY prio ASC,
-         CASE WHEN c.last_metrics_at IS NULL THEN 0 ELSE 1 END ASC,
-         c.last_metrics_at ASC,
+         CASE WHEN c.last_attempt_at IS NULL THEN 0 ELSE 1 END ASC,
+         c.last_attempt_at ASC,
          c.clip_uid ASC
 """
 
@@ -135,8 +138,10 @@ ORDER BY prio ASC,
 async def sweep_targets(scheduled_at: int) -> list[dict]:
     """이 회차에 아직 처리되지 않은 전체 클립. 대표·일반을 모두 포함한다.
 
-    이미 처리된 클립은 last_metrics_at >= scheduled_at 이라 자동으로 빠진다 —
+    이미 처리된 클립은 last_attempt_at >= scheduled_at 이라 자동으로 빠진다 —
     그래서 이 목록 자체가 '남은 일감'이고, 재시작 후 그대로 이어진다.
+    성공이 아니라 **시도**가 기준이라, 계속 실패하는 클립도 회차 안에서 한 번만
+    부르고 다음 회차로 넘어간다.
     """
     db = await get_db()
     rows = await (await db.execute(

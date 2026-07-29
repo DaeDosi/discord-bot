@@ -887,15 +887,19 @@ async def _apply_metrics(clip_uid: str, heart: int, view: int,
     # 갱신 공백이 길었는데 하트가 움직였다면, 그 차이는 '최근 1시간 증가'가 아니라
     # 공백 동안 누적된 양이다. 복구 시각을 남겨 단기 증감 계산에서 빼도록 한다.
     prev = await (await db.execute(
-        "SELECT heart_count, last_metrics_at FROM singcup_clips WHERE clip_uid=?",
-        (clip_uid,))).fetchone()
+        "SELECT heart_count, last_metrics_at, last_heart_at FROM singcup_clips "
+        "WHERE clip_uid=?", (clip_uid,))).fetchone()
+    # 공백 판정 기준은 '하트를 마지막으로 정상 수신한 시각'이다. last_metrics_at을
+    # 쓰면 조회수만 실패해 온 클립이 공백으로 오인된다.
+    _prev_heart_at = (int(prev["last_heart_at"] or 0) or int(prev["last_metrics_at"] or 0)
+                      ) if prev is not None else 0
     if (heart_ok and prev is not None
-            and now - int(prev["last_metrics_at"] or 0) > STALE_RECOVERY_SECONDS
+            and now - _prev_heart_at > STALE_RECOVERY_SECONDS
             and heart != int(prev["heart_count"] or 0)):
         sets.append("metrics_recovered_at=?")
         params.append(now)
         _log({"event": "metrics_recovered", "level": "warning", "clip_uid": clip_uid,
-              "gap_hours": round((now - int(prev["last_metrics_at"] or 0)) / 3600, 2),
+              "gap_hours": round((now - _prev_heart_at) / 3600, 2),
               "heart_from": int(prev["heart_count"] or 0), "heart_to": heart})
     if heart_ok:
         sets.append("heart_count=?")
@@ -906,13 +910,50 @@ async def _apply_metrics(clip_uid: str, heart: int, view: int,
     # metrics_ok는 지금까지처럼 '둘 다 온전한가'를 뜻한다(스키마 의미 유지)
     sets.append("metrics_ok=?")
     params.append(1 if (heart_ok and view_ok) else 0)
-    # 못 읽은 회차도 last_metrics_at은 올려 같은 클립만 계속 재시도하지 않게 한다
-    sets += ["last_metrics_at=?", "last_collected_at=?", "row_updated_at=?"]
-    params += [now, now, now, clip_uid]
+
+    # 시각을 네 개로 나눈다. 예전에는 last_metrics_at 하나가 '시도했다'와
+    # '정상으로 받았다'를 겸해서, 둘 다 실패해도 now로 올라갔다. 그러면 실제
+    # 값은 며칠 전 것인데 스케줄러는 방금 갱신된 정상 클립으로 판단한다.
+    #   last_attempt_at  항상 갱신 — 같은 클립을 무한 재호출하지 않기 위한 시각
+    #   last_heart_at    하트를 정상으로 받았을 때만
+    #   last_view_at     조회수를 정상으로 받았을 때만
+    #   last_metrics_at  **둘 다** 정상일 때만 — 이제 '신선함'의 진짜 근거
+    sets.append("last_attempt_at=?")
+    params.append(now)
+    if heart_ok:
+        sets.append("last_heart_at=?")
+        params.append(now)
+    if view_ok:
+        sets.append("last_view_at=?")
+        params.append(now)
+    if heart_ok and view_ok:
+        sets.append("last_metrics_at=?")
+        params.append(now)
+    sets += ["last_collected_at=?", "row_updated_at=?"]
+    params += [now, now, clip_uid]
     await db.execute(
         f"UPDATE singcup_clips SET {', '.join(sets)} WHERE clip_uid=?", params)
     return "ok" if (heart_ok and view_ok) else "failed" if not (heart_ok or view_ok) \
         else "partial"
+
+
+def metrics_state(row, now: int, stale_seconds: int = 2 * 3600) -> str:
+    """클립 지표의 신선도 — ok / partial / stale / failed.
+
+    last_metrics_at(둘 다 정상)만 보면 부분 성공 클립이 영원히 stale로 보인다.
+    필드별 시각을 함께 봐야 "하트는 최신인데 조회수만 옛날"을 구분할 수 있다.
+    """
+    h = int(row["last_heart_at"] or 0)
+    v = int(row["last_view_at"] or 0)
+    a = int(row["last_attempt_at"] or 0)
+    fresh_h, fresh_v = (now - h) <= stale_seconds, (now - v) <= stale_seconds
+    if h and v and fresh_h and fresh_v:
+        return "ok"
+    if (h and fresh_h) or (v and fresh_v):
+        return "partial"
+    if a and not h and not v:
+        return "failed"
+    return "stale"
 
 
 async def _queue_retry(item: dict, err: str, now: int):
@@ -1273,12 +1314,13 @@ async def discover_new_clips() -> dict:
 
 
 # ── ③ 지표 갱신 (목록을 훑지 않는다) ────────────────────────────────────────
-_DUE_SQL = """SELECT c.clip_uid, c.video_id, c.rec_id, c.last_metrics_at,
+_DUE_SQL = """SELECT c.clip_uid, c.video_id, c.rec_id, c.last_attempt_at,
                      (s.representative_clip_uid IS NOT NULL) AS is_rep
               FROM singcup_clips c
               LEFT JOIN singcup_streamers s ON s.representative_clip_uid = c.clip_uid
               WHERE c.event_id=? AND c.active=1
-                AND c.last_metrics_at < (CASE WHEN s.representative_clip_uid IS NOT NULL
+                -- 성공이 아니라 **시도** 기준(실패 클립 무한 재호출 방지)
+                AND c.last_attempt_at < (CASE WHEN s.representative_clip_uid IS NOT NULL
                                               THEN ? ELSE ? END)
                 {extra}
               -- 한 번도 갱신 못 받은 행(NULL/0)을 무조건 맨 앞으로 명시한다.
@@ -1286,10 +1328,10 @@ _DUE_SQL = """SELECT c.clip_uid, c.video_id, c.rec_id, c.last_metrics_at,
               -- NULL의 위치는 방언마다 달라 의도를 SQL에 박아 둔다.
               -- 그다음은 가장 오래 방치된 것부터. clip_uid는 동률일 때 순서를
               -- 고정해 재시작 후에도 같은 앞머리만 반복해 집지 않게 한다.
-              ORDER BY CASE WHEN c.last_metrics_at IS NULL THEN 0
-                            WHEN c.last_metrics_at = 0    THEN 0
+              ORDER BY CASE WHEN c.last_attempt_at IS NULL THEN 0
+                            WHEN c.last_attempt_at = 0    THEN 0
                             ELSE 1 END ASC,
-                       c.last_metrics_at ASC, c.clip_uid ASC
+                       c.last_attempt_at ASC, c.clip_uid ASC
               LIMIT ?"""
 
 

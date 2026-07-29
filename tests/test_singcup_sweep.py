@@ -50,10 +50,10 @@ async def _seed(n_streamers=3, clips_each=3, *, last=0):
                 " video_id, rec_id, clip_title, thumbnail_image_url, description,"
                 " created_at, heart_count, view_count, duration, adult, blind_type,"
                 " metrics_ok, active, missing_scan_count, first_collected_at,"
-                " last_collected_at, row_updated_at, last_metrics_at)"
-                " VALUES (?,?,?,?,'','t',?,'#싱드컵',?,?,0,60,0,'',1,1,0,?,?,?,?)",
+                " last_collected_at, row_updated_at, last_metrics_at, last_attempt_at)"
+                " VALUES (?,?,?,?,'','t',?,'#싱드컵',?,?,0,60,0,'',1,1,0,?,?,?,?,?)",
                 (uid, sc.EVENT_ID, cid, f"v{uid}", f"https://t/{uid}.jpg",
-                 now - 9999, 10 - ci, now, now, now, last))
+                 now - 9999, 10 - ci, now, now, now, last, last))
         await c.execute(
             "INSERT INTO singcup_streamers (channel_id, event_id, channel_name,"
             " channel_image_url, follower_count, verified_mark,"
@@ -66,7 +66,7 @@ async def _seed(n_streamers=3, clips_each=3, *, last=0):
 async def _all_metrics():
     c = await database.get_db()
     rows = await (await c.execute(
-        "SELECT clip_uid, heart_count, view_count, last_metrics_at "
+        "SELECT clip_uid, heart_count, view_count, last_metrics_at, last_attempt_at "
         "FROM singcup_clips WHERE event_id=?", (sc.EVENT_ID,))).fetchall()
     return {r["clip_uid"]: dict(r) for r in rows}
 
@@ -107,7 +107,7 @@ def test_missed_run_is_recorded_not_executed(db):
     runs = db(sw.recent_runs(5))
     assert runs[0]["status"] == sw.MISSED
     # 대상 클립은 하나도 건드리지 않았다
-    assert all(m["last_metrics_at"] == 0 for m in db(_all_metrics()).values())
+    assert all(m["last_attempt_at"] == 0 for m in db(_all_metrics()).values())
 
 
 def test_within_grace_the_run_executes(db):
@@ -127,7 +127,7 @@ def test_past_runs_are_not_batched_on_startup(db):
         db(sw._record(now - back * KST_HOUR, sw.MISSED, "기동 전"))
     runs = db(sw.recent_runs(10))
     assert [r["status"] for r in runs] == [sw.MISSED] * 3
-    assert all(m["last_metrics_at"] == 0 for m in db(_all_metrics()).values())
+    assert all(m["last_attempt_at"] == 0 for m in db(_all_metrics()).values())
 
 
 # ── 7~9. 멱등성·중복 방지 ──────────────────────────────────────────────────
@@ -237,8 +237,9 @@ def test_restart_resumes_and_does_not_redo(db):
         rows = await (await c.execute(
             "SELECT clip_uid FROM singcup_clips LIMIT ?", (n,))).fetchall()
         for r in rows:
-            await c.execute("UPDATE singcup_clips SET last_metrics_at=? "
-                            "WHERE clip_uid=?", (sched + 10, r["clip_uid"]))
+            await c.execute("UPDATE singcup_clips SET last_metrics_at=?, "
+                            "last_attempt_at=? WHERE clip_uid=?",
+                            (sched + 10, sched + 10, r["clip_uid"]))
         await c.commit()
     db(mark_done(5))                                   # 5건은 이미 처리된 셈
 
@@ -301,8 +302,10 @@ def test_recovered_clip_does_not_pollute_surge(db):
             "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
             " heart_count, view_count, follower_count, score, rank, collected_at)"
             " VALUES (?,?,?,0,1,0,0,1,?)", (sc.EVENT_ID, "c0_0", "own0", now - 3600))
+        old = now - 20 * 3600
         await c.execute("UPDATE singcup_clips SET heart_count=0, view_count=1, "
-                        "last_metrics_at=?", (now - 20 * 3600,))
+                        "last_metrics_at=?, last_attempt_at=?, last_heart_at=?, "
+                        "last_view_at=?", (old, old, old, old))
         await c.commit()
     db(stale())
 
@@ -377,8 +380,9 @@ def test_run_is_not_completed_until_everything_is_done(db):
         rows = await (await c.execute(
             "SELECT clip_uid FROM singcup_clips LIMIT 2")).fetchall()
         for r in rows:
-            await c.execute("UPDATE singcup_clips SET last_metrics_at=? "
-                            "WHERE clip_uid=?", (sched + 5, r["clip_uid"]))
+            await c.execute("UPDATE singcup_clips SET last_metrics_at=?, "
+                            "last_attempt_at=? WHERE clip_uid=?",
+                            (sched + 5, sched + 5, r["clip_uid"]))
         await c.commit()
     db(only_two())
     assert len(db(sw.sweep_targets(sched))) == 2        # 아직 2건 남음
@@ -1322,7 +1326,8 @@ def test_hourly_snapshots_still_support_deltas(db):
                 " snapshot_bucket) VALUES (?,?,?,?,1,0,0,1,?,?)",
                 (sc.EVENT_ID, "c0_0", "own0", heart, ts, sc.snapshot_bucket(ts)))
         await c.execute("UPDATE singcup_clips SET heart_count=30, "
-                        "last_metrics_at=? WHERE clip_uid='c0_0'", (now - 300,))
+                        "last_metrics_at=?, last_attempt_at=? WHERE clip_uid='c0_0'",
+                        (now - 300, now - 300))
         await c.commit()
     db(hourly_history())
 
@@ -1343,7 +1348,8 @@ def test_duplicate_report_is_read_only(db):
                 "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
                 " heart_count, view_count, follower_count, score, rank, collected_at)"
                 " VALUES (?,?,?,?,1,0,0,1,?)",
-                (sc.EVENT_ID, "c0_0", "own0", i, now - i * 60))
+                (sc.EVENT_ID, "c0_0", "own0", i,
+                 sc.snapshot_bucket(now) + 100 + i))
         await c.commit()
     db(legacy())
 
@@ -1353,3 +1359,132 @@ def test_duplicate_report_is_read_only(db):
     assert rep["legacy_duplicate_buckets"] == 1
     assert rep["legacy_rows_in_duplicate_buckets"] == 3
     assert len(db(_snap_rows())) == 3, "보고가 행을 지웠다"
+
+
+# ── 2단계: 시도 시각과 성공 시각 분리 ──────────────────────────────────────
+# 예전에는 last_metrics_at 하나가 '시도했다'와 '정상으로 받았다'를 겸했다.
+# 둘 다 실패해도 now로 올라가서, 실제 값은 며칠 전인데 스케줄러는 방금 갱신된
+# 정상 클립으로 판단했다(실패의 정상 위장).
+async def _times(uid="c0_0"):
+    c = await database.get_db()
+    r = await (await c.execute(
+        "SELECT last_attempt_at, last_heart_at, last_view_at, last_metrics_at,"
+        " heart_count, view_count FROM singcup_clips WHERE clip_uid=?",
+        (uid,))).fetchone()
+    return dict(r)
+
+
+async def _preset(uid="c0_0", *, t=0):
+    c = await database.get_db()
+    await c.execute(
+        "UPDATE singcup_clips SET heart_count=3, view_count=99, last_attempt_at=?,"
+        " last_heart_at=?, last_view_at=?, last_metrics_at=? WHERE clip_uid=?",
+        (t, t, t, t, uid))
+    await c.commit()
+
+
+def test_both_ok_updates_all_four_times(db):
+    db(_seed(1, 1))
+    db(_preset())
+    now = int(time.time())
+    assert db(sc._apply_metrics("c0_0", 10, 20, True, True, now)) == "ok"
+    t = db(_times())
+    assert t["last_attempt_at"] == t["last_heart_at"] == now
+    assert t["last_view_at"] == t["last_metrics_at"] == now
+    assert (t["heart_count"], t["view_count"]) == (10, 20)
+
+
+def test_heart_only_leaves_view_time_untouched(db):
+    db(_seed(1, 1))
+    db(_preset(t=1000))
+    now = int(time.time())
+    assert db(sc._apply_metrics("c0_0", 10, 0, True, False, now)) == "partial"
+    t = db(_times())
+    assert t["last_attempt_at"] == now and t["last_heart_at"] == now
+    assert t["last_view_at"] == 1000, "조회수 실패인데 view 시각이 올라갔다"
+    assert t["last_metrics_at"] == 1000, "부분 성공인데 metrics 시각이 올라갔다"
+    assert (t["heart_count"], t["view_count"]) == (10, 99)
+
+
+def test_view_only_leaves_heart_time_untouched(db):
+    db(_seed(1, 1))
+    db(_preset(t=1000))
+    now = int(time.time())
+    assert db(sc._apply_metrics("c0_0", 0, 20, False, True, now)) == "partial"
+    t = db(_times())
+    assert t["last_view_at"] == now and t["last_heart_at"] == 1000
+    assert t["last_metrics_at"] == 1000
+    assert (t["heart_count"], t["view_count"]) == (3, 20)
+
+
+def test_both_failed_updates_only_attempt(db):
+    """둘 다 실패하면 last_metrics_at은 그대로 — 실패를 정상으로 위장하지 않는다."""
+    db(_seed(1, 1))
+    db(_preset(t=1000))
+    now = int(time.time())
+    assert db(sc._apply_metrics("c0_0", 0, 0, False, False, now)) == "failed"
+    t = db(_times())
+    assert t["last_attempt_at"] == now, "재시도 간격 판단용 시각은 올라가야 한다"
+    assert t["last_heart_at"] == t["last_view_at"] == 1000
+    assert t["last_metrics_at"] == 1000, "실패인데 신선한 것으로 기록됐다"
+    assert (t["heart_count"], t["view_count"]) == (3, 99)
+
+
+def test_failing_clip_is_not_called_twice_in_one_sweep(db):
+    """계속 실패하는 클립도 한 회차에서는 한 번만 부른다(무한 재호출 금지)."""
+    db(_seed(2, 2))
+    calls = []
+
+    def h(request):
+        url = str(request.url)
+        if "/service/v1/channels/" in url or "/categories/" in url:
+            return _cards()(request)
+        calls.append(request.url.params.get("referer", "").rsplit("/", 1)[-1])
+        return httpx.Response(503, json={"code": 503})
+    _install(h)
+
+    res = db(sw.run_sweep(sw.floor_hour(time.time())))
+    assert res["status"] == sw.COMPLETED
+    # HTTP 재시도(_get_json은 503에 3회)는 별개다. 여기서 보는 건 '같은 클립을
+    # 회차 안에서 두 번 처리하지 않는가'다.
+    assert len(set(calls)) == 4 and res["processed"] == 4
+    # 전부 실패했지만 회차는 끝난다(대상에서 빠진다)
+    assert db(sw.sweep_targets(sw.floor_hour(time.time()))) == []
+    assert res["failed"] == 4 and res["success"] == 0
+
+    # 실패했으므로 '정상 수신' 시각은 올라가지 않았다
+    t = db(_times())
+    assert t["last_attempt_at"] > 0 and t["last_metrics_at"] == 0
+
+
+def test_failed_clip_is_not_counted_as_fresh(db):
+    """실패 클립은 metrics_state에서 정상으로 집계되지 않는다."""
+    db(_seed(1, 1))
+    now = int(time.time())
+    db(_preset(t=now - 10 * 3600))
+    db(sc._apply_metrics("c0_0", 0, 0, False, False, now))
+    assert sc.metrics_state(db(_times()), now) == "stale"
+
+    db(_preset(t=now))
+    assert sc.metrics_state(db(_times()), now) == "ok"
+
+    db(_preset(t=now))
+    db(sc._apply_metrics("c0_0", 5, 0, True, False, now))
+
+    async def age_view():
+        c = await database.get_db()
+        await c.execute("UPDATE singcup_clips SET last_view_at=?", (now - 10 * 3600,))
+        await c.commit()
+    db(age_view())
+    assert sc.metrics_state(db(_times()), now) == "partial"
+
+
+def test_partial_success_stays_stale_by_metrics_at(db):
+    """부분 성공은 last_metrics_at 기준으로는 계속 stale이다(의미가 좁아졌다)."""
+    db(_seed(1, 1))
+    now = int(time.time())
+    db(_preset(t=now - 5 * 3600))
+    db(sc._apply_metrics("c0_0", 7, 0, True, False, now))
+    t = db(_times())
+    assert now - t["last_metrics_at"] > 4 * 3600     # 둘 다 정상인 시각은 옛날 그대로
+    assert t["last_heart_at"] == now                  # 하트는 방금 받았다

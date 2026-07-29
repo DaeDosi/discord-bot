@@ -53,11 +53,12 @@ TAGGED = {"t1", "t2", "t3"}
 async def _age_metrics(uids=None):
     c = await database.get_db()
     if uids is None:
-        await c.execute("UPDATE singcup_clips SET last_metrics_at=0")
+        await c.execute("UPDATE singcup_clips SET last_metrics_at=0, last_attempt_at=0")
     else:
         qs = ",".join("?" for _ in uids)
         await c.execute(
-            f"UPDATE singcup_clips SET last_metrics_at=0 WHERE clip_uid IN ({qs})",
+            f"UPDATE singcup_clips SET last_metrics_at=0, last_attempt_at=0 "
+            f"WHERE clip_uid IN ({qs})",
             tuple(uids))
     await c.commit()
 
@@ -247,8 +248,9 @@ def test_refresh_prefers_representative_clips(db):
     async def stale_between_ttls():
         # 대표 TTL(5분)은 넘고 일반 TTL(45분)은 안 넘은 시점으로 맞춘다
         c = await database.get_db()
-        await c.execute("UPDATE singcup_clips SET last_metrics_at=?",
-                        (int(time.time()) - 10 * 60,))
+        t = int(time.time()) - 10 * 60
+        await c.execute("UPDATE singcup_clips SET last_metrics_at=?, last_attempt_at=?",
+                        (t, t))
         await c.commit()
     db(stale_between_ttls())
 
@@ -714,9 +716,10 @@ async def _seed(n, *, hearts, aged=0):
             " rec_id, clip_title, thumbnail_image_url, description, created_at,"
             " heart_count, view_count, duration, adult, blind_type, metrics_ok, active,"
             " missing_scan_count, first_collected_at, last_collected_at, row_updated_at,"
-            " last_metrics_at)"
-            " VALUES (?,?,?,?,'','t','','#tag',?,?,0,60,0,'',1,1,0,?,?,?,?)",
-            (uid, sc.EVENT_ID, f"o{i:03d}", f"v{i}", now, hearts(i), now, now, now, aged))
+            " last_metrics_at, last_attempt_at)"
+            " VALUES (?,?,?,?,'','t','','#tag',?,?,0,60,0,'',1,1,0,?,?,?,?,?)",
+            (uid, sc.EVENT_ID, f"o{i:03d}", f"v{i}", now, hearts(i), now, now, now,
+             aged, aged))
         await c.execute(
             "INSERT INTO singcup_streamers (channel_id, event_id, channel_name,"
             " channel_image_url, follower_count, verified_mark, representative_clip_uid,"
@@ -746,8 +749,8 @@ def test_sweep_covers_every_clip_over_repeated_cycles(db):
         c = await database.get_db()
         qs = ",".join("?" for _ in uids)
         await c.execute(
-            f"UPDATE singcup_clips SET last_metrics_at=? WHERE clip_uid IN ({qs})",
-            (at, *uids))
+            f"UPDATE singcup_clips SET last_metrics_at=?, last_attempt_at=? "
+            f"WHERE clip_uid IN ({qs})", (at, at, *uids))
         await c.commit()
 
     for _ in range(10):                       # 10 사이클 × 10건 = 100건
@@ -771,8 +774,8 @@ def test_queue_is_deterministic_across_restarts(db):
         c = await database.get_db()
         qs = ",".join("?" for _ in uids)
         await c.execute(
-            f"UPDATE singcup_clips SET last_metrics_at=? WHERE clip_uid IN ({qs})",
-            (now, *uids))
+            f"UPDATE singcup_clips SET last_metrics_at=?, last_attempt_at=? "
+            f"WHERE clip_uid IN ({qs})", (now, now, *uids))
         await c.commit()
     db(refresh(first))
     nxt = [r["clip_uid"] for r in db(sc._metrics_due(now, 10))]
@@ -798,7 +801,7 @@ def test_new_low_heart_clip_gets_refreshed_and_reranked(db):
         c = await database.get_db()
         # 최초 수집값에서 멈춘 상태 재현: 하트 0, 조회수 1
         await c.execute("UPDATE singcup_clips SET heart_count=0, view_count=1, "
-                        "last_metrics_at=0 WHERE clip_uid='t1'")
+                        "last_metrics_at=0, last_attempt_at=0 WHERE clip_uid='t1'")
         await c.commit()
     db(make_it_look_like_the_bug())
 
@@ -828,8 +831,12 @@ def test_recovered_clip_is_excluded_from_1h_surge(db):
             " heart_count, view_count, follower_count, score, rank, collected_at)"
             " VALUES (?,?,?,0,1,0,0,1,?)", (sc.EVENT_ID, "t1", "o1", now - 3600))
         # 20시간 동안 갱신이 멈춰 있었다
+        # 공백 판정 기준은 이제 '하트를 마지막으로 정상 수신한 시각'이다.
+        # last_heart_at을 함께 늙히지 않으면 공백으로 보지 않는 게 정상 동작이다.
+        old = now - 20 * 3600
         await c.execute("UPDATE singcup_clips SET heart_count=0, view_count=1, "
-                        "last_metrics_at=? WHERE clip_uid='t1'", (now - 20 * 3600,))
+                        "last_metrics_at=?, last_attempt_at=?, last_heart_at=?, "
+                        "last_view_at=? WHERE clip_uid='t1'", (old, old, old, old))
         await c.commit()
     db(stale_with_baseline())
 
@@ -857,8 +864,8 @@ def test_normal_update_still_reports_1h_delta(db):
             " heart_count, view_count, follower_count, score, rank, collected_at)"
             " VALUES (?,?,?,3,10,0,0,1,?)", (sc.EVENT_ID, "t1", "o1", now - 3600))
         # 공백 없이 최근까지 갱신되던 클립
-        await c.execute("UPDATE singcup_clips SET last_metrics_at=? "
-                        "WHERE clip_uid='t1'", (now - 600,))
+        await c.execute("UPDATE singcup_clips SET last_metrics_at=?, last_attempt_at=? "
+                        "WHERE clip_uid='t1'", (now - 600, now - 600))
         await c.commit()
     db(fresh_baseline())
 
@@ -904,7 +911,7 @@ def test_single_clip_refresh_uses_normal_path(db):
     async def freeze():
         c = await database.get_db()
         await c.execute("UPDATE singcup_clips SET heart_count=0, view_count=1, "
-                        "last_metrics_at=0 WHERE clip_uid='t1'")
+                        "last_metrics_at=0, last_attempt_at=0 WHERE clip_uid='t1'")
         await c.commit()
     db(freeze())
 
@@ -978,8 +985,12 @@ def test_recovered_clip_is_excluded_from_24h_delta(db):
                 " heart_count, view_count, follower_count, score, rank, collected_at)"
                 " VALUES (?,?,?,?,1,0,0,1,?)",
                 (sc.EVENT_ID, "t1", "o1", h, now - ago))
+        # 공백 판정 기준은 이제 '하트를 마지막으로 정상 수신한 시각'이다.
+        # last_heart_at을 함께 늙히지 않으면 공백으로 보지 않는 게 정상 동작이다.
+        old = now - 20 * 3600
         await c.execute("UPDATE singcup_clips SET heart_count=0, view_count=1, "
-                        "last_metrics_at=? WHERE clip_uid='t1'", (now - 20 * 3600,))
+                        "last_metrics_at=?, last_attempt_at=?, last_heart_at=?, "
+                        "last_view_at=? WHERE clip_uid='t1'", (old, old, old, old))
         await c.commit()
     db(stale())
 
@@ -1005,8 +1016,8 @@ def test_normal_clip_still_reports_24h_delta(db):
             "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
             " heart_count, view_count, follower_count, score, rank, collected_at)"
             " VALUES (?,?,?,1,1,0,0,1,?)", (sc.EVENT_ID, "t1", "o1", now - 25 * 3600))
-        await c.execute("UPDATE singcup_clips SET last_metrics_at=? "
-                        "WHERE clip_uid='t1'", (now - 600,))
+        await c.execute("UPDATE singcup_clips SET last_metrics_at=?, last_attempt_at=? "
+                        "WHERE clip_uid='t1'", (now - 600, now - 600))
         await c.commit()
     db(baseline())
 
@@ -1029,14 +1040,15 @@ def test_each_lane_keeps_oldest_first(db):
                         "WHERE channel_id >= 'o020'")
         # last_metrics_at을 역순으로 흩뿌린다 — uid 순서와 일부러 어긋나게
         for i in range(40):
-            await c.execute("UPDATE singcup_clips SET last_metrics_at=? "
-                            "WHERE clip_uid=?", (100 + (40 - i), f"q{i:03d}"))
+            await c.execute("UPDATE singcup_clips SET last_metrics_at=?, "
+                            "last_attempt_at=? WHERE clip_uid=?",
+                            (100 + (40 - i), 100 + (40 - i), f"q{i:03d}"))
         await c.commit()
     db(spread())
 
     due = db(sc._metrics_due(now, 10))
-    reps = [r["last_metrics_at"] for r in due if r["is_rep"]]
-    others = [r["last_metrics_at"] for r in due if not r["is_rep"]]
+    reps = [r["last_attempt_at"] for r in due if r["is_rep"]]
+    others = [r["last_attempt_at"] for r in due if not r["is_rep"]]
     assert reps and others, "두 레인 모두에서 뽑혀야 한다"
     assert reps == sorted(reps), "대표 레인이 oldest-first가 아니다"
     assert others == sorted(others), "일반 레인이 oldest-first가 아니다"
@@ -1049,8 +1061,9 @@ def test_never_refreshed_clips_come_first(db):
 
     async def mixed():
         c = await database.get_db()
-        await c.execute("UPDATE singcup_clips SET last_metrics_at=?", (now - 3 * 3600,))
-        await c.execute("UPDATE singcup_clips SET last_metrics_at=0 "
+        await c.execute("UPDATE singcup_clips SET last_metrics_at=?, last_attempt_at=?",
+                        (now - 3 * 3600, now - 3 * 3600))
+        await c.execute("UPDATE singcup_clips SET last_metrics_at=0, last_attempt_at=0 "
                         "WHERE clip_uid IN ('q029','q015')")
         await c.commit()
     db(mixed())

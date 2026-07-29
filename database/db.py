@@ -904,6 +904,25 @@ async def init_db():
         "WHERE snapshot_bucket IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_singcup_snapshots_bucket "
         "ON singcup_snapshots(event_id, snapshot_bucket)",
+        # last_metrics_at 하나가 '시도했다'와 '정상으로 받았다'를 겸하고 있었다.
+        # 두 지표를 모두 못 읽어도 now로 올라가서, 실제 값은 며칠 전 것인데
+        # 스케줄러는 방금 갱신된 정상 클립으로 판단했다(실패의 정상 위장).
+        # 이제 시각을 네 개로 나눈다:
+        #   last_attempt_at  시도한 시각(성공·실패 무관) — 재시도 간격 판단용
+        #   last_heart_at    하트를 정상으로 받은 마지막 시각
+        #   last_view_at     조회수를 정상으로 받은 마지막 시각
+        #   last_metrics_at  **둘 다** 정상으로 받은 마지막 시각(의미 축소)
+        # 기존 값은 그대로 두고 새 컬럼만 추가한다(과거 행은 0 → '모름').
+        # 롤백: _apply_metrics를 되돌리면 된다(컬럼이 남아도 무해).
+        "ALTER TABLE singcup_clips ADD COLUMN last_attempt_at INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE singcup_clips ADD COLUMN last_heart_at INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE singcup_clips ADD COLUMN last_view_at INTEGER NOT NULL DEFAULT 0",
+        # 스윕 대상 선정은 이제 last_attempt_at을 본다(실패해도 무한 재호출 금지)
+        "CREATE INDEX IF NOT EXISTS idx_singcup_clips_attempt "
+        "ON singcup_clips(event_id, active, last_attempt_at, clip_uid)",
+        # 기존 행은 last_metrics_at을 시도 시각의 근사로 삼는다(0이면 미시도)
+        "UPDATE singcup_clips SET last_attempt_at=last_metrics_at "
+        "WHERE last_attempt_at=0 AND last_metrics_at>0",
     ]:
         try:
             await db.execute(sql)
