@@ -17,6 +17,7 @@ from singcup_clips import (
     load_main,
     load_streamer_clips,
     metrics_sweep_stats,
+    recheck_untagged_clips,
     refresh_metrics,
     refresh_one_clip,
     reset_backfill,
@@ -164,6 +165,17 @@ async def clips_refresh_one(clip_uid: str,
     if res.get("status") == ST_FAILED and "DB에 없" in note:
         raise HTTPException(status_code=404, detail=note)
     return res
+
+
+@router.post("/clips/recheck-untagged")
+async def clips_recheck(limit: int | None = None,
+                        x_singcup_secret: str | None = Header(default=None)):
+    """뒤늦게 #싱드컵을 붙인 클립을 찾아 등록한다(정기 루프와 동일).
+
+    "내 클립이 안 올라온다"는 제보가 오면 목록 전체를 다시 훑을 필요 없이 이걸 부른다.
+    """
+    _require_secret(x_singcup_secret)
+    return await recheck_untagged_clips(limit=limit)
 
 
 @router.get("/sweep/status")

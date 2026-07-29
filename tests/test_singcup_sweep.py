@@ -562,3 +562,156 @@ def test_repair_ignores_empty_detail_response(db):
     _install(_detail_handler(thumb=""))
     res = db(sw.run_sweep(sw.floor_hour(time.time())))
     assert res["thumbnails_repaired"] == 0
+
+
+# ── 뒤늦게 붙은 #싱드컵 태그 ────────────────────────────────────────────────
+# 참가자가 클립을 먼저 올리고 나중에 설명에 태그를 붙이는 경우가 흔한데, 탐색은
+# 이미 스캔한 uid를 태그 여부와 무관하게 건너뛴다. 그래서 재확인 경로가 없으면
+# 그 클립은 영원히 못 들어온다(실측: 업로드 21시간 뒤에도 미등록).
+IN_WINDOW = "2026-07-28 23:08:06"
+
+
+def _retag_handler(desc="#노래 #싱드컵", *, owner="ow1", created=IN_WINDOW,
+                   card_calls=None, detail_calls=None):
+    def h(request):
+        url = str(request.url)
+        if "/service/v1/channels/" in url:
+            return httpx.Response(200, json={"code": 200, "content": {
+                "channelId": owner, "channelName": "가수", "channelImageUrl": "",
+                "followerCount": 3, "verifiedMark": False}})
+        if "/categories/" in url:
+            return httpx.Response(200, json={"code": 200,
+                                             "content": {"data": [], "page": {}}})
+        if url.endswith("/detail"):
+            if detail_calls is not None:
+                detail_calls.append(url)
+            return httpx.Response(200, json={"code": 200, "content": {
+                "clipUID": "late1", "videoId": "vLate", "clipTitle": "늦게 붙인 태그",
+                "thumbnailImageUrl": "https://t/late.jpg", "createdDate": created,
+                "duration": 60, "adult": False, "blindType": None}})
+        if card_calls is not None:
+            card_calls.append(url)
+        payload = card(desc, likes=5, views=36)
+        # 소유 채널은 카드에서만 얻을 수 있다(상세는 null을 준다)
+        payload["card"]["interaction"]["subscription"] = {"channelId": owner}
+        return httpx.Response(200, json=payload)
+    return h
+
+
+async def _mark_scanned(uid="late1", *, tagged=0, age_hours=10, video_id="vLate",
+                        created=None):
+    c = await database.get_db()
+    await c.execute(
+        "INSERT INTO singcup_clip_scan (clip_uid, tagged, checked_at, video_id,"
+        " rec_id, created_at) VALUES (?,?,?,?,'{}',?)",
+        (uid, tagged, int(time.time()) - int(age_hours * 3600), video_id, created))
+    await c.commit()
+
+
+async def _clip_rows():
+    c = await database.get_db()
+    rows = await (await c.execute("SELECT * FROM singcup_clips")).fetchall()
+    return {r["clip_uid"]: dict(r) for r in rows}
+
+
+def test_late_tag_is_picked_up_on_recheck(db):
+    """설명에 나중에 #싱드컵이 붙은 클립이 재확인으로 등록된다."""
+    from datetime import datetime
+    created = int(datetime.strptime(IN_WINDOW, "%Y-%m-%d %H:%M:%S")
+                  .replace(tzinfo=sw.KST).timestamp())
+    db(_mark_scanned(created=created))
+    _install(_retag_handler())
+
+    res = db(sc.recheck_untagged_clips())
+    assert res["newly_tagged"] == 1 and res["checked"] == 1
+
+    rows = db(_clip_rows())
+    assert "late1" in rows
+    assert rows["late1"]["heart_count"] == 5 and rows["late1"]["view_count"] == 36
+    assert rows["late1"]["owner_channel_id"] == "ow1"
+    assert rows["late1"]["thumbnail_image_url"] == "https://t/late.jpg"
+    # 이제 메인에 스트리머로 뜬다
+    assert any(s["clipUid"] == "late1" for s in db(sc.load_main())["streamers"])
+
+
+def test_still_untagged_clip_is_not_registered(db):
+    """여전히 태그가 없으면 등록하지 않고 확인 시각만 민다."""
+    db(_mark_scanned())
+    _install(_retag_handler(desc="#노래 #커버"))
+
+    res = db(sc.recheck_untagged_clips())
+    assert res["newly_tagged"] == 0 and res["checked"] == 1
+    assert db(_clip_rows()) == {}
+
+    async def state():
+        c = await database.get_db()
+        r = await (await c.execute(
+            "SELECT tagged, checked_at FROM singcup_clip_scan "
+            "WHERE clip_uid='late1'")).fetchone()
+        return int(r["tagged"]), int(r["checked_at"])
+    tagged, checked = db(state())
+    assert tagged == 0
+    assert checked > int(time.time()) - 60      # 큐 뒤로 밀렸다
+
+
+def test_recently_checked_clips_are_not_rechecked(db):
+    """방금 확인한 클립은 재확인 대상이 아니다(불필요한 호출 방지)."""
+    db(_mark_scanned(age_hours=0.1))
+    calls = []
+    _install(_retag_handler(card_calls=calls))
+    res = db(sc.recheck_untagged_clips())
+    assert res["checked"] == 0 and calls == []
+
+
+def test_already_tagged_clips_are_not_rechecked(db):
+    """이미 참가작인 클립은 재확인하지 않는다."""
+    db(_mark_scanned(tagged=1))
+    calls = []
+    _install(_retag_handler(card_calls=calls))
+    assert db(sc.recheck_untagged_clips())["checked"] == 0
+    assert calls == []
+
+
+def test_out_of_window_clip_is_skipped(db):
+    """이벤트 기간 밖 클립은 재확인해도 등록하지 않는다."""
+    from datetime import datetime
+    old = int(datetime.strptime("2026-07-01 10:00:00", "%Y-%m-%d %H:%M:%S")
+              .replace(tzinfo=sw.KST).timestamp())
+    db(_mark_scanned(created=old))
+    _install(_retag_handler())
+    res = db(sc.recheck_untagged_clips())
+    assert res["checked"] == 0                  # SQL에서 이미 걸러진다
+    assert db(_clip_rows()) == {}
+
+
+def test_legacy_row_without_video_id_uses_detail(db):
+    """videoId가 없던 예전 스캔 행은 상세 API로 재료를 채워 확인한다."""
+    db(_mark_scanned(video_id="", created=None))
+    details, cards = [], []
+    _install(_retag_handler(detail_calls=details, card_calls=cards))
+
+    res = db(sc.recheck_untagged_clips())
+    assert details, "상세 API로 videoId를 받아와야 한다"
+    assert res["newly_tagged"] == 1
+    assert "late1" in db(_clip_rows())
+
+
+def test_recheck_lock_blocks_concurrent_runs(db):
+    import asyncio
+    db(_mark_scanned())
+    _install(_retag_handler())
+
+    async def go():
+        return await asyncio.gather(sc.recheck_untagged_clips(),
+                                    sc.recheck_untagged_clips())
+    a, b = db(go())
+    assert sum(1 for r in (a, b) if r["status"] == sc.ST_SKIPPED) == 1
+
+
+def test_card_owner_channel_id_is_extracted():
+    """소유 채널은 interaction.subscription.channelId에서 온다."""
+    p = card("#싱드컵", likes=1, views=1)
+    p["card"]["interaction"]["subscription"] = {"channelId": "abc123"}
+    assert sc.extract_owner_channel_id(p["card"]) == "abc123"
+    assert sc.extract_owner_channel_id({"interaction": {}}) == ""
+    assert sc.extract_owner_channel_id({}) == ""

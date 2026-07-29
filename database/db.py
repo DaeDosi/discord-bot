@@ -854,6 +854,15 @@ async def init_db():
            )""",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_singcup_sweep_runs_sched "
         "ON singcup_sweep_runs(event_id, scheduled_at)",
+        # 태그 없이 올라온 클립을 나중에 다시 확인하려면 카드 API를 부를 재료가
+        # 있어야 한다. 스캔 시점에 함께 저장해 둔다(없으면 상세 API를 한 번 더
+        # 불러야 한다). created_at은 이벤트 기간 밖 클립을 재확인 대상에서 빼는 데 쓴다.
+        # 롤백: 재확인 코드만 되돌리면 된다(컬럼은 남아도 무해).
+        "ALTER TABLE singcup_clip_scan ADD COLUMN video_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE singcup_clip_scan ADD COLUMN rec_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE singcup_clip_scan ADD COLUMN created_at INTEGER",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_scan_recheck "
+        "ON singcup_clip_scan(tagged, checked_at)",
         "CREATE INDEX IF NOT EXISTS idx_singcup_sweep_runs_status "
         "ON singcup_sweep_runs(event_id, status, scheduled_at DESC)",
     ]:
