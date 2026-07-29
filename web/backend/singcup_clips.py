@@ -362,6 +362,46 @@ def _missing_reason(card: dict, heart_ok: bool, view_ok: bool) -> str:
     return ",".join(parts)
 
 
+CLIP_DETAIL_API = "https://api.chzzk.naver.com/service/v1/clips/{uid}/detail"
+
+
+async def fetch_clip_detail(client, clip_uid: str) -> dict | None:
+    """클립 1건의 제목·썸네일. 목록에서 놓친 필드를 메우는 **보수용** 경로다.
+
+    정상 흐름에서는 목록 응답이 이 값을 주므로 부르지 않는다. 과거에 빈 값으로
+    저장된 행은 목록 재스캔이 닿지 않아(신규 탐색은 아는 페이지에서 멈춘다)
+    스스로 복구되지 않기 때문에 여기서만 따로 채운다.
+    """
+    url = CLIP_DETAIL_API.format(uid=quote(clip_uid, safe=""))
+    headers = dict(_HEADERS)
+    headers["Referer"] = f"https://chzzk.naver.com/clips/{quote(clip_uid, safe='')}"
+    try:
+        payload = await _get_json(client, url, headers=headers,
+                                  what=f"detail({clip_uid})")
+    except (FetchError, SchemaError) as e:
+        _log({"event": "clip_detail_failed", "level": "warning",
+              "clip_uid": clip_uid, "detail": str(e)[:160]})
+        return None
+    c = payload.get("content") if isinstance(payload, dict) else None
+    if not isinstance(c, dict):
+        return None
+    return {"clip_title": str(c.get("clipTitle") or ""),
+            "thumbnail_image_url": str(c.get("thumbnailImageUrl") or "")}
+
+
+async def repair_clip_media(clip_uid: str, detail: dict) -> bool:
+    """비어 있던 제목/썸네일만 채운다. 이미 값이 있으면 건드리지 않는다."""
+    if not detail or not detail.get("thumbnail_image_url"):
+        return False
+    db = await get_db()
+    cur = await db.execute(
+        "UPDATE singcup_clips SET thumbnail_image_url=?, "
+        "clip_title = CASE WHEN clip_title='' THEN ? ELSE clip_title END "
+        "WHERE clip_uid=? AND (thumbnail_image_url='' OR thumbnail_image_url IS NULL)",
+        (detail["thumbnail_image_url"], detail.get("clip_title", ""), clip_uid))
+    return cur.rowcount > 0
+
+
 # 채널 정보는 clip마다 반복 조회하지 않는다 — channelId 기준 메모리 캐시 + DB 기록
 _channel_cache: dict[str, tuple[float, dict]] = {}
 
@@ -412,8 +452,15 @@ async def _upsert_clip(c: dict, now: int) -> bool:
                                           THEN excluded.owner_channel_image_url
                                           ELSE owner_channel_image_url END,
                owner_verified      = excluded.owner_verified,
-               clip_title          = excluded.clip_title,
-               thumbnail_image_url = excluded.thumbnail_image_url,
+               -- 닉네임과 같은 이유로 빈 값이 기존 값을 덮지 못하게 한다.
+               -- 목록 응답이 어쩌다 이 필드를 빠뜨리면 썸네일이 '' 로 지워지는데,
+               -- 카드 API는 썸네일을 주지 않고 신규 탐색은 아는 페이지에서 멈추므로
+               -- 한 번 비면 그 클립은 영원히 이미지 없이 남는다(실측 53/967건).
+               clip_title          = CASE WHEN excluded.clip_title != ''
+                                          THEN excluded.clip_title ELSE clip_title END,
+               thumbnail_image_url = CASE WHEN excluded.thumbnail_image_url != ''
+                                          THEN excluded.thumbnail_image_url
+                                          ELSE thumbnail_image_url END,
                description         = excluded.description,
                -- 카드 조회에 실패한 회차가 기존 수치를 0으로 덮지 않게 한다
                heart_count = CASE WHEN excluded.metrics_ok=1 THEN excluded.heart_count

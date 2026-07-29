@@ -108,6 +108,7 @@ def required_rate(total: int) -> float:
 #   3 대표를 추월할 가능성(대표 하트의 절반 이상) / 4 나머지 일반 클립
 _TARGET_SQL = """
 SELECT c.clip_uid, c.video_id, c.rec_id, c.last_metrics_at, c.owner_channel_id,
+       c.thumbnail_image_url,
        (s.representative_clip_uid IS NOT NULL) AS is_rep,
        CASE
          WHEN c.last_metrics_at IS NULL              THEN 0
@@ -245,6 +246,7 @@ async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = Non
              "eta_minutes": round(total / max(rate, 1e-6) / 60, 1)})
 
     tally = {"success": 0, "partial": 0, "failed": 0, "fetch_failed": 0}
+    repaired = 0
     lat: list[int] = []
     changed_owners: set[str] = set()
     done = 0
@@ -254,7 +256,7 @@ async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = Non
     lock = asyncio.Lock()
 
     async def one(t: dict):
-        nonlocal done
+        nonlocal done, repaired
         await bucket.acquire()
         item = {"clipUID": t["clip_uid"], "videoId": t["video_id"],
                 "recId": t["rec_id"] or "{}"}
@@ -290,6 +292,17 @@ async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = Non
                 if state != "failed":
                     changed_owners.add(t["owner_channel_id"])
                 await sc._clear_retry(t["clip_uid"])
+        # 썸네일이 비어 있으면 이 기회에 메운다. 카드 API는 썸네일을 주지 않고
+        # 목록 재스캔은 아는 페이지에서 멈추므로, 전체를 도는 여기가 유일한 기회다.
+        # 이미 값이 있는 클립에는 추가 요청이 나가지 않는다.
+        if not t["thumbnail_image_url"]:
+            await bucket.acquire()
+            detail = await sc.fetch_clip_detail(client, t["clip_uid"])
+            async with lock:
+                if detail and await sc.repair_clip_media(t["clip_uid"], detail):
+                    repaired += 1
+
+        async with lock:
             done += 1
             if done % PROGRESS_EVERY == 0:
                 await (await get_db()).commit()
@@ -332,13 +345,13 @@ async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = Non
              "duration_seconds": round(dur / 1000, 1),
              "p50_ms": _pct(lat, 0.5), "p95_ms": _pct(lat, 0.95),
              "api_calls": api["calls"], "http_429": api["http_429"],
-             "throttled": bucket.throttled,
+             "throttled": bucket.throttled, "thumbnails_repaired": repaired,
              "changed_streamers": len(changed_owners)})
     return {"status": status, "run_id": run_id, "scheduled_at": kst(scheduled_at),
             "total_targets": total, "processed": done, "remaining": len(left),
             "duration_seconds": round(dur / 1000, 1),
             "p50_ms": _pct(lat, 0.5), "p95_ms": _pct(lat, 0.95),
-            "http_429": api["http_429"], **tally}
+            "http_429": api["http_429"], "thumbnails_repaired": repaired, **tally}
 
 
 # ── 스케줄러 ───────────────────────────────────────────────────────────────

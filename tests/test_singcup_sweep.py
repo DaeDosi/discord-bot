@@ -50,9 +50,9 @@ async def _seed(n_streamers=3, clips_each=3, *, last=0):
                 " created_at, heart_count, view_count, duration, adult, blind_type,"
                 " metrics_ok, active, missing_scan_count, first_collected_at,"
                 " last_collected_at, row_updated_at, last_metrics_at)"
-                " VALUES (?,?,?,?,'','t','','#싱드컵',?,?,0,60,0,'',1,1,0,?,?,?,?)",
-                (uid, sc.EVENT_ID, cid, f"v{uid}", now - 9999,
-                 10 - ci, now, now, now, last))
+                " VALUES (?,?,?,?,'','t',?,'#싱드컵',?,?,0,60,0,'',1,1,0,?,?,?,?)",
+                (uid, sc.EVENT_ID, cid, f"v{uid}", f"https://t/{uid}.jpg",
+                 now - 9999, 10 - ci, now, now, now, last))
         await c.execute(
             "INSERT INTO singcup_streamers (channel_id, event_id, channel_name,"
             " channel_image_url, follower_count, verified_mark,"
@@ -446,3 +446,119 @@ def test_status_exposes_429_and_overlap_risk_mid_run(db):
     # 5,000건을 이 페이스로 끝내면 한 시간을 넘긴다 → 다음 회차가 밀린다
     assert cur["behind_schedule"] is True
     assert cur["will_overlap_next_hour"] is True
+
+
+# ── 썸네일 유실·복구 ───────────────────────────────────────────────────────
+def _detail_handler(thumb="https://t/new.jpg", title="복구된 제목", status=200):
+    def h(request):
+        url = str(request.url)
+        if "/clips/" in url and url.endswith("/detail"):
+            if status != 200:
+                return httpx.Response(status, json={"code": status})
+            return httpx.Response(200, json={"code": 200, "content": {
+                "clipTitle": title, "thumbnailImageUrl": thumb}})
+        return _cards()(request)
+    return h
+
+
+async def _commit():
+    c = await database.get_db()
+    await c.commit()
+
+
+async def _thumbs():
+    c = await database.get_db()
+    rows = await (await c.execute(
+        "SELECT clip_uid, thumbnail_image_url, clip_title FROM singcup_clips"
+    )).fetchall()
+    return {r["clip_uid"]: (r["thumbnail_image_url"], r["clip_title"]) for r in rows}
+
+
+def test_empty_thumbnail_does_not_overwrite_a_good_one(db):
+    """목록이 썸네일을 빠뜨린 회차가 기존 이미지를 지우면 안 된다(유실의 원인)."""
+    now = int(time.time())
+    good = {"clip_uid": "x1", "owner_channel_id": "o1", "video_id": "v",
+            "rec_id": "r", "clip_title": "제목", "thumbnail_image_url": "https://t/a.jpg",
+            "description": "#싱드컵", "created_at": now, "heart_count": 1,
+            "view_count": 1, "duration": 10, "adult": 0, "blind_type": "",
+            "metrics_ok": 1, "owner_channel_name": "n",
+            "owner_channel_image_url": "", "owner_verified": 0}
+    db(sc._upsert_clip(good, now))
+    # 같은 클립이 썸네일·제목 없이 다시 들어온다
+    db(sc._upsert_clip({**good, "thumbnail_image_url": "", "clip_title": ""}, now))
+    db(_commit())
+
+    t = db(_thumbs())
+    assert t["x1"] == ("https://t/a.jpg", "제목")
+
+
+def test_sweep_repairs_missing_thumbnail(db):
+    """이미 비어 있던 썸네일을 정각 회차가 상세 API로 메운다."""
+    db(_seed(1, 2))
+
+    async def blank():
+        c = await database.get_db()
+        await c.execute("UPDATE singcup_clips SET thumbnail_image_url='', "
+                        "clip_title='' WHERE clip_uid='c0_0'")
+        await c.commit()
+    db(blank())
+
+    _install(_detail_handler())
+    res = db(sw.run_sweep(sw.floor_hour(time.time())))
+    assert res["thumbnails_repaired"] == 1
+    t = db(_thumbs())
+    assert t["c0_0"] == ("https://t/new.jpg", "복구된 제목")
+    assert t["c0_1"][0] == "https://t/c0_1.jpg"   # 값이 있던 건 그대로
+
+
+def test_repair_is_skipped_when_thumbnail_exists(db):
+    """썸네일이 있는 클립에는 상세 API 요청이 나가지 않는다."""
+    db(_seed(1, 2))
+    calls = []
+
+    async def fill():
+        c = await database.get_db()
+        await c.execute("UPDATE singcup_clips SET thumbnail_image_url='https://t/x.jpg'")
+        await c.commit()
+    db(fill())
+
+    def h(request):
+        if str(request.url).endswith("/detail"):
+            calls.append(str(request.url))
+        return _detail_handler()(request)
+    _install(h)
+
+    db(sw.run_sweep(sw.floor_hour(time.time())))
+    assert calls == []
+    assert all(v[0] == "https://t/x.jpg" for v in db(_thumbs()).values())
+
+
+def test_repair_failure_leaves_the_row_untouched(db):
+    """상세 API가 실패해도 회차는 계속되고 행은 그대로다."""
+    db(_seed(1, 1))
+
+    async def blank():
+        c = await database.get_db()
+        await c.execute("UPDATE singcup_clips SET thumbnail_image_url=''")
+        await c.commit()
+    db(blank())
+
+    _install(_detail_handler(status=500))
+    res = db(sw.run_sweep(sw.floor_hour(time.time())))
+    assert res["status"] == sw.COMPLETED and res["thumbnails_repaired"] == 0
+    assert db(_thumbs())["c0_0"][0] == ""
+
+
+def test_repair_ignores_empty_detail_response(db):
+    """상세가 빈 썸네일을 줘도 '' 로 다시 쓰지 않는다."""
+    db(_seed(1, 1))
+
+    async def blank():
+        c = await database.get_db()
+        await c.execute("UPDATE singcup_clips SET thumbnail_image_url=''")
+        await c.commit()
+    db(blank())
+
+    _install(_detail_handler(thumb=""))
+    res = db(sw.run_sweep(sw.floor_hour(time.time())))
+    assert res["thumbnails_repaired"] == 0
