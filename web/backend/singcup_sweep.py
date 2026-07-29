@@ -75,21 +75,31 @@ class TokenBucket:
         self.floor = MIN_RATE if floor is None else floor
         self.rate = max(self.floor, min(rate, cap))
         self.cap = cap
+        # **저장 용량과 충전 속도는 다른 값이다.** 예전에는 토큰 상한을 rate로 잡아서
+        # rate가 1 미만이면 토큰이 rate에서 멈춰 1.0에 영원히 도달하지 못했다
+        # (요청 하나에 토큰 1개가 필요하다). 그래서 429나 카드 실패로 한 번
+        # 감속(×0.5)되는 순간 스윕이 첫 클립에서 통째로 멈췄다 —
+        # 운영 로그의 "sweep_start rate=0.749 → sweep_done 없음"이 이 증상이다.
+        # 용량은 최소 1.0을 보장한다: 어떤 속도에서도 토큰 한 개는 모을 수 있어야 한다.
+        self.capacity = max(1.0, cap)
         self.tokens = 1.0
         self.updated = time.monotonic()
         self._lock = asyncio.Lock()
         self.throttled = 0
 
     async def acquire(self):
+        # 락은 '순서대로 한 명씩 통과'시키는 용도다. 대기 중 취소되면 async with가
+        # 락을 풀어 주므로 다음 대기자가 막히지 않는다.
         async with self._lock:
             while True:
                 now = time.monotonic()
-                self.tokens = min(self.rate,
+                self.tokens = min(self.capacity,
                                   self.tokens + (now - self.updated) * self.rate)
                 self.updated = now
                 if self.tokens >= 1.0:
                     self.tokens -= 1.0
                     return
+                # 남은 토큰만큼만 기다린다. rate는 항상 floor(>0) 이상이라 유한하다.
                 await asyncio.sleep((1.0 - self.tokens) / max(self.rate, 1e-6))
 
     def slow_down(self, why: str):
