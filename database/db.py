@@ -863,6 +863,31 @@ async def init_db():
         "ALTER TABLE singcup_clip_scan ADD COLUMN created_at INTEGER",
         "CREATE INDEX IF NOT EXISTS idx_singcup_scan_recheck "
         "ON singcup_clip_scan(tagged, checked_at)",
+        # tagged=0 하나로 '태그 없음 / 조회 실패 / 파싱 실패 / 소유자 미상'을 전부
+        # 표현하던 것이 이번 누락의 뿌리다 — 실패를 최종 판정으로 굳혀 버렸다.
+        # 상태를 나눠 각각 다른 재확인 주기를 준다. next_check_at이 NULL이면
+        # 최종 상태(재확인 안 함)다.
+        # 롤백: 재확인 코드만 되돌리면 된다(컬럼이 남아도 기존 쿼리에 영향 없음).
+        "ALTER TABLE singcup_clip_scan ADD COLUMN scan_status TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE singcup_clip_scan ADD COLUMN next_check_at INTEGER",
+        "ALTER TABLE singcup_clip_scan ADD COLUMN recheck_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE singcup_clip_scan ADD COLUMN last_http_status INTEGER",
+        "ALTER TABLE singcup_clip_scan ADD COLUMN last_error TEXT",
+        "ALTER TABLE singcup_clip_scan ADD COLUMN owner_channel_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE singcup_clip_scan ADD COLUMN first_checked_at INTEGER",
+        "ALTER TABLE singcup_clip_scan ADD COLUMN registered_at INTEGER",
+        # 재확인 큐는 next_check_at 순으로 훑는다
+        "CREATE INDEX IF NOT EXISTS idx_singcup_scan_due "
+        "ON singcup_clip_scan(scan_status, next_check_at, clip_uid)",
+        # 기존 행에 상태를 채운다(한 번만 의미가 있고, 다시 돌아도 무해).
+        # 태그가 있던 행은 registered, 나머지는 untagged로 두고 즉시 재확인 대상에 넣는다
+        # — 이번 결함으로 빠진 클립을 배포 직후 되찾기 위해서다.
+        "UPDATE singcup_clip_scan SET scan_status='registered', next_check_at=NULL "
+        "WHERE scan_status='' AND tagged=1",
+        "UPDATE singcup_clip_scan SET scan_status='untagged', next_check_at=0 "
+        "WHERE scan_status='' AND tagged=0",
+        "UPDATE singcup_clip_scan SET first_checked_at=checked_at "
+        "WHERE first_checked_at IS NULL",
         "CREATE INDEX IF NOT EXISTS idx_singcup_sweep_runs_status "
         "ON singcup_sweep_runs(event_id, status, scheduled_at DESC)",
     ]:

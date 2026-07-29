@@ -71,8 +71,11 @@ MISSING_SCANS_TO_DEACTIVATE = int(os.getenv("SINGCUP_MISSING_SCANS", "2"))
 # 값이 안 도는 클립을 지목해 추적할 때만 켠다(빈 값이면 꺼짐).
 DEBUG_CLIP_UID = os.getenv("SINGCUP_METRICS_DEBUG_UID", "").strip()
 
-# 정확히 '#싱드컵' 태그만 인정한다. 제목/본문에 '싱드컵'이라는 단어만 있는 건 제외.
-_TAG_RE = re.compile(r"(^|\s)#싱드컵(?=\s|$)")
+# 앞뒤가 공백일 때만 인정하던 예전 패턴은 `[#싱드컵]`, `#싱드컵,`, 줄바꿈이 뒤따르는
+# 경우를 놓쳤다. 구분자를 '글자가 아닌 것'으로 넓히되 `#싱드컵대회` 같은 다른
+# 낱말과는 여전히 구분한다. `#` 없는 `[싱드컵]`은 **인정하지 않는다** — 이건 기존
+# 정책이고, 대회 도중에 완화하면 순위가 소급해 바뀐다.
+_TAG_RE = re.compile(r"(?<![0-9A-Za-z가-힣])#[ 	]?싱드컵(?![0-9A-Za-z가-힣])")
 # 재생 불가 상태 — 목록/카드에서 제외한다
 _BAD_BLIND = {"BLIND", "DELETE", "DELETED", "PRIVATE"}
 
@@ -85,11 +88,17 @@ def _log(payload: dict):
 
 
 # ── 순수 함수 (테스트 대상) ─────────────────────────────────────────────────
-def has_singcup_tag(description) -> bool:
-    """`#싱드컵` 해시태그가 실제로 있는지. 유니코드 정규화 후 검사한다."""
-    if not description:
-        return False
-    return bool(_TAG_RE.search(unicodedata.normalize("NFKC", str(description))))
+def has_singcup_tag(*texts) -> bool:
+    """`#싱드컵` 해시태그가 실제로 있는지. 유니코드 정규화 후 검사한다.
+
+    설명뿐 아니라 제목도 함께 넘길 수 있다 — 해시태그를 제목에만 적는 참가자가
+    있어서, 검사 위치를 넓히는 쪽이 기존 판정의 상위집합이 된다(원래 통과하던
+    클립은 그대로 통과한다).
+    """
+    for t in texts:
+        if t and _TAG_RE.search(unicodedata.normalize("NFKC", str(t))):
+            return True
+    return False
 
 
 def parse_clip_date(raw) -> datetime | None:
@@ -342,7 +351,13 @@ async def fetch_card(client, item: dict) -> dict | None:
     return {"description": extract_description(card), "heart_count": heart,
             "view_count": view, "heart_ok": heart_ok, "view_ok": view_ok,
             "metrics_ok": bool(heart_ok and view_ok),
+            "title": extract_title(card),
             "owner_channel_id": extract_owner_channel_id(card)}
+
+
+def extract_title(card: dict) -> str:
+    content = card.get("content")
+    return str((content or {}).get("title") or "") if isinstance(content, dict) else ""
 
 
 def extract_owner_channel_id(card: dict) -> str:
@@ -400,6 +415,43 @@ async def fetch_clip_detail(client, clip_uid: str) -> dict | None:
         return None
     return {"clip_title": str(c.get("clipTitle") or ""),
             "thumbnail_image_url": str(c.get("thumbnailImageUrl") or "")}
+
+
+async def fetch_clip_meta(client, clip_uid: str, *, full: bool = False) -> dict | None:
+    """상세 API로 videoId·생성일(·등록에 필요한 나머지)을 얻는다.
+
+    목록 없이 클립 하나만 알 때 등록 재료를 모으는 경로다. `ownerChannelId`는
+    이 응답에서 `null`로 오는 일이 잦아 카드 쪽 값을 함께 써야 한다
+    (`extract_owner_channel_id` 주석 참고).
+    """
+    url = CLIP_DETAIL_API.format(uid=quote(clip_uid, safe=""))
+    headers = dict(_HEADERS)
+    headers["Referer"] = f"https://chzzk.naver.com/clips/{quote(clip_uid, safe='')}"
+    try:
+        payload = await _get_json(client, url, headers=headers,
+                                  what=f"detail({clip_uid})")
+    except (FetchError, SchemaError):
+        return None
+    c = payload.get("content") if isinstance(payload, dict) else None
+    if not isinstance(c, dict):
+        return None
+    d = parse_clip_date(c.get("createdDate"))
+    out = {"video_id": str(c.get("videoId") or ""),
+           "rec_id": str(c.get("recId") or ""),
+           "created_at": int(d.timestamp()) if d else None,
+           "created_date": c.get("createdDate")}
+    if full:
+        oc = c.get("ownerChannel") or {}
+        out.update({
+            "owner_channel_id": str(c.get("ownerChannelId")
+                                    or oc.get("channelId") or ""),
+            "clip_title": str(c.get("clipTitle") or ""),
+            "thumbnail_image_url": str(c.get("thumbnailImageUrl") or ""),
+            "duration": safe_count(c.get("duration")),
+            "adult": bool(c.get("adult")),
+            "blind_type": str(c.get("blindType") or ""),
+        })
+    return out
 
 
 async def repair_clip_media(clip_uid: str, detail: dict) -> bool:
@@ -697,40 +749,36 @@ async def _scanned_uids() -> set[str]:
     return {r["clip_uid"] for r in rows}
 
 
-async def _scan_state_of(uids: list[str]) -> dict[str, tuple[int, int]]:
+async def _scan_state_of(uids: list[str]) -> dict[str, dict]:
+    """스캔 기록을 상태까지 함께 읽는다.
+
+    예전에는 (tagged, checked_at) 튜플을 돌려주면서 호출부가 **둘 다 무시하고**
+    "기록이 있으면 건너뛴다"만 했다. 그래서 일시적 조회 실패가 영구 제외로 굳었다.
+    """
     if not uids:
         return {}
     db = await get_db()
     qs = ",".join("?" for _ in uids)
     rows = await (await db.execute(
-        f"SELECT clip_uid, tagged, checked_at FROM singcup_clip_scan WHERE clip_uid IN ({qs})",
-        tuple(uids))).fetchall()
-    return {r["clip_uid"]: (int(r["tagged"]), int(r["checked_at"])) for r in rows}
+        f"SELECT clip_uid, tagged, checked_at, scan_status, next_check_at "
+        f"FROM singcup_clip_scan WHERE clip_uid IN ({qs})", tuple(uids))).fetchall()
+    return {r["clip_uid"]: {"tagged": int(r["tagged"] or 0),
+                            "checked_at": int(r["checked_at"] or 0),
+                            "status": r["scan_status"] or "",
+                            "next_check_at": r["next_check_at"]} for r in rows}
 
 
-async def _record_scan(clip_uid: str, tagged: bool, now: int, item: dict | None = None):
-    """스캔 결과 기록. 재확인에 필요한 videoId/생성일을 함께 남긴다.
-
-    태그가 없던 클립도 나중에 설명이 바뀌면 참가작이 될 수 있는데(스트리머가
-    올린 뒤 #싱드컵을 추가하는 경우), 그때 카드 API를 다시 부르려면 videoId가
-    필요하다. 이게 없어서 예전에는 재확인 자체가 불가능했다.
-    """
-    db = await get_db()
-    d = parse_clip_date((item or {}).get("createdDate"))
-    await db.execute(
-        "INSERT INTO singcup_clip_scan (clip_uid, tagged, checked_at, video_id,"
-        " rec_id, created_at) VALUES (?,?,?,?,?,?) "
-        "ON CONFLICT(clip_uid) DO UPDATE SET tagged=excluded.tagged, "
-        "checked_at=excluded.checked_at, "
-        # 빈 값이 기존 값을 덮지 않게 한다(재확인 재료를 잃지 않도록)
-        "video_id = CASE WHEN excluded.video_id != '' THEN excluded.video_id "
-        "                ELSE video_id END, "
-        "rec_id   = CASE WHEN excluded.rec_id != '' THEN excluded.rec_id "
-        "                ELSE rec_id END, "
-        "created_at = COALESCE(excluded.created_at, created_at)",
-        (clip_uid, 1 if tagged else 0, now,
-         str((item or {}).get("videoId") or ""), str((item or {}).get("recId") or ""),
-         int(d.timestamp()) if d else None))
+def _scan_says_skip(st: dict | None, now: int) -> bool:
+    """이 클립을 이번 탐색에서 건너뛸지. 기록이 있다는 이유만으로는 안 건너뛴다."""
+    if st is None:
+        return False                       # 처음 보는 클립 — 확인한다
+    status = st["status"]
+    if status in _TERMINAL:
+        return True                        # 등록 완료 / 기간 밖 / 삭제 — 최종
+    if not status:                         # 상태가 없는 예전 행은 기존 동작 유지
+        return bool(st["tagged"])
+    nxt = st["next_check_at"]
+    return nxt is not None and now < int(nxt)   # 재확인 시각 전이면 건너뛴다
 
 
 async def _metrics_snapshot(clip_uid: str) -> dict | None:
@@ -876,7 +924,7 @@ async def _scan_batch(client, items: list[dict], now: int) -> tuple[int, int, in
             await _queue_retry(it, "card fetch failed", now)
             continue
         await _clear_retry(uid)
-        is_tag = has_singcup_tag(card["description"])
+        is_tag = has_singcup_tag(card["description"], card.get("title"))
         await _record_scan(uid, is_tag, now, it)
         if not is_tag:
             continue
@@ -1115,14 +1163,18 @@ async def discover_new_clips() -> dict:
             scanned += len(items)
             uids = [str(it.get("clipUID") or "") for it in items if it.get("clipUID")]
             state = await _scan_state_of(uids)
+            now_ts = int(time.time())
             new_here = 0
             for it in items:
                 uid = str(it.get("clipUID") or "")
-                if not uid or uid in state:
+                if not uid or _scan_says_skip(state.get(uid), now_ts):
                     continue
                 if is_candidate_clip(it, start=START_AT, end=END_AT):
                     fresh.append(it)
-                new_here += 1
+                # 처음 보는 클립만 '이 페이지에 새 게 있다'로 센다 — 재확인 대상까지
+                # 세면 조기 종료가 풀려 매번 전 페이지를 훑게 된다.
+                if uid not in state:
+                    new_here += 1
             # 이 페이지가 전부 '아는 클립'이면 그 뒤는 볼 필요가 없다
             if new_here == 0:
                 break
@@ -1535,153 +1587,376 @@ async def refresh_one_clip(clip_uid: str, *, actor: str = "admin") -> dict:
             "db_before": before, "fetched": fetched, "db_after": after}
 
 
-# 태그 없이 스캔된 클립을 이 시간이 지나면 한 번 더 확인한다.
+# ── 스캔 상태 모델 ─────────────────────────────────────────────────────────
+# 예전에는 tagged=0 하나로 '태그 없음 / 조회 실패 / 파싱 실패 / 소유자 미상'을 전부
+# 표현했고, 탐색은 `uid in state`만 보고 영구히 건너뛰었다. 그래서 **일시적 실패가
+# 최종 판정으로 굳었다**. 상태를 나누고 각각 다른 재확인 주기를 준다.
+SCAN_REGISTERED = "registered"        # 참가작으로 등록됨 — 지표 갱신이 관리
+SCAN_UNTAGGED = "untagged"            # 확인했고 태그 없음 — 느린 주기로 재확인
+SCAN_FETCH_FAILED = "fetch_failed"    # HTTP/네트워크 실패 — 짧은 백오프
+SCAN_PARSE_FAILED = "parse_failed"    # 응답은 왔는데 구조가 깨짐 — 짧은 백오프
+SCAN_MISSING_OWNER = "missing_owner"  # 태그는 있는데 소유 채널을 못 정함
+SCAN_OUTSIDE_EVENT = "outside_event"  # 기간 밖 — 최종
+SCAN_INVALID = "blind_or_invalid"     # 삭제/블라인드 — 최종
+_TERMINAL = {SCAN_REGISTERED, SCAN_OUTSIDE_EVENT, SCAN_INVALID}
+
+# 태그가 없던 클립의 재확인 간격(회차별). 뒤로 갈수록 뜸하게 본다.
 RETAG_HOURS = float(os.getenv("SINGCUP_RETAG_HOURS", "6"))
+RETAG_HOURS_2 = float(os.getenv("SINGCUP_RETAG_HOURS_2", "12"))
+RETAG_HOURS_N = float(os.getenv("SINGCUP_RETAG_HOURS_N", "24"))
+# 실패는 '아직 모른다'는 뜻이라 훨씬 빨리 다시 본다.
+_FAIL_BACKOFF = [300, 900, 1800, 3600]
 RETAG_PER_CYCLE = int(os.getenv("SINGCUP_RETAG_PER_CYCLE", "40"))
+RETAG_CONCURRENCY = int(os.getenv("SINGCUP_RETAG_CONCURRENCY", "2"))
+RETAG_RATE = float(os.getenv("SINGCUP_RETAG_RATE", "1.0"))   # 초당 요청
+# 이벤트가 끝난 뒤에도 이 시간까지는 늦게 붙은 태그를 받아 준다.
+RETAG_GRACE_HOURS = float(os.getenv("SINGCUP_RETAG_GRACE_HOURS", "24"))
+
+
+def _next_check_at(status: str, recheck_count: int, now: int) -> int | None:
+    """상태별 다음 확인 시각. 최종 상태는 None(다시 보지 않음)."""
+    if status in _TERMINAL:
+        return None
+    if status in (SCAN_FETCH_FAILED, SCAN_PARSE_FAILED, SCAN_MISSING_OWNER):
+        i = min(max(0, recheck_count - 1), len(_FAIL_BACKOFF) - 1)
+        return now + _FAIL_BACKOFF[i]
+    hours = (RETAG_HOURS if recheck_count <= 1
+             else RETAG_HOURS_2 if recheck_count == 2 else RETAG_HOURS_N)
+    return now + int(hours * 3600)
+
+
+async def _scan_upsert(clip_uid: str, status: str, now: int, *, item: dict | None = None,
+                       video_id: str = "", rec_id: str = "", created_at: int | None = None,
+                       owner: str = "", http_status: int | None = None,
+                       error: str = "", advance: bool = True):
+    """스캔 상태를 한 행에 UPDATE한다(이력 행을 무한히 쌓지 않는다).
+
+    `advance=False`면 recheck_count를 올리지 않는다 — 최초 스캔처럼 '재확인이
+    아닌' 경우에 쓴다. 빈 값이 기존 값을 덮지 않게 해 재확인 재료를 잃지 않는다.
+    """
+    db = await get_db()
+    d = parse_clip_date((item or {}).get("createdDate")) if item else None
+    vid = video_id or str((item or {}).get("videoId") or "")
+    rid = rec_id or str((item or {}).get("recId") or "")
+    cat = created_at if created_at is not None else (int(d.timestamp()) if d else None)
+    row = await (await db.execute(
+        "SELECT recheck_count FROM singcup_clip_scan WHERE clip_uid=?",
+        (clip_uid,))).fetchone()
+    cnt = (int(row["recheck_count"]) if row else 0) + (1 if advance else 0)
+    nxt = _next_check_at(status, cnt, now)
+    await db.execute(
+        """INSERT INTO singcup_clip_scan
+               (clip_uid, tagged, checked_at, first_checked_at, video_id, rec_id,
+                created_at, scan_status, next_check_at, recheck_count,
+                last_http_status, last_error, owner_channel_id, registered_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(clip_uid) DO UPDATE SET
+               tagged        = excluded.tagged,
+               checked_at    = excluded.checked_at,
+               scan_status   = excluded.scan_status,
+               next_check_at = excluded.next_check_at,
+               recheck_count = excluded.recheck_count,
+               last_http_status = excluded.last_http_status,
+               last_error    = excluded.last_error,
+               video_id   = CASE WHEN excluded.video_id != ''
+                                 THEN excluded.video_id ELSE video_id END,
+               rec_id     = CASE WHEN excluded.rec_id != ''
+                                 THEN excluded.rec_id ELSE rec_id END,
+               created_at = COALESCE(excluded.created_at, created_at),
+               owner_channel_id = CASE WHEN excluded.owner_channel_id != ''
+                                       THEN excluded.owner_channel_id
+                                       ELSE owner_channel_id END,
+               registered_at = COALESCE(excluded.registered_at, registered_at)""",
+        (clip_uid, 1 if status == SCAN_REGISTERED else 0, now, now, vid, rid, cat,
+         status, nxt, cnt, http_status, error[:200] or None, owner,
+         now if status == SCAN_REGISTERED else None))
+
+
+async def _record_scan(clip_uid: str, tagged: bool, now: int, item: dict | None = None,
+                       owner: str = ""):
+    """최초 스캔 결과. 재확인 횟수는 올리지 않는다."""
+    await _scan_upsert(clip_uid, SCAN_REGISTERED if tagged else SCAN_UNTAGGED, now,
+                       item=item, owner=owner, advance=False)
+
+
+# ── 재확인 ─────────────────────────────────────────────────────────────────
+def _retag_window() -> tuple[int, int]:
+    """재확인을 인정하는 클립 생성 구간(이벤트 기간 + 종료 후 유예)."""
+    return int(START_AT.timestamp()), int(END_AT.timestamp())
+
+
+def retag_enabled() -> bool:
+    """이벤트가 끝나고 유예까지 지나면 재확인을 멈춘다(무의미한 호출 방지)."""
+    return time.time() <= END_AT.timestamp() + RETAG_GRACE_HOURS * 3600
+
+
+_DUE_SCAN_SQL = """
+SELECT clip_uid, video_id, rec_id, created_at, scan_status, recheck_count
+FROM singcup_clip_scan
+WHERE scan_status NOT IN (?, ?, ?)
+  AND (next_check_at IS NULL OR next_check_at <= ?)
+  AND (created_at IS NULL OR (created_at >= ? AND created_at <= ?))
+  AND clip_uid NOT IN (SELECT clip_uid FROM singcup_clips WHERE event_id = ?)
+ORDER BY CASE WHEN checked_at IS NULL THEN 0 ELSE 1 END,
+         checked_at ASC, clip_uid ASC
+LIMIT ?
+"""
+
+
+async def _due_scans(now: int, limit: int) -> list[dict]:
+    db = await get_db()
+    start_ts, end_ts = _retag_window()
+    rows = await (await db.execute(
+        _DUE_SCAN_SQL, (SCAN_REGISTERED, SCAN_OUTSIDE_EVENT, SCAN_INVALID,
+                        now, start_ts, end_ts, EVENT_ID, max(0, limit)))).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def _due_count(now: int) -> int:
+    db = await get_db()
+    start_ts, end_ts = _retag_window()
+    row = await (await db.execute(
+        "SELECT COUNT(*) c FROM singcup_clip_scan WHERE scan_status NOT IN (?,?,?) "
+        "AND (next_check_at IS NULL OR next_check_at <= ?) "
+        "AND (created_at IS NULL OR (created_at >= ? AND created_at <= ?)) "
+        "AND clip_uid NOT IN (SELECT clip_uid FROM singcup_clips WHERE event_id=?)",
+        (SCAN_REGISTERED, SCAN_OUTSIDE_EVENT, SCAN_INVALID, now,
+         start_ts, end_ts, EVENT_ID))).fetchone()
+    return int(row["c"] or 0)
+
+
+async def _register_from_card(uid: str, card: dict, meta: dict | None,
+                              now: int) -> str:
+    """태그가 확인된 클립을 정상 경로로 등록한다. 반환은 최종 스캔 상태."""
+    # 소유 채널 우선순위: 상세의 공식 필드 → 카드의 검증된 채널 필드.
+    # 어느 쪽도 못 얻으면 **아무 채널에도 귀속시키지 않는다**(잘못된 스트리머에
+    # 클립이 붙으면 순위가 통째로 틀어진다).
+    owner = (meta or {}).get("owner_channel_id") or card.get("owner_channel_id") or ""
+    if not owner:
+        await _scan_upsert(uid, SCAN_MISSING_OWNER, now,
+                           video_id=(meta or {}).get("video_id", ""),
+                           error="소유 채널을 확정하지 못함")
+        return SCAN_MISSING_OWNER
+    if meta is None:
+        await _scan_upsert(uid, SCAN_FETCH_FAILED, now, owner=owner,
+                           error="상세 조회 실패")
+        return SCAN_FETCH_FAILED
+    if str(meta.get("blind_type") or "").upper() in _BAD_BLIND:
+        await _scan_upsert(uid, SCAN_INVALID, now, owner=owner)
+        return SCAN_INVALID
+
+    item = {"clipUID": uid, "videoId": meta["video_id"],
+            "recId": meta.get("rec_id") or "{}", "ownerChannelId": owner,
+            "clipTitle": meta.get("clip_title") or card.get("title") or "",
+            "thumbnailImageUrl": meta.get("thumbnail_image_url", ""),
+            "duration": meta.get("duration", 0), "adult": meta.get("adult", False),
+            "blindType": meta.get("blind_type") or None,
+            "createdDate": meta.get("created_date")}
+    await _upsert_clip(_to_clip_row(item, card), now)
+    await _apply_metrics(uid, card["heart_count"], card["view_count"],
+                         card["heart_ok"], card["view_ok"], now)
+    await _scan_upsert(uid, SCAN_REGISTERED, now, item=item, owner=owner)
+    _log({"event": "retag_found", "clip_uid": uid, "owner": owner,
+          "hearts": card["heart_count"], "views": card["view_count"]})
+    return SCAN_REGISTERED
+
+
+async def _recheck_one(client, r: dict, now: int, tally: dict, sem, bucket):
+    """스캔 행 1건을 다시 확인한다. 실패는 실패로 기록하고 짧게 재시도한다."""
+    uid = r["clip_uid"]
+    start_ts, end_ts = _retag_window()
+    video_id, rec_id = r["video_id"], r["rec_id"] or "{}"
+    created = r["created_at"]
+
+    async with sem:
+        await bucket.acquire()
+        # videoId나 생성일을 모르면 상세로 먼저 채운다(예전 스캔 행)
+        meta = None
+        if not video_id or created is None:
+            meta = await fetch_clip_meta(client, uid, full=True)
+            if meta is None:
+                tally["fetch_failed"] += 1
+                await _scan_upsert(uid, SCAN_FETCH_FAILED, now, error="상세 조회 실패")
+                return
+            video_id = video_id or meta["video_id"]
+            created = meta["created_at"] if created is None else created
+            if created is not None and not (start_ts <= created <= end_ts):
+                tally["outside_event"] += 1
+                await _scan_upsert(uid, SCAN_OUTSIDE_EVENT, now,
+                                   video_id=video_id, created_at=created)
+                return
+        if not video_id:
+            tally["parse_failed"] += 1
+            await _scan_upsert(uid, SCAN_PARSE_FAILED, now, error="videoId 없음")
+            return
+        await bucket.acquire()
+        card = await fetch_card(client, {"clipUID": uid, "videoId": video_id,
+                                         "recId": rec_id})
+
+    tally["fetched"] += 1
+    if card is None:
+        tally["fetch_failed"] += 1
+        await _scan_upsert(uid, SCAN_FETCH_FAILED, now, video_id=video_id,
+                           created_at=created, error="카드 조회 실패")
+        return
+    if not has_singcup_tag(card["description"], card.get("title")):
+        tally["still_untagged"] += 1
+        await _scan_upsert(uid, SCAN_UNTAGGED, now, video_id=video_id,
+                           created_at=created,
+                           owner=card.get("owner_channel_id", ""))
+        return
+
+    tally["newly_tagged"] += 1
+    if meta is None:
+        async with sem:
+            await bucket.acquire()
+            meta = await fetch_clip_meta(client, uid, full=True)
+    if meta is not None:
+        meta.setdefault("rec_id", rec_id)
+        meta["video_id"] = meta.get("video_id") or video_id
+    status = await _register_from_card(uid, card, meta, now)
+    if status == SCAN_REGISTERED:
+        tally["registered"] += 1
+    elif status == SCAN_MISSING_OWNER:
+        tally["missing_owner"] += 1
+    else:
+        tally["fetch_failed"] += 1
 
 
 async def recheck_untagged_clips(limit: int | None = None) -> dict:
-    """태그가 없던 클립의 설명을 다시 확인한다.
+    """태그 판정을 다시 한다 — 목록을 재순회하지 않고 스캔 기록에서만 고른다.
 
-    참가자들이 클립을 먼저 올리고 나중에 설명에 #싱드컵을 붙이는 일이 흔한데,
-    탐색은 '이미 스캔한 uid'를 태그 여부와 무관하게 건너뛰므로 그런 클립은
-    영원히 들어오지 못했다(실측 사례: 업로드 21시간 뒤에도 미등록).
-    목록을 다시 훑는 대신 스캔 기록에서 오래된 미태그 건만 골라 카드만 다시 부른다.
-
-    이벤트 기간 밖 클립은 대상에서 제외한다 — 어차피 참가작이 될 수 없다.
+    확정된 결함은 "스캔 기록이 있다는 이유만으로 영구 제외"였다. 처음부터 태그가
+    없었는지, 나중에 붙였는지, 그때 API가 실패했는지는 **과거 응답이 없어 알 수
+    없다** — 그래서 상태를 나눠 실패는 빨리, 무태그는 느리게 다시 본다.
     """
     limit = limit or RETAG_PER_CYCLE
+    if not retag_enabled():
+        return {"status": ST_SKIPPED, "note": "이벤트 종료 후 유예기간이 지났습니다."}
     token = await acquire_named_lock("singcup_retag", 300)
     if token is None:
         return {"status": ST_SKIPPED, "note": "다른 재확인 작업이 실행 중입니다."}
 
     now = int(time.time())
-    start_ts, end_ts = int(START_AT.timestamp()), int(END_AT.timestamp())
-    db = await get_db()
+    tally = {"fetched": 0, "newly_tagged": 0, "still_untagged": 0, "registered": 0,
+             "missing_owner": 0, "fetch_failed": 0, "parse_failed": 0,
+             "outside_event": 0}
     try:
-        rows = await (await db.execute(
-            """SELECT clip_uid, video_id, rec_id, created_at
-               FROM singcup_clip_scan
-               WHERE tagged = 0 AND checked_at < ?
-                 -- created_at을 모르는 예전 행은 일단 대상에 넣고, 확인하면서 채운다
-                 AND (created_at IS NULL OR (created_at >= ? AND created_at <= ?))
-               ORDER BY checked_at ASC LIMIT ?""",
-            (now - int(RETAG_HOURS * 3600), start_ts, end_ts, max(0, limit))
-        )).fetchall()
+        rows = await _due_scans(now, limit)
         if not rows:
-            return {"status": ST_OK, "checked": 0, "newly_tagged": 0}
+            return {"status": ST_OK, "examined": 0, **tally,
+                    "remaining_due": await _due_count(now), "next_cursor": None}
 
         client = _get_client()
-        sem = asyncio.Semaphore(max(1, CARD_CONCURRENCY))
-        checked = tagged = skipped = 0
-
-        async def one(r):
-            nonlocal checked, tagged, skipped
-            uid = r["clip_uid"]
-            video_id, rec_id = r["video_id"], r["rec_id"] or "{}"
-            created = r["created_at"]
-            async with sem:
-                # videoId가 없는 예전 행은 상세를 한 번 불러 재료를 채운다
-                if not video_id or created is None:
-                    meta = await fetch_clip_meta(client, uid)
-                    if meta is None:
-                        await _touch_scan(uid, now)
-                        skipped += 1
-                        return
-                    video_id = video_id or meta["video_id"]
-                    created = meta["created_at"] if created is None else created
-                    if created is not None and not (start_ts <= created <= end_ts):
-                        # 기간 밖 — 재료만 채워 두고 다음부터는 SQL에서 걸러진다
-                        await _touch_scan(uid, now, video_id=video_id, created_at=created)
-                        skipped += 1
-                        return
-                card = await fetch_card(client, {"clipUID": uid, "videoId": video_id,
-                                                 "recId": rec_id})
-            checked += 1
-            if card is None:
-                await _touch_scan(uid, now, video_id=video_id, created_at=created)
-                return
-            if not has_singcup_tag(card["description"]):
-                await _touch_scan(uid, now, video_id=video_id, created_at=created)
-                return
-            # 이제 참가작이다 — 정상 등록 경로를 그대로 탄다.
-            # 소유 채널은 카드에서만 얻을 수 있다(상세는 null을 준다).
-            owner = card.get("owner_channel_id") or ""
-            meta = await fetch_clip_meta(client, uid, full=True)
-            if not owner or meta is None:
-                await _touch_scan(uid, now, video_id=video_id, created_at=created)
-                return
-            item = {"clipUID": uid, "videoId": video_id, "recId": rec_id,
-                    "ownerChannelId": owner,
-                    "clipTitle": meta["clip_title"],
-                    "thumbnailImageUrl": meta["thumbnail_image_url"],
-                    "duration": meta.get("duration", 0),
-                    "adult": meta.get("adult", False),
-                    "blindType": meta.get("blind_type") or None,
-                    "createdDate": meta["created_date"]}
-            await _upsert_clip(_to_clip_row(item, card), now)
-            await _apply_metrics(uid, card["heart_count"], card["view_count"],
-                                 card["heart_ok"], card["view_ok"], now)
-            await _record_scan(uid, True, now, item)
-            tagged += 1
-            _log({"event": "retag_found", "clip_uid": uid,
-                  "owner": meta["owner_channel_id"], "hearts": card["heart_count"]})
-
-        await asyncio.gather(*[one(r) for r in rows])
-        await db.commit()
-        if tagged:
+        sem = asyncio.Semaphore(max(1, RETAG_CONCURRENCY))
+        # 정각 전체 갱신과 같은 방식으로 요청을 고르게 흘린다(예산을 나눠 쓴다)
+        from singcup_sweep import TokenBucket
+        bucket = TokenBucket(RETAG_RATE, RETAG_RATE)
+        await asyncio.gather(*[_recheck_one(client, r, now, tally, sem, bucket)
+                               for r in rows])
+        await (await get_db()).commit()
+        if tally["registered"]:
+            # 새 참가자가 생겼으니 대표·점수·순위·KPI를 다시 계산한다
             await recompute_ranking(now, client=client)
-        _log({"event": "retag", "candidates": len(rows), "checked": checked,
-              "newly_tagged": tagged, "skipped": skipped})
-        return {"status": ST_OK, "candidates": len(rows), "checked": checked,
-                "newly_tagged": tagged, "skipped": skipped}
+        remaining = await _due_count(now)
+        _log({"event": "retag", "examined": len(rows), **tally,
+              "remaining_due": remaining})
+        return {"status": ST_OK, "examined": len(rows), **tally,
+                "remaining_due": remaining,
+                # 커서가 필요 없다 — 처리한 행은 next_check_at이 미래로 가서
+                # 대상에서 빠지므로, 같은 요청을 반복하면 자연히 다음 묶음이 온다.
+                "next_cursor": None}
     except (FetchError, SchemaError) as e:
         _log({"event": "retag_failed", "level": "warning", "detail": str(e)[:200]})
+        return {"status": ST_FAILED, "note": str(e)[:200], **tally}
+    finally:
+        await release_named_lock("singcup_retag", token)
+
+
+async def rediscover_clip(clip_uid: str) -> dict:
+    """클립 1건을 즉시 재탐색·등록한다(관리자용). 전체 백필 차례를 기다리지 않는다."""
+    if not _CLIP_UID_RE.match(clip_uid or ""):
+        return {"status": ST_FAILED, "note": "clip_uid 형식이 올바르지 않습니다."}
+    token = await acquire_named_lock("singcup_retag", 120)
+    if token is None:
+        return {"status": ST_SKIPPED, "note": "다른 재확인 작업이 실행 중입니다."}
+    now = int(time.time())
+    start_ts, end_ts = _retag_window()
+    try:
+        client = _get_client()
+        meta = await fetch_clip_meta(client, clip_uid, full=True)
+        if meta is None:
+            await _scan_upsert(clip_uid, SCAN_FETCH_FAILED, now, error="상세 조회 실패")
+            return {"status": ST_FAILED, "note": "클립 상세를 조회하지 못했습니다."}
+        created = meta["created_at"]
+        if created is None or not (start_ts <= created <= end_ts):
+            await _scan_upsert(clip_uid, SCAN_OUTSIDE_EVENT, now,
+                               video_id=meta["video_id"], created_at=created)
+            return {"status": ST_OK, "scan_status": SCAN_OUTSIDE_EVENT,
+                    "note": "이벤트 기간 밖 클립입니다.", "created_at": _iso(created)}
+        card = await fetch_card(client, {"clipUID": clip_uid,
+                                         "videoId": meta["video_id"], "recId": "{}"})
+        if card is None:
+            await _scan_upsert(clip_uid, SCAN_FETCH_FAILED, now,
+                               video_id=meta["video_id"], created_at=created,
+                               error="카드 조회 실패")
+            return {"status": ST_FAILED, "note": "카드를 조회하지 못했습니다."}
+        tagged = has_singcup_tag(card["description"], card.get("title"))
+        if not tagged:
+            await _scan_upsert(clip_uid, SCAN_UNTAGGED, now,
+                               video_id=meta["video_id"], created_at=created)
+            return {"status": ST_OK, "scan_status": SCAN_UNTAGGED, "tagged": False,
+                    "description": card["description"], "title": card.get("title"),
+                    "note": "#싱드컵 태그가 없습니다."}
+        status = await _register_from_card(clip_uid, card, meta, now)
+        await (await get_db()).commit()
+        if status == SCAN_REGISTERED:
+            await recompute_ranking(now, client=client)
+        return {"status": ST_OK if status == SCAN_REGISTERED else ST_FAILED,
+                "scan_status": status, "tagged": True,
+                "owner_channel_id": meta.get("owner_channel_id")
+                                    or card.get("owner_channel_id"),
+                "heart_count": card["heart_count"], "view_count": card["view_count"],
+                "db_after": await _metrics_snapshot(clip_uid)}
+    except (FetchError, SchemaError) as e:
         return {"status": ST_FAILED, "note": str(e)[:200]}
     finally:
         await release_named_lock("singcup_retag", token)
 
 
-async def _touch_scan(clip_uid: str, now: int, *, video_id: str = "",
-                      created_at: int | None = None):
-    """재확인했지만 여전히 태그가 없을 때 — 시각만 밀어 큐 뒤로 보낸다."""
+async def retag_stats() -> dict:
+    """재확인 큐 건전성 — 남은 대상과 소진 예상 시간."""
     db = await get_db()
-    await db.execute(
-        "UPDATE singcup_clip_scan SET checked_at=?, "
-        "video_id = CASE WHEN ? != '' THEN ? ELSE video_id END, "
-        "created_at = COALESCE(?, created_at) WHERE clip_uid=?",
-        (now, video_id, video_id, created_at, clip_uid))
+    now = int(time.time())
+    by = {r["scan_status"]: int(r["c"]) for r in await (await db.execute(
+        "SELECT scan_status, COUNT(*) c FROM singcup_clip_scan GROUP BY scan_status"
+    )).fetchall()}
+    oldest = await (await db.execute(
+        "SELECT MIN(checked_at) m FROM singcup_clip_scan "
+        "WHERE scan_status NOT IN (?,?,?)",
+        (SCAN_REGISTERED, SCAN_OUTSIDE_EVENT, SCAN_INVALID))).fetchone()
+    recent = await (await db.execute(
+        "SELECT COUNT(*) c, SUM(CASE WHEN scan_status=? THEN 1 ELSE 0 END) t "
+        "FROM singcup_clip_scan WHERE checked_at >= ?",
+        (SCAN_REGISTERED, now - 3600))).fetchone()
+    due = await _due_count(now)
+    per_hour = RETAG_PER_CYCLE * (60.0 / max(1e-9, CLIP_INTERVAL_MINUTES))
+    return {
+        "enabled": retag_enabled(),
+        "untagged_total": by.get(SCAN_UNTAGGED, 0),
+        "due_now": due,
+        "checked_1h": int(recent["c"] or 0),
+        "newly_tagged_1h": int(recent["t"] or 0),
+        "missing_owner": by.get(SCAN_MISSING_OWNER, 0),
+        "fetch_failed": by.get(SCAN_FETCH_FAILED, 0),
+        "parse_failed": by.get(SCAN_PARSE_FAILED, 0),
+        "outside_event": by.get(SCAN_OUTSIDE_EVENT, 0),
+        "registered": by.get(SCAN_REGISTERED, 0),
+        "oldest_checked_at": _iso(oldest["m"] if oldest else None),
+        "per_hour": round(per_hour, 1),
+        "estimated_backfill_hours": round(due / per_hour, 2) if per_hour else None,
+    }
 
-
-async def fetch_clip_meta(client, clip_uid: str, *, full: bool = False) -> dict | None:
-    """상세 API로 videoId·생성일(·등록에 필요한 나머지)을 얻는다."""
-    url = CLIP_DETAIL_API.format(uid=quote(clip_uid, safe=""))
-    headers = dict(_HEADERS)
-    headers["Referer"] = f"https://chzzk.naver.com/clips/{quote(clip_uid, safe='')}"
-    try:
-        payload = await _get_json(client, url, headers=headers,
-                                  what=f"detail({clip_uid})")
-    except (FetchError, SchemaError):
-        return None
-    c = payload.get("content") if isinstance(payload, dict) else None
-    if not isinstance(c, dict):
-        return None
-    d = parse_clip_date(c.get("createdDate"))
-    out = {"video_id": str(c.get("videoId") or ""),
-           "created_at": int(d.timestamp()) if d else None,
-           "created_date": c.get("createdDate")}
-    if full:
-        oc = c.get("ownerChannel") or {}
-        out.update({
-            "owner_channel_id": str(c.get("ownerChannelId")
-                                    or oc.get("channelId") or ""),
-            "clip_title": str(c.get("clipTitle") or ""),
-            "thumbnail_image_url": str(c.get("thumbnailImageUrl") or ""),
-            "duration": safe_count(c.get("duration")),
-            "adult": bool(c.get("adult")),
-            "blind_type": str(c.get("blindType") or ""),
-        })
-    return out
 
 
 async def retry_failed_clips(limit: int = 50) -> dict:

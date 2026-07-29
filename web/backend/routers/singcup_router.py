@@ -18,9 +18,11 @@ from singcup_clips import (
     load_streamer_clips,
     metrics_sweep_stats,
     recheck_untagged_clips,
+    rediscover_clip,
     refresh_metrics,
     refresh_one_clip,
     reset_backfill,
+    retag_stats,
     run_backfill,
 )
 from singcup_collector import (
@@ -176,6 +178,28 @@ async def clips_recheck(limit: int | None = None,
     """
     _require_secret(x_singcup_secret)
     return await recheck_untagged_clips(limit=limit)
+
+
+@router.post("/clips/{clip_uid}/rediscover")
+async def clips_rediscover(clip_uid: str,
+                           x_singcup_secret: str | None = Header(default=None)):
+    """클립 1건을 즉시 재탐색해 등록한다 — 전체 백필 차례를 기다리지 않는다.
+
+    상세·카드 조회 → 기간/카테고리 확인 → 태그 판정 → 소유 채널 확정 →
+    UPSERT → 스트리머 등록 → 대표 재선정 → 점수·랭킹 재계산까지 정상 경로를 탄다.
+    """
+    _require_secret(x_singcup_secret)
+    res = await rediscover_clip(clip_uid)
+    if res.get("status") == ST_FAILED and "형식" in str(res.get("note", "")):
+        raise HTTPException(status_code=400, detail=res["note"])
+    return res
+
+
+@router.get("/clips/retag-stats")
+async def clips_retag_stats(x_singcup_secret: str | None = Header(default=None)):
+    """재확인 큐 건전성 — 남은 대상·상태별 건수·소진 예상 시간."""
+    _require_secret(x_singcup_secret)
+    return await retag_stats()
 
 
 @router.get("/sweep/status")

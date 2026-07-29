@@ -8,6 +8,7 @@
 import time
 
 import httpx
+import pytest
 import singcup_clips as sc
 import singcup_sweep as sw
 from test_singcup_clips import card
@@ -599,13 +600,25 @@ def _retag_handler(desc="#노래 #싱드컵", *, owner="ow1", created=IN_WINDOW,
 
 
 async def _mark_scanned(uid="late1", *, tagged=0, age_hours=10, video_id="vLate",
-                        created=None):
+                        created=None, status=None, next_check_at=0, count=0):
     c = await database.get_db()
+    st = status or (sc.SCAN_REGISTERED if tagged else sc.SCAN_UNTAGGED)
+    now = int(time.time())
     await c.execute(
-        "INSERT INTO singcup_clip_scan (clip_uid, tagged, checked_at, video_id,"
-        " rec_id, created_at) VALUES (?,?,?,?,'{}',?)",
-        (uid, tagged, int(time.time()) - int(age_hours * 3600), video_id, created))
+        "INSERT INTO singcup_clip_scan (clip_uid, tagged, checked_at, first_checked_at,"
+        " video_id, rec_id, created_at, scan_status, next_check_at, recheck_count)"
+        " VALUES (?,?,?,?,?,'{}',?,?,?,?)",
+        (uid, tagged, now - int(age_hours * 3600), now - int(age_hours * 3600),
+         video_id, created, st,
+         None if st in sc._TERMINAL else next_check_at, count))
     await c.commit()
+
+
+async def _scan_row(uid="late1"):
+    c = await database.get_db()
+    r = await (await c.execute(
+        "SELECT * FROM singcup_clip_scan WHERE clip_uid=?", (uid,))).fetchone()
+    return dict(r) if r else None
 
 
 async def _clip_rows():
@@ -623,7 +636,7 @@ def test_late_tag_is_picked_up_on_recheck(db):
     _install(_retag_handler())
 
     res = db(sc.recheck_untagged_clips())
-    assert res["newly_tagged"] == 1 and res["checked"] == 1
+    assert res["newly_tagged"] == 1 and res["registered"] == 1
 
     rows = db(_clip_rows())
     assert "late1" in rows
@@ -640,27 +653,24 @@ def test_still_untagged_clip_is_not_registered(db):
     _install(_retag_handler(desc="#노래 #커버"))
 
     res = db(sc.recheck_untagged_clips())
-    assert res["newly_tagged"] == 0 and res["checked"] == 1
+    assert res["newly_tagged"] == 0 and res["still_untagged"] == 1
     assert db(_clip_rows()) == {}
 
-    async def state():
-        c = await database.get_db()
-        r = await (await c.execute(
-            "SELECT tagged, checked_at FROM singcup_clip_scan "
-            "WHERE clip_uid='late1'")).fetchone()
-        return int(r["tagged"]), int(r["checked_at"])
-    tagged, checked = db(state())
-    assert tagged == 0
-    assert checked > int(time.time()) - 60      # 큐 뒤로 밀렸다
+    r = db(_scan_row())
+    assert r["tagged"] == 0 and r["scan_status"] == sc.SCAN_UNTAGGED
+    assert r["checked_at"] > int(time.time()) - 60
+    # 다음 확인은 6시간 뒤 — 매 루프마다 다시 부르지 않는다
+    assert r["next_check_at"] >= int(time.time()) + int(sc.RETAG_HOURS * 3600) - 60
+    assert r["recheck_count"] == 1
 
 
 def test_recently_checked_clips_are_not_rechecked(db):
     """방금 확인한 클립은 재확인 대상이 아니다(불필요한 호출 방지)."""
-    db(_mark_scanned(age_hours=0.1))
+    db(_mark_scanned(age_hours=0.1, next_check_at=int(time.time()) + 3600))
     calls = []
     _install(_retag_handler(card_calls=calls))
     res = db(sc.recheck_untagged_clips())
-    assert res["checked"] == 0 and calls == []
+    assert res["examined"] == 0 and calls == []
 
 
 def test_already_tagged_clips_are_not_rechecked(db):
@@ -668,7 +678,7 @@ def test_already_tagged_clips_are_not_rechecked(db):
     db(_mark_scanned(tagged=1))
     calls = []
     _install(_retag_handler(card_calls=calls))
-    assert db(sc.recheck_untagged_clips())["checked"] == 0
+    assert db(sc.recheck_untagged_clips())["examined"] == 0
     assert calls == []
 
 
@@ -680,7 +690,7 @@ def test_out_of_window_clip_is_skipped(db):
     db(_mark_scanned(created=old))
     _install(_retag_handler())
     res = db(sc.recheck_untagged_clips())
-    assert res["checked"] == 0                  # SQL에서 이미 걸러진다
+    assert res["examined"] == 0                 # SQL에서 이미 걸러진다
     assert db(_clip_rows()) == {}
 
 
@@ -692,7 +702,7 @@ def test_legacy_row_without_video_id_uses_detail(db):
 
     res = db(sc.recheck_untagged_clips())
     assert details, "상세 API로 videoId를 받아와야 한다"
-    assert res["newly_tagged"] == 1
+    assert res["newly_tagged"] == 1 and res["registered"] == 1
     assert "late1" in db(_clip_rows())
 
 
@@ -715,3 +725,289 @@ def test_card_owner_channel_id_is_extracted():
     assert sc.extract_owner_channel_id(p["card"]) == "abc123"
     assert sc.extract_owner_channel_id({"interaction": {}}) == ""
     assert sc.extract_owner_channel_id({}) == ""
+
+
+# ── 실패와 무태그를 구분한다 ────────────────────────────────────────────────
+# 이번 사고의 뿌리는 tagged=0 하나로 '태그 없음'과 '확인 실패'를 같게 취급한 것이다.
+def test_fetch_failure_uses_short_backoff_not_six_hours(db):
+    """HTTP 실패는 6시간이 아니라 분 단위로 다시 본다."""
+    db(_mark_scanned())
+
+    def h(request):
+        url = str(request.url)
+        if "/service/v1/channels/" in url or "/categories/" in url:
+            return _cards()(request)
+        if url.endswith("/detail"):
+            return _retag_handler()(request)
+        return httpx.Response(503, json={"code": 503})
+    _install(h)
+
+    res = db(sc.recheck_untagged_clips())
+    assert res["fetch_failed"] == 1 and res["still_untagged"] == 0
+    r = db(_scan_row())
+    assert r["scan_status"] == sc.SCAN_FETCH_FAILED
+    gap = r["next_check_at"] - int(time.time())
+    assert 0 < gap <= 600, f"실패인데 {gap}초 뒤로 밀렸다(무태그 주기를 쓰면 안 됨)"
+    assert r["tagged"] == 0
+
+
+def test_failure_backoff_grows_with_attempts(db):
+    """반복 실패는 점점 뜸하게 — 5분 → 15분 → 30분 → 1시간."""
+    now = int(time.time())
+    gaps = []
+    for cnt in (0, 1, 2, 5):
+        nxt = sc._next_check_at(sc.SCAN_FETCH_FAILED, cnt + 1, now)
+        gaps.append(nxt - now)
+    assert gaps == [300, 900, 1800, 3600]
+
+
+def test_untagged_backoff_grows_with_attempts(db):
+    now = int(time.time())
+    a = sc._next_check_at(sc.SCAN_UNTAGGED, 1, now) - now
+    b = sc._next_check_at(sc.SCAN_UNTAGGED, 2, now) - now
+    c = sc._next_check_at(sc.SCAN_UNTAGGED, 9, now) - now
+    assert a < b < c
+    assert a == int(sc.RETAG_HOURS * 3600)
+
+
+def test_terminal_states_are_never_rechecked(db):
+    """등록·기간밖·삭제는 최종 상태 — next_check_at이 없다."""
+    now = int(time.time())
+    for st in (sc.SCAN_REGISTERED, sc.SCAN_OUTSIDE_EVENT, sc.SCAN_INVALID):
+        assert sc._next_check_at(st, 1, now) is None
+
+
+def test_failure_does_not_become_permanent_exclusion(db):
+    """실패한 클립도 백오프가 지나면 다시 대상에 들어온다(영구 제외 금지)."""
+    db(_mark_scanned(status=sc.SCAN_FETCH_FAILED,
+                     next_check_at=int(time.time()) - 10))
+    _install(_retag_handler())
+    res = db(sc.recheck_untagged_clips())
+    assert res["examined"] == 1 and res["registered"] == 1
+
+
+# ── 소유 채널 안전장치 ──────────────────────────────────────────────────────
+def test_missing_owner_is_not_attributed_to_a_wrong_channel(db):
+    """소유 채널을 확정 못 하면 아무 스트리머에도 귀속시키지 않는다."""
+    db(_mark_scanned())
+
+    def h(request):
+        url = str(request.url)
+        if "/service/v1/channels/" in url or "/categories/" in url:
+            return _cards()(request)
+        if url.endswith("/detail"):
+            return httpx.Response(200, json={"code": 200, "content": {
+                "clipUID": "late1", "videoId": "vLate", "clipTitle": "t",
+                "thumbnailImageUrl": "https://t/a.jpg",
+                "createdDate": IN_WINDOW, "duration": 10, "adult": False,
+                "blindType": None}})          # ownerChannelId 없음
+        p = card("#싱드컵", likes=5, views=36)   # 카드에도 subscription 없음
+        return httpx.Response(200, json=p)
+    _install(h)
+
+    res = db(sc.recheck_untagged_clips())
+    assert res["newly_tagged"] == 1 and res["missing_owner"] == 1
+    assert res["registered"] == 0
+    assert db(_clip_rows()) == {}                # 클립 행이 만들어지지 않았다
+    r = db(_scan_row())
+    assert r["scan_status"] == sc.SCAN_MISSING_OWNER
+    # 짧은 백오프로 다시 시도한다(영구 포기 아님)
+    assert 0 < r["next_check_at"] - int(time.time()) <= 3600
+
+
+def test_owner_priority_prefers_official_field(db):
+    """공식 ownerChannelId가 있으면 그걸 쓰고, 없을 때만 카드 fallback."""
+    db(_mark_scanned())
+
+    def h(request):
+        url = str(request.url)
+        if "/service/v1/channels/" in url or "/categories/" in url:
+            return _cards()(request)
+        if url.endswith("/detail"):
+            return httpx.Response(200, json={"code": 200, "content": {
+                "clipUID": "late1", "videoId": "vLate", "clipTitle": "t",
+                "thumbnailImageUrl": "https://t/a.jpg", "createdDate": IN_WINDOW,
+                "duration": 10, "adult": False, "blindType": None,
+                "ownerChannelId": "official-owner"}})
+        p = card("#싱드컵", likes=5, views=36)
+        p["card"]["interaction"]["subscription"] = {"channelId": "card-owner"}
+        return httpx.Response(200, json=p)
+    _install(h)
+
+    db(sc.recheck_untagged_clips())
+    assert db(_clip_rows())["late1"]["owner_channel_id"] == "official-owner"
+
+
+def test_blinded_clip_becomes_terminal(db):
+    """삭제·블라인드 클립은 등록하지 않고 최종 상태로 닫는다."""
+    db(_mark_scanned())
+
+    def h(request):
+        url = str(request.url)
+        if "/service/v1/channels/" in url or "/categories/" in url:
+            return _cards()(request)
+        if url.endswith("/detail"):
+            return httpx.Response(200, json={"code": 200, "content": {
+                "clipUID": "late1", "videoId": "vLate", "clipTitle": "t",
+                "thumbnailImageUrl": "", "createdDate": IN_WINDOW, "duration": 10,
+                "adult": False, "blindType": "DELETE"}})
+        p = card("#싱드컵", likes=5, views=36)
+        p["card"]["interaction"]["subscription"] = {"channelId": "ow1"}
+        return httpx.Response(200, json=p)
+    _install(h)
+
+    db(sc.recheck_untagged_clips())
+    assert db(_clip_rows()) == {}
+    r = db(_scan_row())
+    assert r["scan_status"] == sc.SCAN_INVALID and r["next_check_at"] is None
+
+
+# ── 큐 진행·중복 방지 ───────────────────────────────────────────────────────
+def test_repeated_calls_walk_the_whole_backlog(db):
+    """limit보다 대상이 많아도 반복 호출하면 전부 검사된다(앞 N건 반복 아님)."""
+    from datetime import datetime
+    created = int(datetime.strptime(IN_WINDOW, "%Y-%m-%d %H:%M:%S")
+                  .replace(tzinfo=sw.KST).timestamp())
+    for i in range(12):
+        db(_mark_scanned(f"u{i:02d}", created=created, video_id=f"v{i}",
+                         age_hours=20 - i))
+    _install(_retag_handler(desc="#노래 #커버"))     # 계속 무태그
+
+    seen = 0
+    for _ in range(4):
+        res = db(sc.recheck_untagged_clips(limit=5))
+        seen += res["examined"]
+    assert seen == 12, f"{12 - seen}건이 한 번도 검사되지 않았다"
+    assert db(sc.recheck_untagged_clips(limit=5))["examined"] == 0
+    assert db(sc._due_count(int(time.time()))) == 0
+
+
+def test_discovery_skips_clips_not_yet_due(db):
+    """탐색은 '기록이 있다'가 아니라 '재확인 시각 전인가'로 건너뛴다."""
+    now = int(time.time())
+    assert sc._scan_says_skip(None, now) is False
+    assert sc._scan_says_skip(
+        {"status": sc.SCAN_REGISTERED, "tagged": 1, "checked_at": 0,
+         "next_check_at": None}, now) is True
+    # 재확인 시각 전 → 건너뜀
+    assert sc._scan_says_skip(
+        {"status": sc.SCAN_UNTAGGED, "tagged": 0, "checked_at": 0,
+         "next_check_at": now + 999}, now) is True
+    # 재확인 시각 도달 → 다시 본다(예전에는 여기서도 영구 제외됐다)
+    assert sc._scan_says_skip(
+        {"status": sc.SCAN_UNTAGGED, "tagged": 0, "checked_at": 0,
+         "next_check_at": now - 1}, now) is False
+    # 실패 상태도 시각이 되면 다시 본다
+    assert sc._scan_says_skip(
+        {"status": sc.SCAN_FETCH_FAILED, "tagged": 0, "checked_at": 0,
+         "next_check_at": now - 1}, now) is False
+
+
+def test_registered_clip_is_not_reregistered(db):
+    """이미 등록된 클립은 재확인 대상에서 빠진다(중복 행 방지)."""
+    from datetime import datetime
+    created = int(datetime.strptime(IN_WINDOW, "%Y-%m-%d %H:%M:%S")
+                  .replace(tzinfo=sw.KST).timestamp())
+    db(_mark_scanned(created=created))
+    _install(_retag_handler())
+    db(sc.recheck_untagged_clips())
+
+    # 스캔 상태를 억지로 되돌려도 singcup_clips에 있으므로 대상이 아니다
+    async def force():
+        c = await database.get_db()
+        await c.execute("UPDATE singcup_clip_scan SET scan_status=?, next_check_at=0",
+                        (sc.SCAN_UNTAGGED,))
+        await c.commit()
+    db(force())
+    assert db(sc.recheck_untagged_clips())["examined"] == 0
+    rows = db(_clip_rows())
+    assert len(rows) == 1                        # UPSERT — 중복 행 없음
+
+
+def test_rediscover_registers_a_single_clip(db):
+    """단건 재탐색이 정상 경로로 등록하고 랭킹까지 반영한다."""
+    _install(_retag_handler())
+    res = db(sc.rediscover_clip("late1"))
+    assert res["scan_status"] == sc.SCAN_REGISTERED
+    assert res["heart_count"] == 5 and res["view_count"] == 36
+    assert res["owner_channel_id"] == "ow1"
+    me = next(s for s in db(sc.load_main())["streamers"] if s["clipUid"] == "late1")
+    assert me["heartCount"] == 5 and me["viewCount"] == 36 and me["score"] > 0
+    assert db(sc.load_main())["summary"]["streamerCount"] == 1
+
+
+def test_rediscover_validates_uid(db):
+    assert db(sc.rediscover_clip("bad uid!"))["status"] == sc.ST_FAILED
+    assert db(sc.rediscover_clip(""))["status"] == sc.ST_FAILED
+
+
+def test_rediscover_reports_untagged_without_registering(db):
+    _install(_retag_handler(desc="#노래 #커버"))
+    res = db(sc.rediscover_clip("late1"))
+    assert res["tagged"] is False and res["scan_status"] == sc.SCAN_UNTAGGED
+    assert db(_clip_rows()) == {}
+
+
+def test_newly_tagged_clip_can_overtake_the_representative(db):
+    """재확인으로 들어온 일반 클립이 하트가 더 많으면 대표가 바뀐다."""
+    db(_seed(1, 1))                              # own0의 대표 c0_0 (하트 10)
+
+    def h(request):
+        url = str(request.url)
+        if "/service/v1/channels/" in url or "/categories/" in url:
+            return _cards()(request)
+        if url.endswith("/detail"):
+            return httpx.Response(200, json={"code": 200, "content": {
+                "clipUID": "late1", "videoId": "vLate", "clipTitle": "역전",
+                "thumbnailImageUrl": "https://t/a.jpg", "createdDate": IN_WINDOW,
+                "duration": 10, "adult": False, "blindType": None}})
+        p = card("#싱드컵", likes=999, views=50)
+        p["card"]["interaction"]["subscription"] = {"channelId": "own0"}
+        return httpx.Response(200, json=p)
+    _install(h)
+
+    db(sc.rediscover_clip("late1"))
+    me = next(s for s in db(sc.load_main())["streamers"] if s["channelId"] == "own0")
+    assert me["clipUid"] == "late1" and me["heartCount"] == 999
+    assert me["taggedClipCount"] == 2             # KPI에도 반영
+
+
+def test_retag_stops_after_event_grace(db, monkeypatch):
+    """이벤트가 끝나고 유예까지 지나면 재확인을 멈춘다."""
+    monkeypatch.setattr(sc, "RETAG_GRACE_HOURS", -99999)
+    assert sc.retag_enabled() is False
+    assert db(sc.recheck_untagged_clips())["status"] == sc.ST_SKIPPED
+
+
+def test_retag_stats_reports_queue_health(db):
+    from datetime import datetime
+    created = int(datetime.strptime(IN_WINDOW, "%Y-%m-%d %H:%M:%S")
+                  .replace(tzinfo=sw.KST).timestamp())
+    for i in range(3):
+        db(_mark_scanned(f"u{i}", created=created, video_id=f"v{i}"))
+    st = db(sc.retag_stats())
+    assert st["enabled"] is True
+    assert st["untagged_total"] == 3 and st["due_now"] == 3
+    assert st["estimated_backfill_hours"] is not None
+
+
+# ── 태그 표기 ──────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("text", [
+    "#싱드컵", "[#싱드컵]", "#싱드컵,", "# 싱드컵", "#노래 #싱드컵\n",
+    "앞 #싱드컵 뒤", "#싱드컵(커버)",
+])
+def test_tag_variants_accepted(text):
+    assert sc.has_singcup_tag(text)
+
+
+@pytest.mark.parametrize("text", [
+    "[싱드컵]", "싱드컵", "#싱드컵대회", "#싱드컵2", "대회싱드컵", "", None,
+])
+def test_tag_variants_rejected(text):
+    assert not sc.has_singcup_tag(text)
+
+
+def test_tag_found_in_title_too():
+    """해시태그를 제목에만 적은 참가자도 인정한다(기존 판정의 상위집합)."""
+    assert sc.has_singcup_tag("#노래 #커버", "[#싱드컵] 제목")
+    assert not sc.has_singcup_tag("#노래", "[싱드컵] 제목")   # # 없으면 불인정
