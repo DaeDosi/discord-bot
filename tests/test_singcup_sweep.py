@@ -1317,23 +1317,34 @@ def test_hourly_snapshots_still_support_deltas(db):
     now = int(time.time())
 
     async def hourly_history():
+        # 운영과 같은 모양: 매시 버킷마다 한 세트씩, **현재 시각 버킷까지** 쌓인다.
+        # 정각 회차가 끝나면 그 시각 버킷이 바로 생기므로, 어느 시점에서 보더라도
+        # 직전 버킷 하나는 허용오차 안에 들어온다.
         c = await database.get_db()
-        for ago, heart in ((25 * 3600, 5), (3600, 10)):
-            ts = sc.snapshot_bucket(now - ago) + 30
+        base = sc.snapshot_bucket(now)
+        for h in range(25, -1, -1):
+            bucket = base - h * 3600
+            heart = 5 if h >= 24 else (10 if h > 0 else 10)
             await c.execute(
                 "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
                 " heart_count, view_count, follower_count, score, rank, collected_at,"
                 " snapshot_bucket) VALUES (?,?,?,?,1,0,0,1,?,?)",
-                (sc.EVENT_ID, "c0_0", "own0", heart, ts, sc.snapshot_bucket(ts)))
+                (sc.EVENT_ID, "c0_0", "own0", heart, bucket + 30, bucket))
         await c.execute("UPDATE singcup_clips SET heart_count=30, "
                         "last_metrics_at=?, last_attempt_at=? WHERE clip_uid='c0_0'",
                         (now - 300, now - 300))
         await c.commit()
     db(hourly_history())
 
-    me = db(sc.load_main())["streamers"][0]
-    assert me["heartDelta"] == 20, "1시간 기준 회차를 찾지 못했다"
-    assert me["heartDelta24h"] == 25
+    main = db(sc.load_main())
+    me = main["streamers"][0]
+    # 기준은 '허용오차 안에서 가장 가까운 버킷'이라 정확히 60분 전이 아닐 수 있다.
+    # 그래서 값 자체보다 "기준을 찾았고 계산됐다"를 본다(실제 시각은 deltaBaseAt).
+    assert me["heartDelta"] is not None, "1시간 기준 회차를 찾지 못했다"
+    assert me["heartDelta"] == 20                 # 30 - 10(직전 버킷)
+    # summary.deltaBaseAt은 KPI(클립 수) 비교용이라 시드 클립의 first_collected_at이
+    # 기준보다 나중이면 null이 맞다 — 여기서 보는 건 스트리머 증감이다.
+    assert me["heartDelta24h"] == 25              # 30 - 5(25시간 전 버킷)
 
 
 def test_duplicate_report_is_read_only(db):
@@ -1488,3 +1499,115 @@ def test_partial_success_stays_stale_by_metrics_at(db):
     t = db(_times())
     assert now - t["last_metrics_at"] > 4 * 3600     # 둘 다 정상인 시각은 옛날 그대로
     assert t["last_heart_at"] == now                  # 하트는 방금 받았다
+
+
+# ── 급상승이 비면 직전 집계를 보여준다 ─────────────────────────────────────
+# 비교 기준 회차가 없거나(배포 직후·수집 공백) 그 구간에 아무도 하트를 못 받으면
+# 목록이 통째로 빈다. 카드가 사라지는 것보다 '언제 것인지'를 밝히고 직전 결과를
+# 보여주는 편이 낫다.
+async def _seed_mover(now, *, before, after):
+    """1시간 전 스냅샷(before) → 현재 하트(after)인 스트리머 하나를 만든다."""
+    c = await database.get_db()
+    ts = now - 3600
+    await c.execute(
+        "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
+        " heart_count, view_count, follower_count, score, rank, collected_at,"
+        " snapshot_bucket) VALUES (?,?,?,?,1,0,0,1,?,?)",
+        (sc.EVENT_ID, "c0_0", "own0", before, ts, sc.snapshot_bucket(ts)))
+    await c.execute("UPDATE singcup_clips SET heart_count=?, last_metrics_at=?,"
+                    " last_attempt_at=?, last_heart_at=?, last_view_at=?"
+                    " WHERE clip_uid='c0_0'", (after, now - 60, now - 60,
+                                               now - 60, now - 60))
+    await c.commit()
+
+
+def test_movers_are_saved_when_present(db):
+    db(_seed(1, 1))
+    _install(_cards())
+    now = int(time.time())
+    db(_seed_mover(now, before=1, after=50))
+
+    main = db(sc.load_main())
+    assert len(main["topHeartMovers1h"]) == 1
+    assert main["topHeartMovers1h"][0]["heartDelta1h"] == 49
+    assert main["topHeartMovers1hStale"] is False
+    assert main["topHeartMovers1hComputedAt"]
+
+    saved, base, at = db(sc._last_top_movers())
+    assert len(saved) == 1 and at
+
+
+def test_empty_movers_fall_back_to_last_result(db):
+    """증가가 없으면 직전 집계를 stale 표시와 함께 돌려준다."""
+    db(_seed(1, 1))
+    _install(_cards())
+    now = int(time.time())
+    db(_seed_mover(now, before=1, after=50))
+    first = db(sc.load_main())
+    assert first["topHeartMovers1hStale"] is False
+
+    async def flatten():
+        # 기준 스냅샷을 현재 하트와 같게 만들어 증가분을 0으로 → movers 없음
+        c = await database.get_db()
+        await c.execute("UPDATE singcup_snapshots SET heart_count=50")
+        await c.commit()
+    db(flatten())
+    sc._main_cache.clear()
+
+    again = db(sc.load_main())
+    assert len(again["topHeartMovers1h"]) == 1, "직전 집계를 보여줘야 한다"
+    assert again["topHeartMovers1hStale"] is True
+    assert again["topHeartMovers1hComputedAt"]
+    assert again["topHeartMovers1h"][0]["heartDelta1h"] == 49
+
+
+def test_no_baseline_also_falls_back(db):
+    """비교 기준 회차 자체가 없어도(배포 직후) 직전 집계를 쓴다."""
+    db(_seed(1, 1))
+    _install(_cards())
+    now = int(time.time())
+    db(_seed_mover(now, before=1, after=50))
+    db(sc.load_main())
+
+    async def wipe():
+        c = await database.get_db()
+        await c.execute("DELETE FROM singcup_snapshots")
+        await c.commit()
+    db(wipe())
+    sc._main_cache.clear()
+
+    again = db(sc.load_main())
+    assert again["topHeartMovers1hStale"] is True
+    assert len(again["topHeartMovers1h"]) == 1
+
+
+def test_no_history_yet_returns_empty_not_stale(db):
+    """직전 집계도 없으면 빈 목록이고 stale이 아니다(가짜 표시 금지)."""
+    db(_seed(1, 1))
+    _install(_cards())
+    main = db(sc.load_main())
+    assert main["topHeartMovers1h"] == []
+    assert main["topHeartMovers1hStale"] is False
+
+
+def test_fresh_movers_overwrite_the_saved_one(db):
+    """새 집계가 나오면 직전 것을 덮어쓴다(오래된 결과가 눌러앉지 않게)."""
+    db(_seed(1, 1))
+    _install(_cards())
+    now = int(time.time())
+    db(_seed_mover(now, before=1, after=50))
+    db(sc.load_main())
+
+    async def grow():
+        c = await database.get_db()
+        await c.execute("UPDATE singcup_clips SET heart_count=200 "
+                        "WHERE clip_uid='c0_0'")
+        await c.commit()
+    db(grow())
+    sc._main_cache.clear()
+
+    main = db(sc.load_main())
+    assert main["topHeartMovers1hStale"] is False
+    assert main["topHeartMovers1h"][0]["heartDelta1h"] == 199
+    saved, _b, _a = db(sc._last_top_movers())
+    assert saved[0]["heartDelta1h"] == 199

@@ -104,7 +104,9 @@ function Tile({ label, value, unit, accent, delta, windowMin, baseAt, foot }:
 
 /** 최근 1시간 하트 급상승 Top 5. 백엔드가 이미 골라 보낸 목록을 그대로 그린다
  *  (프론트에서 전체 배열로 다시 계산하면 대표 클립 교체 같은 조건이 누락된다). */
-function HeartMovers({ movers }: { movers: SingcupHeartMover[] }) {
+function HeartMovers({ movers, stale, computedAt }: {
+  movers: SingcupHeartMover[]; stale?: boolean; computedAt?: string | null;
+}) {
   return (
     <section className="card !p-4">
       <div>
@@ -114,13 +116,24 @@ function HeartMovers({ movers }: { movers: SingcupHeartMover[] }) {
         </h2>
         {/* 집계 시각은 페이지 우측 상단에 하나만 둔다 — 같은 값을 두 번 보이면 잡음이다 */}
         <p className="mt-0.5 text-[12px] text-muted">
-          대표 클립의 하트가 1시간 동안 가장 많이 증가한 스트리머입니다.
+          {stale
+            ? "이번 구간에는 확인된 하트 증가가 없어 직전 집계를 보여줍니다."
+            : "대표 클립의 하트가 1시간 동안 가장 많이 증가한 스트리머입니다."}
         </p>
+        {/* 옛 결과를 현재 순위로 오해하지 않도록 언제 것인지 밝힌다 */}
+        {stale && computedAt && (
+          <p className="mt-0.5 text-[11px] text-muted tabular-nums">
+            {new Date(computedAt).toLocaleString("ko-KR", {
+              month: "numeric", day: "numeric",
+              hour: "2-digit", minute: "2-digit",
+            })} 기준
+          </p>
+        )}
       </div>
 
       {movers.length === 0 ? (
         <p className="py-6 text-center text-sm text-muted">
-          최근 1시간 동안 확인된 하트 증가가 없습니다.
+          아직 확인된 하트 증가가 없습니다.
         </p>
       ) : (
         // 데스크톱 5열 → 태블릿 3열 → 모바일 2열. 카드 내용이 잘리지 않게 최소 폭을 준다.
@@ -631,7 +644,9 @@ export default function Singcup() {
 
       {/* 최근 1시간 하트 급상승 — KPI 위에 둔다(제목/설명 바로 다음) */}
       {data && (
-        <HeartMovers movers={data.topHeartMovers1h} />
+        <HeartMovers movers={data.topHeartMovers1h}
+                     stale={data.topHeartMovers1hStale}
+                     computedAt={data.topHeartMovers1hComputedAt} />
       )}
 
       {/* 요약 */}

@@ -914,6 +914,17 @@ async def init_db():
         #   last_metrics_at  **둘 다** 정상으로 받은 마지막 시각(의미 축소)
         # 기존 값은 그대로 두고 새 컬럼만 추가한다(과거 행은 0 → '모름').
         # 롤백: _apply_metrics를 되돌리면 된다(컬럼이 남아도 무해).
+        # '최근 1시간 하트 급상승'은 비교 기준 회차가 없거나(배포 직후·수집 공백)
+        # 그 사이 아무도 하트를 못 받으면 통째로 빈다. 화면에 카드가 사라지는 것보다
+        # 직전 정상 집계를 '언제 것인지'와 함께 보여주는 편이 낫다.
+        # 이벤트당 한 행만 UPDATE한다(이력이 아니라 최신 캐시).
+        # 롤백: 이 표를 읽는 코드만 되돌리면 된다.
+        """CREATE TABLE IF NOT EXISTS singcup_top_movers (
+               event_id    TEXT PRIMARY KEY,
+               payload     TEXT    NOT NULL,
+               base_at     INTEGER,
+               computed_at INTEGER NOT NULL
+           )""",
         "ALTER TABLE singcup_clips ADD COLUMN last_attempt_at INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE singcup_clips ADD COLUMN last_heart_at INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE singcup_clips ADD COLUMN last_view_at INTEGER NOT NULL DEFAULT 0",

@@ -2210,6 +2210,33 @@ async def find_reference_run(now: int, window: int,
     return int(row["t"]) if row else None
 
 
+async def _save_top_movers(movers: list[dict], base_at: int | None, now: int):
+    """직전 정상 집계를 덮어쓴다(이력이 아니라 최신 캐시라 행은 이벤트당 하나)."""
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO singcup_top_movers (event_id, payload, base_at, computed_at) "
+        "VALUES (?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET "
+        "payload=excluded.payload, base_at=excluded.base_at, "
+        "computed_at=excluded.computed_at",
+        (EVENT_ID, json.dumps(movers, ensure_ascii=False), base_at, now))
+    await db.commit()
+
+
+async def _last_top_movers() -> tuple[list[dict], int | None, int | None]:
+    """마지막으로 비어 있지 않았던 급상승 집계. 없으면 빈 목록."""
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT payload, base_at, computed_at FROM singcup_top_movers WHERE event_id=?",
+        (EVENT_ID,))).fetchone()
+    if row is None:
+        return [], None, None
+    try:
+        data = json.loads(row["payload"])
+    except (TypeError, ValueError):
+        return [], None, None
+    return (data if isinstance(data, list) else []), row["base_at"], row["computed_at"]
+
+
 async def _delta_maps(now: int) -> tuple[dict, dict, int | None]:
     """(1시간 전 스냅샷, 24시간 전 스냅샷, 1시간 기준 회차 시각).
 
@@ -2420,6 +2447,17 @@ async def _load_main_uncached(limit: int = 200) -> dict:
         "live": live.get(r["channel_id"]),
     } for i, (d, r) in enumerate(movers[:5])]
 
+    # 비교 기준 회차가 없거나(배포 직후·수집 공백) 그 사이 아무도 하트를 못 받으면
+    # 목록이 통째로 빈다. 카드가 사라지는 것보다 직전 정상 집계를 '언제 것인지'와
+    # 함께 보여주는 편이 낫다 — 현재 값으로 오해되지 않도록 stale 표시를 붙인다.
+    if top_movers:
+        movers_out, movers_stale = top_movers, False
+        movers_base, movers_at = ref_ts, now
+        await _save_top_movers(top_movers, ref_ts, now)
+    else:
+        movers_out, movers_base, movers_at = await _last_top_movers()
+        movers_stale = bool(movers_out)
+
     return {
         "event": event_meta(),
         "summary": {
@@ -2434,7 +2472,14 @@ async def _load_main_uncached(limit: int = 200) -> dict:
             "deltaBaseAt": (datetime.fromtimestamp(ref_for_kpi, _KST).isoformat()
                             if has_ref else None),
         },
-        "topHeartMovers1h": top_movers,
+        "topHeartMovers1h": movers_out,
+        # 지금 계산한 값인지, 직전 정상 집계를 다시 보여주는 것인지 구분한다.
+        # 화면에서 "언제 것인지"를 밝히지 않으면 옛 순위를 현재로 오해한다.
+        "topHeartMovers1hStale": movers_stale,
+        "topHeartMovers1hBaseAt": (datetime.fromtimestamp(movers_base, _KST).isoformat()
+                                   if movers_base else None),
+        "topHeartMovers1hComputedAt": (datetime.fromtimestamp(movers_at, _KST).isoformat()
+                                       if movers_at else None),
         "live": live_info,
         "collector": {
             "lastSuccessAt": datetime.fromtimestamp(last_at, _KST).isoformat()

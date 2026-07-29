@@ -374,6 +374,8 @@ def test_load_main_shape(db):
     d = db(sc.load_main())
 
     assert set(d) == {"event", "summary", "collector", "live",
+                      "topHeartMovers1hStale", "topHeartMovers1hBaseAt",
+                      "topHeartMovers1hComputedAt",
                       "topHeartMovers1h", "streamers"}
     # 라이브 신선도 — 화면이 '언제 확인한 라이브인지' 표시할 수 있어야 한다
     assert set(d["live"]) == {"collectedAt", "nextExpectedAt", "intervalSeconds", "isStale"}

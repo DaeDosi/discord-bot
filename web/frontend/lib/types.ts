@@ -625,6 +625,12 @@ export interface SingcupMain {
   };
   /** 최근 1시간 하트 급상승 — 스트리머당 현재 대표 클립 하나만, 동일 clipUid끼리 비교 */
   topHeartMovers1h: SingcupHeartMover[];
+  /** true면 지금 계산한 값이 아니라 '직전 정상 집계'다(이번 구간에 증가가 없었다) */
+  topHeartMovers1hStale?: boolean;
+  /** 그 집계가 비교한 기준 회차 시각 */
+  topHeartMovers1hBaseAt?: string | null;
+  /** 그 집계를 계산한 시각 — 화면에 '언제 것인지' 밝히는 데 쓴다 */
+  topHeartMovers1hComputedAt?: string | null;
   /** 라이브 표시의 신선도. 싱드컵 수집기가 아니라 전체 라이브 스캔 주기에 묶여 있다. */
   live: {
     collectedAt: string | null; nextExpectedAt: string | null;
