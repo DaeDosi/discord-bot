@@ -992,22 +992,159 @@ def test_retag_stats_reports_queue_health(db):
 
 
 # ── 태그 표기 ──────────────────────────────────────────────────────────────
+# 참가 태그는 정확히 `#싱드컵` 하나다. 앞뒤가 공백이거나 문자열 끝이어야 한다.
 @pytest.mark.parametrize("text", [
-    "#싱드컵", "[#싱드컵]", "#싱드컵,", "# 싱드컵", "#노래 #싱드컵\n",
-    "앞 #싱드컵 뒤", "#싱드컵(커버)",
+    "#싱드컵", "앞 #싱드컵 뒤", "#노래 #싱드컵", "#신입 #하꼬 #아저씨 #싱드컵",
+    "#싱드컵 #노래", "  #싱드컵  ",
 ])
 def test_tag_variants_accepted(text):
     assert sc.has_singcup_tag(text)
 
 
+# 다른 글자가 붙은 표기는 참가 태그로 보지 않는다(대회 규칙).
 @pytest.mark.parametrize("text", [
+    "[#싱드컵]", "# 싱드컵", "#싱드컵(커버)", "#싱드컵,",
     "[싱드컵]", "싱드컵", "#싱드컵대회", "#싱드컵2", "대회싱드컵", "", None,
 ])
 def test_tag_variants_rejected(text):
     assert not sc.has_singcup_tag(text)
 
 
-def test_tag_found_in_title_too():
-    """해시태그를 제목에만 적은 참가자도 인정한다(기존 판정의 상위집합)."""
-    assert sc.has_singcup_tag("#노래 #커버", "[#싱드컵] 제목")
-    assert not sc.has_singcup_tag("#노래", "[싱드컵] 제목")   # # 없으면 불인정
+def test_tag_is_judged_on_description_only(db):
+    """제목의 `[싱드컵]` 표기만으로는 참가 처리되지 않는다."""
+    db(_mark_scanned())
+    _install(_retag_handler(desc="#노래 #커버"))   # 제목엔 [싱드컵]이 들어 있다
+    res = db(sc.recheck_untagged_clips())
+    assert res["still_untagged"] == 1 and res["registered"] == 0
+    assert db(_clip_rows()) == {}
+
+
+# ── 고아 클립 (카드 실패 → 재시도 소진 → 어느 표에도 없음) ──────────────────
+# 이번 미등록의 실제 경로로 확인된 것: _scan_batch가 카드 실패 시 재시도 큐에만
+# 넣고 스캔 행을 남기지 않았다. 재시도가 3회로 소진되면 그 클립은
+# singcup_clips에도 singcup_clip_scan에도 없어, 목록 1페이지를 벗어나는 순간
+# 어떤 경로로도 다시 만날 수 없었다.
+def _pages(clips_by_cursor, *, tagged, card_status=200, calls=None):
+    def h(request):
+        url = str(request.url)
+        if "/service/v1/channels/" in url:
+            return _cards()(request)
+        if "/categories/" in url:
+            cur = request.url.params.get("clipUID")
+            items, nxt = clips_by_cursor.get(cur, ([], None))
+            page = {"next": {"clipUID": nxt}} if nxt else {}
+            return httpx.Response(200, json={"code": 200,
+                                             "content": {"data": items, "page": page}})
+        uid = request.url.params.get("referer", "").rsplit("/", 1)[-1]
+        if calls is not None:
+            calls.append(uid)
+        if card_status != 200:
+            return httpx.Response(card_status, json={"code": card_status})
+        p = card("#싱드컵" if uid in tagged else "#노래", likes=5, views=36)
+        p["card"]["interaction"]["subscription"] = {"channelId": f"own-{uid}"}
+        return httpx.Response(200, json=p)
+    return h
+
+
+def _clip(uid, created="2026-07-28 23:08:06"):
+    return {"clipUID": uid, "videoId": f"v{uid}", "recId": "{}",
+            "ownerChannelId": f"own-{uid}", "clipTitle": "t",
+            "thumbnailImageUrl": "https://t/x.jpg", "categoryType": "ETC",
+            "clipCategory": "music", "duration": 60, "adult": False,
+            "createdDate": created, "blindType": None,
+            "ownerChannel": {"channelId": f"own-{uid}", "channelName": "가수",
+                             "channelImageUrl": "", "verifiedMark": False}}
+
+
+async def _scan_uids():
+    c = await database.get_db()
+    rows = await (await c.execute(
+        "SELECT clip_uid, scan_status FROM singcup_clip_scan")).fetchall()
+    return {r["clip_uid"]: r["scan_status"] for r in rows}
+
+
+def test_card_failure_still_leaves_a_scan_row(db):
+    """카드 조회가 실패해도 스캔 상태를 남긴다 — 고아가 되지 않게."""
+    pages = {None: ([_clip("orph")], None)}
+    _install(_pages(pages, tagged={"orph"}, card_status=503))
+    db(sc.discover_new_clips())
+
+    st = db(_scan_uids())
+    assert st.get("orph") == sc.SCAN_FETCH_FAILED
+    # 재확인 큐가 이 클립을 소유한다(재시도 소진과 무관하게 다시 시도된다)
+    assert any(r["clip_uid"] == "orph"
+               for r in db(sc._due_scans(int(time.time()) + 99999, 50)))
+
+
+def test_orphan_is_recovered_by_reconcile(db):
+    """어느 표에도 없는 클립을 전체 대조가 되찾는다(원인과 무관하게)."""
+    # 1페이지는 이미 아는 클립, 뒤쪽 페이지에 우리가 모르는 클립이 있다
+    pages = {None: ([_clip("known")], "p2"),
+             "p2": ([_clip("known2")], "p3"),
+             "p3": ([_clip("lost")], None)}
+    _install(_pages(pages, tagged={"known", "known2", "lost"}))
+    db(sc.discover_new_clips())
+    assert "lost" in db(_clip_rows())          # 첫 탐색에선 들어온다
+
+    # 'lost'만 통째로 지워 고아 상태를 만든다
+    async def orphan():
+        c = await database.get_db()
+        await c.execute("DELETE FROM singcup_clips WHERE clip_uid='lost'")
+        await c.execute("DELETE FROM singcup_clip_scan WHERE clip_uid='lost'")
+        await c.commit()
+    db(orphan())
+
+    # 신규 탐색은 1페이지가 전부 아는 클립이라 즉시 멈춰 'lost'에 닿지 못한다
+    _install(_pages(pages, tagged={"known", "known2", "lost"}))
+    db(sc.discover_new_clips())
+    assert "lost" not in db(_clip_rows())
+
+    # 전체 대조는 조기 종료가 없으므로 되찾는다
+    _install(_pages(pages, tagged={"known", "known2", "lost"}))
+    res = db(sc.reconcile_from_list())
+    assert res["missing"] == 1 and res["tagged"] == 1
+    assert "lost" in db(_clip_rows())
+    me = next(s for s in db(sc.load_main())["streamers"] if s["clipUid"] == "lost")
+    assert me["heartCount"] == 5 and me["viewCount"] == 36
+
+
+def test_reconcile_only_fetches_unknown_clips(db):
+    """이미 아는 클립에는 카드 요청이 나가지 않는다(대조 비용 억제)."""
+    pages = {None: ([_clip("a"), _clip("b")], None)}
+    _install(_pages(pages, tagged={"a", "b"}))
+    db(sc.discover_new_clips())
+
+    calls = []
+    _install(_pages(pages, tagged={"a", "b"}, calls=calls))
+    res = db(sc.reconcile_from_list())
+    assert res["missing"] == 0 and calls == []
+
+
+def test_reconcile_ignores_out_of_window_clips(db):
+    pages = {None: ([_clip("old", created="2026-07-01 10:00:00")], None)}
+    _install(_pages(pages, tagged={"old"}))
+    res = db(sc.reconcile_from_list())
+    assert res["missing"] == 0
+    assert db(_clip_rows()) == {}
+
+
+def test_reconcile_runs_on_its_own_interval(db):
+    """정기 루프에서 매번 전체를 훑지 않는다(주기 제한)."""
+    pages = {None: ([_clip("a")], None)}
+    _install(_pages(pages, tagged={"a"}))
+    sc._last_reconcile = 0.0
+    assert db(sc.maybe_reconcile()) is not None      # 처음엔 실행
+    _install(_pages(pages, tagged={"a"}))
+    assert db(sc.maybe_reconcile()) is None          # 주기 전에는 건너뜀
+
+
+def test_reconcile_lock_blocks_concurrent_runs(db):
+    import asyncio
+    pages = {None: ([_clip("a")], None)}
+    _install(_pages(pages, tagged={"a"}))
+
+    async def go():
+        return await asyncio.gather(sc.reconcile_from_list(),
+                                    sc.reconcile_from_list())
+    a, b = db(go())
+    assert sum(1 for r in (a, b) if r["status"] == sc.ST_SKIPPED) == 1

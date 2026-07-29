@@ -71,11 +71,10 @@ MISSING_SCANS_TO_DEACTIVATE = int(os.getenv("SINGCUP_MISSING_SCANS", "2"))
 # 값이 안 도는 클립을 지목해 추적할 때만 켠다(빈 값이면 꺼짐).
 DEBUG_CLIP_UID = os.getenv("SINGCUP_METRICS_DEBUG_UID", "").strip()
 
-# 앞뒤가 공백일 때만 인정하던 예전 패턴은 `[#싱드컵]`, `#싱드컵,`, 줄바꿈이 뒤따르는
-# 경우를 놓쳤다. 구분자를 '글자가 아닌 것'으로 넓히되 `#싱드컵대회` 같은 다른
-# 낱말과는 여전히 구분한다. `#` 없는 `[싱드컵]`은 **인정하지 않는다** — 이건 기존
-# 정책이고, 대회 도중에 완화하면 순위가 소급해 바뀐다.
-_TAG_RE = re.compile(r"(?<![0-9A-Za-z가-힣])#[ 	]?싱드컵(?![0-9A-Za-z가-힣])")
+# 정확히 '#싱드컵' 태그만 인정한다. 앞뒤가 공백(또는 문자열 끝)이어야 한다 —
+# `[#싱드컵]`, `# 싱드컵`, `#싱드컵(커버)`처럼 다른 글자가 붙은 표기는 참가 태그로
+# 보지 않는다(대회 규칙). 제목/본문에 '싱드컵'이라는 낱말만 있는 것도 제외.
+_TAG_RE = re.compile(r"(^|\s)#싱드컵(?=\s|$)")
 # 재생 불가 상태 — 목록/카드에서 제외한다
 _BAD_BLIND = {"BLIND", "DELETE", "DELETED", "PRIVATE"}
 
@@ -88,17 +87,16 @@ def _log(payload: dict):
 
 
 # ── 순수 함수 (테스트 대상) ─────────────────────────────────────────────────
-def has_singcup_tag(*texts) -> bool:
+def has_singcup_tag(description) -> bool:
     """`#싱드컵` 해시태그가 실제로 있는지. 유니코드 정규화 후 검사한다.
 
-    설명뿐 아니라 제목도 함께 넘길 수 있다 — 해시태그를 제목에만 적는 참가자가
-    있어서, 검사 위치를 넓히는 쪽이 기존 판정의 상위집합이 된다(원래 통과하던
-    클립은 그대로 통과한다).
+    판정 대상은 **설명(description)뿐이다**. 제목은 보지 않는다 — 제목에는
+    `[싱드컵]`처럼 태그가 아닌 표기가 흔해서, 넓히면 참가하지 않은 클립까지
+    들어온다.
     """
-    for t in texts:
-        if t and _TAG_RE.search(unicodedata.normalize("NFKC", str(t))):
-            return True
-    return False
+    if not description:
+        return False
+    return bool(_TAG_RE.search(unicodedata.normalize("NFKC", str(description))))
 
 
 def parse_clip_date(raw) -> datetime | None:
@@ -922,9 +920,15 @@ async def _scan_batch(client, items: list[dict], now: int) -> tuple[int, int, in
         if card is None:
             failed += 1
             await _queue_retry(it, "card fetch failed", now)
+            # 카드 실패도 **스캔 상태로 남긴다**. 예전에는 재시도 큐에만 넣었는데,
+            # 그 큐는 attempts가 한도(RETRY_MAX_ATTEMPTS)에 닿으면 다시 보지 않는다.
+            # 그러면 그 클립은 singcup_clips에도 singcup_clip_scan에도 없는
+            # '고아'가 되어, 목록에서 1페이지를 벗어나는 순간 영영 사라진다.
+            await _scan_upsert(uid, SCAN_FETCH_FAILED, now, item=it,
+                               error="discover: card fetch failed")
             continue
         await _clear_retry(uid)
-        is_tag = has_singcup_tag(card["description"], card.get("title"))
+        is_tag = has_singcup_tag(card["description"])
         await _record_scan(uid, is_tag, now, it)
         if not is_tag:
             continue
@@ -1799,7 +1803,7 @@ async def _recheck_one(client, r: dict, now: int, tally: dict, sem, bucket):
         await _scan_upsert(uid, SCAN_FETCH_FAILED, now, video_id=video_id,
                            created_at=created, error="카드 조회 실패")
         return
-    if not has_singcup_tag(card["description"], card.get("title")):
+    if not has_singcup_tag(card["description"]):
         tally["still_untagged"] += 1
         await _scan_upsert(uid, SCAN_UNTAGGED, now, video_id=video_id,
                            created_at=created,
@@ -1901,7 +1905,7 @@ async def rediscover_clip(clip_uid: str) -> dict:
                                video_id=meta["video_id"], created_at=created,
                                error="카드 조회 실패")
             return {"status": ST_FAILED, "note": "카드를 조회하지 못했습니다."}
-        tagged = has_singcup_tag(card["description"], card.get("title"))
+        tagged = has_singcup_tag(card["description"])
         if not tagged:
             await _scan_upsert(clip_uid, SCAN_UNTAGGED, now,
                                video_id=meta["video_id"], created_at=created)
@@ -1957,6 +1961,104 @@ async def retag_stats() -> dict:
         "estimated_backfill_hours": round(due / per_hour, 2) if per_hour else None,
     }
 
+
+
+# ── 목록 대조 (안전망) ─────────────────────────────────────────────────────
+# 신규 탐색은 '아는 클립만 있는 페이지'를 만나면 즉시 멈춘다 — 평소에는 옳지만,
+# 어떤 이유로든 한 번 놓친 클립은 목록에서 1페이지를 벗어나는 순간 영영 못 만난다.
+# 실제로 그런 클립이 나왔다(15페이지에 멀쩡히 있는데 우리 DB엔 없음).
+#
+# 그래서 주기적으로 **끝까지** 훑어 'singcup_clips에도 singcup_clip_scan에도 없는'
+# 클립만 찾아 온다. 원인이 재시도 소진이든, 페이지 밀림이든, 일시적 장애든
+# 상관없이 되찾는다는 점이 핵심이다 — 원인별 대응은 놓치는 경우가 생긴다.
+RECONCILE_INTERVAL_MINUTES = float(
+    os.getenv("SINGCUP_RECONCILE_INTERVAL_MINUTES", "60"))
+RECONCILE_MAX_PAGES = int(os.getenv("SINGCUP_RECONCILE_MAX_PAGES", "150"))
+RECONCILE_MAX_NEW = int(os.getenv("SINGCUP_RECONCILE_MAX_NEW", "300"))
+
+
+async def _unknown_uids(uids: list[str]) -> list[str]:
+    """등록도 스캔도 안 된 uid만 남긴다."""
+    if not uids:
+        return []
+    db = await get_db()
+    qs = ",".join("?" for _ in uids)
+    known = set()
+    for sql in (f"SELECT clip_uid FROM singcup_clips WHERE clip_uid IN ({qs})",
+                f"SELECT clip_uid FROM singcup_clip_scan WHERE clip_uid IN ({qs})"):
+        for r in await (await db.execute(sql, tuple(uids))).fetchall():
+            known.add(r["clip_uid"])
+    return [u for u in uids if u not in known]
+
+
+async def reconcile_from_list(max_pages: int | None = None) -> dict:
+    """목록을 끝까지 훑어 우리가 모르는 클립을 찾아 등록한다.
+
+    조기 종료가 없다 — 그게 이 함수의 존재 이유다. 대신 자주 돌리지 않는다
+    (기본 60분). 목록은 페이지당 1회 요청이라 150페이지도 부담이 작다.
+    """
+    token = await acquire_named_lock("singcup_reconcile", 900)
+    if token is None:
+        return {"status": ST_SKIPPED, "note": "다른 대조 작업이 실행 중입니다."}
+
+    client = _get_client()
+    pages = scanned = 0
+    missing: list[dict] = []
+    cursor = None
+    status, note = ST_OK, ""
+    try:
+        for _ in range(max_pages or RECONCILE_MAX_PAGES):
+            items, nxt = await fetch_clip_page(client, cursor)
+            pages += 1
+            if not items:
+                break
+            scanned += len(items)
+            cands = [it for it in items
+                     if is_candidate_clip(it, start=START_AT, end=END_AT)]
+            uids = [str(it.get("clipUID")) for it in cands]
+            unknown = set(await _unknown_uids(uids))
+            missing += [it for it in cands if str(it.get("clipUID")) in unknown]
+
+            oldest = parse_clip_date(items[-1].get("createdDate"))
+            if oldest and oldest < START_AT:
+                break                       # 이벤트 시작 이전 구간에 닿았다
+            if len(missing) >= RECONCILE_MAX_NEW or nxt is None:
+                break
+            cursor = nxt
+            await asyncio.sleep(PAGE_DELAY)
+
+        tagged = inserted = failed = 0
+        if missing:
+            now = int(time.time())
+            tagged, inserted, failed = await _scan_batch(client, missing, now)
+            if tagged:
+                await recompute_ranking(now, client=client)
+        _log({"event": "reconcile", "pages": pages, "scanned": scanned,
+              "missing": len(missing), "tagged": tagged, "inserted": inserted,
+              "failed": failed})
+        return {"status": status, "pages": pages, "scanned": scanned,
+                "missing": len(missing), "tagged": tagged, "inserted": inserted,
+                "failed": failed, "note": note}
+    except (FetchError, SchemaError) as e:
+        _log({"event": "reconcile_failed", "level": "warning",
+              "pages": pages, "detail": str(e)[:200]})
+        return {"status": getattr(e, "status", ST_FAILED), "pages": pages,
+                "note": str(e)[:200]}
+    finally:
+        await release_named_lock("singcup_reconcile", token)
+
+
+_last_reconcile = 0.0
+
+
+async def maybe_reconcile() -> dict | None:
+    """정기 루프에서 호출 — 주기가 됐을 때만 전체 대조를 돌린다."""
+    global _last_reconcile
+    now = time.monotonic()
+    if _last_reconcile and now - _last_reconcile < RECONCILE_INTERVAL_MINUTES * 60:
+        return None
+    _last_reconcile = now
+    return await reconcile_from_list()
 
 
 async def retry_failed_clips(limit: int = 50) -> dict:
@@ -2249,10 +2351,11 @@ async def start_clip_collector():
                 # 대표·일반을 가리지 않고 전체를 한 번씩 훑는다. 이 루프는 새 클립을
                 # 빨리 찾는 역할만 남긴다(정각까지 기다리면 신규 등장이 늦어진다).
                 await discover_new_clips()
-                # 나중에 #싱드컵을 붙인 클립을 데려온다 — 탐색은 이미 스캔한
-                # uid를 건너뛰므로 이 경로가 없으면 영영 못 들어온다.
-                await recheck_untagged_clips()
                 await retry_failed_clips()
+                # 설명이 나중에 바뀐 클립을 데려온다(스캔 기록 기준)
+                await recheck_untagged_clips()
+                # 어떤 이유로든 양쪽 표에 다 없는 '고아'를 되찾는다(주기적 전체 대조)
+                await maybe_reconcile()
             elif st == "UPCOMING":
                 wait = 30.0
             else:
