@@ -8,14 +8,18 @@
 """
 import asyncio
 import hmac
+import os
+import time
 
-from fastapi import APIRouter, Header, HTTPException
+import singcup_obs
+from fastapi import APIRouter, Header, HTTPException, Request, Response
 from singcup_clips import (
     backfill_status,
     clip_diagnosis,
     discover_new_clips,
-    load_main,
+    load_main_entry,
     load_streamer_clips,
+    main_cache_stats,
     metrics_sweep_stats,
     recheck_untagged_clips,
     rediscover_clip,
@@ -96,10 +100,74 @@ def _consteq(a: str, b: str) -> bool:
 
 # ── 클립 기반(메인/랭킹) ────────────────────────────────────────────────────
 # 자유게시판 버프(/rankings)와는 별개 데이터다. 메인과 랭킹 화면은 이쪽을 쓴다.
+# 브라우저·프록시가 이 응답을 재사용해도 되는 시간. 서버 캐시 TTL(20초)과 맞춘다 —
+# 더 길게 잡으면 순위 갱신이 화면에 늦게 도착하고, 짧게 잡으면 재마운트마다 네트워크가
+# 나간다. 이 응답에는 인증·개인화 요소가 전혀 없으므로(비로그인 공개 통계) public이다.
+MAIN_MAX_AGE = int(os.getenv("SINGCUP_MAIN_MAX_AGE", "20"))
+
+
+def _etag_matches(header: str | None, etag: str) -> bool:
+    """If-None-Match 대조. 여러 개가 콤마로 오고, 앞단이 W/를 떼거나 붙일 수 있다."""
+    if not header:
+        return False
+    if header.strip() == "*":
+        return True
+    bare = etag.removeprefix('W/')
+    for candidate in header.split(","):
+        c = candidate.strip()
+        if c == etag or c.removeprefix('W/') == bare:
+            return True
+    return False
+
+
 @router.get("/main")
-async def main(limit: int = 200):
-    """#싱드컵 태그 스트리머 목록 — 대표 클립·비공식 예상 인기점수·변화량·현재 라이브."""
-    return await load_main(limit=limit)
+async def main(request: Request, limit: int = 200):
+    """#싱드컵 태그 스트리머 목록 — 대표 클립·비공식 예상 인기점수·변화량·현재 라이브.
+
+    응답이 참가자 전원(약 850KB, gzip 약 240KB)이라 호출 1회의 전송 비용이 크다.
+    그래서 여기서는 두 가지를 한다.
+
+    1) 캐시에 미리 만들어 둔 bytes를 그대로 내보낸다 — 요청마다 재직렬화하지 않는다.
+    2) ETag로 조건부 요청을 받는다 — 내용이 그대로면 304(본문 0바이트)로 끝낸다.
+
+    프론트의 폴링 주기를 늘리는 것과 별개의 방어선이다. 주기를 늘려도 사용자가 많으면
+    호출은 다시 늘어나는데, 그때 실제로 나가는 bytes를 줄이는 건 이쪽이다.
+    """
+    t0 = singcup_obs.begin()
+    try:
+        entry, source = await load_main_entry(limit=limit)
+        etag, body = entry["etag"], entry["body"]
+        headers = {
+            "ETag": etag,
+            "Cache-Control": f"public, max-age={MAIN_MAX_AGE}, stale-while-revalidate=60",
+            # 앞단(Railway 엣지)이 gzip 여부에 따라 다른 표현을 캐시하도록 명시한다
+            "Vary": "Accept-Encoding",
+        }
+        if _etag_matches(request.headers.get("if-none-match"), etag):
+            status, out, sent = 304, Response(status_code=304, headers=headers), 0
+        else:
+            status, sent = 200, len(body)
+            out = Response(content=body, media_type="application/json",
+                           headers=headers)
+        singcup_obs.record(request, status=status, bytes_out=sent,
+                           ms=(time.perf_counter() - t0) * 1000,
+                           cache=("304:" + source) if status == 304 else source,
+                           limit=limit, full_bytes=len(body))
+        return out
+    finally:
+        singcup_obs.end()
+
+
+@router.get("/observability")
+async def observability(minutes: int = 30,
+                        x_singcup_secret: str | None = Header(default=None)):
+    """/main 호출 관측 — 분당 호출 수·전송 bytes·캐시 적중·304 비율·유니크 클라이언트.
+
+    비용 대응의 배포 전후 비교를 이 응답 하나로 만들 수 있게 모아 둔다.
+    원문 IP나 UA 전문은 저장하지 않는다(singcup_obs 참고).
+    """
+    _require_secret(x_singcup_secret)
+    return {"requests": singcup_obs.snapshot(minutes), "serverCache": main_cache_stats()}
 
 
 @router.get("/streamers/{channel_id}/clips")

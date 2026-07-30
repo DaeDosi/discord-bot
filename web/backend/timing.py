@@ -7,6 +7,7 @@
 """
 import os
 import time
+import uuid
 from collections import defaultdict, deque
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -64,11 +65,16 @@ def reset_stats():
 class ServerTimingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         t0 = time.perf_counter()
+        # 요청 ID — 느린 요청 로그와 사용자가 본 응답을 이어 붙일 수 있게 한다.
+        # 클라이언트가 보낸 값이 있으면 그대로 쓰되 길이를 자른다(로그 오염 방지).
+        rid = (request.headers.get("x-request-id") or uuid.uuid4().hex[:12])[:36]
+        request.state.request_id = rid
         try:
             response = await call_next(request)
         except Exception:
             _errors[_key(request)] += 1
             raise
+        response.headers["X-Request-Id"] = rid
         total = (time.perf_counter() - t0) * 1000
 
         key = _key(request)
@@ -85,7 +91,8 @@ class ServerTimingMiddleware(BaseHTTPMiddleware):
 
         if total >= SLOW_MS:
             detail = " ".join(f"{n}={round(v, 1)}ms" for n, v in marks.items())
-            print(f"[slow] {request.method} {key} {round(total)}ms {detail}".strip(), flush=True)
+            print(f"[slow] {request.method} {key} {round(total)}ms rid={rid} "
+                  f"{detail}".strip(), flush=True)
         return response
 
 

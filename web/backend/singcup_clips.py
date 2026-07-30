@@ -21,6 +21,7 @@
 알 수 없으므로 구현하지 않고, 태그 클립 전체를 하나의 통합 풀로 계산한다.
 """
 import asyncio
+import hashlib
 import json
 import os
 import random
@@ -222,7 +223,7 @@ def _get_client() -> httpx.AsyncClient:
 
 
 async def reset_state():
-    global _client
+    global _client, _main_lock
     if _client is not None:
         try:
             await _client.aclose()
@@ -230,7 +231,11 @@ async def reset_state():
             pass
     _client = None
     _channel_cache.clear()
-    _main_cache.clear()
+    invalidate_main_cache()
+    # 락은 '경합이 일어난 순간'의 이벤트 루프에 묶인다(경합이 없으면 묶이지 않는다).
+    # 테스트는 매번 새 루프를 만들므로, 한 번이라도 동시 요청을 재현한 테스트가 있으면
+    # 그 뒤의 테스트에서 "bound to a different event loop"로 터진다. 새로 만들어 끊는다.
+    _main_lock = asyncio.Lock()
 
 
 class FetchError(RuntimeError):
@@ -744,7 +749,7 @@ async def recompute_ranking(now: int, *, client=None,
     await db.commit()
     # 순위가 바뀌었으니 /main 캐시를 즉시 버린다 — TTL이 만료될 때까지 옛 순위를
     # 보여주면 "갱신했는데 화면이 안 바뀐다"는 바로 그 증상이 다시 생긴다.
-    _main_cache.clear()
+    invalidate_main_cache()
     return ranked
 
 
@@ -2388,25 +2393,95 @@ async def _delta_maps(now: int) -> tuple[dict, dict, int | None]:
 # 전원을 조인·정렬하고 증감까지 계산해 1~4초가 걸렸다. 원본 데이터는 4분(탐색)
 # 또는 1시간(정각 스윕)에 한 번만 바뀌므로 짧은 TTL 캐시로 충분하다.
 # single-flight까지 두어 캐시가 만료된 순간 요청이 몰려도 계산은 한 번만 한다.
+#
+# 캐시에는 dict뿐 아니라 **직렬화된 body와 ETag까지 함께** 넣는다. 이 응답은 참가자
+# 전원(1,000명 이상, 원본 약 850KB)이라 JSON 직렬화 자체가 비싸고, ETag를 요청마다
+# 새로 계산하려면 어차피 한 번 더 직렬화해야 한다. 캐시를 채울 때 한 번만 만들어 두면
+# 요청 경로에서는 bytes를 그대로 흘려보내기만 하면 된다.
 MAIN_CACHE_TTL = float(os.getenv("SINGCUP_MAIN_CACHE_SECONDS", "20"))
+# 캐시 항목 수 상한. limit은 호출자가 정하는 값이라(`?limit=1`, `?limit=99999` …)
+# 서로 다른 값으로 계속 부르면 항목이 무한히 쌓인다. 항목 하나가 dict + bytes로
+# 수 MB라 이건 그냥 메모리 폭주 경로다. 화면이 실제로 쓰는 값은 하나뿐이므로
+# 넉넉히 잡아도 이 정도면 충분하다.
+MAIN_CACHE_MAX_ENTRIES = int(os.getenv("SINGCUP_MAIN_CACHE_MAX_ENTRIES", "8"))
+# limit -> (채운 시각, entry). entry = {"data", "body", "etag"}
 _main_cache: dict[int, tuple[float, dict]] = {}
 _main_lock = asyncio.Lock()
+# 캐시 효율 관측용 — /api/singcup/observability 에서 그대로 노출한다.
+_main_stats = {"hit": 0, "miss": 0, "coalesced": 0, "invalidated": 0,
+               "waiting": 0, "waitingPeak": 0}
 
 
-async def load_main(limit: int = 200) -> dict:
-    """메인/랭킹 공용 데이터. 짧은 TTL 캐시를 태운다."""
+def invalidate_main_cache() -> None:
+    """순위·데이터가 바뀌었을 때 즉시 버린다(옛 순위를 TTL 내내 보여주지 않도록)."""
+    if _main_cache:
+        _main_stats["invalidated"] += 1
+    _main_cache.clear()
+
+
+def main_cache_stats() -> dict:
+    return {**_main_stats, "entries": len(_main_cache), "ttlSeconds": MAIN_CACHE_TTL}
+
+
+def _build_main_entry(data: dict) -> dict:
+    """응답 dict → 전송용 bytes + ETag.
+
+    ETag 지문에서 `topHeartMovers1hComputedAt`은 뺀다. 이 필드는 '급상승을 언제
+    계산했는가'라 캐시를 채울 때마다(20초) 값이 바뀌는데, 순위와 수치가 그대로인데도
+    ETag가 달라지면 304가 영영 성립하지 않아 검증 요청이 전부 850KB 전송이 된다.
+    내용이 같으면 같은 ETag가 나오는 것이 조건부 요청의 전제다.
+
+    starlette의 JSONResponse와 같은 옵션으로 직렬화한다 — 다른 옵션을 쓰면 같은
+    데이터가 다른 bytes가 돼 Content-Length와 실제 응답이 어긋난다.
+    """
+    body = json.dumps(data, ensure_ascii=False, allow_nan=False,
+                      separators=(",", ":")).encode("utf-8")
+    fingerprint = {k: v for k, v in data.items() if k != "topHeartMovers1hComputedAt"}
+    digest = hashlib.sha256(
+        json.dumps(fingerprint, ensure_ascii=False, allow_nan=False,
+                   separators=(",", ":")).encode("utf-8")).hexdigest()[:32]
+    # 약한(weak) ETag를 쓴다 — 앞단 프록시가 gzip으로 표현을 바꾸므로 바이트 단위
+    # 동일성(strong)을 주장할 수 없다. 조건부 요청에는 weak로 충분하다.
+    return {"data": data, "body": body, "etag": f'W/"{digest}"'}
+
+
+async def load_main_entry(limit: int = 200) -> tuple[dict, str]:
+    """(entry, source) — source는 hit/coalesced/miss."""
     hit = _main_cache.get(limit)
     now_m = time.monotonic()
     if hit and now_m - hit[0] < MAIN_CACHE_TTL:
-        return hit[1]
-    async with _main_lock:
-        hit = _main_cache.get(limit)          # 대기 중에 다른 요청이 채웠을 수 있다
-        now_m = time.monotonic()
-        if hit and now_m - hit[0] < MAIN_CACHE_TTL:
-            return hit[1]
-        data = await _load_main_uncached(limit)
-        _main_cache[limit] = (time.monotonic(), data)
-        return data
+        _main_stats["hit"] += 1
+        return hit[1], "hit"
+
+    _main_stats["waiting"] += 1
+    _main_stats["waitingPeak"] = max(_main_stats["waitingPeak"], _main_stats["waiting"])
+    try:
+        async with _main_lock:
+            hit = _main_cache.get(limit)      # 대기 중에 다른 요청이 채웠을 수 있다
+            now_m = time.monotonic()
+            if hit and now_m - hit[0] < MAIN_CACHE_TTL:
+                _main_stats["coalesced"] += 1
+                return hit[1], "coalesced"
+            data = await _load_main_uncached(limit)
+            entry = _build_main_entry(data)
+            _main_cache[limit] = (time.monotonic(), entry)
+            while len(_main_cache) > MAIN_CACHE_MAX_ENTRIES:
+                oldest = min(_main_cache, key=lambda k: _main_cache[k][0])
+                _main_cache.pop(oldest, None)
+            _main_stats["miss"] += 1
+            return entry, "miss"
+    finally:
+        _main_stats["waiting"] -= 1
+
+
+async def load_main(limit: int = 200) -> dict:
+    """메인/랭킹 공용 데이터(dict).
+
+    HTTP 라우터는 직렬화된 bytes와 ETag가 필요해 `load_main_entry`를 직접 쓴다.
+    이쪽은 응답 dict만 필요한 호출자(진단·스크립트)를 위한 얇은 래퍼다.
+    """
+    entry, _ = await load_main_entry(limit)
+    return entry["data"]
 
 
 async def _load_main_uncached(limit: int = 200) -> dict:
