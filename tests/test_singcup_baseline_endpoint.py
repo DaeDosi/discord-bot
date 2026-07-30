@@ -19,7 +19,11 @@ SECRET = "s3cr3t-for-test"
 
 async def _seed(now: int):
     c = await database.get_db()
-    t = sc.snapshot_bucket(now - HOUR) + 600
+    # 기준 시각(now-1h)에 최대한 가까운 **그 버킷 안의** 시각. 고정 오프셋(+600)을
+    # 쓰면 실행 시각에 따라 허용 오차를 벗어나 테스트가 흔들린다.
+    ref = now - sc.DELTA_WINDOW_SECONDS
+    b = sc.snapshot_bucket(ref)
+    t = b + min(3540, max(60, ref - b))
     await c.execute(
         "INSERT INTO singcup_snapshots (event_id, clip_uid, owner_channel_id,"
         " heart_count, view_count, follower_count, score, rank, collected_at,"

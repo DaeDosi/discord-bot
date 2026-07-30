@@ -37,8 +37,10 @@ MIN_SESSION_SECONDS = float(os.getenv("SINGCUP_SNAPSHOT_MIN_SESSION_SECONDS", "9
 # 받고 처음부터 다시 받는다 — 이 사실은 API 계약에 명시돼 있다.
 MAX_VERSIONS = int(os.getenv("SINGCUP_SNAPSHOT_MAX_VERSIONS", "60"))
 # 전체 레지스트리가 보관할 스트리머 항목 수 상한(버전 수 × 참가자 수).
-# 참가자가 늘면 버전 수가 자동으로 줄어든다.
-MAX_TOTAL_ITEMS = int(os.getenv("SINGCUP_SNAPSHOT_MAX_ITEMS", "200000"))
+# 참가자가 늘면 버전 수가 자동으로 줄어든다. 실측 약 0.98KB/항목이므로 60,000이면
+# 약 59MB — 컨테이너 메모리에서 감당 가능한 선이다. 예전 기본값 200,000은 약
+# 196MB로, 참가자가 늘면 그대로 메모리 사고가 된다.
+MAX_TOTAL_ITEMS = int(os.getenv("SINGCUP_SNAPSHOT_MAX_ITEMS", "60000"))
 MAX_PAGE_SIZE = int(os.getenv("SINGCUP_PAGE_MAX_SIZE", "200"))
 DEFAULT_PAGE_SIZE = int(os.getenv("SINGCUP_PAGE_DEFAULT_SIZE", "100"))
 
@@ -256,6 +258,10 @@ class Snapshot:
                                -_num(s.get("heartCount")), str(s.get("channelId"))))
         return self._live
 
+    def remaining_seconds(self) -> int:
+        """이 버전이 앞으로 얼마나 더 조회 가능한지(최소 보존 기준)."""
+        return max(0, int(MIN_SESSION_SECONDS - (time.monotonic() - self.created_mono)))
+
     def matches(self, q: str) -> list[str]:
         """전체 참가자에서 닉네임 부분 일치. 반환은 channelId 집합용 목록."""
         nq = normalize_query(q)
@@ -266,6 +272,47 @@ class Snapshot:
 
 _registry: dict[str, Snapshot] = {}
 _order: list[str] = []          # 오래된 것 → 최신
+
+# ── 실시간 봉투(랭킹 스냅샷과 분리) ─────────────────────────────────────────
+# summary·movers·collector는 스트리머 집합이 그대로여도 바뀔 수 있다. 그런데 이
+# 값들을 랭킹 스냅샷 안에 얼려 두면, ranking_version이 같다는 이유로 새 스냅샷이
+# 등록되지 않아 **/summary와 /movers가 과거 상태로 굳는다**(실측 확인).
+# 반대로 이 값들까지 ranking_version에 넣으면 커서가 필요 이상으로 자주 죽는다.
+# 그래서 커서 정합성이 필요한 랭킹과, 항상 최신이면 되는 실시간 값을 나눈다.
+_latest_envelope: dict | None = None
+_envelope_versions = {"summaryVersion": None, "moversVersion": None}
+
+
+def _envelope_version(part: dict | list | None) -> str:
+    canon = json.dumps(part, ensure_ascii=False, sort_keys=True,
+                       separators=(",", ":"), default=str).encode()
+    return hashlib.sha256(canon).hexdigest()[:16]
+
+
+def publish_envelope(data: dict) -> dict:
+    """랭킹과 무관하게 **항상 최신으로 덮어쓰는** 봉투."""
+    global _latest_envelope
+    env = {
+        "event": dict(data.get("event") or {}),
+        "summary": dict(data.get("summary") or {}),
+        "topHeartMovers1h": [dict(m) for m in (data.get("topHeartMovers1h") or [])],
+        "topHeartMovers1hStale": data.get("topHeartMovers1hStale"),
+        "topHeartMovers1hBaseAt": data.get("topHeartMovers1hBaseAt"),
+        "live": dict(data.get("live") or {}),
+        "collector": dict(data.get("collector") or {}),
+    }
+    _latest_envelope = env
+    _envelope_versions["summaryVersion"] = _envelope_version(
+        {"event": env["event"], "summary": env["summary"],
+         "live": env["live"], "collector": env["collector"]})
+    _envelope_versions["moversVersion"] = _envelope_version(
+        {"items": env["topHeartMovers1h"], "stale": env["topHeartMovers1hStale"],
+         "baseAt": env["topHeartMovers1hBaseAt"]})
+    return env
+
+
+def latest_envelope() -> dict | None:
+    return _latest_envelope
 _stats = {"registered": 0, "evicted": 0, "evicted_by_cap": 0,
           "evicted_by_items": 0, "expired_requests": 0, "served": 0,
           "render_hit": 0, "render_miss": 0}
@@ -281,6 +328,8 @@ def register(data: dict, *, version: str | None = None) -> Snapshot:
     버전은 **랭킹 집합만의 지문**이다. summary 시각이나 collector 상태만 달라진
     경우에는 같은 버전이 되어 진행 중인 커서가 그대로 살아 있다.
     """
+    # 봉투는 랭킹 버전이 같아도 **항상** 최신으로 덮어쓴다.
+    publish_envelope(data)
     v = version or ranking_version(data)
     if v in _registry:
         return _registry[v]
@@ -352,13 +401,18 @@ def stats() -> dict:
             "oldestAgeSeconds": (
                 round(time.monotonic() - _registry[_order[0]].created_mono, 1)
                 if _order else None),
-            "cursorSecretConfigured": CURSOR_SECRET_OK}
+            "cursorSecretConfigured": CURSOR_SECRET_OK,
+            "hasEnvelope": _latest_envelope is not None,
+            **_envelope_versions}
 
 
 def reset() -> None:
+    global _latest_envelope
     _registry.clear()
     _order.clear()
     _render.clear()
+    _latest_envelope = None
+    _envelope_versions.update(summaryVersion=None, moversVersion=None)
 
 
 # ── 페이지 자르기 ───────────────────────────────────────────────────────────
@@ -429,6 +483,9 @@ def _slice(items: list[dict], pos: dict[str, int], snap: Snapshot, sort: str,
     return {
         "snapshotVersion": snap.version,
         "generatedAt": snap.generated_at,
+        # 이 버전이 언제까지 조회 가능한지. 참가자가 많으면 메모리 상한 때문에
+        # 최소 보존 시간보다 일찍 사라질 수 있어, 클라이언트가 미리 알 수 있게 준다.
+        "retentionSeconds": snap.remaining_seconds(),
         "total": len(items),
         "items": page,
         "nextCursor": nxt,
@@ -487,37 +544,51 @@ def live(*, size: int | None = None, cursor: str | None = None,
     pos = {s["channelId"]: i for i, s in enumerate(items)}
     out = _slice(items, pos, snap, "live", "desc", cursor, _clamp(size),
                  endpoint="live", fhash=filter_hash(live=True))
-    out["liveInfo"] = snap.envelope.get("live")
+    out["liveInfo"] = (latest_envelope() or snap.envelope).get("live")
     out["_renderKey"] = (snap.version, "live", cursor, _clamp(size))
     return out
 
 
 def movers(*, range_: str = "1h", size: int | None = None,
            snapshot_version: str | None = None) -> dict:
-    snap = get(snapshot_version)
+    """급상승 Top N. summary와 같은 이유로 **최신 봉투**에서 읽는다."""
     if range_ != "1h":
         raise CursorError("range_unsupported")
-    items = (snap.envelope.get("topHeartMovers1h") or [])[:_clamp(size)]
+    env = latest_envelope()
+    if env is None:
+        raise SnapshotExpired(latest().version if latest() else None)
+    items = (env.get("topHeartMovers1h") or [])[:_clamp(size)]
     return {
-        "snapshotVersion": snap.version, "generatedAt": snap.generated_at,
+        "moversVersion": _envelope_versions["moversVersion"],
+        "generatedAt": env["collector"].get("lastSuccessAt"),
         "range": range_, "total": len(items), "items": items,
-        "stale": bool(snap.envelope.get("topHeartMovers1hStale")),
-        "baseAt": snap.envelope.get("topHeartMovers1hBaseAt"),
+        "stale": bool(env.get("topHeartMovers1hStale")),
+        "baseAt": env.get("topHeartMovers1hBaseAt"),
     }
 
 
 def summary(*, snapshot_version: str | None = None) -> dict:
-    """첫 화면에 필요한 최소 응답. 실측 gzip 약 2.0KB(전체의 0.7%)."""
-    snap = get(snapshot_version)
-    d = snap.envelope
+    """첫 화면에 필요한 최소 응답. 실측 gzip 약 2.0KB(전체의 0.7%).
+
+    **랭킹 스냅샷이 아니라 최신 봉투에서 읽는다.** 스트리머 집합이 그대로여도
+    집계 수치는 바뀌는데, 랭킹 버전에 묶어 두면 그때 값이 과거로 굳는다.
+    커서와 무관한 응답이라 항상 최신을 주는 것이 맞다.
+    """
+    env = latest_envelope()
+    if env is None:
+        raise SnapshotExpired(latest().version if latest() else None)
+    snap = latest()
     return {
-        "snapshotVersion": snap.version, "generatedAt": snap.generated_at,
-        "event": d.get("event"), "summary": d.get("summary"),
-        "topHeartMovers1h": d.get("topHeartMovers1h"),
-        "topHeartMovers1hStale": d.get("topHeartMovers1hStale"),
-        "topHeartMovers1hBaseAt": d.get("topHeartMovers1hBaseAt"),
-        "live": d.get("live"), "collector": d.get("collector"),
-        "liveCount": len(snap.live()),
+        "summaryVersion": _envelope_versions["summaryVersion"],
+        "snapshotVersion": snap.version if snap else None,
+        "retentionSeconds": snap.remaining_seconds() if snap else None,
+        "generatedAt": env["collector"].get("lastSuccessAt"),
+        "event": env.get("event"), "summary": env.get("summary"),
+        "topHeartMovers1h": env.get("topHeartMovers1h"),
+        "topHeartMovers1hStale": env.get("topHeartMovers1hStale"),
+        "topHeartMovers1hBaseAt": env.get("topHeartMovers1hBaseAt"),
+        "live": env.get("live"), "collector": env.get("collector"),
+        "liveCount": len(snap.live()) if snap else 0,
     }
 
 

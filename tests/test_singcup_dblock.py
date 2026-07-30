@@ -269,11 +269,11 @@ def test_concurrent_writer_is_not_starved(db):
     _install(_cards())
     other = {"ok": 0, "err": 0}
 
-    async def bot_role(stop):
+    async def bot_role(stop, ready):
         c = await aiosqlite.connect(database.DB_PATH)
         await c.execute("PRAGMA journal_mode=WAL")
         await c.execute("PRAGMA busy_timeout=10000")
-        while not stop.is_set():
+        while True:
             try:
                 await c.execute(
                     "INSERT INTO singcup_clip_scan (clip_uid, tagged, checked_at)"
@@ -283,12 +283,20 @@ def test_concurrent_writer_is_not_starved(db):
                 other["ok"] += 1
             except Exception:
                 other["err"] += 1
+            # 첫 쓰기를 마친 뒤에야 스윕을 시작한다 — 연결·PRAGMA를 준비하는 동안
+            # 스윕이 끝나 버리면 '동시 쓰기'를 한 번도 측정하지 못하고 ok=0으로
+            # 실패한다(전체 실행에서 실제로 관측된 흔들림). 불변식은 그대로 두고
+            # 측정 창만 보장한다.
+            ready.set()
+            if stop.is_set():
+                break
             await asyncio.sleep(0.005)
         await c.close()
 
     async def go():
-        stop = asyncio.Event()
-        t = asyncio.create_task(bot_role(stop))
+        stop, ready = asyncio.Event(), asyncio.Event()
+        t = asyncio.create_task(bot_role(stop, ready))
+        await asyncio.wait_for(ready.wait(), timeout=10)
         res = await sw.run_sweep(sw.floor_hour(time.time()))
         stop.set()
         await t

@@ -751,6 +751,9 @@ async def recompute_ranking(now: int, *, client=None,
     # 순위가 바뀌었으니 /main 캐시를 즉시 버린다 — TTL이 만료될 때까지 옛 순위를
     # 보여주면 "갱신했는데 화면이 안 바뀐다"는 바로 그 증상이 다시 생긴다.
     invalidate_main_cache()
+    # 랭킹 계산이 완전히 끝난 지점 = 분리 API 스냅샷의 유일한 생산 시점.
+    # 실패해도 수집·스윕을 죽이지 않는다.
+    await publish_snapshot(source="recompute")
     return ranked
 
 
@@ -2705,7 +2708,8 @@ def _build_main_entry(data: dict) -> dict:
     return {"data": data, "body": body, "etag": f'W/"{digest}"'}
 
 
-async def load_main_entry(limit: int = 200) -> tuple[dict, str]:
+async def load_main_entry(limit: int = 200, *,
+                          persist_top_movers: bool = True) -> tuple[dict, str]:
     """(entry, source) — source는 hit/coalesced/miss."""
     hit = _main_cache.get(limit)
     now_m = time.monotonic()
@@ -2722,22 +2726,16 @@ async def load_main_entry(limit: int = 200) -> tuple[dict, str]:
             if hit and now_m - hit[0] < MAIN_CACHE_TTL:
                 _main_stats["coalesced"] += 1
                 return hit[1], "coalesced"
-            data = await _load_main_uncached(limit)
+            # 기본 경로는 예전과 **완전히 같은 호출 형태**를 유지한다. 새 인자를
+            # 항상 넘기면 이 함수를 대체하는 기존 테스트 스텁이 전부 깨진다.
+            data = (await _load_main_uncached(limit) if persist_top_movers
+                    else await _load_main_uncached(limit, persist_top_movers=False))
             entry = _build_main_entry(data)
             _main_cache[limit] = (time.monotonic(), entry)
-            # 완성된 응답을 분리 API의 불변 스냅샷으로 등록한다. 새로 계산하지 않고
-            # 방금 만든 결과를 복사해 고정하므로 DB 접근이 없다. 버전은 `/main` ETag가
-            # 아니라 **랭킹 집합만의 지문**이다 — 집계 시각처럼 페이지네이션과 무관한
-            # 변화로 버전이 바뀌면 진행 중인 커서가 죽는다.
-            # 화면이 실제로 쓰는 상한에서만 등록한다 — 진단용 limit까지 등록하면
-            # 서로 다른 크기의 스냅샷이 섞여 버전 의미가 흐려진다.
-            if limit >= 3000:
-                try:
-                    import singcup_split_api as _split
-                    _split.register(data)   # 버전은 랭킹 집합만의 지문
-                except Exception as e:      # noqa: BLE001 — 등록 실패가 /main을 막으면 안 된다
-                    _log({"event": "snapshot_register_failed", "level": "warning",
-                          "detail": str(e)[:160]})
+            # 분리 API 스냅샷은 **여기서 만들지 않는다.** 조회 경로가 생산자가 되면
+            # 프론트가 /main을 그만 부르는 순간 생산이 멈추고, 재시작 후 레지스트리가
+            # 영영 비어 있을 수 있다. 생산은 랭킹 계산이 끝나는 지점(publish_snapshot)
+            # 하나로 모은다.
             while len(_main_cache) > MAIN_CACHE_MAX_ENTRIES:
                 oldest = min(_main_cache, key=lambda k: _main_cache[k][0])
                 _main_cache.pop(oldest, None)
@@ -2757,7 +2755,8 @@ async def load_main(limit: int = 200) -> dict:
     return entry["data"]
 
 
-async def _load_main_uncached(limit: int = 200) -> dict:
+async def _load_main_uncached(limit: int = 200, *,
+                              persist_top_movers: bool = True) -> dict:
     """메인/랭킹 공용 데이터 — 스트리머별 대표 클립 + 점수 + 변화량 + 현재 라이브."""
     db = await get_db()
     rows = [dict(r) for r in await (await db.execute(
@@ -2936,7 +2935,11 @@ async def _load_main_uncached(limit: int = 200) -> dict:
     if top_movers:
         movers_out, movers_stale = top_movers, False
         movers_base, movers_at = ref_ts, now
-        await _save_top_movers(top_movers, ref_ts, now)
+        # 스냅샷 생산 경로는 이 저장을 건너뛴다. 게시할 때마다 같은 값을 다시 쓰면
+        # 스윕 종료 직후·warm-up마다 불필요한 UPDATE/COMMIT이 붙어, P1에서 겨우
+        # 없앤 잠금 경합을 되살릴 수 있다. 저장은 기존 /main 경로에만 남긴다.
+        if persist_top_movers:
+            await _save_top_movers(top_movers, ref_ts, now)
     else:
         movers_out, movers_base, movers_at = await _last_top_movers()
         movers_stale = bool(movers_out)
@@ -2990,6 +2993,98 @@ async def _load_main_uncached(limit: int = 200) -> dict:
         },
         "streamers": out,
     }
+
+
+# ── 분리 API 스냅샷 생산 ────────────────────────────────────────────────────
+# 생산은 **조회와 완전히 분리한다.** 조회 경로가 생산자를 겸하면 프론트가 /main을
+# 그만 부르는 순간 갱신이 멈추고, 재시작 후에도 아무도 /main을 부르지 않으면
+# 레지스트리가 영영 비어 있다. 그래서 랭킹 계산이 끝나는 지점에서만 만든다.
+SNAPSHOT_PUBLISH_INTERVAL = float(
+    os.getenv("SINGCUP_SNAPSHOT_PUBLISH_INTERVAL_SECONDS", "600"))
+# 기동 직후 첫 게시까지의 지연. DB는 lifespan에서 이미 init 되므로 길게 잡을
+# 이유가 없다 — 짧게 시도하고 실패할 때만 지수 백오프한다.
+SNAPSHOT_WARMUP_DELAY = float(os.getenv("SINGCUP_SNAPSHOT_WARMUP_DELAY", "2"))
+SNAPSHOT_RETRY_MAX = float(os.getenv("SINGCUP_SNAPSHOT_RETRY_MAX_SECONDS", "300"))
+_publish_stats = {"published": 0, "unchanged": 0, "failed": 0,
+                  "lastVersion": None, "lastMs": None, "lastSource": None,
+                  "lastAt": None, "lastError": None}
+
+
+def snapshot_publish_stats() -> dict:
+    return dict(_publish_stats)
+
+
+async def publish_snapshot(*, source: str) -> str | None:
+    """완성된 랭킹을 분리 API의 불변 스냅샷으로 게시한다.
+
+    실패해도 예외를 밖으로 내보내지 않는다 — 스냅샷 등록이 수집·스윕을 죽이면
+    본말이 전도된다. 검증에 실패하면 아무것도 등록하지 않으므로 **기존 latest가
+    그대로 유지**된다(원자적 교체).
+    """
+    t0 = time.perf_counter()
+    try:
+        import singcup_split_api as _split
+        if not _split.SPLIT_API_ENABLED:
+            # 비활성 배포에서는 계산도 메모리도 로그도 쓰지 않는다.
+            return None
+        # 게시는 순수 생산이다 — DB 쓰기를 하지 않는다.
+        entry, _src = await load_main_entry(_split.MAX_SNAPSHOT_LIMIT,
+                                            persist_top_movers=False)
+        data = entry["data"]
+        rows = data.get("streamers") or []
+        # 불완전한 결과는 게시하지 않는다. 참가자가 0명인 응답을 latest로 올리면
+        # 화면이 통째로 비어 버린다(수집 실패·DB 잠금 직후에 실제로 나올 수 있다).
+        if not rows or len(rows) != int(data.get("summary", {}).get("streamerCount") or 0):
+            _publish_stats["failed"] += 1
+            _publish_stats["lastError"] = "incomplete_payload"
+            _log({"event": "snapshot_publish_skipped", "level": "warning",
+                  "source": source, "rows": len(rows),
+                  "streamerCount": data.get("summary", {}).get("streamerCount")})
+            return None
+        before = _split.latest()
+        snap = _split.register(data)
+        ms = round((time.perf_counter() - t0) * 1000, 1)
+        changed = before is None or before.version != snap.version
+        _publish_stats["published" if changed else "unchanged"] += 1
+        _publish_stats.update(lastVersion=snap.version, lastMs=ms, lastSource=source,
+                              lastAt=_iso(int(time.time())), lastError=None)
+        _log({"event": "snapshot_published" if changed else "snapshot_unchanged",
+              "source": source, "version": snap.version, "items": len(snap.streamers),
+              "duration_ms": ms, "versions": _split.stats()["versions"]})
+        return snap.version
+    except Exception as e:      # noqa: BLE001 — 게시 실패가 수집을 멈추면 안 된다
+        _publish_stats["failed"] += 1
+        _publish_stats["lastError"] = str(e)[:160]
+        _log({"event": "snapshot_publish_failed", "level": "warning",
+              "source": source, "detail": str(e)[:200]})
+        return None
+
+
+async def start_snapshot_publisher():
+    """기동 직후 warm-up + 느린 안전망 주기.
+
+    평상시 갱신은 recompute_ranking이 맡는다. 이 루프는 두 가지만 담당한다.
+      · 재시작 직후 레지스트리가 비어 있는 구간을 줄인다(warm-up)
+      · 어떤 이유로든 recompute가 오래 돌지 않을 때의 안전망
+    실패하면 지수 백오프로 다시 시도한다 — 요청마다 재시도하지 않는다.
+    """
+    if os.getenv("SINGCUP_ENABLED", "true").lower() in ("0", "false", "no"):
+        return
+    import singcup_split_api as _split
+    if not _split.SPLIT_API_ENABLED:
+        # 비활성 배포에서는 태스크 자체를 시작하지 않는다(추가 부하 0).
+        _log({"event": "snapshot_publisher_disabled"})
+        return
+    await asyncio.sleep(SNAPSHOT_WARMUP_DELAY)
+    backoff = 5.0
+    while True:
+        ok = await publish_snapshot(source="warmup") is not None
+        if ok:
+            backoff = 5.0
+            await asyncio.sleep(SNAPSHOT_PUBLISH_INTERVAL)
+        else:
+            await asyncio.sleep(backoff)
+            backoff = min(SNAPSHOT_RETRY_MAX, backoff * 2)
 
 
 async def load_streamer_clips(channel_id: str) -> dict:

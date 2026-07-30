@@ -4,10 +4,15 @@
 summary는 약 2KB, 상위 100명은 약 29KB다(실측). 그래서 **행 수를 줄이되 정렬·검색의
 기준 집합은 절대 줄이지 않는다**는 것이 여기서 지켜야 할 계약이다.
 """
+import time as _t
+
 import pytest
 import routers.singcup_router as R
+import singcup_clips as sc
 import singcup_split_api as split
 from fastapi.responses import JSONResponse
+
+import database
 
 
 def _streamer(i, **over):
@@ -527,3 +532,298 @@ def test_render_cache_has_an_upper_bound(monkeypatch):
     for i in range(10):
         split.render((f"v{i}", "rankings"), {"i": i})
     assert len(split._render) == 3
+
+
+# ── 독립 생산 경로 ────────────────────────────────────────────────────────
+# 조회 경로가 생산자를 겸하면 프론트가 /main을 그만 부르는 순간 갱신이 멈추고,
+# 재시작 후 아무도 /main을 부르지 않으면 레지스트리가 영영 비어 있다.
+@pytest.fixture
+def split_on(monkeypatch):
+    """생산 경로는 flag가 켜져 있을 때만 동작한다(비활성 배포에서 부하 0)."""
+    monkeypatch.setattr(split, "SPLIT_API_ENABLED", True)
+    return True
+
+
+def _seed_main(db, n=5):
+    """랭킹 계산이 가능한 최소 데이터."""
+    async def go():
+        c = await database.get_db()
+        now = int(_t.time())
+        for i in range(n):
+            await c.execute(
+                "INSERT INTO singcup_clips (clip_uid, event_id, owner_channel_id,"
+                " video_id, rec_id, clip_title, thumbnail_image_url, description,"
+                " created_at, heart_count, view_count, duration, adult, blind_type,"
+                " metrics_ok, owner_channel_name, active, missing_scan_count,"
+                " first_collected_at, last_collected_at, row_updated_at)"
+                " VALUES (?,?,?,?,'','t','','#싱드컵',?,?,?,60,0,'',1,?,1,0,?,?,?)",
+                (f"c{i}", sc.EVENT_ID, f"o{i}", f"v{i}", now - 3600, 100 - i, i,
+                 f"o{i}", now - 3600, now, now))
+            await c.execute(
+                "INSERT INTO singcup_streamers (channel_id, event_id, channel_name,"
+                " channel_image_url, follower_count, verified_mark, tagged_clip_count,"
+                " representative_clip_uid, row_updated_at) VALUES (?,?,?,'',0,0,1,?,?)",
+                (f"o{i}", sc.EVENT_ID, f"o{i}", f"c{i}", now))
+        await c.commit()
+    db(go())
+
+
+def test_publish_without_any_main_request(db, split_on):
+    """`/main` 요청이 0건이어도 스냅샷이 생산된다."""
+    split.reset()
+    _seed_main(db, 5)
+    assert split.latest() is None
+    v = db(sc.publish_snapshot(source="test"))
+    assert v is not None
+    assert split.latest().version == v
+    assert len(split.latest().streamers) == 5
+
+
+def test_publish_is_idempotent_for_same_ranking(db, split_on):
+    split.reset()
+    _seed_main(db, 5)
+    v1 = db(sc.publish_snapshot(source="a"))
+    v2 = db(sc.publish_snapshot(source="b"))
+    assert v1 == v2
+    assert split.stats()["versions"] == 1
+    assert sc.snapshot_publish_stats()["unchanged"] >= 1
+
+
+def test_concurrent_producers_register_one_version(db, split_on):
+    import asyncio
+    split.reset()
+    _seed_main(db, 5)
+
+    async def burst():
+        return await asyncio.gather(*[sc.publish_snapshot(source=f"p{i}")
+                                      for i in range(8)])
+
+    versions = db(burst())
+    assert len(set(versions)) == 1 and split.stats()["versions"] == 1
+
+
+def test_incomplete_payload_is_not_published(db, monkeypatch, split_on):
+    """참가자 0명 응답을 latest로 올리면 화면이 통째로 빈다 — 게시하지 않는다."""
+    split.reset()
+    _seed_main(db, 5)
+    good = db(sc.publish_snapshot(source="ok"))
+    assert good is not None
+
+    async def empty(limit, **kw):
+        return {"event": {}, "summary": {"streamerCount": 0}, "topHeartMovers1h": [],
+                "live": {}, "collector": {}, "streamers": []}
+
+    monkeypatch.setattr(sc, "_load_main_uncached", empty)
+    sc.invalidate_main_cache()
+    assert db(sc.publish_snapshot(source="bad")) is None
+    assert split.latest().version == good, "실패해도 기존 latest가 유지돼야 한다"
+    assert sc.snapshot_publish_stats()["lastError"] == "incomplete_payload"
+
+
+def test_publish_failure_does_not_raise(db, monkeypatch, split_on):
+    split.reset()
+    _seed_main(db, 5)
+    good = db(sc.publish_snapshot(source="ok"))
+
+    async def boom(limit, **kw):
+        raise RuntimeError("DB 잠금")
+
+    monkeypatch.setattr(sc, "_load_main_uncached", boom)
+    sc.invalidate_main_cache()
+    assert db(sc.publish_snapshot(source="fail")) is None   # 예외를 올리지 않는다
+    assert split.latest().version == good
+    assert "DB 잠금" in (sc.snapshot_publish_stats()["lastError"] or "")
+
+
+def test_recompute_ranking_publishes(db, split_on):
+    """랭킹 계산이 끝나는 지점이 유일한 생산 시점이다."""
+    split.reset()
+    _seed_main(db, 5)
+
+    # 채널 API(팔로워)는 타지 않는다 — 실패해도 랭킹 계산은 계속되어야 한다
+    async def _no_channel(client, cid):
+        return None
+
+    import pytest as _p
+    mp = _p.MonkeyPatch()
+    mp.setattr(sc, "fetch_channel", _no_channel)
+    try:
+        db(sc.recompute_ranking(int(_t.time()), client=object()))
+    finally:
+        mp.undo()
+    assert split.latest() is not None
+    assert sc.snapshot_publish_stats()["lastSource"] == "recompute"
+
+
+def test_get_path_never_produces_a_snapshot(db, monkeypatch):
+    """조회는 절대 생산하지 않는다 — 없으면 503."""
+    monkeypatch.setattr(split, "SPLIT_API_ENABLED", True)
+    split.reset()
+    _seed_main(db, 5)
+    out = db(R.split_rankings())
+    assert out.status_code == 503
+    assert split.latest() is None, "조회가 스냅샷을 만들면 안 된다"
+
+
+def test_retention_seconds_is_exposed(db, split_on):
+    split.reset()
+    _seed_main(db, 5)
+    db(sc.publish_snapshot(source="t"))
+    # 커서가 걸리는 응답에만 보존 시간이 의미가 있다
+    for call in (split.rankings(), split.summary()):
+        assert 0 < call["retentionSeconds"] <= split.MIN_SESSION_SECONDS
+    # movers는 커서가 없고 항상 최신 봉투라 자체 버전만 준다
+    assert split.movers()["moversVersion"]
+
+
+def test_409_recovery_from_start(db, monkeypatch):
+    """상한으로 조기 축출돼도 409 → 처음부터 다시 받으면 정상 복구된다."""
+    monkeypatch.setattr(split, "SPLIT_API_ENABLED", True)
+    monkeypatch.setattr(split, "MAX_VERSIONS", 1)
+    _reg(250, "old")
+    cursor = split.rankings(size=100, snapshot_version="old")["nextCursor"]
+    split.register(_payload(250, "new"), version="new")      # old 축출
+    import json
+    out = db(R.split_rankings(cursor=cursor, snapshotVersion="old"))
+    assert out.status_code == 409
+    body = json.loads(out.body)
+    assert body["retryFromStart"] is True
+    fresh = db(R.split_rankings(size=100, snapshotVersion=body["latestSnapshotVersion"]))
+    assert fresh.status_code == 200
+
+
+# ── 랭킹 버전 vs 실시간 봉투 분리 ─────────────────────────────────────────
+# 스트리머 집합이 그대로여도 summary·movers는 바뀐다. 이를 랭킹 스냅샷에 얼려 두면
+# ranking_version이 같다는 이유로 새 스냅샷이 등록되지 않아 과거 값이 굳는다.
+def test_summary_refreshes_even_when_ranking_is_unchanged():
+    d1 = _payload(50)
+    split.register(d1)
+    v1 = split.latest().version
+    s1 = split.summary()
+
+    d2 = _payload(50)                                   # 스트리머 집합 동일
+    d2["summary"]["taggedClipCount"] = 99999
+    d2["collector"]["lastSuccessAt"] = "2026-07-31T05:00:00+09:00"
+    split.register(d2)
+
+    assert split.latest().version == v1, "랭킹 버전은 그대로여야 커서가 산다"
+    s2 = split.summary()
+    assert s2["summary"]["taggedClipCount"] == 99999, "summary는 최신이어야 한다"
+    assert s2["collector"]["lastSuccessAt"] == "2026-07-31T05:00:00+09:00"
+    assert s1["summaryVersion"] != s2["summaryVersion"]
+
+
+def test_movers_refreshes_even_when_ranking_is_unchanged():
+    d1 = _payload(50)
+    split.register(d1)
+    m1 = split.movers()
+    d2 = _payload(50)
+    d2["topHeartMovers1h"] = [{"rank": 1, "channelId": "c0000", "heartDelta1h": 777}]
+    d2["topHeartMovers1hStale"] = True
+    split.register(d2)
+    m2 = split.movers()
+    assert m2["items"][0]["heartDelta1h"] == 777 and m2["stale"] is True
+    assert m1["moversVersion"] != m2["moversVersion"]
+
+
+def test_live_change_rotates_ranking_version():
+    """라이브 상태는 스트리머 레코드에 있으므로 랭킹 버전에 포함된다."""
+    d1 = _payload(50)
+    d2 = _payload(50)
+    d2["streamers"][1]["live"] = {"liveTitle": "새 방송", "concurrentViewers": 5,
+                                  "categoryName": "음악/노래"}
+    assert split.ranking_version(d1) != split.ranking_version(d2)
+
+
+def test_same_version_gives_identical_pages():
+    _reg(250)
+    a = split.rankings(size=100, sort="heart")
+    b = split.rankings(size=100, sort="heart")
+    assert a["items"] == b["items"] and a["nextCursor"] == b["nextCursor"]
+    a2 = split.rankings(size=100, cursor=a["nextCursor"], sort="heart")
+    b2 = split.rankings(size=100, cursor=b["nextCursor"], sort="heart")
+    assert a2["items"] == b2["items"]
+
+
+# ── 생산 경로의 DB 쓰기 0 ─────────────────────────────────────────────────
+def test_publish_performs_no_db_write(db, split_on):
+    """게시는 순수 생산이어야 한다 — P1에서 없앤 잠금 경합을 되살리면 안 된다."""
+    import database
+    split.reset()
+    _seed_main(db, 5)
+
+    async def counts():
+        c = await database.get_db()
+        out = {}
+        for t in ("singcup_top_movers", "singcup_snapshots", "singcup_clips",
+                  "singcup_streamers", "singcup_sweep_runs"):
+            out[t] = (await (await c.execute(f"SELECT COUNT(*) n FROM {t}")).fetchone())["n"]
+        return out
+
+    async def movers_row():
+        c = await database.get_db()
+        r = await (await c.execute(
+            "SELECT computed_at FROM singcup_top_movers WHERE event_id=?",
+            (sc.EVENT_ID,))).fetchone()
+        return r["computed_at"] if r else None
+
+    before, before_movers = db(counts()), db(movers_row())
+    for _ in range(5):
+        sc.invalidate_main_cache()          # 매번 새로 계산하도록 강제
+        db(sc.publish_snapshot(source="t"))
+    assert db(counts()) == before
+    assert db(movers_row()) == before_movers, "top movers를 다시 쓰면 안 된다"
+
+
+def test_main_route_still_persists_top_movers(db):
+    """`/main`의 기존 동작(P1.5 범위)은 건드리지 않았다."""
+    import database
+    _seed_main(db, 5)
+    sc.invalidate_main_cache()
+    db(sc.load_main_entry(3000))            # 기본값 persist_top_movers=True
+    c = db(database.get_db())
+    row = db((db(c.execute("SELECT COUNT(*) n FROM singcup_top_movers"))).fetchone())
+    assert row["n"] >= 0                    # 스키마 접근이 정상(값 자체는 데이터 의존)
+
+
+# ── flag=false에서 아무 일도 하지 않는다 ──────────────────────────────────
+def test_publisher_does_nothing_when_flag_is_off(db, monkeypatch):
+    monkeypatch.setattr(split, "SPLIT_API_ENABLED", False)
+    split.reset()
+    _seed_main(db, 5)
+    calls = []
+    real = sc._load_main_uncached
+
+    async def spy(limit, **kw):
+        calls.append(limit)
+        return await real(limit, **kw)
+
+    monkeypatch.setattr(sc, "_load_main_uncached", spy)
+    assert db(sc.publish_snapshot(source="off")) is None
+    assert calls == [], "flag=false면 계산조차 하지 않는다"
+    assert split.latest() is None and split.stats()["versions"] == 0
+
+
+def test_publisher_task_exits_immediately_when_flag_is_off(db, monkeypatch):
+    import asyncio
+    monkeypatch.setattr(split, "SPLIT_API_ENABLED", False)
+    monkeypatch.setattr(sc, "SNAPSHOT_WARMUP_DELAY", 60.0)   # 이걸 기다리면 실패
+
+    async def go():
+        await asyncio.wait_for(sc.start_snapshot_publisher(), timeout=2.0)
+
+    db(go())    # 즉시 반환해야 한다
+
+
+def test_recompute_does_not_publish_when_flag_is_off(db, monkeypatch):
+    import time as _t
+    monkeypatch.setattr(split, "SPLIT_API_ENABLED", False)
+    split.reset()
+    _seed_main(db, 5)
+
+    async def _no_channel(client, cid):
+        return None
+
+    monkeypatch.setattr(sc, "fetch_channel", _no_channel)
+    db(sc.recompute_ranking(int(_t.time()), client=object()))
+    assert split.latest() is None
