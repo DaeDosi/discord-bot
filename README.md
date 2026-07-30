@@ -436,6 +436,45 @@ curl -X POST 'https://<backend>/api/singcup/prune?dry_run=false' -H 'X-Singcup-S
 | `SINGCUP_CLIP_MAX_PAGES` | `200` | 클립 목록 최대 페이지 |
 | `SINGCUP_CHANNEL_TTL_MINUTES` | `20` | 채널(팔로워) 캐시 |
 
+#### `/api/singcup/main` 전송 비용
+
+이 응답은 **참가자 전원**(운영 기준 1,039명, 원본 약 850KB / gzip 약 240KB)입니다.
+검색·정렬·필터가 전부 이 응답 안에서 이뤄지므로 `limit`을 참가자 수 아래로 내리면
+하위 랭킹과 닉네임 검색이 통째로 누락됩니다. **비용은 `limit`이 아니라 호출 횟수로**
+줄입니다. 2026-07-30 기준 분당 63회가 나가 Railway Network Egress가 월 $29.98로
+예측된 적이 있습니다. 현재 방어선은 네 겹입니다.
+
+1. **프론트 공유 캐시 + in-flight 합류**(`lib/api.ts`의 `sharedGet`) — 여러 컴포넌트가
+   동시에 불러도 네트워크는 1회. 탭 전환·재마운트는 60초(`SINGCUP_MAIN_TTL_MS`) 동안
+   캐시로 답합니다.
+2. **폴링 주기 5분 + 배경 탭 중단**(`lib/useSingcupMain.ts`) — 랭킹 탭과 라이브
+   페이지가 이 훅 하나를 공유합니다. 숨겨진 탭은 요청을 만들지 않고, 복귀 시에도
+   마지막 수신이 60초를 넘겼을 때만 받습니다. **60초 폴링으로 되돌리지 마세요.**
+3. **서버 캐시 + single-flight**(`singcup_clips.load_main_entry`) — 캐시를 채울 때
+   직렬화한 bytes와 ETag를 함께 보관해, 요청 경로에서는 재직렬화가 없습니다.
+4. **ETag/304** — 내용이 그대로면 본문 0바이트. ETag 지문에서
+   `topHeartMovers1hComputedAt`은 제외합니다(20초마다 바뀌어 304를 영영 막습니다).
+
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `SINGCUP_MAIN_CACHE_SECONDS` | `20` | 서버 측 `/main` 캐시 TTL |
+| `SINGCUP_MAIN_MAX_AGE` | `20` | 응답 `Cache-Control: public, max-age=` |
+| `SINGCUP_OBS_ENABLED` | `true` | `/main` 호출 관측 on/off |
+| `SINGCUP_OBS_WINDOW_MINUTES` | `180` | 관측 보관 시간(메모리, 디스크 저장 없음) |
+| `TRUSTED_PROXY_HOPS` | `0` | XFF에서 신뢰할 프록시 홉 수. 0=레거시(맨 앞 항목). Railway 단일 프록시면 `1` |
+| `CLIENT_IP_SALT` | (프로세스마다 랜덤) | IP 해시 소금. 재시작 후에도 해시를 잇고 싶을 때만 지정 |
+
+관측 조회(배포 전후 비교용):
+
+```bash
+curl 'https://<backend>/api/singcup/observability?minutes=30' -H 'X-Singcup-Secret: <secret>'
+```
+
+분당 호출 수·전송 bytes·상태코드별 횟수·캐시 적중(hit/coalesced/miss)·304 비율·
+유니크 클라이언트 수·화면(랭킹/라이브)·브라우저 종류·p50/p95/p99를 돌려줍니다.
+**원문 IP와 UA 전문은 저장하지 않습니다** — IP는 날짜별로 회전하는 해시, UA는 종류
+문자열 하나로 줄여서 메모리에만 둡니다.
+
 #### 백필 운영
 
 ```bash
