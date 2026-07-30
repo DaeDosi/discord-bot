@@ -1,5 +1,100 @@
 export const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// ── 공유 응답 캐시 + in-flight 중복 제거 ───────────────────────────────────────
+// 왜 필요한가: 싱드컵 메인 응답은 참가자 전원(약 850KB, gzip 240KB)이라 한 번의
+// 중복 호출이 그대로 전송 비용이 된다. 그런데 같은 데이터를 두 화면(랭킹 탭 /
+// 라이브 페이지)이 쓰고, 탭을 옮길 때마다 컴포넌트가 다시 마운트되면서 직전 호출과
+// 몇 초 차이로 또 요청이 나갔다. 컴포넌트 바깥(모듈 단위)에 두어야 마운트 수명과
+// 무관하게 재사용된다.
+//
+// 설계 규칙 세 가지:
+//  - 진행 중인 같은 요청이 있으면 그 Promise를 그대로 나눠 준다(네트워크 1회).
+//  - 성공만 캐시한다. 실패는 남기지 않아 곧바로 재시도할 수 있다.
+//  - 요청을 abort하지 않는다. 언마운트한 소비자 하나 때문에 같은 요청을 기다리는
+//    다른 화면까지 실패하면 안 되기 때문이다(언마운트 처리는 소비자 쪽 무시로 한다).
+type SharedEntry = { at: number; data: unknown };
+
+const _sharedCache = new Map<string, SharedEntry>();
+const _sharedPending = new Map<string, Promise<unknown>>();
+
+// 만료된 지 한참 지난 항목까지 들고 있을 이유가 없다(누수 방지).
+const SHARED_SWEEP_MS = 10 * 60_000;
+
+function sweepShared(now: number) {
+  for (const [key, entry] of _sharedCache) {
+    if (now - entry.at > SHARED_SWEEP_MS) _sharedCache.delete(key);
+  }
+}
+
+/** 캐시가 채워진 시각으로부터 지난 시간(ms). 없으면 null. */
+export function sharedAge(key: string): number | null {
+  const entry = _sharedCache.get(key);
+  return entry ? Date.now() - entry.at : null;
+}
+
+/** 네트워크를 부르지 않고 캐시만 본다(재마운트 시 즉시 그리기용). */
+export function sharedPeek<T>(key: string, ttlMs: number): T | null {
+  const entry = _sharedCache.get(key);
+  if (!entry || Date.now() - entry.at >= ttlMs) return null;
+  return entry.data as T;
+}
+
+export function sharedGet<T>(
+  key: string,
+  ttlMs: number,
+  fetcher: () => Promise<T>,
+  opts: { force?: boolean } = {},
+): Promise<T> {
+  const now = Date.now();
+  sweepShared(now);
+
+  if (!opts.force) {
+    const entry = _sharedCache.get(key);
+    if (entry && now - entry.at < ttlMs) return Promise.resolve(entry.data as T);
+  }
+
+  // force여도 이미 나가 있는 요청에는 합류한다 — 방금 시작한 요청이라 어차피
+  // 최신이고, 새로고침 버튼 연타가 그대로 중복 호출이 되는 것을 막는다.
+  const pending = _sharedPending.get(key);
+  if (pending) return pending as Promise<T>;
+
+  const p = fetcher()
+    .then((data) => {
+      _sharedCache.set(key, { at: Date.now(), data });
+      return data;
+    })
+    .finally(() => {
+      // 성공이든 실패든 진행 중 표시는 반드시 지운다. 실패한 Promise가 남으면
+      // 이후 모든 호출이 같은 실패를 영구히 되돌려 받는다.
+      _sharedPending.delete(key);
+    });
+
+  _sharedPending.set(key, p);
+  return p;
+}
+
+// ── 싱드컵 메인 응답의 공유 정책 ─────────────────────────────────────────────
+// limit은 '반환할 스트리머 수의 상한'이지 호출 횟수가 아니다. 검색·정렬·필터가 모두
+// 이 응답 안에서 이뤄지므로 참가자 수보다 낮추면 하위 랭킹과 검색이 통째로 누락된다.
+// 전송량은 limit이 아니라 '호출 횟수'로 줄인다(공유 캐시 + 폴링 주기 + 304).
+export const SINGCUP_MAIN_LIMIT = 3000;
+// 이 시간 안의 재요청은 네트워크 없이 캐시로 답한다. 탭 전환·재마운트·두 화면 동시
+// 사용이 여기서 흡수된다. 폴링 주기(5분)보다 짧아 정기 갱신을 막지는 않는다.
+export const SINGCUP_MAIN_TTL_MS = 60_000;
+
+export const singcupMainKey = (limit: number) => `singcup:main:${limit}`;
+
+/** 테스트·수동 무효화용. */
+export function sharedClear(key?: string) {
+  if (key === undefined) {
+    _sharedCache.clear();
+    _sharedPending.clear();
+  } else {
+    _sharedCache.delete(key);
+    _sharedPending.delete(key);
+  }
+}
+
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return localStorage.getItem("token");
@@ -169,9 +264,20 @@ export const api = {
     // 자유게시판 홍보글(버프) — 보조 화면
     rankings: (limit = 200) =>
       fetch(`${BASE}/api/singcup/rankings?limit=${limit}`).then(r => r.json()) as Promise<import("./types").SingcupRankings>,
-    // #싱드컵 태그 클립 — 메인/랭킹의 근거
-    main: (limit = 200) =>
-      fetch(`${BASE}/api/singcup/main?limit=${limit}`).then(r => r.json()) as Promise<import("./types").SingcupMain>,
+    // #싱드컵 태그 클립 — 메인/랭킹의 근거.
+    // 응답이 커서(참가자 전원) 중복 호출 비용이 크다. 공유 캐시 + in-flight 합류를
+    // 태워 "여러 컴포넌트가 동시에 불러도 네트워크는 1회"를 보장한다.
+    // 캐시 키에 limit을 넣는다 — limit이 다르면 응답 내용도 다르므로 섞이면 안 된다.
+    main: (limit = 200, opts: { force?: boolean } = {}) =>
+      sharedGet<import("./types").SingcupMain>(
+        singcupMainKey(limit), SINGCUP_MAIN_TTL_MS,
+        () => fetch(`${BASE}/api/singcup/main?limit=${limit}`).then(r => {
+          // r.ok를 보지 않으면 429/5xx의 에러 JSON({detail:...})이 정상 데이터인 척
+          // 캐시에 눌러앉는다 — 그 순간 화면의 참가자 목록이 통째로 빈다.
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        }),
+        opts),
     streamerClips: (channelId: string) =>
       fetch(`${BASE}/api/singcup/streamers/${encodeURIComponent(channelId)}/clips`).then(r => r.json()) as Promise<import("./types").SingcupStreamerClips>,
   },

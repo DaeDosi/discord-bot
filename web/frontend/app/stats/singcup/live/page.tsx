@@ -1,11 +1,12 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import {
-  ArrowLeft, Bot, Trophy, ExternalLink, Play, Eye, Heart, Radio, ChevronDown,
+  ArrowLeft, Bot, Trophy, ExternalLink, Play, Eye, Heart, Radio, ChevronDown, RefreshCw,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { SingcupMain, SingcupStreamer, SingcupClip } from "@/lib/types";
+import { useSingcupMain } from "@/lib/useSingcupMain";
+import type { SingcupStreamer, SingcupClip } from "@/lib/types";
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
 import {
@@ -201,21 +202,11 @@ function StreamerCard({ s }: { s: SingcupStreamer }) {
 }
 
 export default function SingcupLivePage() {
-  const [data, setData] = useState<SingcupMain | null>(null);
-  const [loading, setLoading] = useState(true);
+  // 랭킹 탭과 **같은 공유 캐시**를 쓴다 — 두 화면을 오가도 데이터를 다시 받지 않는다.
+  // (라이브 여부는 순위와 무관하므로 응답은 참가자 전원이어야 한다. 상위 N명만 받으면
+  //  하위권 라이브가 통째로 빠진다 — 그래서 limit이 아니라 호출 횟수로 비용을 줄인다.)
+  const { data, loading, refreshing, updatedAt, refresh } = useSingcupMain();
   const [sort, setSort] = useState<SortKey>("viewers");
-
-  useEffect(() => {
-    let alive = true;
-    // 라이브 여부는 순위와 무관하다 — 상위 N명만 받으면 하위권 라이브가 통째로 빠진다
-    const load = () => api.singcup.main(3000)
-      .then((d) => { if (alive) setData(d); })
-      .catch(() => { /* 실패해도 마지막 정상 데이터를 유지한다 */ })
-      .finally(() => { if (alive) setLoading(false); });
-    load();
-    const t = setInterval(load, 60_000);
-    return () => { alive = false; clearInterval(t); };
-  }, []);
 
   const sorted = useMemo(() => {
     // 방송 중인 참가자만 남긴다
@@ -281,11 +272,23 @@ export default function SingcupLivePage() {
               </p>
             )}
           </div>
-          <Link href="/stats?tab=singcup" className="flex items-center gap-1.5 rounded-lg px-3 py-2
-                                         text-sm font-bold text-[#1a1400]"
-                style={{ background: GOLD }}>
-            <Trophy size={15} /> 랭킹 보기
-          </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* 자동 갱신 5분. 라이브 여부의 원본(전체 라이브 스캔)이 10분 주기라
+                화면이 원본보다 빠르다. 그래도 즉시 확인하고 싶을 때를 위한 수동 갱신. */}
+            <button onClick={refresh} disabled={refreshing}
+                    title={updatedAt
+                      ? `${fmtDateTime(new Date(updatedAt).toISOString())}에 받은 데이터입니다. 5분마다 자동으로 갱신됩니다.`
+                      : "데이터를 다시 받아옵니다."}
+                    className="btn-secondary flex items-center gap-1.5 text-sm disabled:opacity-60">
+              <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
+              새로고침
+            </button>
+            <Link href="/stats?tab=singcup" className="flex items-center gap-1.5 rounded-lg px-3 py-2
+                                           text-sm font-bold text-[#1a1400]"
+                  style={{ background: GOLD }}>
+              <Trophy size={15} /> 랭킹 보기
+            </Link>
+          </div>
         </div>
 
         <div className="grid grid-cols-3 gap-3">

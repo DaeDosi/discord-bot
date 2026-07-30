@@ -3,9 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Trophy, ExternalLink, Play, Eye, Heart, Loader2, Radio, ClipboardList, X,
-  Search, ArrowDown, ArrowUp,
+  Search, ArrowDown, ArrowUp, RefreshCw,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useSingcupMain } from "@/lib/useSingcupMain";
 import type {
   SingcupHeartMover, SingcupMain, SingcupStreamer, SingcupRankings,
 } from "@/lib/types";
@@ -470,8 +471,8 @@ function Pager({ page, total, onChange, rangeFrom, rangeTo, totalRows }:
 }
 
 export default function Singcup() {
-  const [data, setData] = useState<SingcupMain | null>(null);
-  const [loading, setLoading] = useState(true);
+  // 데이터 구독·폴링 정책은 라이브 페이지와 공유한다(lib/useSingcupMain).
+  const { data, loading, refreshing, updatedAt, refresh } = useSingcupMain();
   const [sort, setSort] = useState<SortKey>("score");
   const [dir, setDir] = useState<SortDir>("desc");
   const [query, setQuery] = useState("");
@@ -503,19 +504,6 @@ export default function Singcup() {
     if (open) url.searchParams.set("view", "board");
     else url.searchParams.delete("view");
     window.history.replaceState(null, "", url.toString());
-  }, []);
-
-  useEffect(() => {
-    let alive = true;
-    // 참가자 전원을 받는다 — 검색이 이 응답 안에서만 이뤄지므로, 여기서 자르면
-    // 잘린 뒤쪽 스트리머는 닉네임을 정확히 쳐도 "없습니다"가 뜬다.
-    const load = () => api.singcup.main(3000)
-      .then((d) => { if (alive) setData(d); })
-      .catch(() => { /* 실패해도 마지막 정상 데이터를 유지한다 */ })
-      .finally(() => { if (alive) setLoading(false); });
-    load();
-    const t = setInterval(load, 60_000);
-    return () => { alive = false; clearInterval(t); };
   }, []);
 
   // 검색은 이미 받아온 참가자 목록 안에서만 한다 — 싱드컵에 등록된 사람만 찾아진다.
@@ -610,6 +598,17 @@ export default function Singcup() {
           </div>
           {/* 모바일에서도 잘리지 않게 wrap */}
           <div className="flex flex-wrap items-center gap-2">
+            {/* 자동 갱신은 5분 주기다(응답이 참가자 전원이라 잦은 자동 호출은 그대로
+                전송 비용이 된다). 그 사이에 바로 최신을 보고 싶은 사람을 위해 수동
+                갱신을 둔다 — 이 버튼만 캐시를 건너뛴다. */}
+            <button onClick={refresh} disabled={refreshing}
+                    title={updatedAt
+                      ? `${fmtDateTime(new Date(updatedAt).toISOString())}에 받은 데이터입니다. 5분마다 자동으로 갱신됩니다.`
+                      : "데이터를 다시 받아옵니다."}
+                    className="btn-secondary flex items-center gap-1.5 text-sm disabled:opacity-60">
+              <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
+              새로고침
+            </button>
             <Link href="/stats/singcup/live"
                   className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-bold text-[#1a1400]"
                   style={{ background: GOLD }}>
@@ -648,7 +647,7 @@ export default function Singcup() {
               windowMin={data?.summary.deltaWindowMinutes}
               baseAt={data?.summary.deltaBaseAt} />
         {/* 라이브는 늘고 줄기를 반복하므로 '증가분' 개념이 맞지 않는다.
-            대신 '언제 확인한 값인지'를 보여준다 — 화면은 60초마다 새로 받지만 이 값은
+            대신 '언제 확인한 값인지'를 보여준다 — 화면은 5분마다 새로 받지만 이 값은
             전체 라이브 스캔 주기(기본 10분)에 묶여 있어 그 사이에는 바뀌지 않는다. */}
         <Tile label="현재 라이브" value={nf(data?.summary.liveCount ?? 0)} unit="명"
               foot={<LiveFreshness live={data?.live} />} />
