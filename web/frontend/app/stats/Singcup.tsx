@@ -582,7 +582,10 @@ export default function Singcup() {
         {/* 우측 열: 집계 시각·수집 기간이 위, 버튼 묶음이 아래.
             페이지 헤더의 '라이브 집계'는 전체 라이브 스캔 시각이라 이 탭에서는
             혼동만 주므로 숨긴다(page.tsx). */}
-        <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
+        {/* shrink-0은 sm 이상에서만. 모바일(390px)에서는 이 열이 줄어들 수 있어야
+            아래 버튼 줄의 flex-wrap이 실제로 동작한다 — shrink-0이면 열 너비가
+            내용 폭(버튼 3개 = 456px)으로 고정돼 화면이 가로로 밀린다. */}
+        <div className="flex flex-col items-start gap-2 sm:shrink-0 sm:items-end">
           <div className="text-[12px] leading-relaxed text-muted/80 sm:text-right">
             <p title="#싱드컵 클립의 조회수·하트를 마지막으로 갱신한 시각입니다.">
               싱드컵 집계{" "}
