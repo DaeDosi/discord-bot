@@ -2725,6 +2725,19 @@ async def load_main_entry(limit: int = 200) -> tuple[dict, str]:
             data = await _load_main_uncached(limit)
             entry = _build_main_entry(data)
             _main_cache[limit] = (time.monotonic(), entry)
+            # 완성된 응답을 분리 API의 불변 스냅샷으로 등록한다. 새로 계산하지 않고
+            # 방금 만든 결과를 복사해 고정하므로 DB 접근이 없다. 버전은 `/main` ETag가
+            # 아니라 **랭킹 집합만의 지문**이다 — 집계 시각처럼 페이지네이션과 무관한
+            # 변화로 버전이 바뀌면 진행 중인 커서가 죽는다.
+            # 화면이 실제로 쓰는 상한에서만 등록한다 — 진단용 limit까지 등록하면
+            # 서로 다른 크기의 스냅샷이 섞여 버전 의미가 흐려진다.
+            if limit >= 3000:
+                try:
+                    import singcup_split_api as _split
+                    _split.register(data)   # 버전은 랭킹 집합만의 지문
+                except Exception as e:      # noqa: BLE001 — 등록 실패가 /main을 막으면 안 된다
+                    _log({"event": "snapshot_register_failed", "level": "warning",
+                          "detail": str(e)[:160]})
             while len(_main_cache) > MAIN_CACHE_MAX_ENTRIES:
                 oldest = min(_main_cache, key=lambda k: _main_cache[k][0])
                 _main_cache.pop(oldest, None)

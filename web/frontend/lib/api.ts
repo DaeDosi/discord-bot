@@ -84,6 +84,41 @@ export const SINGCUP_MAIN_TTL_MS = 60_000;
 
 export const singcupMainKey = (limit: number) => `singcup:main:${limit}`;
 
+// ── 분리 API (Shadow) ────────────────────────────────────────────────────────
+// 기본은 꺼져 있다. 켜지기 전까지 화면 동작은 기존 `/main` 그대로다.
+export const SPLIT_API_ENABLED =
+  (process.env.NEXT_PUBLIC_SINGCUP_SPLIT_API_ENABLED || "false").toLowerCase() === "true";
+
+export type SingcupPageQuery = {
+  size?: number; cursor?: string; sort?: string;
+  direction?: "desc" | "asc"; snapshotVersion?: string; q?: string;
+};
+
+/** 스냅샷 만료는 조용히 최신으로 섞지 않고 호출자가 처음부터 다시 받게 한다. */
+export class SnapshotExpiredError extends Error {
+  latestSnapshotVersion: string | null;
+  constructor(latest: string | null) {
+    super("snapshot_expired");
+    this.name = "SnapshotExpiredError";
+    this.latestSnapshotVersion = latest;
+  }
+}
+
+async function splitGet<T>(path: string, params: Record<string, unknown>): Promise<T> {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
+  }
+  const url = `${BASE}${path}${qs.toString() ? `?${qs}` : ""}`;
+  const res = await fetch(url);
+  if (res.status === 409) {
+    const body = await res.json().catch(() => ({}));
+    throw new SnapshotExpiredError(body?.latestSnapshotVersion ?? null);
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
 /** 테스트·수동 무효화용. */
 export function sharedClear(key?: string) {
   if (key === undefined) {
@@ -280,6 +315,26 @@ export const api = {
         opts),
     streamerClips: (channelId: string) =>
       fetch(`${BASE}/api/singcup/streamers/${encodeURIComponent(channelId)}/clips`).then(r => r.json()) as Promise<import("./types").SingcupStreamerClips>,
+
+    // ── 분리 API (Shadow) ────────────────────────────────────────────────
+    // `/main`은 참가자 전원이라 gzip 약 265KB다. 아래는 같은 데이터를 '필요한
+    // 만큼만' 받는 경로로, 실측상 초기 화면이 약 30KB(−88.7%)가 된다.
+    // NEXT_PUBLIC_SINGCUP_SPLIT_API_ENABLED 가 켜질 때만 화면이 이쪽을 쓴다.
+    //
+    // 정렬·검색은 **서버가 전체 참가자 집합을 기준으로** 수행한 결과다.
+    // 받아온 페이지 안에서 다시 정렬하거나 검색하면 안 된다(하위권이 사라진다).
+    split: {
+      summary: (v?: string) =>
+        splitGet<import("./types").SingcupSplitSummary>("/api/singcup/summary", { snapshotVersion: v }),
+      rankings: (p: SingcupPageQuery = {}) =>
+        splitGet<import("./types").SingcupPage>("/api/singcup/rankings-page", p),
+      search: (q: string, p: SingcupPageQuery = {}) =>
+        splitGet<import("./types").SingcupPage>("/api/singcup/search", { ...p, q }),
+      live: (p: SingcupPageQuery = {}) =>
+        splitGet<import("./types").SingcupPage>("/api/singcup/live", p),
+      movers: (p: { range?: string; size?: number; snapshotVersion?: string } = {}) =>
+        splitGet<import("./types").SingcupMovers>("/api/singcup/movers", p),
+    },
   },
 
   // CHZZK Rising — 공개(비로그인) 분석 포털. 인증 불필요라 plain fetch 사용.

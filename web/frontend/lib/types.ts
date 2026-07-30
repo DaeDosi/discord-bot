@@ -643,3 +643,43 @@ export interface SingcupClip {
   heartCount: number; viewCount: number; duration: number; createdAt: string;
 }
 export interface SingcupStreamerClips { channelId: string; clips: SingcupClip[] }
+
+// ── 싱드컵 분리 API (Shadow) ────────────────────────────────────────────────
+// 전송량 대책으로 `/main`을 쪼갠 경로의 응답. 정렬·검색은 서버가 **전체 참가자
+// 집합** 기준으로 수행한 결과이며, items는 그중 한 페이지일 뿐이다.
+export interface SingcupPage {
+  snapshotVersion: string;
+  generatedAt: string | null;
+  /** 전체 결과 수(현재 페이지 수가 아니다) */
+  total: number;
+  items: SingcupStreamer[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  sort: string;
+  direction: string;
+  /** search 응답에만 있음 */
+  query?: string;
+  /** live 응답에만 있음 */
+  liveInfo?: SingcupMain["live"];
+}
+export interface SingcupSplitSummary {
+  snapshotVersion: string;
+  generatedAt: string | null;
+  event: SingcupMain["event"];
+  summary: SingcupMain["summary"];
+  topHeartMovers1h: SingcupHeartMover[];
+  topHeartMovers1hStale?: boolean;
+  topHeartMovers1hBaseAt?: string | null;
+  live: SingcupMain["live"];
+  collector: SingcupMain["collector"];
+  liveCount: number;
+}
+export interface SingcupMovers {
+  snapshotVersion: string;
+  generatedAt: string | null;
+  range: string;
+  total: number;
+  items: SingcupHeartMover[];
+  stale: boolean;
+  baseAt: string | null;
+}

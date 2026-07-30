@@ -12,7 +12,9 @@ import os
 import time
 
 import singcup_obs
+import singcup_split_api as split
 from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from singcup_clips import (
     backfill_status,
     baseline_report,
@@ -338,3 +340,104 @@ async def clips_diagnose(clip_uid: str,
     """클립 1건의 DB 수치·대기열 위치·제외 사유. 값이 안 도는 클립을 지목해 본다."""
     _require_secret(x_singcup_secret)
     return await clip_diagnosis(clip_uid)
+
+
+# ── 분리 API (Shadow) ───────────────────────────────────────────────────────
+# `/main`은 그대로 둔다. 여기는 같은 데이터를 '필요한 만큼만' 내려 주는 경로이며
+# SINGCUP_SPLIT_API_ENABLED=false 인 동안에는 아예 열리지 않는다.
+#
+# 조회 경로에서 DB 쓰기·랭킹 재계산·스냅샷 생성을 하지 않는다. 이미 만들어져 있는
+# `/main` 캐시 엔트리를 불변 스냅샷으로 읽기만 한다.
+def _require_split_api():
+    if not split.SPLIT_API_ENABLED:
+        raise HTTPException(status_code=404, detail="분리 API가 비활성화되어 있습니다.")
+
+
+def _split_error(e: Exception):
+    if isinstance(e, split.SnapshotExpired):
+        return JSONResponse(status_code=409, content={
+            "error": "snapshot_expired", "latestSnapshotVersion": e.latest,
+            "retryFromStart": True})
+    return JSONResponse(status_code=400, content={"error": str(e)})
+
+
+async def _split_call(fn, **kw):
+    """분리 API 공통 처리.
+
+    **조회 경로에서 스냅샷을 만들지 않는다.** 만들려면 `/main` 계산을 타야 하고
+    그 안에는 `_save_top_movers()`라는 DB 쓰기가 있다(P1.5) — GET에서 DB 쓰기 0을
+    지키려면 여기서 건드리면 안 된다. 스냅샷은 기존 `/main` 트래픽이 캐시를 채울 때
+    등록되며, 아직 없으면 503으로 명확히 알린다.
+    """
+    _require_split_api()
+    if split.latest() is None:
+        return JSONResponse(status_code=503, content={
+            "error": "snapshot_not_ready",
+            "detail": "랭킹 스냅샷이 아직 준비되지 않았습니다. 잠시 후 다시 시도하세요."})
+    try:
+        out = fn(**kw)
+    except (split.SnapshotExpired, split.CursorError) as e:
+        return _split_error(e)
+    # 페이지 응답은 (버전, 필터, 정렬, 커서, size)에 대해 결정적이라 직렬화 결과를
+    # 그대로 캐시한다. `/main`이 캐시된 bytes를 내보내는 것과 같은 이유다.
+    key = out.pop("_renderKey", None)
+    if key is None:
+        return out
+    return Response(content=split.render(key, out), media_type="application/json")
+
+
+@router.get("/summary")
+async def split_summary(snapshotVersion: str | None = None):
+    """첫 화면용 최소 응답 — KPI·급상승·집계 시각. 실측 gzip 약 2.0KB."""
+    return await _split_call(split.summary, snapshot_version=snapshotVersion)
+
+
+@router.get("/rankings-page")
+async def split_rankings(size: int | None = None, cursor: str | None = None,
+                         sort: str = "score", direction: str = "desc",
+                         snapshotVersion: str | None = None):
+    """전체 참가자를 서버에서 정렬한 뒤 한 페이지만. 실측 100명 gzip 약 29KB.
+
+    경로 이름이 `/rankings`가 아닌 이유: `/api/singcup/rankings`는 이미 자유게시판
+    홍보글(별개 데이터)이 쓰고 있다. 같은 이름으로 덮으면 그 화면이 깨진다.
+    """
+    return await _split_call(split.rankings, size=size, cursor=cursor, sort=sort,
+                             direction=direction, snapshot_version=snapshotVersion)
+
+
+@router.get("/search")
+async def split_search(q: str = "", size: int | None = None, cursor: str | None = None,
+                       sort: str = "score", direction: str = "desc",
+                       snapshotVersion: str | None = None):
+    """**전체 참가자 집합**에서 닉네임 검색. 받아온 페이지 안에서 찾지 않는다."""
+    return await _split_call(split.search, q=q, size=size, cursor=cursor, sort=sort,
+                             direction=direction, snapshot_version=snapshotVersion)
+
+
+@router.get("/live")
+async def split_live(size: int | None = None, cursor: str | None = None,
+                     snapshotVersion: str | None = None):
+    """방송 중인 참가자만. 실측 344명 전체는 gzip 약 89KB라 페이지로 나눈다."""
+    return await _split_call(split.live, size=size, cursor=cursor,
+                             snapshot_version=snapshotVersion)
+
+
+@router.get("/movers")
+async def split_movers(range: str = "1h", size: int | None = None,
+                       snapshotVersion: str | None = None):
+    return await _split_call(split.movers, range_=range, size=size,
+                             snapshot_version=snapshotVersion)
+
+
+@router.get("/delta")
+async def split_delta(sinceVersion: str | None = None):
+    """버전 간 변경분 — 인터페이스만 고정하고 아직 구현하지 않는다."""
+    _require_split_api()
+    return split.delta(since_version=sinceVersion)
+
+
+@router.get("/snapshots/registry")
+async def snapshot_registry(x_singcup_secret: str | None = Header(default=None)):
+    """스냅샷 레지스트리 상태(관리자) — 보존 버전 수·항목 수·만료 요청 수."""
+    _require_secret(x_singcup_secret)
+    return split.stats()
