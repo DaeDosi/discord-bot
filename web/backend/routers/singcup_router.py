@@ -15,6 +15,7 @@ import singcup_obs
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 from singcup_clips import (
     backfill_status,
+    baseline_report,
     clip_diagnosis,
     discover_new_clips,
     load_main_entry,
@@ -280,6 +281,19 @@ async def snapshot_duplicates(x_singcup_secret: str | None = Header(default=None
     """
     _require_secret(x_singcup_secret)
     return await snapshot_duplicate_report()
+
+
+@router.get("/snapshots/baseline")
+async def snapshot_baseline(window_minutes: int | None = None,
+                            x_singcup_secret: str | None = Header(default=None)):
+    """1시간 증감의 기준선 진단(read-only).
+
+    "왜 전원이 NEW인가"를 이 응답 하나로 판별한다 — 선택된 버킷, 그 버킷의 인원과
+    collected_at 최소·최대, 커버리지, partial 여부, 후보 버킷 목록.
+    """
+    _require_secret(x_singcup_secret)
+    return await baseline_report(None if window_minutes is None
+                                 else max(1, window_minutes) * 60)
 
 
 @router.get("/sweep/status")

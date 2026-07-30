@@ -231,6 +231,7 @@ async def reset_state():
             pass
     _client = None
     _channel_cache.clear()
+    _baseline_cache.clear()
     invalidate_main_cache()
     # 락은 '경합이 일어난 순간'의 이벤트 루프에 묶인다(경합이 없으면 묶이지 않는다).
     # 테스트는 매번 새 루프를 만들므로, 한 번이라도 동시 요청을 재현한 테스트가 있으면
@@ -2312,21 +2313,254 @@ async def retry_failed_clips(limit: int = 50) -> dict:
 
 
 # ── 조회 (API용) ────────────────────────────────────────────────────────────
-async def find_reference_run(now: int, window: int,
-                             tolerance: int = DELTA_TOLERANCE_SECONDS) -> int | None:
-    """기준 시각(now-window)에 가장 가까운 수집 회차. 허용 오차를 벗어나면 None.
+# 기준 버킷이 '기대 인원'의 이 비율에 못 미치면 불완전으로 본다.
+#
+# 기대 인원을 현재 참가자 수로 잡으면 이벤트 초기의 정상적인 증가를 불완전으로
+# 오인한다. 대신 **참가자 수가 단조 증가한다**는 성질을 쓴다 — singcup_streamers는
+# 행을 지우지 않으므로, 어떤 시각의 완전한 세트는 그보다 앞선 완전한 세트보다 작을
+# 수 없다. 그래서 기대 인원 = '후보 구간에서 이 버킷보다 오래된 버킷들의 최대 인원'
+# 이다. 이러면 두 상황이 분명히 갈린다.
+#   A 정상 증가   90 → 110 → 120   (각 단계가 직전 이상)
+#   B 부분 세트   1051 → 7 → 1057  (7이 직전의 0.7%)
+# 단조성 덕분에 임계값을 느슨하게 잡을 이유가 없어 기본값을 0.9로 둔다.
+# (탈락·비활성으로 소폭 감소하는 경우가 있어 1.0으로는 잡지 않는다.)
+_COVERAGE_RAW = os.getenv("SINGCUP_BASELINE_MIN_COVERAGE", "0.9")
+try:
+    BASELINE_MIN_COVERAGE = float(_COVERAGE_RAW)
+    if not 0.0 < BASELINE_MIN_COVERAGE <= 1.0:
+        raise ValueError(_COVERAGE_RAW)
+except ValueError:
+    # 잘못된 값으로 판정이 조용히 무력화되면 이번 사고가 그대로 재발한다.
+    print(f"[singcup_clips] SINGCUP_BASELINE_MIN_COVERAGE={_COVERAGE_RAW!r} 는 "
+          f"(0,1] 범위의 수가 아니라 기본값 0.9를 씁니다", flush=True)
+    BASELINE_MIN_COVERAGE = 0.9
 
-    한 회차는 참가자 '전원'을 같은 collected_at으로 저장하므로(_save_snapshots),
-    회차 하나를 고르면 그 시점의 순위·점수 기준이 통째로 일관된다. 스트리머마다
-    제각기 다른 시점과 비교하는 일이 없다.
+# 후보 버킷을 모을 때 앞뒤로 함께 읽을 여유(판정 비교군). 기본 2시간.
+_BASELINE_NEIGHBOR_SECONDS = 2 * 3600
+
+
+async def find_reference_baseline(now: int, window: int,
+                                  tolerance: int = DELTA_TOLERANCE_SECONDS) -> dict | None:
+    """기준 시각(now-window)에 가장 가까운 **시간 버킷** 하나.
+
+    예전에는 collected_at 한 점을 회차 ID로 썼다. 그런데 `_save_snapshots`는
+    UNIQUE(event_id, owner, snapshot_bucket) + INSERT OR IGNORE라, 같은 시간대의
+    두 번째 저장에서는 기존 참가자가 전부 무시되고 **그 사이 새로 들어온 참가자만**
+    새 collected_at으로 들어간다. 그 '부분 세트'가 기준으로 뽑히면 나머지 전원이
+    기준값 없음(=NEW)이 되고 1시간 증감이 통째로 죽는다
+    (실측 2026-07-30: 1,060명 중 1,057명 NEW, 기준선 7명).
+
+    그래서 회차의 단위를 **시간 버킷**으로 바꾼다. 한 버킷 안에 collected_at이 여러
+    개 섞여 있는 것을 정상으로 보고, 그 구간 전체를 하나의 기준선으로 읽는다.
+
+    버킷은 `snapshot_bucket` 컬럼을 신뢰하되, 컬럼 도입 전 행은 NULL이라
+    collected_at으로 되계산해 채운다(COALESCE). 후보를 collected_at 범위로 먼저
+    좁히므로 기존 인덱스(event_id, collected_at)를 그대로 타고, COALESCE는 이미
+    좁혀진 소수 행에만 적용된다. 마이그레이션도 데이터 변경도 필요 없다.
+
+    선택 순서가 중요하다. **가까운 것을 먼저 고른 뒤 불완전인지 보는** 방식이면,
+    바로 옆에 멀쩡한 버킷이 있는데도 대량 null이 난다. 그래서 **정상 후보를 먼저
+    가려내고 그중 가장 가까운 것**을 고른다.
     """
     ref = now - window
-    row = await (await (await get_db()).execute(
-        "SELECT collected_at AS t FROM singcup_snapshots WHERE event_id=? "
-        "AND collected_at BETWEEN ? AND ? "
-        "ORDER BY ABS(collected_at - ?) ASC LIMIT 1",
-        (EVENT_ID, ref - tolerance, ref + tolerance, ref))).fetchone()
-    return int(row["t"]) if row else None
+    cands = await _bucket_candidates(ref, tolerance)
+    if not cands:
+        return None
+    # 허용 오차는 버킷 시작이 아니라 '그 버킷이 실제로 처음 기록된 시각'으로 잰다.
+    # 버킷 시작(정시)으로 재면 판정이 최대 한 시간 앞으로 밀린다.
+    for c in cands:
+        c["distance"] = abs(c["lo"] - ref)
+        c["withinTolerance"] = c["distance"] <= tolerance
+    cands.sort(key=lambda c: c["distance"])
+
+    # **허용 오차는 커버리지보다 먼저다.** coverage가 정상이어도 target에서 멀면
+    # 그 값을 '1시간 전'이라고 부를 수 없다. 오래된 정상 버킷을 무제한 fallback으로
+    # 끌어오면 '30분 증감'이나 '3시간 증감'을 1시간이라고 표시하게 된다.
+    near = [c for c in cands if c["withinTolerance"]]
+    healthy = [c for c in near if not c["partial"]]
+    if healthy:
+        chosen, fallback = dict(healthy[0]), False
+    elif near:
+        # 허용 범위 안이 전부 불완전 — 그중 가장 가까운 것을 partial로 표시해 쓴다.
+        # 소비자는 이걸 보고 전원 NEW 대신 baseline_incomplete로 처리한다.
+        chosen, fallback = dict(near[0]), True
+    else:
+        return None          # 허용 범위 안에 후보 자체가 없다 → insufficient_history
+
+    def _why(c: dict) -> str:
+        if not c["withinTolerance"]:
+            return "outside_tolerance"
+        if c["partial"]:
+            return "partial_set"
+        return "farther_from_target"
+
+    chosen["fallbackUsed"] = fallback
+    chosen["toleranceSeconds"] = tolerance
+    chosen["rejected"] = [
+        {"bucket": c["bucket"], "rows": c["rows"], "expected": c["expected"],
+         "coverage": c["coverage"], "distance": c["distance"],
+         "withinTolerance": c["withinTolerance"], "reason": _why(c)}
+        for c in cands if c["bucket"] != chosen["bucket"]]
+    return chosen
+
+
+async def _bucket_candidates(ref: int, tolerance: int, *,
+                             detail: bool = False) -> list[dict]:
+    """기준 시각 주변 버킷들 + 각 버킷의 기대 인원·커버리지·불완전 여부.
+
+    기대 인원은 '자기보다 오래된 후보 버킷들의 최대 인원'이다(참가자 수 단조 증가).
+    가장 오래된 후보는 비교 대상이 없으므로 자기 자신을 기대치로 둔다(판정 보류).
+
+    `detail=False`(요청 경로)에서는 COUNT(DISTINCT collected_at) 같은 진단 전용
+    집계를 빼서 임시 B-tree를 하나 줄인다 — 5,000명 규모에서 실측으로 유의미했다.
+    """
+    lo = ref - tolerance - _BASELINE_NEIGHBOR_SECONDS
+    hi = ref + tolerance + _BASELINE_NEIGHBOR_SECONDS
+    extra = (", COUNT(DISTINCT collected_at) AS times,"
+             " SUM(CASE WHEN snapshot_bucket IS NULL THEN 1 ELSE 0 END) AS legacy"
+             if detail else "")
+    rows = await (await (await get_db()).execute(
+        "SELECT COALESCE(snapshot_bucket, (collected_at/3600)*3600) AS bucket,"
+        " MIN(collected_at) AS lo, MAX(collected_at) AS hi,"
+        " COUNT(DISTINCT owner_channel_id) AS owners, COUNT(*) AS raw_rows"
+        + extra +
+        " FROM singcup_snapshots WHERE event_id=? AND collected_at>=? AND collected_at<?"
+        " GROUP BY bucket ORDER BY bucket ASC", (EVENT_ID, lo, hi))).fetchall()
+    out: list[dict] = []
+    running_max = 0
+    for r in rows:
+        owners = int(r["owners"])
+        expected = running_max or owners
+        item = {
+            "bucket": int(r["bucket"]), "lo": int(r["lo"]), "hi": int(r["hi"]),
+            "rows": owners, "rawRows": int(r["raw_rows"]),
+            "expected": expected,
+            "coverage": round(owners / expected, 4) if expected else 0.0,
+            "partial": owners < expected * BASELINE_MIN_COVERAGE,
+        }
+        if detail:
+            item["distinctCollectedAt"] = int(r["times"])
+            item["legacyRows"] = int(r["legacy"])
+        out.append(item)
+        running_max = max(running_max, owners)
+    return out
+
+
+# 진단은 secret이 있어도 분당 150회까지 열려 있다. 매번 GROUP BY 집계를 돌리면
+# 진단이 그 자체로 부하가 된다 — 짧은 TTL 캐시 + single-flight로 실제 SQL은
+# 창당 한 번만 돈다. 실패는 캐시하지 않아 다음 호출이 그대로 재시도된다.
+BASELINE_REPORT_TTL = float(os.getenv("SINGCUP_BASELINE_REPORT_TTL", "45"))
+BASELINE_REPORT_TIMEOUT = float(os.getenv("SINGCUP_BASELINE_REPORT_TIMEOUT", "10"))
+_baseline_cache: dict[int, tuple[float, dict]] = {}
+_baseline_lock = asyncio.Lock()
+_baseline_stats = {"hit": 0, "miss": 0, "coalesced": 0, "timeout": 0}
+
+
+def baseline_report_stats() -> dict:
+    return dict(_baseline_stats)
+
+
+async def baseline_report(window: int | None = None) -> dict:
+    """기준선 진단(read-only). 짧은 TTL 캐시 + single-flight."""
+    key = int(DELTA_WINDOW_SECONDS if window is None else window)
+    hit = _baseline_cache.get(key)
+    mono = time.monotonic()
+    if hit and mono - hit[0] < BASELINE_REPORT_TTL:
+        _baseline_stats["hit"] += 1
+        return {**hit[1], "cached": True}
+    async with _baseline_lock:
+        hit = _baseline_cache.get(key)
+        mono = time.monotonic()
+        if hit and mono - hit[0] < BASELINE_REPORT_TTL:
+            _baseline_stats["coalesced"] += 1
+            return {**hit[1], "cached": True}
+        t0 = time.perf_counter()
+        try:
+            data = await asyncio.wait_for(_baseline_report_uncached(key),
+                                          timeout=BASELINE_REPORT_TIMEOUT)
+        except TimeoutError:
+            _baseline_stats["timeout"] += 1
+            raise
+        data["computeMs"] = round((time.perf_counter() - t0) * 1000, 2)
+        # 성공만 캐시한다(예외는 여기까지 오지 않으므로 실패는 남지 않는다)
+        _baseline_cache[key] = (time.monotonic(), data)
+        while len(_baseline_cache) > 8:
+            _baseline_cache.pop(min(_baseline_cache, key=lambda k: _baseline_cache[k][0]), None)
+        _baseline_stats["miss"] += 1
+        return {**data, "cached": False}
+
+
+async def _baseline_report_uncached(window: int | None = None) -> dict:
+    """어떤 버킷이 왜 뽑혔는지, 커버리지가 얼마인지 — 실제 집계."""
+    now = int(time.time())
+    win = DELTA_WINDOW_SECONDS if window is None else window
+    ref = now - win
+    db = await get_db()
+    cur = await (await db.execute(
+        "SELECT COUNT(*) n FROM singcup_streamers WHERE event_id=?", (EVENT_ID,))).fetchone()
+    current = int(cur["n"] or 0)
+    cands = await _bucket_candidates(ref, DELTA_TOLERANCE_SECONDS, detail=True)
+    chosen = await find_reference_baseline(now, win)
+
+    # 24시간 쪽은 owner별 MAX(collected_at)<=목표라 '얼마나 오래된 샘플을 썼는지'가
+    # owner마다 다르다. 이번 부분 세트 버그와는 별개의 위험이라 수치로 드러낸다.
+    tgt24 = now - 86400
+    d24 = await (await db.execute(
+        "SELECT COUNT(*) n, MIN(collected_at) lo, MAX(collected_at) hi,"
+        " AVG(? - collected_at) avg_gap,"
+        " SUM(CASE WHEN ? - collected_at > ? THEN 1 ELSE 0 END) far"
+        " FROM (SELECT owner_channel_id, MAX(collected_at) AS collected_at"
+        "       FROM singcup_snapshots WHERE event_id=? AND collected_at<=?"
+        "       GROUP BY owner_channel_id)",
+        (tgt24, tgt24, DELTA_TOLERANCE_SECONDS, EVENT_ID, tgt24))).fetchone()
+
+    return {
+        "now": _iso(now), "windowMinutes": win // 60,
+        "toleranceMinutes": DELTA_TOLERANCE_SECONDS // 60,
+        "targetAt": _iso(ref),
+        "currentStreamers": current,
+        "minCoverage": BASELINE_MIN_COVERAGE,
+        "toleranceSeconds": DELTA_TOLERANCE_SECONDS,
+        "selected": None if chosen is None else {
+            "selectedBucket": _iso(chosen["bucket"]),
+            "selectedMinCollectedAt": _iso(chosen["lo"]),
+            "selectedMaxCollectedAt": _iso(chosen["hi"]),
+            "selectedDistanceSeconds": chosen.get("distance"),
+            "toleranceSeconds": chosen.get("toleranceSeconds", DELTA_TOLERANCE_SECONDS),
+            "withinTolerance": bool(chosen.get("withinTolerance")),
+            "selectedRows": chosen["rows"],
+            "expectedRows": chosen.get("expected"),
+            "coverage": chosen.get("coverage"),
+            "partial": bool(chosen.get("partial")),
+            "fallbackUsed": bool(chosen.get("fallbackUsed")),
+            # 기준선이 현재 참가자를 얼마나 덮는가. 이벤트 초기에는 자연히 낮다.
+            "coverageVsCurrent": round(chosen["rows"] / current, 4) if current else None,
+            # 실제 비교 간격 — '정확히 1시간'이 아님을 수치로 밝힌다
+            "intervalSecondsMin": now - chosen["hi"],
+            "intervalSecondsMax": now - chosen["lo"],
+            "rejectedBuckets": [{**b, "bucketAt": _iso(b["bucket"])}
+                                for b in chosen.get("rejected", [])],
+        },
+        "candidates": [{
+            "bucketAt": _iso(c["bucket"]),
+            "minCollectedAt": _iso(c["lo"]), "maxCollectedAt": _iso(c["hi"]),
+            "owners": c["rows"], "rows": c["rawRows"],
+            "distinctCollectedAt": c.get("distinctCollectedAt"),
+            "legacyBucketNullRows": c.get("legacyRows"),
+            "expected": c["expected"], "coverage": c["coverage"],
+            "partial": c["partial"],
+        } for c in cands],
+        # V2 Phase 5 개선 대상 — 24시간 기준 샘플이 목표에서 얼마나 떨어져 있는가
+        "day24h": {
+            "targetAt": _iso(tgt24),
+            "owners": int(d24["n"] or 0),
+            "oldestBaseAt": _iso(int(d24["lo"])) if d24["lo"] else None,
+            "newestBaseAt": _iso(int(d24["hi"])) if d24["hi"] else None,
+            "avgGapSeconds": round(float(d24["avg_gap"] or 0), 1),
+            "beyondToleranceOwners": int(d24["far"] or 0),
+            "note": "owner별 MAX(collected_at)<=목표 방식이라 샘플 시각이 제각각이다",
+        },
+    }
 
 
 async def _save_top_movers(movers: list[dict], base_at: int | None, now: int):
@@ -2356,24 +2590,47 @@ async def _last_top_movers() -> tuple[list[dict], int | None, int | None]:
     return (data if isinstance(data, list) else []), row["base_at"], row["computed_at"]
 
 
-async def _delta_maps(now: int) -> tuple[dict, dict, int | None]:
-    """(1시간 전 스냅샷, 24시간 전 스냅샷, 1시간 기준 회차 시각).
+async def _delta_maps(now: int) -> tuple[dict, dict, dict | None]:
+    """(1시간 전 스냅샷, 24시간 전 스냅샷, 1시간 기준 버킷 정보).
 
-    1시간 쪽은 '기준 시각 ±허용오차 안의 실제 회차' 하나를 골라 그 회차의 행만 읽는다.
-    예전처럼 owner별 MAX(collected_at)<=기준 으로 뽑으면, 수집이 멈춰 있던 구간에서
-    며칠 전 값과 비교해 놓고 '1시간 증감'이라고 표시하게 된다.
+    1시간 쪽은 '기준 시각 ±허용오차 안의 실제 버킷' 하나를 골라 **그 한 시간 구간
+    전체**를 읽는다. 같은 버킷에 collected_at이 여럿 섞여 있는 것은 정상이다
+    (find_reference_baseline 주석 참고). 예전처럼 owner별 MAX(collected_at)<=기준
+    으로 뽑으면 수집이 멈춰 있던 구간에서 며칠 전 값과 비교해 놓고 '1시간 증감'이라고
+    표시하게 되므로, 회차를 하나로 고르는 성질 자체는 그대로 둔다.
     """
     db = await get_db()
     prev: dict = {}
-    ref_ts = await find_reference_run(now, DELTA_WINDOW_SECONDS)
-    if ref_ts is not None:
+    base = await find_reference_baseline(now, DELTA_WINDOW_SECONDS)
+    if base is not None:
+        b = base["bucket"]
+        # owner마다 정확히 한 줄만 쓴다. 동점 기준을 끝까지 고정해 같은 입력이면
+        # 항상 같은 행이 뽑히게 한다.
+        #   ① 기준 시각과의 거리   ② collected_at DESC(같은 거리면 더 최근 값)
+        #   ③ id DESC             (같은 시각의 중복 행 — 나중에 쓰인 행)
+        #
+        # 이 순서를 SQL의 ORDER BY ABS(...)로 만들면 정렬 가능한 인덱스가 없어
+        # 임시 B-tree가 생긴다(실측 5,000명에서 유의미). 대신 인덱스 순서
+        # (collected_at ASC)로 그냥 읽고 승자만 파이썬에서 고른다 — 비교 키가
+        # 명시적이라 결정성은 SQL로 정렬할 때와 같다.
+        ref = now - DELTA_WINDOW_SECONDS
+        best: dict[str, tuple] = {}
         for r in await (await db.execute(
-            "SELECT owner_channel_id, clip_uid, heart_count, rank, score "
-            "FROM singcup_snapshots WHERE event_id=? AND collected_at=?",
-            (EVENT_ID, ref_ts))).fetchall():
-            # clip_uid까지 들고 있어야 '같은 대표 클립끼리만' 하트를 뺄 수 있다
-            prev[r["owner_channel_id"]] = (int(r["heart_count"]), int(r["rank"]),
-                                           str(r["clip_uid"]), float(r["score"] or 0))
+            "SELECT owner_channel_id, clip_uid, heart_count, rank, score, collected_at, id "
+            "FROM singcup_snapshots WHERE event_id=? AND collected_at>=? AND collected_at<?",
+            (EVENT_ID, b, b + 3600))).fetchall():
+            owner = r["owner_channel_id"]
+            at = int(r["collected_at"])
+            key = (abs(at - ref), -at, -int(r["id"]))
+            cur = best.get(owner)
+            if cur is None or key < cur[0]:
+                best[owner] = (key, r)
+        # clip_uid까지 들고 있어야 '같은 대표 클립끼리만' 하트를 뺄 수 있다.
+        # collected_at도 함께 둔다 — owner별 실제 기준 시각을 알아야 '1시간'이
+        # 실제로 몇 분인지 말할 수 있다.
+        prev = {o: (int(r["heart_count"]), int(r["rank"]), str(r["clip_uid"]),
+                    float(r["score"] or 0), int(r["collected_at"]))
+                for o, (_k, r) in best.items()}
 
     # 24시간 쪽도 기준 회차 '시각'을 함께 들고 나온다 — 그 시각 이후에 복구된
     # 클립은 24h 증감 역시 며칠치 누적이라 그대로 보여주면 안 된다.
@@ -2386,7 +2643,10 @@ async def _delta_maps(now: int) -> tuple[dict, dict, int | None]:
         "AND collected_at <= ?) GROUP BY owner_channel_id",
         (EVENT_ID, now - 86400))).fetchall():
         day[r["owner_channel_id"]] = (int(r["heart_count"]), int(r["collected_at"]))
-    return prev, day, ref_ts
+    # 24시간 쪽은 owner별 MAX(collected_at)라 부분 세트의 영향을 받지 않는다
+    # (각자 자기 최신 스냅샷을 찾으므로 한 회차에 묶이지 않는다). 그래서 이번
+    # 수정 대상이 아니고, 대신 그 성질을 테스트로 고정해 둔다.
+    return prev, day, base
 
 
 # /main은 프론트가 아주 자주 부르는데(운영 로그 기준 초당 수 회), 매번 스트리머
@@ -2491,7 +2751,8 @@ async def _load_main_uncached(limit: int = 200) -> dict:
         """SELECT s.channel_id, s.channel_name, s.channel_image_url, s.follower_count,
                   s.verified_mark, s.tagged_clip_count,
                   c.clip_uid, c.clip_title, c.thumbnail_image_url, c.heart_count,
-                  c.view_count, c.created_at, c.duration, c.metrics_recovered_at
+                  c.view_count, c.created_at, c.duration, c.metrics_recovered_at,
+                  c.first_collected_at
            FROM singcup_streamers s
            JOIN singcup_clips c ON c.clip_uid = s.representative_clip_uid
            WHERE s.event_id=? AND c.active=1""", (EVENT_ID,))).fetchall()]
@@ -2500,7 +2761,8 @@ async def _load_main_uncached(limit: int = 200) -> dict:
     ranked = compute_scores(reps)
 
     now = int(time.time())
-    prev, day, ref_ts = await _delta_maps(now)
+    prev, day, base = await _delta_maps(now)
+    ref_ts = base["lo"] if base else None
 
     # 현재 라이브 — 기존 수집 데이터(rising_live_snapshots)의 최신 사이클과 연결한다
     live: dict = {}
@@ -2547,6 +2809,20 @@ async def _load_main_uncached(limit: int = 200) -> dict:
         # 창이 넓어 오염이 더 오래 남는다.
         recovered = bool(ref_ts and rec_at >= ref_ts)
         recovered24 = bool(d24_row and rec_at >= d24_row[1])
+        # 기준값이 없는 이유를 나눈다. '기준 버킷에 없다'가 곧 '신규'는 아니다 —
+        # 기준 버킷이 없거나 불완전하면 원래 있던 사람도 빠져 있을 수 있다.
+        first_at = int(r["first_collected_at"] or 0)
+        # 기준선이 아예 없으면 비교할 대상이 없다. 그래도 '기준 시각 뒤에 처음
+        # 발견된 사람'은 기준선 유무와 무관하게 진짜 신규다.
+        cutoff = base["hi"] if base is not None else now - DELTA_WINDOW_SECONDS
+        if p is not None:
+            missing = None
+        elif first_at > cutoff:
+            missing = "new"            # 기준 시점 뒤에 처음 발견된 참가자
+        elif base is None:
+            missing = "insufficient_history"  # 비교할 기준선 자체가 없다
+        else:
+            missing = "baseline_incomplete"   # 그때 있었어야 하는데 기준선에 없다
         out.append({
             "rank": r["rank"], "channelId": cid,
             "channelName": r["channel_name"], "channelImageUrl": r["channel_image_url"],
@@ -2564,7 +2840,10 @@ async def _load_main_uncached(limit: int = 200) -> dict:
             # 단기 증감에서 뺀다(0 → 52를 '1시간에 +52'로 보여주지 않기 위해).
             "heartDelta": (r["heart_count"] - p[0])
                           if p and p[2] == r["clip_uid"] and not recovered else None,
-            "deltaState": "recovering" if recovered else ("new" if p is None else "ok"),
+            "deltaState": (missing if missing is not None
+                           else "recovering" if recovered
+                           else "representative_changed" if p[2] != r["clip_uid"]
+                           else "ok"),
             "rankDelta": (p[1] - r["rank"]) if p else None,
             "scoreDelta": round(r["score"] - p[3], 2) if p and not recovered else None,
             "heartDelta24h": (r["heart_count"] - d24)
@@ -2573,7 +2852,9 @@ async def _load_main_uncached(limit: int = 200) -> dict:
                                   if d24 is not None and not recovered24 else None,
             "delta24hState": ("recovering" if recovered24
                               else "new" if d24 is None else "ok"),
-            "isNew": p is None,
+            # NEW는 '기준 버킷이 닫힌 뒤 처음 발견된 참가자'에만 붙인다. 기준선이
+            # 없거나 불완전해서 빠진 사람은 신규가 아니라 '아직 못 세운' 것이다.
+            "isNew": missing == "new",
             "live": live.get(cid),
         })
 
@@ -2660,6 +2941,25 @@ async def _load_main_uncached(limit: int = 200) -> dict:
             # 실제로 비교한 회차 시각 — 툴팁에서 '약 1시간 전'의 실체를 보여줄 수 있다
             "deltaBaseAt": (datetime.fromtimestamp(ref_for_kpi, _KST).isoformat()
                             if has_ref else None),
+            # 기준선 진단(요약). 1시간 증감이 통째로 죽는 사고를 응답만 보고 판별할
+            # 수 있어야 한다(2026-07-30: 기준선 7명 / 참가자 1,060명).
+            #
+            # 한 버킷 안에서도 owner마다 collected_at이 다를 수 있으므로 단일
+            # '기준 시각'을 정답처럼 주지 않는다 — 구간과 실제 간격 범위를 준다.
+            # owner별 상세와 후보 목록은 /snapshots/baseline(관리자)에만 둔다
+            # (전원분을 실으면 응답이 약 53KB 늘어 비용 대책과 정면으로 충돌한다).
+            "deltaBaseline": None if base is None else {
+                "bucketAt": datetime.fromtimestamp(base["bucket"], _KST).isoformat(),
+                "minCollectedAt": datetime.fromtimestamp(base["lo"], _KST).isoformat(),
+                "maxCollectedAt": datetime.fromtimestamp(base["hi"], _KST).isoformat(),
+                "rows": base["rows"], "expectedRows": base.get("expected"),
+                "coverage": base.get("coverage"),
+                "partial": bool(base.get("partial")),
+                "fallbackUsed": bool(base.get("fallbackUsed")),
+                # 실제 비교 간격의 범위. '정확히 1시간'이 아님을 데이터로 밝힌다.
+                "intervalSecondsMin": now - base["hi"],
+                "intervalSecondsMax": now - base["lo"],
+            },
         },
         "topHeartMovers1h": movers_out,
         # 지금 계산한 값인지, 직전 정상 집계를 다시 보여주는 것인지 구분한다.
