@@ -65,12 +65,17 @@ def shadow() -> bool:
 
 
 def hot_enabled() -> bool:
-    """Phase 2 — Hot lane만 실제 상태 변경을 허용한다."""
+    """**Hot lane을 실행할지**만 정한다(상태 변경 여부는 SHADOW가 정한다).
+
+    예전에는 이 값이 '상태 변경 허용'을 뜻해서, 둘 다 false인데도 두 레인이
+    상세 API를 호출했다. 이름과 동작이 어긋나면 Phase 1을 켜는 순간 예상보다
+    많은 요청이 나간다.
+    """
     return _flag("SINGCUP_DELETION_HOT_ENABLED", "false")
 
 
 def cold_enabled() -> bool:
-    """Phase 3 — Cold lane 전체 순회까지 실제 상태 변경을 허용한다."""
+    """**Cold lane(전체 순회)을 실행할지**만 정한다."""
     return _flag("SINGCUP_DELETION_COLD_ENABLED", "false")
 
 
@@ -258,7 +263,7 @@ _circuit = Circuit()
 _stats: dict = {
     "authoritative_checks": 0, "alive": 0, "suspected": 0, "confirmed": 0,
     "recovered": 0, "inconclusive": 0, "shadow_deleted": 0,
-    "http_404": 0, "http_429": 0, "http_5xx": 0, "timeout": 0,
+    "http_404": 0, "http_410": 0, "http_429": 0, "http_5xx": 0, "timeout": 0,
     "hot_processed": 0, "cold_processed": 0, "skipped_locked": 0,
     "db_lock_giveup": 0,
     "last_progress_at": 0, "cycles": 0,
@@ -283,20 +288,42 @@ def _pct(values: list[float], q: float) -> int | None:
 # ── 힌트(우선순위 상승) ─────────────────────────────────────────────────────
 # 힌트는 **삭제 근거가 아니다.** 상태를 바꾸지 않고 audit_hint/audit_hint_at만
 # 채운다. 이 구분을 흐리면 "새 클립을 올렸더니 예전 클립이 사라졌다"가 된다.
+#
+# 두 가지를 반드시 지킨다.
+#  1) **master OFF면 DB를 건드리지 않는다.** 예전에는 enabled() 검사가
+#     run_audit_cycle에만 있어서, 기능이 꺼진 상태에서도 신규 클립·대표 변경·
+#     카드 결측마다 UPDATE+COMMIT이 나갔다(운영 로그의 audit_hint_siblings).
+#     꺼진 기능이 다른 작업의 쓰기 잠금 경합에 끼어들 이유가 없다. 힌트를
+#     건너뛰어도 Cold lane이 결국 모든 활성 클립을 검사하므로 영구 누락은 없다.
+#  2) **같은 힌트를 다시 쓰지 않는다.** 먼저 읽어 보고 바뀔 것이 있을 때만 쓴다.
+#     카드가 계속 실패하거나 지표가 계속 고정된 클립은 회차마다 같은 힌트를
+#     다시 걸어, 쓸모없는 UPDATE+COMMIT이 회차당 수백~수천 건이 된다.
 async def hint_clip(clip_uid: str, reason: str, now: int | None = None) -> bool:
     if reason not in HINTS:
         raise ValueError(f"unknown hint reason: {reason}")
+    if not enabled():
+        return False
     now = int(time.time()) if now is None else now
+    db = await get_db()
+    cur = await (await db.execute(
+        "SELECT audit_hint, audit_hint_at FROM singcup_clips "
+        "WHERE clip_uid=? AND active=1 AND deletion_state<>?",
+        (clip_uid, sc.DEL_CONFIRMED))).fetchone()
+    if cur is None:
+        return False
+    if (cur["audit_hint"] == reason
+            and int(cur["audit_hint_at"] or 0) > hint_cutoff(now)):
+        return False                      # 이미 같은 힌트가 살아 있다 — 쓰지 않는다
     hit = {"n": 0}
 
     async def _work(db):
-        cur = await db.execute(
+        c = await db.execute(
             "UPDATE singcup_clips SET audit_hint=?, audit_hint_at=?, "
             # 힌트가 붙으면 백오프를 풀어 준다 — 힌트는 '지금 보라'는 뜻이다.
             "audit_next_at=0, row_updated_at=? "
             "WHERE clip_uid=? AND active=1 AND deletion_state<>?",
             (reason, now, now, clip_uid, sc.DEL_CONFIRMED))
-        hit["n"] = cur.rowcount
+        hit["n"] = c.rowcount
 
     if not await sc.db_write(get_db, _work, what="audit_hint", log=_log):
         return False
@@ -311,7 +338,18 @@ async def hint_owner_siblings(owner_channel_id: str, *, exclude_uid: str,
     삭제하고 다시 올리는 흐름이 흔해서 신호가 세다. 그렇다고 비활성화하면
     정상 클립을 여러 개 올린 스트리머가 통째로 지워진다 — 검사 예약만 한다.
     """
+    if not enabled():
+        return 0
     now = int(time.time()) if now is None else now
+    db = await get_db()
+    # 쓸 것이 있는지 먼저 읽는다. 없으면 쓰기 트랜잭션 자체를 열지 않는다.
+    pending = await (await db.execute(
+        "SELECT COUNT(*) FROM singcup_clips "
+        "WHERE event_id=? AND owner_channel_id=? AND clip_uid<>? "
+        "  AND active=1 AND deletion_state<>? AND audit_hint_at=0",
+        (sc.EVENT_ID, owner_channel_id, exclude_uid, sc.DEL_CONFIRMED))).fetchone()
+    if not int(pending[0] or 0):
+        return 0
     hit = {"n": 0}
 
     async def _work(db):
@@ -334,8 +372,14 @@ async def hint_owner_siblings(owner_channel_id: str, *, exclude_uid: str,
 
 async def note_metrics_frozen(clip_uid: str, rounds: int,
                               now: int | None = None) -> bool:
-    """지표가 연속 고정된 클립에 힌트를 준다. 임계 미만이면 아무것도 안 한다."""
-    if rounds < FROZEN_HINT_THRESHOLD:
+    """지표가 연속 고정된 클립에 힌트를 준다. 임계 미만이면 아무것도 안 한다.
+
+    **임계를 넘는 순간에만** 건다. `>=`로 두면 오래 고정된 클립이 회차마다 다시
+    힌트를 받아 같은 값을 계속 쓰게 된다(인기 없는 정상 클립이 대부분이라 그 수가
+    수천 건이 된다). hint_clip의 읽기-우선 검사가 한 겹 더 막지만, 여기서 끊는
+    편이 읽기 한 번조차 나가지 않는다.
+    """
+    if rounds != FROZEN_HINT_THRESHOLD:
         return False
     return await hint_clip(clip_uid, HINT_METRICS_FROZEN, now)
 
@@ -364,7 +408,17 @@ _PRIORITY_SQL = """
     END
 """
 
-_TARGET_SQL = f"""
+# Hot / Cold를 **따로** 뽑는다. 하나의 질의에 LIMIT을 걸면 Hot이 그 창을 다
+# 채우는 동안 Cold는 한 건도 뽑히지 않는다 — 초기 Hot 큐가 377건이라 실제로
+# 일어난다. 레인마다 슬롯을 나눠 두면 어느 쪽도 굶지 않는다.
+_LANE_HOT = ("(c.deletion_state = 'suspected_deleted' "
+             " OR c.audit_hint_at > :hint_cutoff)")
+_LANE_COLD = ("(c.deletion_state <> 'suspected_deleted' "
+              " AND c.audit_hint_at <= :hint_cutoff)")
+
+
+def _target_sql(lane_filter: str) -> str:
+    return f"""
 SELECT c.clip_uid, c.owner_channel_id, c.deletion_state, c.deletion_last_at,
        c.missing_scan_count, c.deletion_reason, c.audit_last_at, c.audit_next_at,
        c.audit_fail_count, c.audit_hint, c.audit_hint_at, c.active,
@@ -374,9 +428,16 @@ WHERE c.event_id = :event_id
   AND c.deletion_state <> 'confirmed_deleted'
   AND (c.active = 1 OR c.deletion_state = 'unknown_legacy')
   AND c.audit_next_at <= :now
+  AND {lane_filter}
 ORDER BY prio ASC, c.audit_next_at ASC, c.audit_last_at ASC, c.clip_uid ASC
 LIMIT :limit
 """
+
+
+_HOT_SQL = _target_sql(_LANE_HOT)
+_COLD_SQL = _target_sql(_LANE_COLD)
+# 한 사이클에서 Cold에 반드시 남겨 두는 슬롯 비율. 0이면 Hot이 전부 가져간다.
+COLD_RESERVE_RATIO = float(os.getenv("SINGCUP_DELETION_COLD_RESERVE", "0.2"))
 
 
 def hint_cutoff(now: int) -> int:
@@ -391,11 +452,13 @@ def is_hot(row, now: int | None = None) -> bool:
             or int(row["audit_hint_at"] or 0) > hint_cutoff(now))
 
 
-async def select_targets(now: int, limit: int) -> list[dict]:
+async def _lane_targets(sql: str, lane: str, now: int, limit: int) -> list[dict]:
+    if limit <= 0:
+        return []
     db = await get_db()
     rows = await (await db.execute(
-        _TARGET_SQL, {"event_id": sc.EVENT_ID, "now": now, "limit": limit,
-                      "hint_cutoff": hint_cutoff(now)})).fetchall()
+        sql, {"event_id": sc.EVENT_ID, "now": now, "limit": limit,
+              "hint_cutoff": hint_cutoff(now)})).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -405,9 +468,21 @@ async def select_targets(now: int, limit: int) -> list[dict]:
             last = int(d["deletion_last_at"] or 0)
             if last and now - last < sc.DELETION_MIN_INTERVAL_SECONDS:
                 continue
-        d["lane"] = "hot" if is_hot(d, now) else "cold"
+        d["lane"] = lane
         out.append(d)
     return out
+
+
+async def select_targets(now: int, limit: int, *, hot: bool = True,
+                         cold: bool = True) -> list[dict]:
+    """Hot 우선, 단 Cold 슬롯을 남겨 둔다. Hot이 비면 그 몫도 Cold가 쓴다."""
+    reserve = (max(1, int(limit * COLD_RESERVE_RATIO))
+               if (limit > 1 and cold) else 0)
+    hot_rows = (await _lane_targets(_HOT_SQL, "hot", now, limit - reserve)
+                if hot else [])
+    cold_rows = (await _lane_targets(_COLD_SQL, "cold", now, limit - len(hot_rows))
+                 if cold else [])
+    return hot_rows + cold_rows
 
 
 # ── 판정 적용 ───────────────────────────────────────────────────────────────
@@ -490,6 +565,9 @@ async def apply_verdict(row: dict, verdict: str, code: int | None, why: str,
     _stats["inconclusive"] += 1
     if code == 429:
         _stats["http_429"] += 1
+    elif code == 410:
+        # 이 API에서 관측된 적이 없다. 별도로만 센다 — 삭제 근거가 아니다.
+        _stats["http_410"] += 1
     elif code is not None and 500 <= code < 600:
         _stats["http_5xx"] += 1
     elif code is None:
@@ -510,6 +588,14 @@ async def _active_total() -> int:
     return int(row[0] or 0)
 
 
+# 상세 API(api.chzzk.naver.com)로 나가는 **모든** 요청은 이 공용 버킷을 먼저
+# 통과한다. 레인마다 버킷만 두면 합산이 상한을 넘는다(Hot 1.0 + Cold 0.2 = 1.2/s).
+# 예산은 하나, 그 아래에서 Cold만 추가로 느리게 흐른다 — Hot이 먼저 뽑히므로
+# 자연스럽게 Hot 우선 할당이 되고, 남은 예산을 Cold가 쓴다.
+TOTAL_RATE_CAP = float(os.getenv("SINGCUP_DELETION_TOTAL_RATE",
+                                 str(HOT_RATE_CAP)))
+_total_bucket = TokenBucket(TOTAL_RATE_CAP, TOTAL_RATE_CAP, MIN_RATE,
+                            name="audit_total", on_log=_log)
 _hot_bucket = TokenBucket(HOT_RATE_CAP, HOT_RATE_CAP, MIN_RATE,
                           name="audit_hot", on_log=_log)
 _cold_bucket = TokenBucket(COLD_RATE_CAP, COLD_RATE_CAP, MIN_RATE,
@@ -528,7 +614,10 @@ async def run_audit_cycle(limit: int | None = None, *,
     _cold_bucket.cap = COLD_RATE_CAP
     _cold_bucket.rate = effective_cold_rate(total)
 
-    targets = await select_targets(now, limit or BATCH)
+    # 레인 실행 여부는 여기서 정한다. 꺼진 레인은 **대상 조회조차 하지 않는다** —
+    # 뽑아 놓고 건너뛰면 그만큼 쓸모없는 DB 읽기가 남는다.
+    targets = await select_targets(now, limit or BATCH,
+                                   hot=hot_enabled(), cold=cold_enabled())
     if not targets:
         return {"status": "idle", "checked": 0, "total_active": total}
 
@@ -544,6 +633,9 @@ async def run_audit_cycle(limit: int | None = None, *,
         if hot and circuit_enabled() and _circuit.current_state() != Circuit.CLOSED:
             # Hot lane도 무제한 우회하지 못한다.
             bucket.rate = min(bucket.rate, CIRCUIT_HOT_RATE)
+        # 공용 예산 → 레인 예산 순서. 두 레인이 같은 회로 차단기와 같은 상한을
+        # 공유하므로 합산 요청량이 TOTAL_RATE_CAP을 넘지 않는다.
+        await _total_bucket.acquire()
         await bucket.acquire()
 
         token = await sc.acquire_clip_lock(row["clip_uid"])
@@ -559,13 +651,14 @@ async def run_audit_cycle(limit: int | None = None, *,
                                               or code is None):
                 _circuit.record_failure()
                 bucket.slow_down(why)
+                _total_bucket.slow_down(why)
             else:
                 _circuit.record_success()
                 bucket.recover()
-            allow = (hot and hot_enabled()) or (not hot and cold_enabled())
-            allow = allow and not shadow()
+                _total_bucket.recover()
+            # 상태 변경 여부는 SHADOW **하나만** 정한다.
             outcome = await apply_verdict(row, verdict, code, why, now,
-                                          allow_state_change=allow)
+                                          allow_state_change=not shadow())
         except Exception as e:                      # 한 클립 실패를 격리한다
             outcome = "error"
             _log({"event": "audit_clip_error", "level": "warning",
@@ -655,6 +748,10 @@ async def audit_status() -> dict:
     last_progress = int(_stats["last_progress_at"] or 0)
     return {
         "enabled": enabled(), "shadow": shadow(),
+        # 꺼져 있어도 아래 집계는 **실제 DB를 읽은 값**이다(조회 전용).
+        # 읽지 않고 0을 내보내면 "큐가 비었다"로 오해할 수 있어 출처를 함께 밝힌다.
+        "status": "running" if enabled() else "disabled",
+        "counts_source": "db",
         "hot_enabled": hot_enabled(), "cold_enabled": cold_enabled(),
         "coverage_hours": COVERAGE_HOURS,
         "active_clips": total,
@@ -677,6 +774,7 @@ async def audit_status() -> dict:
         "shadow_deleted": _stats["shadow_deleted"],
         "http_404": _stats["http_404"], "http_429": _stats["http_429"],
         "http_5xx": _stats["http_5xx"], "timeout": _stats["timeout"],
+        "http_410_unverified": _stats["http_410"],
         "hot_processed": _stats["hot_processed"],
         "cold_processed": _stats["cold_processed"],
         "skipped_locked": _stats["skipped_locked"],
@@ -685,6 +783,8 @@ async def audit_status() -> dict:
         # 없었다"로 읽히므로 미계측임을 명시한다.
         "db_lock_retry": None,
         "current_rate": round(_cold_bucket.rate, 4),
+        "total_rate": round(_total_bucket.rate, 4),
+        "total_rate_cap": TOTAL_RATE_CAP,
         "required_rate": round(required_rate(total), 4),
         "cold_rate_cap": COLD_RATE_CAP,
         "hot_rate": round(_hot_bucket.rate, 4),

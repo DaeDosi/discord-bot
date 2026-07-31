@@ -53,6 +53,7 @@ def _reset_audit_runtime():
     for k in audit._stats:
         audit._stats[k] = 0
     audit._hot_bucket.rate = audit.HOT_RATE_CAP
+    audit._total_bucket.rate = audit.TOTAL_RATE_CAP
     audit._cold_bucket.rate = audit.COLD_RATE_CAP
 
 
@@ -83,10 +84,10 @@ async def _streamer(db, sc, cid, rep, now=None):
 
 
 class FakeResponse:
-    def __init__(self, status, payload=None):
+    def __init__(self, status, payload=None, ctype="application/json"):
         self.status_code = status
         self._payload = payload if payload is not None else {}
-        self.headers = {}
+        self.headers = {"content-type": ctype}
 
     def json(self):
         return self._payload
@@ -949,3 +950,484 @@ def test_unmeasured_metrics_are_null_not_zero(env):
         assert st["db_lock_retry"] is None
 
     run(go())
+
+
+# ── 12. B2.1: strict OFF / 플래그 진리표 / 합산 예산 / 404 의미 ─────────────
+@pytest.fixture()
+def off(db, monkeypatch):
+    """master OFF 상태(기본값)."""
+    monkeypatch.setenv("SINGCUP_DELETION_RECONCILE_ENABLED", "false")
+    _reset_audit_runtime()
+    yield db
+    _reset_audit_runtime()
+
+
+async def _audit_cols(db, uid):
+    r = await (await db.execute(
+        "SELECT audit_last_at, audit_next_at, audit_verdict, audit_fail_count, "
+        "audit_hint, audit_hint_at FROM singcup_clips WHERE clip_uid=?",
+        (uid,))).fetchone()
+    return dict(r)
+
+
+async def _op_cols(db):
+    rows = await (await db.execute(
+        "SELECT clip_uid, active, deletion_state, missing_scan_count, "
+        "heart_count, view_count FROM singcup_clips ORDER BY clip_uid")).fetchall()
+    reps = await (await db.execute(
+        "SELECT channel_id, representative_clip_uid FROM singcup_streamers "
+        "ORDER BY channel_id")).fetchall()
+    return [tuple(r) for r in rows], [tuple(r) for r in reps]
+
+
+def test_strict_off_writes_nothing_and_calls_nothing(off):
+    """master OFF면 힌트 DB UPDATE 0, 상세 API 요청 0."""
+    run = off
+
+    async def go():
+        db = await sc.get_db()
+        now = int(time.time())
+        for uid in ("a", "b", "c"):
+            await _seed(db, sc, uid, "o1", now=now)
+        before = await _audit_cols(db, "a")
+        row_before = await _op_cols(db)
+
+        # 실제 운영 경로 그대로 — 신규 클립·대표 변경·카드 결측·지표 고정
+        assert await sc._audit_hint_siblings("o1", "c") == 0
+        assert await sc._audit_hint("a", audit.HINT_REP_CHANGED) is False
+        assert await sc._audit_hint("a", audit.HINT_CARD_EMPTY) is False
+        assert await sc._audit_note_frozen("a", audit.FROZEN_HINT_THRESHOLD) is False
+        assert await audit.hint_clip("a", audit.HINT_MANUAL) is False
+
+        assert await _audit_cols(db, "a") == before, "OFF에서 감사 컬럼이 바뀌었다"
+        assert await _op_cols(db) == row_before
+
+        client = FakeClient({"a": ("deleted",)}, record=[])
+        r = await audit.run_audit_cycle(client=client, now=now)
+        assert r["status"] == "disabled"
+        assert client.record == []
+
+    run(go())
+
+
+def test_repeated_same_hint_does_not_write_again(env):
+    """같은 힌트를 회차마다 다시 걸지 않는다(쓰기 증폭 방지)."""
+    run = env
+
+    async def go():
+        db = await sc.get_db()
+        now = int(time.time())
+        await _seed(db, sc, "a", now=now)
+        assert await audit.hint_clip("a", audit.HINT_CARD_EMPTY, now) is True
+        for _ in range(10):
+            assert await audit.hint_clip("a", audit.HINT_CARD_EMPTY, now) is False
+        # 다른 사유로는 갱신된다
+        assert await audit.hint_clip("a", audit.HINT_REP_CHANGED, now) is True
+
+    run(go())
+
+
+def test_frozen_hint_fires_only_at_the_crossing(env):
+    run = env
+
+    async def go():
+        db = await sc.get_db()
+        now = int(time.time())
+        await _seed(db, sc, "a", now=now)
+        th = audit.FROZEN_HINT_THRESHOLD
+        assert await audit.note_metrics_frozen("a", th - 1, now) is False
+        assert await audit.note_metrics_frozen("a", th, now) is True
+        for extra in range(1, 20):
+            assert await audit.note_metrics_frozen("a", th + extra, now) is False
+
+    run(go())
+
+
+def test_sibling_hint_makes_no_write_when_nothing_pending(env):
+    run = env
+
+    async def go():
+        db = await sc.get_db()
+        now = int(time.time())
+        await _seed(db, sc, "new1", "o1", now=now)
+        assert await audit.hint_owner_siblings("o1", exclude_uid="new1", now=now) == 0
+        await _seed(db, sc, "old1", "o1", now=now)
+        assert await audit.hint_owner_siblings("o1", exclude_uid="new1", now=now) == 1
+        assert await audit.hint_owner_siblings("o1", exclude_uid="new1", now=now) == 0
+
+    run(go())
+
+
+# 진리표 — (ENABLED, SHADOW, HOT, COLD) → (힌트, 상세API 요청, 운영 상태 변경)
+@pytest.mark.parametrize(
+    "enabled_,shadow_,hot_,cold_,hint,requests,state_change",
+    [
+        ("false", "true", "false", "false", False, False, False),
+        ("true", "true", "false", "false", True, False, False),
+        ("true", "true", "true", "false", True, True, False),
+        ("true", "true", "false", "true", True, True, False),
+        ("true", "true", "true", "true", True, True, False),
+        ("true", "false", "true", "false", True, True, True),
+        ("true", "false", "false", "true", True, True, False),
+        ("true", "false", "true", "true", True, True, True),
+    ])
+def test_feature_flag_truth_table(db, monkeypatch, enabled_, shadow_, hot_, cold_,
+                                  hint, requests, state_change):
+    """Hot 힌트가 붙은 클립 하나로 8개 조합을 그대로 시험한다."""
+    monkeypatch.setenv("SINGCUP_DELETION_RECONCILE_ENABLED", enabled_)
+    monkeypatch.setenv("SINGCUP_DELETION_RECONCILE_SHADOW", shadow_)
+    monkeypatch.setenv("SINGCUP_DELETION_HOT_ENABLED", hot_)
+    monkeypatch.setenv("SINGCUP_DELETION_COLD_ENABLED", cold_)
+    _reset_audit_runtime()
+
+    async def go():
+        conn = await sc.get_db()
+        now = int(time.time())
+        await _seed(conn, sc, "ghost", "o1", now=now)
+        await _seed(conn, sc, "alive1", "o1", heart=1, now=now)
+        await _streamer(conn, sc, "o1", "alive1", now)
+
+        # 힌트 — ENABLED=false면 기록되지 않아야 한다
+        hinted = await audit.hint_clip("ghost", audit.HINT_CARD_EMPTY, now)
+        assert hinted is hint, f"힌트 기대 {hint}"
+
+        before = await _op_cols(conn)
+        client = FakeClient({"ghost": ("deleted",)}, record=[])
+        for i in range(3):                       # 2회 404를 만들 만큼 돌린다
+            await audit.run_audit_cycle(
+                client=client, now=now + i * (sc.DELETION_MIN_INTERVAL_SECONDS + 1))
+        assert bool(client.record) is requests, f"요청 기대 {requests}"
+        assert (await _op_cols(conn) != before) is state_change, \
+            f"운영 상태 변경 기대 {state_change}"
+
+    db(go())
+    _reset_audit_runtime()
+
+
+def test_shadow_advances_checkpoints_but_not_operational_state(env, monkeypatch):
+    """Shadow가 바꿔도 되는 것과 안 되는 것을 분리해 고정한다."""
+    run = env
+    monkeypatch.setenv("SINGCUP_DELETION_RECONCILE_SHADOW", "true")
+
+    async def go():
+        db = await sc.get_db()
+        now = int(time.time())
+        await _seed(db, sc, "ghost", "o1", now=now)
+        await _seed(db, sc, "alive1", "o1", heart=1, now=now)
+        await _streamer(db, sc, "o1", "alive1", now)
+        before_ops = await _op_cols(db)
+        before_ck = await _audit_cols(db, "ghost")
+
+        client = FakeClient({"ghost": ("deleted",)})
+        for i in range(3):
+            await audit.run_audit_cycle(
+                client=client, now=now + i * (sc.DELETION_MIN_INTERVAL_SECONDS + 1))
+
+        assert await _op_cols(db) == before_ops, "Shadow가 운영 상태를 바꿨다"
+        after_ck = await _audit_cols(db, "ghost")
+        assert after_ck != before_ck, "Shadow인데 체크포인트가 전혀 안 움직였다"
+        assert after_ck["audit_verdict"] == audit.V_DELETED
+        assert after_ck["audit_last_at"] > 0
+
+    run(go())
+
+
+# ── 합산 요청 예산 ─────────────────────────────────────────────────────────
+def test_hot_and_cold_share_one_total_budget():
+    """레인 버킷만 두면 합산이 상한을 넘는다 — 공용 버킷을 먼저 통과해야 한다."""
+    import inspect
+    src = inspect.getsource(audit.run_audit_cycle)
+    i_total = src.index("_total_bucket.acquire()")
+    i_lane = src.index("await bucket.acquire()")
+    assert i_total < i_lane, "공용 예산을 레인 예산보다 먼저 통과해야 한다"
+    assert audit.TOTAL_RATE_CAP <= audit.HOT_RATE_CAP + audit.COLD_RATE_CAP
+
+
+def test_total_budget_caps_combined_rate():
+    from utils.token_bucket import TokenBucket
+
+    async def go():
+        total = TokenBucket(2.0, 2.0, 0.1)
+        t0 = time.monotonic()
+        for _ in range(5):
+            await total.acquire()
+        return time.monotonic() - t0
+
+    took = asyncio.run(go())
+    # 토큰 1개로 시작하므로 5건에 최소 4/2초
+    assert took >= 4 / 2.0 - 0.3
+
+
+def test_hot_queue_does_not_starve_cold(env):
+    """Hot이 배치를 다 채워도 Cold 슬롯이 남는다."""
+    run = env
+
+    async def go():
+        db = await sc.get_db()
+        now = int(time.time())
+        for i in range(100):                       # Hot 후보를 배치보다 많이
+            await _seed(db, sc, f"h{i:03d}", "o1", now=now)
+            await audit.hint_clip(f"h{i:03d}", audit.HINT_CARD_EMPTY, now)
+        for i in range(50):
+            await _seed(db, sc, f"c{i:03d}", "o2", now=now)
+        picked = await audit.select_targets(now, 20)
+        lanes = [p["lane"] for p in picked]
+        assert lanes.count("cold") >= 1, "Cold가 한 건도 못 뽑혔다"
+        assert lanes.count("hot") >= 1
+        assert lanes == sorted(lanes, key=lambda x: 0 if x == "hot" else 1)
+
+    run(go())
+
+
+def test_cold_takes_all_slots_when_hot_is_empty(env):
+    run = env
+
+    async def go():
+        db = await sc.get_db()
+        now = int(time.time())
+        for i in range(30):
+            await _seed(db, sc, f"c{i:03d}", "o1", now=now)
+        picked = await audit.select_targets(now, 10)
+        assert len(picked) == 10
+        assert all(p["lane"] == "cold" for p in picked)
+
+    run(go())
+
+
+def test_no_burst_right_after_restart():
+    """재시작 직후 토큰을 쌓아 두지 않는다(초기 토큰 1개)."""
+    from utils.token_bucket import TokenBucket
+    b = TokenBucket(1.0, 1.0, 0.1)
+    assert b.tokens == 1.0
+
+
+# ── 404 / 410 의미 검증 ────────────────────────────────────────────────────
+class _RawClient:
+    """상태코드·본문·Content-Type을 그대로 지정하는 클라이언트."""
+
+    def __init__(self, status, body, ctype="application/json"):
+        self.status, self.body, self.ctype = status, body, ctype
+
+    async def get(self, url, params=None, headers=None, timeout=None, **kw):
+        outer = self
+
+        class R:
+            status_code = outer.status
+            headers = {"content-type": outer.ctype}
+
+            def json(self):
+                if isinstance(outer.body, Exception):
+                    raise outer.body
+                return outer.body
+
+        return R()
+
+
+def test_meaningful_chzzk_404_is_deleted(env):
+    run = env
+
+    async def go():
+        v, code, why = await audit.probe_deleted(
+            _RawClient(404, {"code": 404, "message": "삭제된 클립입니다."}), "abc123")
+        assert (v, code, why) == (audit.V_DELETED, 404, "http_404")
+
+    run(go())
+
+
+def test_html_404_is_not_deleted(env):
+    """경로 오타·프록시가 준 HTML 404를 삭제로 오인하면 안 된다."""
+    run = env
+
+    async def go():
+        v, _code, why = await audit.probe_deleted(
+            _RawClient(404, {}, ctype="text/html"), "abc123")
+        assert v == audit.V_INCONCLUSIVE and why == "http_404_not_json"
+
+    run(go())
+
+
+def test_404_with_unexpected_body_is_not_deleted(env):
+    run = env
+
+    async def go():
+        v, _c, why = await audit.probe_deleted(
+            _RawClient(404, {"error": "not found"}), "abc123")
+        assert v == audit.V_INCONCLUSIVE and why == "http_404_unexpected_body"
+        v, _c, why = await audit.probe_deleted(
+            _RawClient(404, ValueError("bad json")), "abc123")
+        assert v == audit.V_INCONCLUSIVE and why == "http_404_bad_json"
+
+    run(go())
+
+
+def test_410_is_not_treated_as_deleted(env):
+    """운영에서 관측된 적이 없다 — 의미 확인 전에는 확정 근거로 쓰지 않는다."""
+    run = env
+
+    async def go():
+        v, code, why = await audit.probe_deleted(_RawClient(410, {"code": 410}),
+                                                 "abc123")
+        assert v == audit.V_INCONCLUSIVE
+        assert code == 410 and why == "http_410_unverified"
+
+        db = await sc.get_db()
+        now = int(time.time())
+        await _seed(db, sc, "g1", now=now)
+        for i in range(4):
+            await audit.run_audit_cycle(
+                client=_RawClient(410, {"code": 410}), now=now + i * 100000)
+        row = await (await db.execute(
+            "SELECT active, deletion_state FROM singcup_clips "
+            "WHERE clip_uid='g1'")).fetchone()
+        assert row["active"] == 1 and row["deletion_state"] == sc.DEL_ACTIVE
+        st = await audit.audit_status()
+        assert st["http_410_unverified"] >= 1
+
+    run(go())
+
+
+class _CountingConn:
+    """실행된 SQL을 세는 얇은 래퍼. strict OFF에서 0인지 증명한다."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.sql: list[str] = []
+        self.commits = 0
+
+    async def execute(self, sql, params=None):
+        self.sql.append(sql.strip().split()[0].upper())
+        return await (self._inner.execute(sql, params) if params is not None
+                      else self._inner.execute(sql))
+
+    async def commit(self):
+        self.commits += 1
+        return await self._inner.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def test_strict_off_issues_no_sql_at_all(off, monkeypatch):
+    """OFF에서 SELECT/UPDATE/COMMIT이 **한 건도** 나가지 않아야 한다."""
+    run = off
+
+    async def go():
+        real = await sc.get_db()
+        counter = _CountingConn(real)
+
+        async def fake_get_db():
+            return counter
+
+        monkeypatch.setattr(sc, "get_db", fake_get_db)
+        monkeypatch.setattr(audit, "get_db", fake_get_db)
+
+        assert await sc._audit_hint_siblings("o1", "x") == 0
+        assert await sc._audit_hint("x", audit.HINT_REP_CHANGED) is False
+        assert await sc._audit_note_frozen("x", audit.FROZEN_HINT_THRESHOLD) is False
+        assert await audit.hint_clip("x", audit.HINT_MANUAL) is False
+        r = await audit.run_audit_cycle(client=FakeClient({}), now=int(time.time()))
+        assert r["status"] == "disabled"
+
+        assert counter.sql == [], f"OFF인데 SQL이 나갔다: {counter.sql}"
+        assert counter.commits == 0
+
+    run(go())
+
+
+def test_status_marks_itself_disabled(off):
+    run = off
+
+    async def go():
+        st = await audit.audit_status()
+        assert st["enabled"] is False
+        assert st["status"] == "disabled"
+        # 집계는 실제 DB에서 읽은 값이다 — 출처를 밝혀 오해를 막는다
+        assert st["counts_source"] == "db"
+
+    run(go())
+
+
+def test_same_hint_is_not_duplicated_under_concurrency(env):
+    """읽고-쓰기 사이에 끼어들어도 같은 힌트가 두 번 저장되지 않는다."""
+    run = env
+
+    async def go():
+        db = await sc.get_db()
+        now = int(time.time())
+        await _seed(db, sc, "a", now=now)
+        results = await asyncio.gather(*[
+            audit.hint_clip("a", audit.HINT_CARD_EMPTY, now) for _ in range(8)])
+        # 경합으로 여러 번 써도 최종 상태는 하나이고, 값이 뒤섞이지 않는다
+        row = await (await db.execute(
+            "SELECT audit_hint, audit_hint_at FROM singcup_clips "
+            "WHERE clip_uid='a'")).fetchone()
+        assert row["audit_hint"] == audit.HINT_CARD_EMPTY
+        assert int(row["audit_hint_at"]) == now
+        # 그리고 이후 호출은 전부 읽기에서 걸러진다
+        assert await audit.hint_clip("a", audit.HINT_CARD_EMPTY, now) is False
+        assert any(results)
+
+    run(go())
+
+
+def test_owner_lock_failure_skips_without_corrupting_state(env):
+    """owner 락을 못 잡으면 아무것도 바꾸지 않고, 다음 회차에 다시 뽑힌다.
+
+    운영에서 실제로 났다(db_locked_giveup what=acquire_owner_lock). 이것이
+    '짧은 실패 격리'로 끝나는지 '영구 누락'인지는 다음 두 가지에 달려 있다.
+      1) 실패 경로가 missing_scan_count / deletion_last_at을 건드리지 않는다
+      2) 그래서 _deletion_due / select_targets가 같은 행을 다시 고른다
+    """
+    run = env
+
+    async def go():
+        db = await sc.get_db()
+        now = int(time.time())
+        await _seed(db, sc, "gone", "o1", heart=9, now=now)
+        await _seed(db, sc, "next", "o1", heart=1, now=now)
+        await _streamer(db, sc, "o1", "gone", now)
+
+        client = FakeClient({"gone": ("deleted",)})
+        await audit.run_audit_cycle(client=client, now=now)      # 404 1회 → 의심
+        snap = ("SELECT active, deletion_state, missing_scan_count, deletion_last_at "
+                "FROM singcup_clips WHERE clip_uid='gone'")
+        after_first = dict(await (await db.execute(snap)).fetchone())
+        assert after_first["missing_scan_count"] == 1
+
+        # 두 번째 404 — 그런데 owner 락 획득이 실패한다(잠금 경합 재현)
+        # monkeypatch.undo()는 이 픽스처의 setenv까지 되돌리므로 쓰지 않는다.
+        real_acquire = sc.acquire_owner_lock
+        sc.acquire_owner_lock = lambda owner: _none()
+        later = now + sc.DELETION_MIN_INTERVAL_SECONDS + 1
+        await audit.run_audit_cycle(client=client, now=later)
+        blocked = dict(await (await db.execute(snap)).fetchone())
+        assert blocked == after_first, f"실패 경로가 상태를 바꿨다: {blocked}"
+        rep = await (await db.execute(
+            "SELECT representative_clip_uid FROM singcup_streamers "
+            "WHERE channel_id='o1'")).fetchone()
+        assert rep[0] == "gone", "대표가 부분 상태로 바뀌었다"
+
+        # 락이 풀리면 다시 처리된다 — **영구 누락이 아니다.** 복구 경로는 둘이다.
+        sc.acquire_owner_lock = real_acquire
+        # (a) Change Set B의 4분 루프: audit_next_at과 무관하게 곧바로 다시 뽑는다.
+        #     운영에서 실제로 이 경로가 복구했다.
+        due = await sc._deletion_due(later + 1, 10)
+        assert any(d["clip_uid"] == "gone" for d in due), "B 경로가 다시 뽑지 않았다"
+
+        # (b) 감사 레인: 실패 뒤 최소 간격만큼 미뤄 두므로 그 뒤에 다시 뽑힌다.
+        assert not any(p["clip_uid"] == "gone"
+                       for p in await audit.select_targets(later + 1, 10))
+        retry_at = later + sc.DELETION_MIN_INTERVAL_SECONDS + 1
+        assert any(p["clip_uid"] == "gone"
+                   for p in await audit.select_targets(retry_at, 10))
+
+        await audit.run_audit_cycle(client=client, now=retry_at)
+        final = dict(await (await db.execute(snap)).fetchone())
+        assert final["deletion_state"] == sc.DEL_CONFIRMED
+        assert final["active"] == 0
+
+    run(go())
+
+
+async def _none():
+    return None

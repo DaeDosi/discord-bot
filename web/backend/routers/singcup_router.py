@@ -21,18 +21,18 @@ from singcup_clips import (
     baseline_report,
     clip_diagnosis,
     deleted_clip_audit,
-    recheck_clip_deletion,
-    restore_deleted_clips,
     discover_new_clips,
     load_main_entry,
     load_streamer_clips,
     main_cache_stats,
     metrics_sweep_stats,
+    recheck_clip_deletion,
     recheck_untagged_clips,
     rediscover_clip,
     refresh_metrics,
     refresh_one_clip,
     reset_backfill,
+    restore_deleted_clips,
     retag_stats,
     run_backfill,
     snapshot_duplicate_report,
@@ -422,6 +422,10 @@ async def clips_audit_now(clip_uid: str,
     _admin_rate_limit("audit")
     if not singcup_audit.valid_clip_uid(clip_uid):
         raise HTTPException(status_code=400, detail="clip_uid 형식이 올바르지 않습니다.")
+    if not singcup_audit.enabled():
+        # master OFF에서는 DB도 건드리지 않는다(strict OFF).
+        return {"clipUid": clip_uid, "hinted": False,
+                "note": "SINGCUP_DELETION_RECONCILE_ENABLED가 꺼져 있습니다."}
     hinted = await singcup_audit.hint_clip(clip_uid, singcup_audit.HINT_MANUAL)
     return {"clipUid": clip_uid, "hinted": hinted}
 

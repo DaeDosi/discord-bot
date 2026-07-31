@@ -615,9 +615,17 @@ def test_attempt_count_matches_the_constant(db, monkeypatch):
         took = time.perf_counter() - t0
     finally:
         db(_release_lock(conn))
-    assert len(tries) == sc.PERSIST_ATTEMPTS, f"{len(tries)}회 시도"
     # 계산한 최악값 안에서 끝났다(실측이 상수 계산을 뒷받침한다)
     assert took <= sc.persist_worst_case_seconds() + 0.3, f"{took:.2f}초"
+    # 시도 횟수는 상수를 **넘지 않는다.** 다만 재시도 예산은 절대 마감시한이라,
+    # 머신이 바쁘면(전체 스위트 동시 실행 등) 마지막 시도를 시작하기 전에 예산이
+    # 먼저 소진돼 한 번 덜 시도할 수 있다 — 그게 이 설계의 의도다.
+    # 그래서 "예산이 남아 있었다면 상수만큼 시도했다"를 검사한다.
+    assert 1 <= len(tries) <= sc.PERSIST_ATTEMPTS, f"{len(tries)}회 시도"
+    budget_left = sc.PERSIST_BUDGET_SECONDS - took
+    if budget_left > 0.3:
+        assert len(tries) == sc.PERSIST_ATTEMPTS, (
+            f"예산이 {budget_left:.2f}초 남았는데 {len(tries)}회만 시도했다")
 
 
 def test_dedicated_connection_is_closed_on_every_path(db, monkeypatch):

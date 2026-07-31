@@ -746,13 +746,36 @@ curl -X POST 'https://<backend>/api/singcup/prune?dry_run=false' -H 'X-Singcup-S
 
 | 환경변수 | 기본 | 뜻 |
 |---|---|---|
-| `SINGCUP_DELETION_RECONCILE_ENABLED` | `false` | kill switch. false면 요청 0건 |
-| `SINGCUP_DELETION_RECONCILE_SHADOW` | `true` | 후보 선정·판정까지만. **상태 변경 없음** |
-| `SINGCUP_DELETION_HOT_ENABLED` | `false` | Phase 2 — Hot lane만 상태 변경 허용 |
-| `SINGCUP_DELETION_COLD_ENABLED` | `false` | Phase 3 — Cold 전체 순회까지 허용 |
-| `SINGCUP_DELETION_COLD_RATE` | `0.2` | Cold lane 초당 상한 |
+| `SINGCUP_DELETION_RECONCILE_ENABLED` | `false` | **strict OFF.** false면 상세 API 요청 0건 **그리고 힌트 DB 쓰기 0건** |
+| `SINGCUP_DELETION_RECONCILE_SHADOW` | `true` | 운영 상태(active/deletion_state/대표/지표) 변경 여부를 **이 값 하나만** 정한다 |
+| `SINGCUP_DELETION_HOT_ENABLED` | `false` | **Hot lane 실행 여부**(상태 변경 여부가 아니다) |
+| `SINGCUP_DELETION_COLD_ENABLED` | `false` | **Cold lane 실행 여부** |
+| `SINGCUP_DELETION_TOTAL_RATE` | `1.0` | Hot+Cold **합산** 초당 상한(공용 예산) |
+| `SINGCUP_DELETION_COLD_RATE` | `0.2` | Cold lane 초당 상한(공용 예산 아래) |
+| `SINGCUP_DELETION_COLD_RESERVE` | `0.2` | 한 사이클에서 Cold에 남겨 두는 슬롯 비율(Hot 기아 방지) |
 | `SINGCUP_DELETION_COVERAGE_HOURS` | `12` | 전체 한 바퀴 목표 시간 |
 | `SINGCUP_DELETION_CIRCUIT_ENABLED` | `true` | 429/5xx가 몰리면 Cold lane 정지 |
+
+플래그 진리표(테스트로 고정):
+
+| ENABLED | SHADOW | HOT | COLD | 힌트 쓰기 | 상세 API | 운영 상태 변경 |
+|---|---|---|---|---|---|---|
+| false | * | * | * | ✗ | ✗ | ✗ |
+| true | true | false | false | ✓ | ✗ | ✗ |
+| true | true | true | false | ✓ | ✓(Hot) | ✗ |
+| true | true | false | true | ✓ | ✓(Cold) | ✗ |
+| true | false | true | * | ✓ | ✓ | ✓ |
+
+**Phase 1(Shadow)에서 두 레인을 관찰하려면 `HOT_ENABLED=true`, `COLD_ENABLED=true`를
+명시해야 합니다** — master 하나만 켜면 요청이 나가지 않습니다.
+
+`ENABLED=false`에서 힌트를 저장하지 않아도 영구 누락은 없습니다. Cold lane이
+켜지는 순간 모든 활성 클립을 결국 검사하기 때문입니다 — 힌트는 순서를 앞당길 뿐입니다.
+
+**삭제 404의 의미를 검증합니다.** 상태코드만 보지 않고 Content-Type이 JSON이며
+본문 `code`가 404인 것만 인정합니다(경로 오타·프록시가 준 HTML 404를 삭제로 오인하면
+멀쩡한 클립이 사라집니다). **410은 이 API에서 관측된 적이 없어 확정 근거로 쓰지 않고
+`http_410_unverified`로 세기만 합니다.**
 
 6,358건 / 12시간 = **0.147 req/s**(약 8.8 req/분)이고 상한 0.2면 여유가 있습니다.
 속도를 고정 숫자로 박지 마세요 — 참가자가 늘면 커버리지 목표가 조용히 깨집니다.

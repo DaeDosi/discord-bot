@@ -737,8 +737,26 @@ async def probe_clip_alive(client, clip_uid: str) -> tuple[str, int | None, str]
                 return ("deleted", code, f"blind_{blind.lower()}")
             return ("alive", code, "ok")
         return ("unknown", code, "no_content")
-    if code in (404, 410):
-        return ("deleted", code, f"http_{code}")
+    if code == 404:
+        # **상태코드만으로 삭제로 보지 않는다.** 경로 오타·프록시·라우팅 오류도
+        # 404를 준다. 치지직의 삭제 응답은 JSON이고 본문에 code=404가 들어 있다
+        # (실측: {"code":404,"message":"삭제된 클립입니다."}). HTML이거나 본문이
+        # 그 모양이 아니면 '우리가 잘못 부른 것'일 수 있으므로 unknown이다.
+        ctype = (r.headers.get("content-type") or "").lower()
+        if "json" not in ctype:
+            return ("unknown", code, "http_404_not_json")
+        try:
+            body = r.json()
+        except (json.JSONDecodeError, ValueError):
+            return ("unknown", code, "http_404_bad_json")
+        if not isinstance(body, dict) or int(body.get("code") or 0) != 404:
+            return ("unknown", code, "http_404_unexpected_body")
+        return ("deleted", code, "http_404")
+    if code == 410:
+        # 410은 이 API에서 **한 번도 관측된 적이 없다.** 의미가 확인되기 전까지
+        # 삭제 확정 근거로 쓰지 않는다 — 별도로 세기만 한다.
+        _api_counter["http_410"] = _api_counter.get("http_410", 0) + 1
+        return ("unknown", code, "http_410_unverified")
     if code == 429:
         _api_counter["http_429"] += 1
     return ("unknown", code, f"http_{code}")
