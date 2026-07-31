@@ -649,9 +649,20 @@ def _streamer_target(new: dict, cur: dict | None, now: int) -> dict:
     }
 
 
+# '이 행을 다시 써야 하는가'를 정하는 필드들. **`last_channel_updated_at`은 일부러
+# 빠져 있다.** 그 값은 `now if info else 0`이고 `fetch_channel`은 캐시 적중 시에도
+# info dict를 돌려주므로 사실상 매 회차 새 `now`가 찍힌다. 여기에 넣어 두면 데이터가
+# 하나도 안 바뀌어도 전원이 '바뀐 행'이 되어 written == considered가 영구히 유지된다
+# (실측 2026-08-01 운영: 1155/1155가 6회 연속, 1156/1156 포함).
+#
+# 그래서 이 필드의 의미가 바뀐다: **"채널 API를 마지막으로 확인한 시각"이 아니라
+# "의미 있는 값 변경이 있어 이 행을 마지막으로 쓴 시각"**이다. 값이 그대로면 갱신되지
+# 않으므로 freshness 지표로 읽으면 안 된다. 지금 이 컬럼을 읽는 곳은 UPSERT의
+# `excluded.last_channel_updated_at > 0` 게이트뿐이고 그 값은 항상 새 payload에서
+# 오므로(저장값을 읽지 않는다) 안전하다. 진짜 freshness 추적이 필요해지면 별도 설계다.
 _STREAMER_FIELDS = ("channel_name", "channel_image_url", "follower_count",
                     "verified_mark", "representative_clip_uid",
-                    "tagged_clip_count", "last_channel_updated_at")
+                    "tagged_clip_count")
 
 
 async def _upsert_streamers_bulk(rows: list[dict], now: int) -> dict:
