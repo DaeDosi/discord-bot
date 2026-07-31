@@ -358,15 +358,98 @@ async def _estimate_prune(now: int) -> dict:
     }
 
 
+# ── strict idle ────────────────────────────────────────────────────────────
+def strict_idle_active() -> bool:
+    """자동 워커가 무거운 집계를 통째로 건너뛰는 조건.
+
+    **두 플래그를 모두 본다.** `PRUNE_ENABLED=false` 하나로 판단하면 활성화 절차
+    3단계(`DRY_RUN=false` + `ENABLED=false` — 롤업을 실제로 쓰고 검증만 하는 상태)까지
+    idle로 삼켜 버려 프루닝 준비가 영영 진행되지 않는다. 그 상태는 idle이 아니다.
+    """
+    return PRUNE_ENABLED is False and PRUNE_DRY_RUN is True
+
+
+async def _final_standings_needed() -> tuple[bool, str]:
+    """이벤트 종료 후 최종 성적을 (다시) 저장해야 하는가.
+
+    판단이 애매하면 **저장하는 쪽**으로 기운다 — 최종 성적은 이벤트의 유일한 영구
+    산출물이라, 불필요한 UPSERT 한 번보다 누락 한 번이 훨씬 비싸다.
+    두 쿼리 모두 인덱스로 끝난다: `singcup_final_standings`는 참가자 수만큼(약 1,157행)
+    이고, 스냅샷 쪽은 `idx_singcup_snap_time(event_id, collected_at)` 위의 MAX다.
+    """
+    db = await get_db()
+    have = await (await db.execute(
+        "SELECT COUNT(*) n, MAX(collected_at) mc FROM singcup_final_standings "
+        "WHERE event_id=?", (EVENT_ID,))).fetchone()
+    if not int(have["n"] or 0):
+        return True, "not_saved_yet"
+    newest = await (await db.execute(
+        "SELECT MAX(collected_at) mc FROM singcup_snapshots WHERE event_id=?",
+        (EVENT_ID,))).fetchone()
+    if newest["mc"] is None:
+        return False, "no_snapshots_left"
+    if int(newest["mc"]) > int(have["mc"] or 0):
+        return True, "newer_snapshot"
+    return False, "already_saved"
+
+
+async def _run_idle(now: int) -> dict:
+    """자동 워커의 strict idle 회차.
+
+    프루닝이 꺼져 있고 dry-run인 동안 시간당 81만 행을 정확히 세어 봐야 할 운영상
+    이유가 없다 — 산출물이 로그 한 줄이고 화면 어디에도 쓰이지 않는다. 그 집계가
+    공유 aiosqlite 연결을 붙들어 공개 API를 뒤로 밀었다(실측: 제거 전 최대 18.4초,
+    남은 `estimate_total`만으로도 2,919ms).
+
+    **여기서도 빠지지 않는 것은 최종 성적 보존뿐이다.** 이벤트가 끝나 있으면 저장한다.
+    """
+    t0 = time.perf_counter()
+    status = event_status()
+    fs: dict = {"attempted": False, "saved": 0}
+    if status == "ENDED":
+        needed, why = await _final_standings_needed()
+        fs["reason"] = why
+        if needed:
+            fs["attempted"] = True
+            try:
+                fs["saved"] = int((await save_final_standings(now))["saved"])
+            except Exception as e:
+                # 부분 완료로 표시하지 않는다 — 한 문장 + COMMIT이라 중간 상태가 없고,
+                # 다음 회차가 같은 조건으로 다시 시도한다.
+                fs["saved"] = 0
+                fs["error"] = str(e)[:160]
+    report = {
+        "event": "retention_idle",
+        "reason": "prune_disabled_and_dry_run",
+        "prune_enabled": PRUNE_ENABLED,
+        "dry_run": PRUNE_DRY_RUN,
+        "event_status": status,
+        "final_standings": fs,
+        "deleted": 0,
+        "last_run_at": now,
+        "next_run_at": now + int(max(300.0, INTERVAL_MINUTES * 60)),
+        "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+    }
+    _log(report)
+    return report
+
+
 # ── 오케스트레이션 ─────────────────────────────────────────────────────────
 async def run_retention(now: int | None = None, *,
-                        force_apply: bool = False) -> dict:
+                        force_apply: bool = False,
+                        automatic: bool = False) -> dict:
     """롤업 → 검증 → (통과한 시간대만) 프루닝. 기본은 아무것도 지우지 않는다.
 
     force_apply는 관리자 엔드포인트에서 '이번 한 번만' 실행할 때 쓴다.
     그래도 PRUNE_ENABLED가 꺼져 있으면 삭제는 하지 않는다.
+
+    automatic=True는 **시간당 자동 워커 전용**이다. 이 경로만 strict idle로 빠진다 —
+    관리자가 명시적으로 요청한 진단 보고서는 언제나 전체 경로를 돈다(사람이 그 순간
+    보려고 부른 것이고, 빈도가 통제된다).
     """
     now = now or int(time.time())
+    if automatic and strict_idle_active():
+        return await _run_idle(now)
     dry = PRUNE_DRY_RUN and not force_apply
     t0 = time.perf_counter()
     # 단계별 시간. `elapsed_ms` 하나만으로는 어느 단계가 20초를 쓰는지 알 수 없어
@@ -438,10 +521,12 @@ async def start_retention_worker():
     await asyncio.sleep(float(os.getenv("SINGCUP_RETENTION_START_DELAY_SECONDS", "120")))
     _log({"event": "worker_start", "prune_enabled": PRUNE_ENABLED,
           "dry_run": PRUNE_DRY_RUN, "interval_minutes": INTERVAL_MINUTES,
+          "strict_idle": strict_idle_active(),
           "warning": "프루닝은 파괴적입니다. revert해도 지워진 원본은 복구되지 않습니다."})
     while True:
         try:
-            await run_retention()
+            # automatic=True — 이 경로만 strict idle로 빠진다(관리자 수동은 전체 경로).
+            await run_retention(automatic=True)
         except Exception as e:
             _log({"event": "worker_error", "level": "warning", "detail": str(e)[:200]})
         await asyncio.sleep(max(300.0, INTERVAL_MINUTES * 60))
