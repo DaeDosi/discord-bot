@@ -84,7 +84,12 @@ GET /api/admin/db/retention/report
 - `prune.would_delete` — 삭제 예정 원본 행 수
 - `prune.oldest_at` / `newest_at` — 삭제 대상 시각 범위
 - `prune.per_event` — 이벤트별 삭제 예정 행 수
-- `prune.not_rolled_up_rows` — **0이어야 합니다**
+- `prune.not_rolled_up_rows` — **dry-run에서는 `null`입니다**(`not_rolled_up_check_performed: false`).
+  예전에는 항상 0이 나왔는데, 그 쿼리가 `singcup_snapshots`를 자기 자신과 대조하는
+  항진식이라 0 말고는 나올 수 없었습니다(무의미한 값이면서 retention 실행시간의 약 97%를
+  썼습니다). **이 값으로 활성화 여부를 판단하지 마십시오.** 미롤업 원본이 없다는 보증은
+  아래 3단계의 `verify.mismatched_hours == 0`이 담당합니다 — 그쪽이 실제 롤업과 원본을
+  대조하는 유일한 경로이고, 삭제는 그 검증을 통과한 시간대에서만 일어납니다.
 - `prune.estimated_reclaim_bytes` — 예상 회수 용량
 - `prune.estimated_batches` / `estimated_seconds` — 처리 예상
 

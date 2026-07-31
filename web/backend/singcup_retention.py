@@ -300,28 +300,45 @@ async def compact_hourly(now: int, *, dry_run: bool) -> dict:
     return {"dropped_hourly": cur.rowcount or 0, "applied": True}
 
 
+_ORPHAN_CHECK_NOTE = ("dry-run에서는 롤업을 저장하지 않으므로 "
+                      "미롤업 원본 대조를 수행하지 않습니다")
+
+
 async def _estimate_prune(now: int) -> dict:
     """dry-run 견적 — 보존 시간 이전 전체를 대상으로 '무엇을 지울 것인지' 센다.
 
     이벤트별 행 수까지 내려주는 이유: 여러 이벤트가 한 테이블에 섞여 있을 때
     어느 쪽이 용량을 먹는지 이 숫자 없이는 알 수 없다.
+
+    **미롤업 원본 대조(`not_rolled_up_rows`)는 여기서 하지 않는다.** 예전에는
+    `singcup_snapshots`를 자기 자신과 대조했는데, 같은 행(`x = s`)이 언제나 세 조건을
+    만족해 `NOT EXISTS`가 성립할 수 없었다 — 82만 행을 훑어 **항상 0을 돌려주는
+    항진식**이었고, 그게 retention 실행시간의 약 97%였다(실측 47,028ms / 48,611ms;
+    `collected_at/3600`이 표현식이라 인덱스 탐색으로 좁혀지지 않는다).
+
+    `singcup_snapshot_hourly`와 대조하도록 고치는 선택지는 **일부러 택하지 않았다**:
+    dry-run은 롤업을 쓰지 않으므로 아직 만들지 않은 롤업을 세게 되어 '82만 행 미롤업'
+    같은 오해를 부르는 숫자가 나온다. 원본 행 수와 owner-hour 롤업 건수는 애초에 단위가
+    다르다. 생성 예정 롤업 수는 `rollup.rollup_rows`가 이미 알려주고, 실제 삭제
+    안전성은 non-dry 경로의 `verify_rollup`(`safe_hours`)이 책임진다.
+
+    응답 필드는 기존 소비처 호환을 위해 남기되, **의미 없는 0을 계속 돌려주지 않는다** —
+    `None` + `not_rolled_up_check_performed=False`로 '재지 않았다'를 명시한다.
     """
     db = await get_db()
     cut = _cutoff(now)
+    t = time.perf_counter()
     tot = await (await db.execute(
         "SELECT COUNT(*) n, MIN(collected_at) lo, MAX(collected_at) hi "
         "FROM singcup_snapshots WHERE collected_at < ?", (cut,))).fetchone()
+    ms_tot = int((time.perf_counter() - t) * 1000)
+    t = time.perf_counter()
     per_event = [{"event_id": r["event_id"], "rows": int(r["n"])}
                  for r in await (await db.execute(
                      "SELECT event_id, COUNT(*) n FROM singcup_snapshots "
                      "WHERE collected_at < ? GROUP BY event_id ORDER BY n DESC",
                      (cut,))).fetchall()]
-    # 롤업되지 않을 원본 = 롤업 대상 시간대에 속하지 않는 행(있으면 안 되지만 확인)
-    orphan = await (await db.execute(
-        "SELECT COUNT(*) n FROM singcup_snapshots s WHERE s.collected_at < ? "
-        "AND NOT EXISTS (SELECT 1 FROM singcup_snapshots x "
-        "  WHERE x.event_id=s.event_id AND x.owner_channel_id=s.owner_channel_id "
-        "    AND x.collected_at/3600 = s.collected_at/3600)", (cut,))).fetchone()
+    ms_pe = int((time.perf_counter() - t) * 1000)
     n = int(tot["n"] or 0)
     batches = (n + PRUNE_BATCH - 1) // PRUNE_BATCH
     return {
@@ -329,11 +346,15 @@ async def _estimate_prune(now: int) -> dict:
         "would_delete": n,
         "oldest_at": tot["lo"], "newest_at": tot["hi"],
         "per_event": per_event,
-        "not_rolled_up_rows": int(orphan["n"] or 0),
+        "not_rolled_up_rows": None,
+        "not_rolled_up_check_performed": False,
+        "not_rolled_up_note": _ORPHAN_CHECK_NOTE,
         "estimated_reclaim_bytes": n * _ROW_BYTES,
         "estimated_batches": batches,
         # 배치당 커밋 + 양보 시간이 실제 소요의 대부분이다
         "estimated_seconds": round(batches * (0.05 + PRUNE_BATCH_SLEEP), 1),
+        "phase_ms": {"estimate_total": ms_tot, "estimate_per_event": ms_pe,
+                     "estimate_orphan_check": 0},
     }
 
 
@@ -348,8 +369,15 @@ async def run_retention(now: int | None = None, *,
     now = now or int(time.time())
     dry = PRUNE_DRY_RUN and not force_apply
     t0 = time.perf_counter()
+    # 단계별 시간. `elapsed_ms` 하나만으로는 어느 단계가 20초를 쓰는지 알 수 없어
+    # 운영에서 원인을 짚지 못했다(실측 2026-08-01). 숫자만 남긴다 — 행 값·식별자 없음.
+    phase_ms = {"build_rollup": 0, "estimate_total": 0, "estimate_per_event": 0,
+                "estimate_orphan_check": 0, "verify": 0, "compact_hourly": 0,
+                "final_standings": 0}
 
+    t = time.perf_counter()
     roll = await build_rollup(now, dry_run=dry)
+    phase_ms["build_rollup"] = int((time.perf_counter() - t) * 1000)
 
     report: dict = {
         "cutoff_at": _cutoff(now),
@@ -367,9 +395,12 @@ async def run_retention(now: int | None = None, *,
         report["verify"] = {"performed": False,
                             "note": "dry-run에서는 롤업을 쓰지 않아 검증을 수행하지 않습니다"}
         report["prune"] = await _estimate_prune(now)
+        phase_ms.update(report["prune"].pop("phase_ms", {}))
         report["prune"]["note"] = "dry-run — 삭제하지 않았습니다"
     else:
+        t = time.perf_counter()
         ver = await verify_rollup(now)
+        phase_ms["verify"] = int((time.perf_counter() - t) * 1000)
         report["verify"] = {"performed": True,
                             **{k: v for k, v in ver.items() if k != "safe_hours"}}
         if ver["mismatched_hours"]:
@@ -384,8 +415,13 @@ async def run_retention(now: int | None = None, *,
             report["prune"] = await prune(now, ver["safe_hours"], dry_run=False)
 
     if COMPACT_HOURLY_ENABLED:
+        t = time.perf_counter()
         report["compact_hourly"] = await compact_hourly(now, dry_run=dry)
+        phase_ms["compact_hourly"] = int((time.perf_counter() - t) * 1000)
+    t = time.perf_counter()
     report["final_standings"] = await save_final_standings(now)
+    phase_ms["final_standings"] = int((time.perf_counter() - t) * 1000)
+    report["phase_ms"] = phase_ms
     report["elapsed_ms"] = int((time.perf_counter() - t0) * 1000)
     _log({"event": "retention_run", **report})
     return report
