@@ -35,6 +35,10 @@ os.environ.setdefault("SINGCUP_START_DELAY_SECONDS", "0")
 os.environ.setdefault("SINGCUP_MAIN_CACHE_SECONDS", "0")
 os.environ.setdefault("SINGCUP_SWEEP_MIN_RATE", "10000")
 os.environ.setdefault("SINGCUP_SWEEP_MAX_RATE", "10000")
+# 삭제 권위 감사도 같은 이유로 속도 제한만 사실상 해제한다(선택·판정 로직은 그대로).
+os.environ.setdefault("SINGCUP_DELETION_COLD_RATE", "10000")
+os.environ.setdefault("SINGCUP_DELETION_HOT_RATE", "10000")
+os.environ.setdefault("SINGCUP_DELETION_MIN_RATE", "10000")
 
 # 루트(database 패키지)와 web/backend(chzzk_channel_history) 둘 다 import 가능해야 한다.
 for p in (str(_ROOT), str(_ROOT / "web" / "backend")):

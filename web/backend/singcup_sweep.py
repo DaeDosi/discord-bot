@@ -24,6 +24,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import singcup_clips as sc
+from utils.token_bucket import TokenBucket
 from singcup_collector import EVENT_ID, ST_OK, event_status
 
 from database import get_db
@@ -64,54 +65,11 @@ def kst(ts) -> str | None:
     return datetime.fromtimestamp(int(ts), KST).isoformat() if ts else None
 
 
-class TokenBucket:
-    """요청을 회차 내내 고르게 뿌린다 + 429를 만나면 스스로 감속한다.
-
-    4분마다 수백 건을 몰아치는 대신 초당 rate건으로 흘린다. 상대 API가 429나
-    5xx를 주기 시작하면 곱셈 감소(×0.5)로 즉시 물러서고, 조용하면 아주 천천히
-    (+5%/회) 회복한다 — 감속은 빠르게, 증속은 느리게가 안전한 쪽이다.
-    """
-
-    def __init__(self, rate: float, cap: float, floor: float | None = None):
-        self.floor = MIN_RATE if floor is None else floor
-        self.rate = max(self.floor, min(rate, cap))
-        self.cap = cap
-        # **저장 용량과 충전 속도는 다른 값이다.** 예전에는 토큰 상한을 rate로 잡아서
-        # rate가 1 미만이면 토큰이 rate에서 멈춰 1.0에 영원히 도달하지 못했다
-        # (요청 하나에 토큰 1개가 필요하다). 그래서 429나 카드 실패로 한 번
-        # 감속(×0.5)되는 순간 스윕이 첫 클립에서 통째로 멈췄다 —
-        # 운영 로그의 "sweep_start rate=0.749 → sweep_done 없음"이 이 증상이다.
-        # 용량은 최소 1.0을 보장한다: 어떤 속도에서도 토큰 한 개는 모을 수 있어야 한다.
-        self.capacity = max(1.0, cap)
-        self.tokens = 1.0
-        self.updated = time.monotonic()
-        self._lock = asyncio.Lock()
-        self.throttled = 0
-
-    async def acquire(self):
-        # 락은 '순서대로 한 명씩 통과'시키는 용도다. 대기 중 취소되면 async with가
-        # 락을 풀어 주므로 다음 대기자가 막히지 않는다.
-        async with self._lock:
-            while True:
-                now = time.monotonic()
-                self.tokens = min(self.capacity,
-                                  self.tokens + (now - self.updated) * self.rate)
-                self.updated = now
-                if self.tokens >= 1.0:
-                    self.tokens -= 1.0
-                    return
-                # 남은 토큰만큼만 기다린다. rate는 항상 floor(>0) 이상이라 유한하다.
-                await asyncio.sleep((1.0 - self.tokens) / max(self.rate, 1e-6))
-
-    def slow_down(self, why: str):
-        self.rate = max(self.floor, self.rate * 0.5)
-        self.throttled += 1
-        sc._log({"event": "sweep_throttle", "level": "warning",
-                 "reason": why, "new_rate": round(self.rate, 3)})
-
-    def recover(self):
-        if self.rate < self.cap:
-            self.rate = min(self.cap, self.rate * 1.05)
+# 토큰 버킷은 utils/token_bucket.py로 옮겼다 — 삭제 감사 워커가 같은 것을 쓰는데
+# 복사본을 두면 "용량 최소 1.0" 같은 교훈이 한쪽에서만 유지된다. 이름은 유지한다.
+def _bucket(rate: float, cap: float, floor: float | None = None) -> TokenBucket:
+    return TokenBucket(rate, cap, floor if floor is not None else MIN_RATE,
+                       name="sweep", on_log=sc._log)
 
 
 def required_rate(total: int) -> float:
@@ -327,11 +285,14 @@ async def _persist_clip(t: dict, card: dict | None, detail: dict | None,
     """
     state = "failed"
     fixed = False
+    metrics = {"frozen_rounds": 0}
+    hints: list[str] = []
 
     async def work(_db):
         nonlocal state, fixed
         if card is None:
-            await sc._apply_metrics(t["clip_uid"], 0, 0, False, False, now)
+            await sc._apply_metrics(t["clip_uid"], 0, 0, False, False, now,
+                                    out=metrics)
             await sc._queue_retry({"clipUID": t["clip_uid"],
                                    "videoId": t["video_id"],
                                    "recId": t["rec_id"] or "{}"},
@@ -340,21 +301,32 @@ async def _persist_clip(t: dict, card: dict | None, detail: dict | None,
             # 확인해 보라'는 표시만 남긴다 — 카드가 아예 응답하지 않는 삭제 클립이
             # 이 경로로만 드러나는 경우가 있다(살아 있으면 첫 확인에서 바로 풀린다).
             await sc._flag_deletion_suspect(t["clip_uid"], "card_failed", now)
+            hints.append("card_failed")
             state = "failed"
             return
         state = await sc._apply_metrics(
             t["clip_uid"], card["heart_count"], card["view_count"],
-            card["heart_ok"], card["view_ok"], now)
+            card["heart_ok"], card["view_ok"], now, out=metrics)
         await sc._clear_retry(t["clip_uid"])
         if not card["heart_ok"] and not card["view_ok"]:
             # 약한 신호다. **여기서 삭제로 세지 않는다** — 카드가 원래 값을 안 주는
             # 경우와 구분되지 않기 때문이다. 상세 API로 따로 확인할 대상으로만 표시한다.
             await sc._flag_deletion_suspect(t["clip_uid"], "card_empty", now)
+            hints.append("card_empty")
         if detail:
             # 상세가 빈 썸네일을 줬거나 이미 값이 있으면 False — 그때는 세지 않는다
             fixed = await sc.repair_clip_media(t["clip_uid"], detail)
 
     ok = await db_write(work, what=f"sweep_clip({t['clip_uid']})")
+    if ok:
+        # 힌트는 **바깥 트랜잭션이 끝난 뒤에** 건다. 안에서 걸면 쓰기 단위가
+        # 하나 더 겹쳐 잠금 경합만 늘고, 힌트는 실패해도 Cold lane이 결국 같은
+        # 클립을 검사하므로 재시도할 이유도 없다.
+        for reason in hints:
+            await sc._audit_hint(t["clip_uid"], reason)
+        if not hints:
+            await sc._audit_note_frozen(t["clip_uid"],
+                                        int(metrics.get("frozen_rounds") or 0))
     return (state if ok else "db_error"), ok, (fixed and ok)
 
 
@@ -427,7 +399,7 @@ async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = Non
     targets = await sweep_targets(cutoff)
     total = len(targets)
     rate = min(MAX_RATE, max(MIN_RATE, required_rate(total)))
-    bucket = TokenBucket(rate, MAX_RATE)
+    bucket = _bucket(rate, MAX_RATE)
     await _progress_safe(run_id, total_targets=total, rate_limit=round(rate, 3))
     sc._log({"event": "sweep_start", "run_id": run_id,
              "scheduled_at": kst(scheduled_at), "total_targets": total,

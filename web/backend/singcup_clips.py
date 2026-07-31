@@ -906,6 +906,39 @@ _NEW_REP_SQL = """
 """
 
 
+# ── 권위 감사 힌트 (singcup_audit) ──────────────────────────────────────────
+# 순환 import를 피하려고 지연 import한다. 그리고 **감사 실패가 수집·스윕으로
+# 번지지 않게** 여기서 삼킨다 — 힌트는 우선순위일 뿐이라 없어도 Cold lane이
+# 결국 같은 클립을 검사한다.
+async def _audit_hint(clip_uid: str, reason: str) -> bool:
+    try:
+        import singcup_audit
+        return await singcup_audit.hint_clip(clip_uid, reason)
+    except Exception as e:
+        _log({"event": "audit_hint_failed", "level": "warning",
+              "clip_uid": clip_uid, "reason": reason, "detail": str(e)[:120]})
+        return False
+
+
+async def _audit_hint_siblings(owner_channel_id: str, new_clip_uid: str) -> int:
+    try:
+        import singcup_audit
+        return await singcup_audit.hint_owner_siblings(
+            owner_channel_id, exclude_uid=new_clip_uid)
+    except Exception as e:
+        _log({"event": "audit_hint_failed", "level": "warning",
+              "owner_channel_id": owner_channel_id, "detail": str(e)[:120]})
+        return 0
+
+
+async def _audit_note_frozen(clip_uid: str, rounds: int) -> bool:
+    try:
+        import singcup_audit
+        return await singcup_audit.note_metrics_frozen(clip_uid, rounds)
+    except Exception:
+        return False
+
+
 async def _flag_deletion_suspect(clip_uid: str, reason: str, now: int) -> bool:
     """약한 신호 — '한 번 확인해 보라'는 표시만 남긴다. **카운터는 올리지 않는다.**
 
@@ -1011,7 +1044,10 @@ async def _confirm_deleted_and_reselect(row: dict, now: int, reason: str,
             lk = await (await db.execute(
                 "SELECT owner, locked_until FROM singcup_locks WHERE name=?",
                 (owner_lock_name(owner),))).fetchone()
-            if lk is None or lk["owner"] != token or int(lk["locked_until"]) <= now:
+            # 만료 판정은 **벽시계**로 한다. 호출자가 넘긴 논리적 now는 상태 판단용
+            # 시각이라 락 TTL과 기준이 다를 수 있고, 그때 멀쩡한 락이 만료로 보인다.
+            wall = int(time.time())
+            if lk is None or lk["owner"] != token or int(lk["locked_until"]) <= wall:
                 outcome["note"] = "owner_lock_lost"
                 return
             # ④ probe 이후 상태가 바뀌었을 수 있다 — 트랜잭션 안에서 다시 읽는다
@@ -1465,6 +1501,10 @@ async def recompute_ranking(now: int, *, client=None,
                   "owner_channel_id": r["owner_channel_id"],
                   "from_clip_uid": prev_uid, "to_clip_uid": r["clip_uid"],
                   "heart_count": r["heart_count"], "view_count": r["view_count"]})
+            # 밀려난 옛 대표를 권위 검사 앞줄에 세운다. 하트 역전으로 바뀐 것이
+            # 대부분이지만, 대표가 삭제돼 바뀐 경우도 여기로 온다 — 어느 쪽인지는
+            # 상세 API만 안다. **여기서 상태를 바꾸지 않는다.**
+            await _audit_hint(prev_uid, "rep_changed")
     if save_snapshot:
         await _save_snapshots(ranked, now)
     await db.commit()
@@ -1700,7 +1740,8 @@ async def _metrics_snapshot(clip_uid: str) -> dict | None:
 
 
 async def _apply_metrics(clip_uid: str, heart: int, view: int,
-                         heart_ok: bool, view_ok: bool, now: int) -> str:
+                         heart_ok: bool, view_ok: bool, now: int,
+                         *, out: dict | None = None) -> str:
     """카드에서 읽은 수치를 반영한다. **읽은 필드만** 쓴다.
 
     예전에는 heart/view 둘 다 성공했을 때만 UPDATE를 돌렸다. 그래서 카드가
@@ -1715,8 +1756,20 @@ async def _apply_metrics(clip_uid: str, heart: int, view: int,
     # 갱신 공백이 길었는데 하트가 움직였다면, 그 차이는 '최근 1시간 증가'가 아니라
     # 공백 동안 누적된 양이다. 복구 시각을 남겨 단기 증감 계산에서 빼도록 한다.
     prev = await (await db.execute(
-        "SELECT heart_count, last_metrics_at, last_heart_at FROM singcup_clips "
-        "WHERE clip_uid=?", (clip_uid,))).fetchone()
+        "SELECT heart_count, view_count, metrics_frozen_count, last_metrics_at, "
+        "last_heart_at FROM singcup_clips WHERE clip_uid=?", (clip_uid,))).fetchone()
+    # 지표가 몇 회차 연속 **완전히** 고정됐는지 센다. 삭제된 클립은 하트도 조회수도
+    # 더 이상 움직이지 않아서 이 값이 계속 오른다 — 다만 인기 없는 정상 클립도
+    # 마찬가지다. 그래서 이것은 **삭제 근거가 아니라 권위 검사 힌트**로만 쓴다.
+    frozen = 0
+    if prev is not None and heart_ok and view_ok:
+        same = (heart == int(prev["heart_count"] or 0)
+                and view == int(prev["view_count"] or 0))
+        frozen = (int(prev["metrics_frozen_count"] or 0) + 1) if same else 0
+        sets.append("metrics_frozen_count=?")
+        params.append(frozen)
+    if out is not None:
+        out["frozen_rounds"] = frozen
     # 공백 판정 기준은 '하트를 마지막으로 정상 수신한 시각'이다. last_metrics_at을
     # 쓰면 조회수만 실패해 온 클립이 공백으로 오인된다.
     _prev_heart_at = (int(prev["last_heart_at"] or 0) or int(prev["last_metrics_at"] or 0)
@@ -1871,6 +1924,10 @@ async def _scan_batch(client, items: list[dict], now: int) -> tuple[int, int, in
         row = _to_clip_row(it, card)
         if await _upsert_clip(row, now):
             inserted += 1
+            # 새 클립이 들어온 소유자의 **기존** 클립을 권위 검사 앞줄에 세운다.
+            # 지우고 다시 올리는 흐름이 흔해 신호가 세지만, 정상 클립을 여러 개
+            # 올린 스트리머도 많으므로 **검사 예약만** 한다(비활성화 금지).
+            await _audit_hint_siblings(row["owner_channel_id"], uid)
         # 같은 클립을 정기 스윕이 만지고 있으면 기다렸다 쓴다
         tok = await acquire_clip_lock(uid)
         try:

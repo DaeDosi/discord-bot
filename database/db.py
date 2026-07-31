@@ -971,6 +971,40 @@ async def init_db():
         # 그래서 legacy 비활성 행은 별도 상태로 '표시만' 한다 — 삭제로 취급되지 않는다.
         "UPDATE singcup_clips SET deletion_state='unknown_legacy' "
         "WHERE active=0 AND deletion_state='active'",
+        # ── 권위 감사(anti-entropy) 스케줄 ────────────────────────────────
+        # 삭제 여부의 유일한 권위는 상세 API다. 그런데 그 확인은 이미 의심 상태로
+        # 들어온 클립만 받았고, 의심으로 들어가는 문은 카드 API 실패 하나뿐이었다.
+        # 카드는 videoId로 조회하고 원본 VOD는 클립 삭제 후에도 남기 때문에,
+        # **카드가 계속 정상 응답하는 삭제 클립은 영원히 확인받지 못했다**
+        # (실측 2026-07-31: 79xM38ged7이 스윕 2786/2786 완주 후에도 active=1).
+        # 그래서 카드 상태와 무관하게 모든 활성 클립을 저속으로 순회한다.
+        # 아래 값들은 기존 컬럼으로 대체할 수 없다:
+        #   audit_last_at    마지막 **권위(상세 API)** 검사 시각. last_attempt_at은
+        #                    카드 조회 시각이라 의미가 다르다.
+        #   audit_next_at    다음 검사 예정 시각. 이 컬럼 자체가 영속 커서다 —
+        #                    처리하면 미래로 밀리므로 별도 진행률 표가 필요 없고,
+        #                    재시작해도 이어진다. 결정적 jitter가 여기 들어간다.
+        #   audit_verdict    마지막 판정(alive/deleted/inconclusive)
+        #   audit_fail_count 연속 일시 오류 횟수(지수 백오프용). 삭제 확인 횟수인
+        #                    missing_scan_count와 섞으면 429가 삭제로 셈해진다.
+        #   audit_hint       Hot lane 힌트 사유. **삭제 근거가 아니라 우선순위다.**
+        #   audit_hint_at    힌트를 받은 시각(0이면 Hot 대상 아님)
+        "ALTER TABLE singcup_clips ADD COLUMN audit_last_at INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE singcup_clips ADD COLUMN audit_next_at INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE singcup_clips ADD COLUMN audit_verdict TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE singcup_clips ADD COLUMN audit_fail_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE singcup_clips ADD COLUMN audit_hint TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE singcup_clips ADD COLUMN audit_hint_at INTEGER NOT NULL DEFAULT 0",
+        # 지표가 여러 회차 완전히 고정된 클립. **삭제 근거가 아니라 힌트다** —
+        # 인기 없는 정상 클립도 오래 고정된다.
+        "ALTER TABLE singcup_clips ADD COLUMN metrics_frozen_count INTEGER NOT NULL "
+        "DEFAULT 0",
+        # Cold lane은 '가장 오래 확인 안 한 활성 클립'을 뽑는다. 6천 행이라 풀스캔도
+        # 견디지만 이 자리는 워커가 계속 도는 곳이다.
+        "CREATE INDEX IF NOT EXISTS idx_singcup_clips_audit "
+        "ON singcup_clips(event_id, active, audit_next_at, clip_uid)",
+        "CREATE INDEX IF NOT EXISTS idx_singcup_clips_audit_hint "
+        "ON singcup_clips(event_id, audit_hint_at)",
     ]:
         try:
             await db.execute(sql)

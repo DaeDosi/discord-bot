@@ -713,6 +713,62 @@ curl -X POST 'https://<backend>/api/singcup/prune?dry_run=false' -H 'X-Singcup-S
 4. Railway에서 네이버 접근이 되는지 확인하려면:
    `SINGCUP_LIVE_TESTS=1 pytest tests/integration -m integration`
 
+### 삭제 클립 권위 감사 (anti-entropy, 2026-07-31)
+
+**문제.** 삭제 여부의 유일한 권위는 치지직 **상세 API**(`/service/v1/clips/{uid}/detail`)
+입니다. 그런데 상세 확인 대상은 이미 `suspected_deleted`인 행뿐이었고, 의심으로
+들어가는 문은 스윕의 **카드 API 실패** 하나였습니다. 카드는 `seedMediaId=videoId`로
+조회하고 **원본 VOD는 클립이 삭제돼도 남습니다.** 그래서 카드가 정상 응답하는
+삭제 클립은 확인을 못 받았습니다 — 실측 2026-07-31, 상세 API가 404
+(`{"code":404,"message":"삭제된 클립입니다."}`)인 클립이 스윕 2,786/2,786 완주 뒤에도
+`active=1`이었습니다. 특정 UID를 예외 처리하는 것은 답이 아닙니다(같은 누락이 반복됩니다).
+
+**구조.** `web/backend/singcup_audit.py`가 두 레인으로 상세 API 검사를 돌립니다.
+
+| 레인 | 대상 | 속도 |
+|---|---|---|
+| Hot | 의심 상태 + *힌트*가 붙은 클립 | 대기열이 있을 때만 `SINGCUP_DELETION_HOT_RATE`(기본 1.0/s)까지 |
+| Cold | `confirmed_deleted`가 아닌 **모든** 활성 클립 | `min(SINGCUP_DELETION_COLD_RATE, 대상수 ÷ 커버리지시간)` |
+
+**힌트는 삭제 근거가 아니라 우선순위입니다.** 새 형제 클립 등장 / 대표 교체로 밀려난
+옛 대표 / 카드 지표 결측 / 지표 장기 고정 — 이 중 어느 것으로도 상태를 바꾸지 않습니다.
+정상 클립을 여러 개 올린 스트리머가 통째로 지워지는 것을 막기 위해서입니다.
+판정 규칙은 그대로입니다: **서로 다른 시점의 명시적 404 2회**만 확정이고,
+429·5xx·timeout·형식 오류는 `inconclusive`로 두고 지수 백오프 후 재시도합니다.
+
+**진행 상태는 `singcup_clips.audit_next_at`이 곧 커서입니다** — 처리하면 미래로
+밀리므로 별도 진행률 표가 없고 재시작해도 이어집니다. offset 페이지네이션을 쓰지
+마세요(행이 밀리면 건너뛰기와 중복을 동시에 만듭니다). 다음 검사 시각에는
+`sha256(clip_uid)` 기반 결정적 jitter가 들어갑니다 — 내장 `hash()`는 프로세스마다
+값이 달라 재시작 때 순서 편향이 생깁니다.
+
+**단계적 활성화.** 기본값은 전부 OFF/Shadow입니다.
+
+| 환경변수 | 기본 | 뜻 |
+|---|---|---|
+| `SINGCUP_DELETION_RECONCILE_ENABLED` | `false` | kill switch. false면 요청 0건 |
+| `SINGCUP_DELETION_RECONCILE_SHADOW` | `true` | 후보 선정·판정까지만. **상태 변경 없음** |
+| `SINGCUP_DELETION_HOT_ENABLED` | `false` | Phase 2 — Hot lane만 상태 변경 허용 |
+| `SINGCUP_DELETION_COLD_ENABLED` | `false` | Phase 3 — Cold 전체 순회까지 허용 |
+| `SINGCUP_DELETION_COLD_RATE` | `0.2` | Cold lane 초당 상한 |
+| `SINGCUP_DELETION_COVERAGE_HOURS` | `12` | 전체 한 바퀴 목표 시간 |
+| `SINGCUP_DELETION_CIRCUIT_ENABLED` | `true` | 429/5xx가 몰리면 Cold lane 정지 |
+
+6,358건 / 12시간 = **0.147 req/s**(약 8.8 req/분)이고 상한 0.2면 여유가 있습니다.
+속도를 고정 숫자로 박지 마세요 — 참가자가 늘면 커버리지 목표가 조용히 깨집니다.
+`rate`가 1 미만이어도 토큰 버킷 **용량은 최소 1.0**이어야 합니다(`utils/token_bucket.py`);
+용량을 rate로 잡으면 0.15/s에서 토큰이 1에 영영 도달하지 못해 한 건도 못 보냅니다.
+
+상태는 `GET /api/singcup/audit/status`(공개, 쓰기 없음)로 봅니다 — 큐 크기, 미검사
+건수, 1/6/12/24시간 커버리지, 판정 분포, 회로 상태, 예상 전체 순회 완료 시각.
+단건 재검사 예약은 `POST /api/singcup/clips/{uid}/audit`(secret + 관리자 전용
+rate limit `SINGCUP_ADMIN_RATE_LIMIT`, 기본 20 req/분).
+
+**롤백:** `SINGCUP_DELETION_RECONCILE_ENABLED=false`. 이미 확정된 행은 물리 삭제가
+아니므로 `GET /api/singcup/clips/deleted`에서 대상을 골라
+`POST /api/singcup/clips/restore`로 되돌립니다(전체 일괄 복구는 하지 않습니다 —
+진짜 삭제된 클립까지 살아나면 순위가 다시 틀어집니다).
+
 ### 테스트
 
 ```bash

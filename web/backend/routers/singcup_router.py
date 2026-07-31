@@ -11,6 +11,7 @@ import hmac
 import os
 import time
 
+import singcup_audit
 import singcup_obs
 import singcup_split_api as split
 from fastapi import APIRouter, Header, HTTPException, Request, Response
@@ -60,6 +61,26 @@ async def rankings(limit: int = 200):
 async def status():
     """수집기 헬스체크 — Railway에서 네이버 API 접근이 되는지 확인할 때 쓴다."""
     return await load_status()
+
+
+# 관리자 API는 공용 미들웨어(기본 150 req/60s)와 별도로 더 좁은 한도를 둔다.
+# secret이 유출됐을 때 외부 API를 대량으로 때리는 통로가 되지 않게 하기 위한 것이라
+# IP가 아니라 **엔드포인트 단위**로 센다.
+_ADMIN_WINDOW = 60.0
+_ADMIN_LIMIT = int(os.getenv("SINGCUP_ADMIN_RATE_LIMIT", "20"))
+_admin_hits: dict[str, list[float]] = {}
+
+
+def _admin_rate_limit(key: str):
+    now = time.monotonic()
+    q = _admin_hits.setdefault(key, [])
+    cutoff = now - _ADMIN_WINDOW
+    while q and q[0] < cutoff:
+        q.pop(0)
+    if len(q) >= _ADMIN_LIMIT:
+        raise HTTPException(status_code=429,
+                            detail="관리 요청이 너무 잦습니다. 잠시 후 다시 시도하세요.")
+    q.append(now)
 
 
 def _require_secret(secret: str | None):
@@ -374,7 +395,35 @@ async def clips_recheck_deletion(clip_uid: str,
     상태가 바뀐 경우에만 대표·점수·순위·스냅샷을 정상 경로로 다시 만든다.
     """
     _require_secret(x_singcup_secret)
+    _admin_rate_limit("recheck-deletion")
+    if not singcup_audit.valid_clip_uid(clip_uid):
+        raise HTTPException(status_code=400, detail="clip_uid 형식이 올바르지 않습니다.")
     return await recheck_clip_deletion(clip_uid)
+
+
+@router.get("/audit/status")
+async def audit_status():
+    """권위 감사(anti-entropy) 진행 상태. 공개 조회 — **쓰기가 없다.**
+
+    락 owner token·secret·외부 응답 본문은 절대 넣지 않는다.
+    """
+    return await singcup_audit.audit_status()
+
+
+@router.post("/clips/{clip_uid}/audit")
+async def clips_audit_now(clip_uid: str,
+                          x_singcup_secret: str | None = Header(default=None)):
+    """단건 권위 검사를 지금 예약한다(Hot lane). **판정은 자동 경로와 동일하다.**
+
+    임의 URL이나 헤더를 받지 않는다 — 입력은 clip_uid 하나이고, 호출 대상은
+    치지직 고정 호스트·경로다.
+    """
+    _require_secret(x_singcup_secret)
+    _admin_rate_limit("audit")
+    if not singcup_audit.valid_clip_uid(clip_uid):
+        raise HTTPException(status_code=400, detail="clip_uid 형식이 올바르지 않습니다.")
+    hinted = await singcup_audit.hint_clip(clip_uid, singcup_audit.HINT_MANUAL)
+    return {"clipUid": clip_uid, "hinted": hinted}
 
 
 @router.get("/clips/{clip_uid}/diagnose")

@@ -40,6 +40,7 @@ from singcup_clips import (
     start_clip_collector,
     start_snapshot_publisher,
 )
+from singcup_audit import start_audit_worker
 from singcup_sweep import start_sweep_worker
 from singcup_collector import ADMIN_SECRET, start_singcup_collector
 from singcup_retention import start_retention_worker
@@ -63,6 +64,10 @@ async def lifespan(app: FastAPI):
     # 지표 전체 갱신 — KST 매시 정각 1회차로 대표·일반 클립 전부를 한 번씩 훑는다.
     # 예전처럼 4분마다 상위 N건만 집으면 클립이 수천 건일 때 한 바퀴가 몇 시간이었다.
     asyncio.create_task(start_sweep_worker())
+    # 삭제 클립 권위 감사 — 카드 API가 정상 응답해도 상세 API로 결국 한 번씩
+    # 확인한다. 기본값은 OFF이고, 켜도 SHADOW가 기본이라 상태를 바꾸지 않는다
+    # (SINGCUP_DELETION_RECONCILE_ENABLED / _SHADOW / _HOT_ENABLED / _COLD_ENABLED).
+    asyncio.create_task(start_audit_worker())
     # 과거 적재는 성격이 달라 별도 워커가 완료될 때까지 연속 처리한다(커서는 DB에 저장)
     asyncio.create_task(start_backfill_worker())
     # 분리 API 스냅샷 게시 — 평상시 갱신은 recompute_ranking이 맡고, 이 루프는
