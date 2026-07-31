@@ -48,6 +48,7 @@ from singcup_collector import (
 )
 
 from database import DB_PATH, get_db
+from utils.db_write import db_write, db_write_isolated
 
 CLIPS_API = "https://api.chzzk.naver.com/service/v1/categories/ETC/music/clips"
 CARD_API = "https://api-videohub.naver.com/shortformhub/feeds/v5/card"
@@ -68,7 +69,9 @@ PAGE_DELAY = float(os.getenv("SINGCUP_PAGE_DELAY_SECONDS", "0.3"))
 # 채널 정보(팔로워)는 자주 안 변한다 — 채널당 이 주기로만 다시 부른다
 CHANNEL_TTL_MINUTES = float(os.getenv("SINGCUP_CHANNEL_TTL_MINUTES", "20"))
 MAX_RUN_SECONDS = int(os.getenv("SINGCUP_CLIP_MAX_RUN_SECONDS", "600"))
-MISSING_SCANS_TO_DEACTIVATE = int(os.getenv("SINGCUP_MISSING_SCANS", "2"))
+# (SINGCUP_MISSING_SCANS는 목록 미발견만으로 비활성화하던 시절의 값이다.
+#  삭제 판정은 이제 상세 API 404 확인 횟수(SINGCUP_DELETION_CONFIRM_CHECKS)로
+#  하고, missing_scan_count 컬럼은 그 확인 횟수를 담는다.)
 # 특정 클립 1건만 '갱신 전 DB값 / 새로 읽은 값 / 갱신 후 DB값'을 통째로 로그에 남긴다.
 # 값이 안 도는 클립을 지목해 추적할 때만 켠다(빈 값이면 꺼짐).
 DEBUG_CLIP_UID = os.getenv("SINGCUP_METRICS_DEBUG_UID", "").strip()
@@ -668,23 +671,720 @@ async def snapshot_duplicate_report() -> dict:
     }
 
 
-async def _reconcile_missing_clips(seen: set, now: int) -> int:
-    """전체 순회에 성공한 회차에서만 호출. 연속 2회 안 보이면 비활성(삭제 아님)."""
+# ── 삭제 상태 기계 ──────────────────────────────────────────────────────────
+# (예전의 _reconcile_missing_clips는 여기로 대체됐다. 그 함수는 호출자가 없어
+#  운영에서 한 번도 실행되지 않았고, 목록 미발견만으로 비활성화하는 방식이라
+#  목록 스캔이 중간에 끊기면 살아 있는 클립을 내려 버릴 위험도 있었다.)
+#
+# 판정 원칙 — **강한 신호에만 카운터를 올린다.**
+#   강함: 상세 API가 HTTP 404/410(본문에 삭제 표시)     → 카운터 +1
+#   약함: 카드에 interaction/vod 없음, timeout, 429, 5xx → 카운터 그대로.
+#         다만 '한 번 확인해 볼 대상'으로 표시만 해 둔다(의심).
+# 확정은 **서로 다른 시점의 명시적 404가 DELETION_CONFIRM_CHECKS회** 모였을 때만.
+DEL_ACTIVE = "active"
+DEL_SUSPECTED = "suspected_deleted"
+DEL_CONFIRMED = "confirmed_deleted"
+DEL_RECOVERED = "recovered"
+# 이 기능 이전에 이미 active=0이던 행. **삭제로 판정한 적이 없다.**
+# 마이그레이션이 기존 비활성 행을 confirmed_deleted로 바꾸면 강한 신호를 한 번도
+# 보지 않고 삭제를 확정하는 셈이고 되돌릴 근거도 남지 않는다. 그래서 표시만 한다.
+DEL_UNKNOWN_LEGACY = "unknown_legacy"
+# 살아 있는 것으로 취급하는 상태(대표 후보·스윕 대상)
+DEL_ALIVE_STATES = (DEL_ACTIVE, DEL_SUSPECTED, DEL_RECOVERED)
+
+DELETION_CONFIRM_CHECKS = int(os.getenv("SINGCUP_DELETION_CONFIRM_CHECKS", "2"))
+# 두 번째 확인은 전체 스윕 한 바퀴(실측 약 43분)를 기다리지 않는다 — 그만큼
+# 삭제 클립이 순위를 차지하는 시간이 길어진다. 의심 클립만 따로, 짧게 다시 본다.
+DELETION_MIN_INTERVAL_SECONDS = int(float(
+    os.getenv("SINGCUP_DELETION_MIN_INTERVAL_MINUTES", "10")) * 60)
+# 확정된 클립도 완전히 잊지는 않는다(복원될 수 있다). 훨씬 긴 주기로만 확인한다.
+DELETION_RECHECK_HOURS = float(os.getenv("SINGCUP_DELETION_RECHECK_HOURS", "6"))
+# 4분 루프 한 번에 확인할 최대 건수. 요청이 몰리지 않게 작게 둔다.
+DELETION_BATCH = int(os.getenv("SINGCUP_DELETION_BATCH", "20"))
+
+
+async def probe_clip_alive(client, clip_uid: str) -> tuple[str, int | None, str]:
+    """이 클립이 실제로 삭제됐는지 **상세 API로만** 확인한다.
+
+    반환: ("deleted" | "alive" | "unknown", http_status, 짧은 사유)
+
+    `_get_json`을 쓰지 않는 이유: 그쪽은 404를 SchemaError로 뭉뚱그리고 재시도까지
+    돌려서, 상태코드와 본문을 그대로 볼 수 없다. 삭제 판정은 이 두 가지가 근거다
+    (실측 응답: HTTP 404 + {"code":404,"message":"삭제된 클립입니다."}).
+
+    **429/5xx/timeout/401/403은 unknown이다.** 삭제로 세면 일시 장애 한 번에
+    멀쩡한 클립이 순위에서 사라진다.
+    """
+    url = CLIP_DETAIL_API.format(uid=quote(clip_uid, safe=""))
+    headers = dict(_HEADERS)
+    headers["Referer"] = f"https://chzzk.naver.com/clips/{quote(clip_uid, safe='')}"
+    try:
+        r = await client.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    except (httpx.TimeoutException, httpx.TransportError) as e:
+        return ("unknown", None, type(e).__name__)
+    _api_counter["calls"] += 1
+    code = r.status_code
+    if code == 200:
+        try:
+            payload = r.json()
+        except (json.JSONDecodeError, ValueError):
+            return ("unknown", code, "not_json")
+        content = payload.get("content") if isinstance(payload, dict) else None
+        if isinstance(content, dict):
+            # 살아 있지만 블라인드/삭제 표시가 붙은 경우도 노출 대상이 아니다
+            blind = str(content.get("blindType") or "").upper()
+            if blind in _BAD_BLIND:
+                return ("deleted", code, f"blind_{blind.lower()}")
+            return ("alive", code, "ok")
+        return ("unknown", code, "no_content")
+    if code in (404, 410):
+        return ("deleted", code, f"http_{code}")
+    if code == 429:
+        _api_counter["http_429"] += 1
+    return ("unknown", code, f"http_{code}")
+
+
+# 대표 변경은 **owner 단위**로 직렬화한다. clip 락만으로는 부족하다 — 같은
+# 스트리머의 서로 다른 클립 두 개가 동시에 삭제 확정되면 각자 다른 대표를 고른다.
+#
+# 락 순서는 어디서나 **clip → owner** 로 고정한다(교착 방지). 대표 변경 경로만
+# 두 락을 함께 쓰고, 나머지 경로(스윕·수동 갱신·정기 작업)는 clip 락만 쓴다.
+# 전체 획득 그래프는 tests/test_singcup_deletion.py의 락 순서 테스트가 고정한다.
+# 대표 변경 트랜잭션은 **전용 연결**로 돈다. 공유 연결을 쓰면 최악 시간에 상한이
+# 없다 — aiosqlite는 연결마다 워커 스레드 하나로 작업을 직렬화하므로 앞선 작업을
+# 기다리는 큐 대기가 busy_timeout 밖이고, 실측상 앞선 느린 작업 1/2/3개에 대해
+# 550 / 1,075 / 1,783ms로 선형 증가했다(상한 없음).
+#
+# 삭제 처리는 공개 요청이 아니다. 40초를 기다리느니 짧게 실패하고 다음 4분 회차에
+# 다시 시도하는 편이 낫다.
+OWNER_TX_BUSY_TIMEOUT_MS = int(os.getenv("SINGCUP_OWNER_TX_BUSY_TIMEOUT_MS", "2000"))
+OWNER_TX_ATTEMPTS = int(os.getenv("SINGCUP_OWNER_TX_ATTEMPTS", "3"))
+OWNER_TX_BUDGET_SECONDS = float(os.getenv("SINGCUP_OWNER_TX_BUDGET_SECONDS", "3.0"))
+# owner 락 자체를 잡고/놓는 쓰기도 전용 연결로 한다. 기존 acquire_named_lock은
+# 공유 연결을 쓰는데, 그러면 락 획득이 공유 큐 뒤에서 상한 없이 기다린다
+# (실측: 앞선 느린 작업 3개 → 1,783ms, 상한 없음). 그 사이 clip 락은 계속 잡혀 있다.
+OWNER_LOCK_TX_BUSY_TIMEOUT_MS = int(
+    os.getenv("SINGCUP_OWNER_LOCK_TX_BUSY_TIMEOUT_MS", "500"))
+OWNER_LOCK_TX_ATTEMPTS = int(os.getenv("SINGCUP_OWNER_LOCK_TX_ATTEMPTS", "2"))
+OWNER_LOCK_TX_BUDGET_SECONDS = float(
+    os.getenv("SINGCUP_OWNER_LOCK_TX_BUDGET_SECONDS", "1.0"))
+# 확정 로그·후처리 여유
+OWNER_POST_SLACK_SECONDS = 0.25
+
+
+def _owner_lock_hold_worst_seconds() -> float:
+    """**락을 실제로 획득한 시점부터** 놓을 때까지의 최악 시간.
+
+    획득을 기다린 시간은 포함하지 않는다(아직 락을 쥐고 있지 않다). 포함하는 것:
+      대표 변경 트랜잭션 하드 예산 + 정리 여유
+      + owner release 시도 상한(전용 연결, 하드 예산)
+      + 로그·짧은 후처리 여유
+
+    전부 절대 deadline으로 묶인 값이라 상한 없는 항이 없다.
+    """
+    from utils.db_write import isolated_worst_case_seconds
+    tx = isolated_worst_case_seconds(budget_seconds=OWNER_TX_BUDGET_SECONDS)
+    rel = isolated_worst_case_seconds(budget_seconds=OWNER_LOCK_TX_BUDGET_SECONDS)
+    return tx + rel + OWNER_POST_SLACK_SECONDS
+
+
+# 이전 이름 유지(테스트·로그가 참조한다)
+_owner_lock_worst_seconds = _owner_lock_hold_worst_seconds
+
+# 안전 최소값 = 락 보유 최악 × 1.5. 환경변수로 이보다 작게 주면 **clamp**한다.
+#
+# 왜 거부(예외)가 아니라 clamp인가: 이 값이 너무 작으면 트랜잭션이 도는 중에 락이
+# 만료돼 두 워커가 같은 owner의 대표를 동시에 바꾼다 — 조용히 깨지는 종류의 오류라
+# 기본값으로 흘려보내면 안 된다. 그렇다고 기동을 막으면 오타 하나로 백엔드 전체가
+# 내려간다. 안전한 하한이 계산으로 구해지므로 그 값으로 올리고 경고를 남긴다.
+OWNER_LOCK_TTL_MIN = int(_owner_lock_hold_worst_seconds() * 1.5) + 1
+_ttl_raw = os.getenv("SINGCUP_OWNER_LOCK_TTL")
+if _ttl_raw is None:
+    OWNER_LOCK_TTL = OWNER_LOCK_TTL_MIN
+else:
+    try:
+        _ttl = int(_ttl_raw)
+    except ValueError:
+        _ttl = 0
+    OWNER_LOCK_TTL = max(_ttl, OWNER_LOCK_TTL_MIN)
+    if OWNER_LOCK_TTL != _ttl:
+        print(f"[singcup_clips] SINGCUP_OWNER_LOCK_TTL={_ttl_raw!r} 는 안전 최소값 "
+              f"{OWNER_LOCK_TTL_MIN}초보다 작아 {OWNER_LOCK_TTL}초로 올립니다 "
+              f"(락 보유 최악 {_owner_lock_hold_worst_seconds():.2f}초 × 1.5).",
+              flush=True)
+
+
+async def acquire_owner_lock(owner_channel_id: str) -> str | None:
+    """owner 락을 **전용 연결**로 잡는다. 공유 큐 뒤에서 기다리지 않는다.
+
+    실패(잠금·미획득)하면 None. 호출자는 아무것도 바꾸지 않고 다음 회차에 재시도한다.
+    """
+    name = owner_lock_name(owner_channel_id)
+    token = uuid.uuid4().hex[:12]
+    got = {"ok": False}
+
+    async def _work(conn):
+        now = int(time.time())
+        await conn.execute(
+            "INSERT OR IGNORE INTO singcup_locks (name, locked_until, owner) "
+            "VALUES (?,0,'')", (name,))
+        cur = await conn.execute(
+            "UPDATE singcup_locks SET locked_until=?, owner=? "
+            "WHERE name=? AND locked_until < ?",
+            (now + OWNER_LOCK_TTL, token, name, now))
+        got["ok"] = cur.rowcount == 1
+
+    ok = await db_write_isolated(
+        DB_PATH, _work, what="acquire_owner_lock",
+        busy_timeout_ms=OWNER_LOCK_TX_BUSY_TIMEOUT_MS,
+        attempts=OWNER_LOCK_TX_ATTEMPTS,
+        budget_seconds=OWNER_LOCK_TX_BUDGET_SECONDS, log=_log)
+    return token if (ok and got["ok"]) else None
+
+
+async def release_owner_lock(owner_channel_id: str, token: str) -> bool:
+    """토큰이 일치할 때만 놓는다. 실패해도 TTL이 지나면 회수된다."""
+    name = owner_lock_name(owner_channel_id)
+
+    async def _work(conn):
+        await conn.execute(
+            "UPDATE singcup_locks SET locked_until=0, owner='' "
+            "WHERE name=? AND owner=?", (name, token))
+
+    return await db_write_isolated(
+        DB_PATH, _work, what="release_owner_lock",
+        busy_timeout_ms=OWNER_LOCK_TX_BUSY_TIMEOUT_MS,
+        attempts=OWNER_LOCK_TX_ATTEMPTS,
+        budget_seconds=OWNER_LOCK_TX_BUDGET_SECONDS, log=_log)
+
+
+async def renew_owner_lock(owner_channel_id: str, token: str) -> bool:
+    """토큰이 일치할 때만 임대를 연장한다(전용 연결)."""
+    name = owner_lock_name(owner_channel_id)
+    ok = {"n": False}
+
+    async def _work(conn):
+        cur = await conn.execute(
+            "UPDATE singcup_locks SET locked_until=? WHERE name=? AND owner=?",
+            (int(time.time()) + OWNER_LOCK_TTL, name, token))
+        ok["n"] = cur.rowcount == 1
+
+    wrote = await db_write_isolated(
+        DB_PATH, _work, what="renew_owner_lock",
+        busy_timeout_ms=OWNER_LOCK_TX_BUSY_TIMEOUT_MS,
+        attempts=OWNER_LOCK_TX_ATTEMPTS,
+        budget_seconds=OWNER_LOCK_TX_BUDGET_SECONDS, log=_log)
+    return bool(wrote and ok["n"])
+
+
+class _UnexpectedRowcount(RuntimeError):
+    """UPDATE가 예상과 다른 행 수를 건드렸다 — 커밋하지 않고 롤백한다."""
+
+
+def owner_lock_name(owner_channel_id: str) -> str:
+    return f"singcup_owner:{EVENT_ID}:{owner_channel_id}"
+
+
+# 새 대표 후보. **정렬은 pick_representative와 같아야 한다** — 두 곳이 갈라지면
+# 트랜잭션 안에서 고른 대표와 직후 recompute_ranking이 고른 대표가 달라져 대표가
+# 두 번 바뀐다(화면이 깜빡이고 증감 기준선도 두 번 끊긴다).
+#   하트↓ → 조회수↓ → 생성 시각↑ → clip_uid↑
+# (생성 시각은 **오름차순**이다. 같은 지표면 먼저 올린 클립을 대표로 본다.)
+_NEW_REP_SQL = """
+    SELECT clip_uid, heart_count, view_count
+    FROM singcup_clips
+    WHERE event_id = ?
+      AND owner_channel_id = ?
+      AND active = 1
+      AND deletion_state <> 'confirmed_deleted'
+      AND clip_uid <> ?
+      AND created_at >= ? AND created_at <= ?
+      AND (blind_type IS NULL OR blind_type = ''
+           OR UPPER(blind_type) NOT IN ('BLIND','DELETE','DELETED','PRIVATE'))
+    ORDER BY heart_count DESC, view_count DESC, created_at ASC, clip_uid ASC
+    LIMIT 1
+"""
+
+
+async def _flag_deletion_suspect(clip_uid: str, reason: str, now: int) -> bool:
+    """약한 신호 — '한 번 확인해 보라'는 표시만 남긴다. **카운터는 올리지 않는다.**
+
+    deletion_last_at을 0으로 둬서, 다음 확인 루프가 최소 간격에 걸리지 않고 바로
+    한 번 볼 수 있게 한다. 이미 의심/확정인 행은 건드리지 않는다.
+    """
+    hit = {"n": 0}
+
+    async def _work(db):
+        cur = await db.execute(
+            "UPDATE singcup_clips SET deletion_state=?, deletion_reason=?, "
+            "deletion_first_at=CASE WHEN deletion_first_at=0 THEN ? "
+            "                       ELSE deletion_first_at END, "
+            "row_updated_at=? WHERE clip_uid=? AND deletion_state IN (?,?)",
+            (DEL_SUSPECTED, reason, now, now, clip_uid, DEL_ACTIVE, DEL_RECOVERED))
+        hit["n"] = cur.rowcount
+
+    if not await db_write(get_db, _work, what="flag_deletion_suspect", log=_log):
+        return False
+    if not hit["n"]:
+        return False
+    _log({"event": "clip_deletion_suspected", "level": "warning",
+          "clip_uid": clip_uid, "from": DEL_ACTIVE, "to": DEL_SUSPECTED,
+          "checks": 0, "reason": reason})
+    return True
+
+
+async def _deletion_confirm_step(row: dict, now: int, reason: str) -> bool:
+    """명시적 삭제 신호 1회를 반영한다. 확정됐으면 True.
+
+    같은 순간에 두 번 세지 않도록 **최소 간격**을 둔다 — "서로 다른 시점의 확인
+    2회"가 규칙이지, "한 번의 응답을 두 번 세는 것"이 아니다.
+    """
+    uid = row["clip_uid"]
+    last = int(row["deletion_last_at"] or 0)
+    if last and now - last < DELETION_MIN_INTERVAL_SECONDS:
+        return False
+    checks = int(row["missing_scan_count"] or 0) + 1
+    confirmed = checks >= DELETION_CONFIRM_CHECKS
+    state = DEL_CONFIRMED if confirmed else DEL_SUSPECTED
+
+    async def _work(db):
+        # 상태·카운터·active를 **한 문장으로** 바꾼다. 나눠 쓰면 active=0만 저장되고
+        # 상태가 옛 값으로 남는 중간 상태가 생긴다.
+        await db.execute(
+            "UPDATE singcup_clips SET deletion_state=?, missing_scan_count=?, "
+            "deletion_last_at=?, deletion_reason=?, "
+            "deletion_first_at=CASE WHEN deletion_first_at=0 THEN ? "
+            "                       ELSE deletion_first_at END, "
+            "active=CASE WHEN ?=1 THEN 0 ELSE active END, row_updated_at=? "
+            "WHERE clip_uid=?",
+            (state, checks, now, reason, now, 1 if confirmed else 0, now, uid))
+
+    if not confirmed:
+        # 아직 의심 단계 — 대표를 건드리지 않는다. 짧은 UPDATE 하나로 끝난다.
+        if not await db_write(get_db, _work, what="deletion_suspect_step", log=_log):
+            return False
+        _log({"event": "clip_deletion_suspected", "level": "warning", "clip_uid": uid,
+              "owner_channel_id": row.get("owner_channel_id"),
+              "from": row.get("deletion_state"), "to": state,
+              "checks": checks, "reason": reason})
+        return False
+
+    # 확정 — 비활성화와 대표 재선정을 **한 트랜잭션**으로 묶는다.
+    return await _confirm_deleted_and_reselect(row, now, reason, checks)
+
+
+async def _confirm_deleted_and_reselect(row: dict, now: int, reason: str,
+                                        checks: int) -> bool:
+    """삭제 확정 + 대표 재선정. **네트워크 호출은 이미 끝난 뒤에 불린다.**
+
+    트랜잭션 안에서는 DB만 만진다 — 치지직 API를 잡은 채 트랜잭션을 열면 그 시간만큼
+    쓰기 잠금이 유지되고, 그게 예전에 'database is locked'를 만든 구조다.
+
+    순서: owner 락 → 트랜잭션 시작 → 상태 재조회 → 확정 → 새 대표 선정 → 대표 갱신
+          → commit → (트랜잭션 밖) recompute_ranking / 캐시 무효화
+
+    중간 어느 단계가 실패해도 전부 롤백된다. '기존 대표만 비활성화되고 새 대표가
+    지정되지 않은' 부분 상태를 남기지 않는다.
+    """
+    uid = row["clip_uid"]
+    owner = row.get("owner_channel_id") or ""
+    # owner 락도 **전용 연결**로 잡는다. 공유 연결을 쓰면 락 획득이 공유 큐 뒤에서
+    # 상한 없이 기다리고, 그동안 clip 락이 계속 잡혀 있다.
+    try:
+        token = await acquire_owner_lock(owner)
+    except Exception as e:                          # noqa: BLE001
+        _log({"event": "clip_deletion_skipped_lock_error", "level": "warning",
+              "clip_uid": uid, "owner_channel_id": owner, "detail": str(e)[:120]})
+        return False
+    if token is None:
+        # 같은 스트리머의 다른 대표 변경이 진행 중이다. 아무것도 바꾸지 않고
+        # 다음 회차에 다시 시도한다(부분 상태를 만들지 않는 것이 우선).
+        _log({"event": "clip_deletion_skipped_owner_locked", "clip_uid": uid,
+              "owner_channel_id": owner, "reason": reason})
+        return False
+
+    outcome = {"confirmed": False, "new_rep": None, "note": "", "streamer_rows": 0}
+    try:
+        async def _work(db):
+            # ④-0 락이 아직 내 것인지 확인한다. TTL이 지나 남이 가져갔다면
+            #      이 트랜잭션을 진행하면 안 된다(대표를 둘이 바꾸게 된다).
+            lk = await (await db.execute(
+                "SELECT owner, locked_until FROM singcup_locks WHERE name=?",
+                (owner_lock_name(owner),))).fetchone()
+            if lk is None or lk["owner"] != token or int(lk["locked_until"]) <= now:
+                outcome["note"] = "owner_lock_lost"
+                return
+            # ④ probe 이후 상태가 바뀌었을 수 있다 — 트랜잭션 안에서 다시 읽는다
+            cur = await (await db.execute(
+                "SELECT deletion_state, missing_scan_count, owner_channel_id, active "
+                "FROM singcup_clips WHERE clip_uid=? AND event_id=?",
+                (uid, EVENT_ID))).fetchone()
+            if cur is None:
+                outcome["note"] = "row_gone"
+                return
+            if cur["deletion_state"] == DEL_CONFIRMED:
+                outcome["note"] = "already_confirmed"      # 멱등
+                return
+            if cur["deletion_state"] not in (DEL_SUSPECTED, DEL_UNKNOWN_LEGACY):
+                # 그 사이 살아난 것으로 확인됐다(recovered/active) — 되돌리지 않는다
+                outcome["note"] = f"state_changed:{cur['deletion_state']}"
+                return
+
+            # ⑤ 확정 + 비활성화. **rowcount가 예상과 다르면 커밋하지 않는다.**
+            up = await db.execute(
+                "UPDATE singcup_clips SET deletion_state=?, missing_scan_count=?, "
+                "deletion_last_at=?, deletion_reason=?, "
+                "deletion_first_at=CASE WHEN deletion_first_at=0 THEN ? "
+                "                       ELSE deletion_first_at END, "
+                "active=0, row_updated_at=? WHERE clip_uid=?",
+                (DEL_CONFIRMED, checks, now, reason, now, now, uid))
+            if up.rowcount != 1:
+                raise _UnexpectedRowcount(f"clips update rowcount={up.rowcount}")
+
+            # ⑥ 같은 owner의 새 대표 후보(같은 트랜잭션 안에서)
+            cand = await (await db.execute(
+                _NEW_REP_SQL,
+                (EVENT_ID, cur["owner_channel_id"], uid,
+                 int(START_AT.timestamp()), int(END_AT.timestamp())))).fetchone()
+
+            # ⑦/⑧ 대표 갱신. 후보가 없으면 NULL로 비운다.
+            #     representative_clip_uid는 NULL 허용이고, `/main`은 이 컬럼을
+            #     JOIN하므로 NULL이면 그 스트리머가 목록에서 빠진다 — 삭제된 클립을
+            #     대표로 계속 들고 있는 것보다 안전하다. 새 유효 클립이 발견되면
+            #     recompute_ranking이 자동으로 다시 채운다(행은 그대로 남는다).
+            #
+            # 스트리머 행이 아직 없을 수도 있다(한 번도 랭킹에 오르지 않은 owner).
+            # 그때는 갱신할 대상이 없는 것이 정상이므로 rowcount 0을 허용한다.
+            # channel_id가 PRIMARY KEY라 2 이상은 나올 수 없지만, 나오면 멈춘다.
+            exists = await (await db.execute(
+                "SELECT COUNT(*) n FROM singcup_streamers "
+                "WHERE channel_id=? AND event_id=?",
+                (cur["owner_channel_id"], EVENT_ID))).fetchone()
+            n_streamer = int(exists["n"])
+            if n_streamer > 1:
+                raise _UnexpectedRowcount(f"streamer rows={n_streamer}")
+            if n_streamer == 1:
+                rep_up = await db.execute(
+                    "UPDATE singcup_streamers SET representative_clip_uid=?, "
+                    "row_updated_at=? WHERE channel_id=? AND event_id=?",
+                    (cand["clip_uid"] if cand else None, now,
+                     cur["owner_channel_id"], EVENT_ID))
+                if rep_up.rowcount != 1:
+                    raise _UnexpectedRowcount(
+                        f"streamers update rowcount={rep_up.rowcount}")
+            outcome["confirmed"] = True
+            outcome["new_rep"] = cand["clip_uid"] if cand else None
+            outcome["streamer_rows"] = n_streamer
+
+        try:
+            # 전용 연결 — 공유 큐 뒤에서 기다리지 않는다. 예산 안에 못 끝내면
+            # 아무것도 바꾸지 않고 다음 삭제 검사 회차에서 다시 시도한다.
+            if not await db_write_isolated(
+                    DB_PATH, _work, what="confirm_and_reselect",
+                    busy_timeout_ms=OWNER_TX_BUSY_TIMEOUT_MS,
+                    attempts=OWNER_TX_ATTEMPTS,
+                    budget_seconds=OWNER_TX_BUDGET_SECONDS, log=_log):
+                return False                               # ⑨ 잠금 소진 → 전부 롤백됨
+        except _UnexpectedRowcount as e:
+            # db_write가 이미 rollback했다. 예상 밖의 rowcount는 데이터가 우리가 아는
+            # 모양이 아니라는 뜻이라 커밋하지 않는다 — 다음 회차에 다시 본다.
+            _log({"event": "clip_deletion_rowcount_mismatch", "level": "warning",
+                  "clip_uid": uid, "owner_channel_id": owner, "detail": str(e)[:120]})
+            return False
+    finally:
+        # 해제도 잠길 수 있다. 실패해도 TTL(OWNER_LOCK_TTL)이 지나면 회수된다.
+        try:
+            if not await release_owner_lock(owner, token):
+                _log({"event": "owner_lock_release_failed", "level": "warning",
+                      "clip_uid": uid, "owner_channel_id": owner,
+                      "ttlSeconds": OWNER_LOCK_TTL})
+        except Exception as e:                      # noqa: BLE001
+            _log({"event": "owner_lock_release_failed", "level": "warning",
+                  "clip_uid": uid, "owner_channel_id": owner,
+                  "ttlSeconds": OWNER_LOCK_TTL, "detail": str(e)[:120]})
+
+    if not outcome["confirmed"]:
+        if outcome["note"]:
+            _log({"event": "clip_deletion_noop", "clip_uid": uid,
+                  "owner_channel_id": owner, "note": outcome["note"]})
+        return False
+
+    _log({"event": "clip_deletion_confirmed", "level": "warning", "clip_uid": uid,
+          "owner_channel_id": owner, "from": row.get("deletion_state"),
+          "to": DEL_CONFIRMED, "checks": checks, "reason": reason})
+    _log({"event": "representative_clip_changed", "owner_channel_id": owner,
+          "from_clip_uid": uid, "to_clip_uid": outcome["new_rep"],
+          "cause": "deleted"})
+    # ⑪ 캐시는 트랜잭션 밖에서 즉시 버린다 — TTL(20초) 동안 옛 대표를 보여주지 않는다.
+    invalidate_main_cache()
+    return True
+
+
+async def _deletion_clear(row: dict, now: int) -> bool:
+    """살아 있는 것이 확인됐다 — 카운터를 지우고 되살린다.
+
+    반환은 '확정 상태에서 복구됐는가'다(대표 재계산이 필요한 경우).
+    """
+    was_deleted = row.get("deletion_state") == DEL_CONFIRMED
+    if row.get("deletion_state") == DEL_ACTIVE and not int(row.get("missing_scan_count") or 0):
+        return False
+    state = DEL_RECOVERED if was_deleted else DEL_ACTIVE
+
+    async def _work(db):
+        await db.execute(
+            "UPDATE singcup_clips SET deletion_state=?, missing_scan_count=0, "
+            "deletion_first_at=0, deletion_last_at=0, deletion_reason='', "
+            "active=1, row_updated_at=? WHERE clip_uid=?",
+            (state, now, row["clip_uid"]))
+
+    if not await db_write(get_db, _work, what="deletion_clear", log=_log):
+        return False
+    _log({"event": "clip_deletion_recovered", "level": "warning",
+          "clip_uid": row["clip_uid"], "owner_channel_id": row.get("owner_channel_id"),
+          "from": row.get("deletion_state"), "to": state,
+          "checks": int(row.get("missing_scan_count") or 0), "reason": "alive"})
+    return was_deleted
+
+
+# 확인 대기열의 우선순위. 한 스윕 회차에서 카드가 비는 클립이 수백 건 나올 수 있어
+# (실측: 2,766건 중 349건 실패), 단순히 '오래된 순'으로 두면 **대표 클립이 일반 클립
+# 수백 건 뒤에 줄을 선다**. 대표 클립이 굳으면 그 스트리머의 순위가 통째로 틀어지므로
+# 가장 먼저 본다.
+_DUE_PRIORITY_SQL = """
+    CASE
+        -- 0) 현재 대표인데 카드가 비었다 — 순위에 바로 영향을 준다
+        WHEN c.deletion_state = 'suspected_deleted'
+             AND s.representative_clip_uid IS NOT NULL
+             AND c.deletion_reason = 'card_empty'                        THEN 0
+        -- 1) 현재 대표이고 의심 상태(사유 무관)
+        WHEN c.deletion_state = 'suspected_deleted'
+             AND s.representative_clip_uid IS NOT NULL                   THEN 1
+        -- 2) 이미 한 번 이상 404를 받은 의심 클립(확정까지 한 걸음)
+        WHEN c.deletion_state = 'suspected_deleted'
+             AND c.missing_scan_count > 0                                THEN 2
+        -- 3) 카드가 빈 일반 클립
+        WHEN c.deletion_state = 'suspected_deleted'
+             AND c.deletion_reason = 'card_empty'                        THEN 3
+        -- 4) 나머지 의심(목록 미발견 등)
+        WHEN c.deletion_state = 'suspected_deleted'                      THEN 4
+        -- 5) 기능 도입 전부터 active=0이던 행 — 분류만 해 둔다
+        WHEN c.deletion_state = 'unknown_legacy'                         THEN 5
+        -- 6) 확정된 클립의 정기 생존 확인
+        ELSE                                                                  6
+    END
+"""
+
+
+async def _touch_legacy_check(clip_uid: str, now: int) -> None:
+    """legacy 행의 확인 시각만 갱신한다(상태·active는 그대로)."""
+    async def _work(db):
+        await db.execute(
+            "UPDATE singcup_clips SET deletion_last_at=?, deletion_reason=?, "
+            "row_updated_at=? WHERE clip_uid=? AND deletion_state=?",
+            (now, "legacy_alive", now, clip_uid, DEL_UNKNOWN_LEGACY))
+    await db_write(get_db, _work, what="touch_legacy_check", log=_log)
+
+
+async def _deletion_due(now: int, limit: int) -> list[dict]:
+    """지금 확인할 클립. 대표 > 의심 > legacy > 확정 순, 각자 다른 재확인 간격."""
     db = await get_db()
     rows = await (await db.execute(
-        "SELECT clip_uid FROM singcup_clips WHERE event_id=? AND active=1", (EVENT_ID,)
-    )).fetchall()
-    missing = [r["clip_uid"] for r in rows if r["clip_uid"] not in seen]
-    if not missing:
-        return 0
-    qs = ",".join("?" for _ in missing)
-    await db.execute(
-        "UPDATE singcup_clips SET missing_scan_count=missing_scan_count+1, row_updated_at=? "
-        f"WHERE clip_uid IN ({qs})", (now, *missing))
-    await db.execute(
-        f"UPDATE singcup_clips SET active=0 WHERE clip_uid IN ({qs}) "
-        "AND missing_scan_count >= ?", (*missing, MISSING_SCANS_TO_DEACTIVATE))
-    return len(missing)
+        "SELECT c.clip_uid, c.owner_channel_id, c.deletion_state, c.deletion_last_at, "
+        "       c.missing_scan_count, c.deletion_reason, "
+        "       (s.representative_clip_uid IS NOT NULL) AS is_rep, "
+        f"      {_DUE_PRIORITY_SQL} AS prio "
+        "FROM singcup_clips c "
+        "LEFT JOIN singcup_streamers s ON s.representative_clip_uid = c.clip_uid "
+        "WHERE c.event_id=? AND c.deletion_state IN (?,?,?) "
+        "ORDER BY prio ASC, c.deletion_last_at ASC, c.clip_uid ASC "
+        "LIMIT ?",
+        (EVENT_ID, DEL_SUSPECTED, DEL_CONFIRMED, DEL_UNKNOWN_LEGACY,
+         limit * 4))).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        last = int(d["deletion_last_at"] or 0)
+        # 상태마다 다시 보는 주기가 다르다.
+        #   의심   10분 — 확정까지 오래 끌면 그동안 순위가 틀어져 있다
+        #   확정    6시간 — 복원 확인만 하면 되므로 아주 뜸하게
+        #   legacy  6시간 — 급할 것이 없다(분류 목적)
+        gap = (DELETION_MIN_INTERVAL_SECONDS if d["deletion_state"] == DEL_SUSPECTED
+               else DELETION_RECHECK_HOURS * 3600)
+        if last and now - last < gap:
+            continue
+        out.append(d)
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def run_deletion_checks(limit: int | None = None) -> dict:
+    """의심/확정 클립만 상세 API로 확인하고 상태를 옮긴다.
+
+    새 워커를 만들지 않는다 — 기존 4분 루프에서 소량씩 부른다. 대상이 없으면
+    요청이 한 건도 나가지 않는다.
+    """
+    now = int(time.time())
+    due = await _deletion_due(now, limit or DELETION_BATCH)
+    if not due:
+        return {"status": ST_OK, "checked": 0, "confirmed": 0,
+                "recovered": 0, "unknown": 0}
+
+    client = _get_client()
+    confirmed = recovered = unknown = skipped = 0
+    for row in due:
+        # 같은 clip_uid를 스윕·수동 갱신이 처리 중이면 건드리지 않는다. 상태 변경과
+        # 지표 갱신이 겹치면 active=0만 저장되고 대표가 옛 UID로 남는 중간 상태가
+        # 생길 수 있다. 락은 이 클립에만, 짧게 걸린다.
+        token = await acquire_clip_lock(row["clip_uid"])
+        if token is None:
+            skipped += 1
+            continue
+        try:
+            verdict, code, why = await probe_clip_alive(client, row["clip_uid"])
+            if verdict == "deleted":
+                if await _deletion_confirm_step(row, now, why):
+                    confirmed += 1
+            elif verdict == "alive":
+                if row["deletion_state"] == DEL_UNKNOWN_LEGACY:
+                    # 살아 있는 것은 확인됐지만 **되살리지 않는다.** 이 행이 왜
+                    # active=0이 됐는지 우리는 모르고(사람이 내렸을 수도 있다),
+                    # 자동 복구는 그 판단을 조용히 뒤집는 셈이다. 확인 시각만 밀어
+                    # 두고 사람이 /clips/deleted 감사 목록에서 결정하게 한다.
+                    await _touch_legacy_check(row["clip_uid"], now)
+                elif await _deletion_clear(row, now):
+                    recovered += 1
+            else:
+                unknown += 1
+                _log({"event": "clip_deletion_unknown", "clip_uid": row["clip_uid"],
+                      "http_status": code, "reason": why})
+        finally:
+            await release_clip_lock(row["clip_uid"], token)
+        await asyncio.sleep(PAGE_DELAY)
+
+    if confirmed or recovered:
+        # 대표·점수·순위·캐시·Split 스냅샷까지 **정상 경로로** 다시 만든다.
+        # 대표를 여기서 직접 고르지 않는다 — 규칙이 두 곳으로 갈라지면 안 된다.
+        await recompute_ranking(int(time.time()), client=client)
+    return {"status": ST_OK, "checked": len(due), "confirmed": confirmed,
+            "recovered": recovered, "unknown": unknown, "skipped": skipped}
+
+
+async def deleted_clip_audit(limit: int = 200) -> dict:
+    """삭제로 확정된 행 목록. **롤백 대상을 특정하기 위한 감사 쿼리다.**
+
+    물리 삭제가 없으므로 언제든 되돌릴 수 있다. 다만 되돌릴 때 '전부 active=1'로
+    쓸면 진짜 삭제된 클립까지 살아나 순위가 다시 틀어진다. 그래서 확정 시각·근거·
+    확인 횟수를 함께 보여 주고, 되돌릴 대상을 골라 넘기게 한다.
+    """
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT clip_uid, owner_channel_id, deletion_state, deletion_reason, "
+        "       missing_scan_count, deletion_first_at, deletion_last_at, "
+        "       heart_count, view_count, active "
+        "FROM singcup_clips WHERE event_id=? AND deletion_state IN (?,?) "
+        "ORDER BY deletion_last_at DESC LIMIT ?",
+        (EVENT_ID, DEL_CONFIRMED, DEL_UNKNOWN_LEGACY, limit))).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["deletion_first_at"] = (_iso(d["deletion_first_at"])
+                                  if d["deletion_first_at"] else None)
+        # 확정 뒤에는 스윕 대상에서 빠져 이 값이 더 움직이지 않는다 = 확정 시각
+        d["deleted_at"] = (_iso(d["deletion_last_at"])
+                           if d["deletion_last_at"] else None)
+        d.pop("deletion_last_at", None)
+        out.append(d)
+    return {"eventId": EVENT_ID, "count": len(out), "clips": out,
+            "note": "행은 물리 삭제되지 않았습니다. restore_deleted_clips로 되돌립니다."}
+
+
+async def restore_deleted_clips(clip_uids: list[str], *, reason: str = "manual") -> dict:
+    """지정한 clip_uid만 되살린다(롤백 경로).
+
+    **전체를 무조건 되돌리지 않는다.** 대상을 명시적으로 받는 이유는, 진짜 삭제된
+    클립까지 살아나면 순위가 다시 틀어지기 때문이다. 감사 목록(deleted_clip_audit)에서
+    되돌릴 것만 골라 넘긴다. 되돌린 뒤에는 정상 경로로 대표·점수·순위·캐시·스냅샷을
+    다시 만든다.
+    """
+    if not clip_uids:
+        return {"restored": 0, "clips": []}
+    db = await get_db()
+    now = int(time.time())
+    qs = ",".join("?" for _ in clip_uids)
+    rows = await (await db.execute(
+        f"SELECT clip_uid, owner_channel_id, deletion_state FROM singcup_clips "
+        f"WHERE event_id=? AND clip_uid IN ({qs})",
+        (EVENT_ID, *clip_uids))).fetchall()
+    targets = [dict(r) for r in rows
+               if r["deletion_state"] in (DEL_CONFIRMED, DEL_UNKNOWN_LEGACY)]
+    if not targets:
+        return {"restored": 0, "clips": []}
+
+    ids = [t["clip_uid"] for t in targets]
+    marks = ",".join("?" for _ in ids)
+
+    async def _work(conn):
+        await conn.execute(
+            f"UPDATE singcup_clips SET deletion_state=?, missing_scan_count=0, "
+            f"deletion_first_at=0, deletion_last_at=0, deletion_reason=?, "
+            f"active=1, row_updated_at=? WHERE clip_uid IN ({marks})",
+            (DEL_RECOVERED, f"restored:{reason}"[:60], now, *ids))
+
+    if not await db_write(get_db, _work, what="restore_deleted_clips", log=_log):
+        return {"restored": 0, "clips": [], "error": "db_locked"}
+    for t in targets:
+        _log({"event": "clip_deletion_recovered", "level": "warning",
+              "clip_uid": t["clip_uid"], "owner_channel_id": t["owner_channel_id"],
+              "from": t["deletion_state"], "to": DEL_RECOVERED,
+              "checks": 0, "reason": f"restored:{reason}"})
+    await recompute_ranking(int(time.time()))
+    return {"restored": len(targets), "clips": ids}
+
+
+async def recheck_clip_deletion(clip_uid: str) -> dict:
+    """관리자용 단건 재확인. **DB를 직접 고치지 않고** 정상 판정 경로를 탄다."""
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT clip_uid, owner_channel_id, deletion_state, deletion_last_at, "
+        "       missing_scan_count FROM singcup_clips WHERE clip_uid=?",
+        (clip_uid,))).fetchone()
+    if row is None:
+        return {"clip_uid": clip_uid, "found": False}
+    r = dict(row)
+    now = int(time.time())
+    # 락 순서를 자동 경로와 **똑같이** 맞춘다: clip → owner.
+    # (owner 락은 _confirm_deleted_and_reselect 안에서만 잡힌다.)
+    clip_token = await acquire_clip_lock(clip_uid, wait=CLIP_LOCK_WAIT_SECONDS)
+    if clip_token is None:
+        return {"clip_uid": clip_uid, "found": True, "verdict": "skipped",
+                "reason": "clip_locked", "changed": False}
+    try:
+        return await _recheck_locked(r, clip_uid, now)
+    finally:
+        await release_clip_lock(clip_uid, clip_token)
+
+
+async def _recheck_locked(r: dict, clip_uid: str, now: int) -> dict:
+    db = await get_db()
+    verdict, code, why = await probe_clip_alive(_get_client(), clip_uid)
+    changed = False
+    if verdict == "deleted":
+        # 수동 확인은 최소 간격을 우회한다(운영자가 직접 누른 것이다).
+        # 그래도 **확인 횟수 규칙은 그대로다** — 1회로 확정되지 않는다.
+        r["deletion_last_at"] = 0
+        changed = await _deletion_confirm_step(r, now, why)
+    elif verdict == "alive":
+        changed = await _deletion_clear(r, now)
+    if changed:
+        await recompute_ranking(int(time.time()))
+    after = await (await db.execute(
+        "SELECT deletion_state, missing_scan_count, active FROM singcup_clips "
+        "WHERE clip_uid=?", (clip_uid,))).fetchone()
+    return {"clip_uid": clip_uid, "found": True, "verdict": verdict,
+            "http_status": code, "reason": why, "changed": changed,
+            "state": after["deletion_state"], "checks": after["missing_scan_count"],
+            "active": after["active"]}
 
 
 def _build_reps(tagged: list[dict]) -> list[dict]:
@@ -713,9 +1413,18 @@ async def recompute_ranking(now: int, *, client=None,
     스냅샷은 정각 전체 회차(singcup_sweep)만 save_snapshot=True로 남긴다.
     """
     db = await get_db()
+    # 대표 후보 조건: 같은 이벤트 · active · 삭제 확정이 아님.
+    # (태그·기간·블라인드는 등록 시점에 이미 걸러져 이 표에 들어오지 않는다.)
     rows = [dict(r) for r in await (await db.execute(
-        "SELECT * FROM singcup_clips WHERE event_id=? AND active=1", (EVENT_ID,)
+        "SELECT * FROM singcup_clips WHERE event_id=? AND active=1 "
+        "AND deletion_state<>?", (EVENT_ID, DEL_CONFIRMED)
     )).fetchall()]
+    # 대표가 실제로 바뀌는지 보려면 '바꾸기 전' 값을 알아야 한다. 스트리머 수백 명에
+    # 한 번씩 SELECT를 돌리지 않도록 여기서 한 번에 읽어 둔다.
+    before_rep = {r["channel_id"]: r["representative_clip_uid"]
+                  for r in await (await db.execute(
+                      "SELECT channel_id, representative_clip_uid "
+                      "FROM singcup_streamers WHERE event_id=?", (EVENT_ID,))).fetchall()}
     ranked = compute_scores(_build_reps(rows))
 
     client = client or _get_client()
@@ -748,6 +1457,14 @@ async def recompute_ranking(now: int, *, client=None,
             "tagged_clip_count": r["tagged_clip_count"],
             "last_channel_updated_at": now if info else 0,
         }, now)
+        prev_uid = before_rep.get(r["owner_channel_id"])
+        if prev_uid and prev_uid != r["clip_uid"]:
+            # 대표가 바뀌면 1시간·24시간 증감이 새 클립 기준으로 다시 시작한다
+            # (이전 클립의 하트를 빼면 서로 다른 영상을 비교하는 셈이다).
+            _log({"event": "representative_clip_changed",
+                  "owner_channel_id": r["owner_channel_id"],
+                  "from_clip_uid": prev_uid, "to_clip_uid": r["clip_uid"],
+                  "heart_count": r["heart_count"], "view_count": r["view_count"]})
     if save_snapshot:
         await _save_snapshots(ranked, now)
     await db.commit()
@@ -1606,8 +2323,10 @@ async def clip_diagnosis(clip_uid: str) -> dict:
     due = r["last_metrics_at"] < now - int(ttl_min * 60)
 
     reason = None
-    if not r["active"]:
-        reason = "active=0 (목록에서 연속 누락돼 비활성)"
+    if r["deletion_state"] == DEL_CONFIRMED:
+        reason = "deletion_state=confirmed_deleted (상세 API가 삭제를 반복 확인)"
+    elif not r["active"]:
+        reason = "active=0"
     elif r["event_id"] != EVENT_ID:
         reason = f"event_id 불일치({r['event_id']} != {EVENT_ID})"
     elif not due:
@@ -1640,6 +2359,16 @@ async def clip_diagnosis(clip_uid: str) -> dict:
             "created_at": _iso(r["created_at"]),
             "age_hours": round((now - (r["last_metrics_at"] or 0)) / 3600, 2)
                          if r["last_metrics_at"] else None,
+        },
+        "deletion": {
+            "state": r["deletion_state"],
+            # 확인 횟수는 missing_scan_count 컬럼을 재사용한다(옛 이름 유지)
+            "checks": r["missing_scan_count"],
+            "first_at": _iso(r["deletion_first_at"]) if r["deletion_first_at"] else None,
+            "last_at": _iso(r["deletion_last_at"]) if r["deletion_last_at"] else None,
+            "reason": r["deletion_reason"] or None,
+            "confirm_checks_required": DELETION_CONFIRM_CHECKS,
+            "min_interval_seconds": DELETION_MIN_INTERVAL_SECONDS,
         },
         "baseline_24h": snap.get("baseline_24h") if snap else None,
         "heart_delta_24h": snap.get("heart_delta_24h") if snap else None,
@@ -2231,6 +2960,29 @@ async def _unknown_uids(uids: list[str]) -> list[str]:
     return [u for u in uids if u not in known]
 
 
+async def _flag_absent_from_list(seen: set[str], now: int) -> int:
+    """완주한 목록 스캔에서 끝내 안 보인 활성 클립을 **의심**으로만 표시한다.
+
+    확정하지 않는 이유: 목록은 정렬·페이지 밀림·지연 반영이 있어 '한 번 안 보였다'가
+    곧 삭제는 아니다. 여기서는 "상세 API로 한 번 물어보라"는 표시만 남기고, 실제
+    판정은 probe_clip_alive의 명시적 404 2회가 한다.
+    """
+    if not seen:
+        return 0
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT clip_uid FROM singcup_clips "
+        "WHERE event_id=? AND active=1 AND deletion_state=?",
+        (EVENT_ID, DEL_ACTIVE))).fetchall()
+    n = 0
+    for r in rows:
+        if r["clip_uid"] in seen:
+            continue
+        if await _flag_deletion_suspect(r["clip_uid"], "list_absent", now):
+            n += 1
+    return n
+
+
 async def reconcile_from_list(max_pages: int | None = None) -> dict:
     """목록을 끝까지 훑어 우리가 모르는 클립을 찾아 등록한다.
 
@@ -2246,26 +2998,42 @@ async def reconcile_from_list(max_pages: int | None = None) -> dict:
     missing: list[dict] = []
     cursor = None
     status, note = ST_OK, ""
+    # 이번 스캔이 **끝까지 갔는가**. 페이지 상한이나 신규 상한에 걸려 중간에 멈췄다면
+    # '목록에 없다'는 사실을 근거로 쓸 수 없다 — 아직 안 본 페이지에 있을 수 있다.
+    complete = False
+    seen: set[str] = set()
     try:
         for _ in range(max_pages or RECONCILE_MAX_PAGES):
             items, nxt = await fetch_clip_page(client, cursor)
             pages += 1
             if not items:
+                complete = True
                 break
             scanned += len(items)
             cands = [it for it in items
                      if is_candidate_clip(it, start=START_AT, end=END_AT)]
             uids = [str(it.get("clipUID")) for it in cands]
+            seen.update(uids)
             unknown = set(await _unknown_uids(uids))
             missing += [it for it in cands if str(it.get("clipUID")) in unknown]
 
             oldest = parse_clip_date(items[-1].get("createdDate"))
             if oldest and oldest < START_AT:
-                break                       # 이벤트 시작 이전 구간에 닿았다
-            if len(missing) >= RECONCILE_MAX_NEW or nxt is None:
+                complete = True             # 이벤트 시작 이전 구간에 닿았다
                 break
+            if nxt is None:
+                complete = True             # 목록 끝
+                break
+            if len(missing) >= RECONCILE_MAX_NEW:
+                break                       # 상한에 걸려 중간에 멈춤 — 완주 아님
             cursor = nxt
             await asyncio.sleep(PAGE_DELAY)
+
+        absent = 0
+        if complete:
+            # 완주했을 때만 '목록에 없음'을 쓴다. 그것도 **의심 표시까지만** —
+            # 확정은 언제나 상세 API의 명시적 404 2회가 있어야 한다.
+            absent = await _flag_absent_from_list(seen, int(time.time()))
 
         tagged = inserted = failed = 0
         if missing:
@@ -2275,10 +3043,11 @@ async def reconcile_from_list(max_pages: int | None = None) -> dict:
                 await recompute_ranking(now, client=client)
         _log({"event": "reconcile", "pages": pages, "scanned": scanned,
               "missing": len(missing), "tagged": tagged, "inserted": inserted,
-              "failed": failed})
+              "failed": failed, "complete": complete, "absent_flagged": absent})
         return {"status": status, "pages": pages, "scanned": scanned,
                 "missing": len(missing), "tagged": tagged, "inserted": inserted,
-                "failed": failed, "note": note}
+                "failed": failed, "complete": complete, "absentFlagged": absent,
+                "note": note}
     except (FetchError, SchemaError) as e:
         _log({"event": "reconcile_failed", "level": "warning",
               "pages": pages, "detail": str(e)[:200]})
@@ -2591,6 +3360,11 @@ PERSIST_ATTEMPTS = int(os.getenv("SINGCUP_PERSIST_ATTEMPTS", "3"))
 PERSIST_BUDGET_SECONDS = float(os.getenv("SINGCUP_PERSIST_BUDGET_SECONDS", "2.0"))
 PERSIST_BACKOFF_BASE_SECONDS = float(
     os.getenv("SINGCUP_PERSIST_BACKOFF_BASE_SECONDS", "0.05"))
+# 내용이 달라도 이 간격 안에는 다시 쓰지 않는 안전판. **기본은 꺼 둔다(0).**
+# 중복 쓰기는 아래 read 비교가 이미 없앤다. 여기에 값을 넣으면 '진짜로 바뀐' 급상승이
+# 다음 회차(최대 4분)까지 저장되지 않으므로, 관측으로 churn이 확인될 때만 켠다.
+PERSIST_MIN_INTERVAL_SECONDS = int(
+    os.getenv("SINGCUP_PERSIST_MIN_INTERVAL_SECONDS", "0"))
 
 
 def persist_worst_case_seconds() -> float:
@@ -2604,10 +3378,6 @@ def persist_worst_case_seconds() -> float:
     backoff = sum(PERSIST_BACKOFF_BASE_SECONDS * (2 ** i) * 2   # ×2 = jitter 상한
                   for i in range(attempts - 1))
     return lock_wait + backoff + attempts * 0.005
-# 내용이 달라도 이 간격 안에는 다시 쓰지 않는 안전판. **기본은 꺼 둔다(0).**
-# 중복 쓰기는 위의 read 비교가 이미 없앤다. 여기에 값을 넣으면 '진짜로 바뀐' 급상승이
-# 다음 회차(최대 4분)까지 저장되지 않으므로, 관측으로 churn이 확인될 때만 켠다.
-PERSIST_MIN_INTERVAL_SECONDS = int(os.getenv("SINGCUP_PERSIST_MIN_INTERVAL_SECONDS", "0"))
 
 _movers_persist_stats = {"written": 0, "unchanged": 0, "throttled": 0, "stale": 0,
                          "failed": 0, "lastAt": None, "lastMs": None}
@@ -2834,13 +3604,16 @@ async def _delta_maps(now: int) -> tuple[dict, dict, dict | None]:
     # 클립은 24h 증감 역시 며칠치 누적이라 그대로 보여주면 안 된다.
     day: dict = {}
     for r in await (await db.execute(
-        "SELECT owner_channel_id, heart_count, collected_at FROM singcup_snapshots s "
-        "WHERE event_id=? "
+        "SELECT owner_channel_id, heart_count, collected_at, clip_uid "
+        "FROM singcup_snapshots s WHERE event_id=? "
         "AND collected_at = (SELECT MAX(collected_at) FROM singcup_snapshots "
         "WHERE event_id=s.event_id AND owner_channel_id=s.owner_channel_id "
         "AND collected_at <= ?) GROUP BY owner_channel_id",
         (EVENT_ID, now - 86400))).fetchall():
-        day[r["owner_channel_id"]] = (int(r["heart_count"]), int(r["collected_at"]))
+        # clip_uid까지 들고 온다. 24시간 사이에 대표가 바뀌었다면(삭제 교체 등)
+        # 옛 클립의 하트를 새 클립에서 빼는 셈이라 증가율이 통째로 가짜가 된다.
+        day[r["owner_channel_id"]] = (int(r["heart_count"]), int(r["collected_at"]),
+                                      str(r["clip_uid"]))
     # 24시간 쪽은 owner별 MAX(collected_at)라 부분 세트의 영향을 받지 않는다
     # (각자 자기 최신 스냅샷을 찾으므로 한 회차에 묶이지 않는다). 그래서 이번
     # 수정 대상이 아니고, 대신 그 성질을 테스트로 고정해 둔다.
@@ -3020,6 +3793,9 @@ async def _load_main_uncached(limit: int = 200) -> dict:
         # 창이 넓어 오염이 더 오래 남는다.
         recovered = bool(ref_ts and rec_at >= ref_ts)
         recovered24 = bool(d24_row and rec_at >= d24_row[1])
+        # 24시간 전 스냅샷이 지금과 **다른 클립**을 가리키면(대표 교체) 비교하지 않는다.
+        # 삭제된 대표를 새 클립으로 갈아 끼운 직후가 바로 이 경우다.
+        rep_changed24 = bool(d24_row and d24_row[2] != r["clip_uid"])
         # 기준값이 없는 이유를 나눈다. '기준 버킷에 없다'가 곧 '신규'는 아니다 —
         # 기준 버킷이 없거나 불완전하면 원래 있던 사람도 빠져 있을 수 있다.
         first_at = int(r["first_collected_at"] or 0)
@@ -3058,10 +3834,14 @@ async def _load_main_uncached(limit: int = 200) -> dict:
             "rankDelta": (p[1] - r["rank"]) if p else None,
             "scoreDelta": round(r["score"] - p[3], 2) if p and not recovered else None,
             "heartDelta24h": (r["heart_count"] - d24)
-                             if d24 is not None and not recovered24 else None,
+                             if d24 is not None and not recovered24
+                             and not rep_changed24 else None,
             "heartChangeRate24h": heart_change_rate(r["heart_count"], d24)
-                                  if d24 is not None and not recovered24 else None,
-            "delta24hState": ("recovering" if recovered24
+                                  if d24 is not None and not recovered24
+                                  and not rep_changed24 else None,
+            # 대표가 바뀌었으면 24시간 쪽도 비교하지 않는다 — 1시간 쪽과 같은 이유다.
+            "delta24hState": ("representative_changed" if rep_changed24
+                              else "recovering" if recovered24
                               else "new" if d24 is None else "ok"),
             # NEW는 '기준 버킷이 닫힌 뒤 처음 발견된 참가자'에만 붙인다. 기준선이
             # 없거나 불완전해서 빠진 사람은 신규가 아니라 '아직 못 세운' 것이다.
@@ -3327,6 +4107,9 @@ async def start_clip_collector():
                 await recheck_untagged_clips()
                 # 어떤 이유로든 양쪽 표에 다 없는 '고아'를 되찾는다(주기적 전체 대조)
                 await maybe_reconcile()
+                # 삭제 의심/확정 클립만 소량 재확인한다. 대상이 없으면 요청 0건이라
+                # 별도 워커를 만들지 않고 이 루프에 얹는다.
+                await run_deletion_checks()
                 # 1시간 증감의 기준선. 정각 회차 완료에 묶으면 회차가 한 시간을
                 # 넘길 때 이력이 끊겨 증감이 통째로 굳는다 — 시각에만 묶는다.
                 await ensure_hourly_snapshot()

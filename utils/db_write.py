@@ -25,6 +25,8 @@ import os
 import random
 from typing import Awaitable, Callable
 
+import aiosqlite
+
 DB_RETRY_ATTEMPTS = int(os.getenv("DB_WRITE_RETRY_ATTEMPTS", "4"))
 DB_RETRY_BASE_SECONDS = float(os.getenv("DB_WRITE_RETRY_BASE_SECONDS", "0.05"))
 
@@ -91,3 +93,121 @@ async def db_write(
         log({"event": "db_locked_giveup", "level": "warning", "what": what,
              "attempts": attempts, "detail": str(last)[:160]})
     return False
+
+
+# ── 전용 연결 쓰기 ──────────────────────────────────────────────────────────
+# 공유 연결을 쓰면 최악 시간에 상한이 없다. aiosqlite는 연결마다 워커 스레드 하나로
+# 모든 작업을 직렬화하므로, 앞선 작업이 끝날 때까지의 **큐 대기**는 busy_timeout이
+# 막지 못한다(실측: 앞선 느린 작업 1/2/3개 → 큐 대기 550 / 1,075 / 1,783ms로 선형 증가).
+# 그래서 "attempts × busy_timeout + backoff"는 진짜 상한이 아니다.
+#
+# 시간 상한이 필요한 짧은 트랜잭션은 자기 연결을 열어 쓴다. 자기 큐에는 앞선 작업이
+# 없으므로 대기 = 0이고, 남는 변수는 busy_timeout과 재시도뿐이라 상한이 계산된다.
+DEFAULT_ISOLATED_BUSY_TIMEOUT_MS = 2000
+DEFAULT_ISOLATED_ATTEMPTS = 3
+# rollback + close에 남겨 두는 시간. 예산을 전부 시도에 써 버리면 정리할 시간이
+# 없어 실제 소요가 예산을 넘는다.
+ISOLATED_CLEANUP_RESERVE_SECONDS = 0.25
+# 이보다 짧게 남았으면 새 시도를 시작하지 않는다(연결만 열다 끝난다).
+ISOLATED_MIN_ATTEMPT_MS = 50
+
+
+async def db_write_isolated(
+    db_path: str,
+    fn: Callable[[object], Awaitable],
+    *,
+    what: str,
+    busy_timeout_ms: int = DEFAULT_ISOLATED_BUSY_TIMEOUT_MS,
+    attempts: int = DEFAULT_ISOLATED_ATTEMPTS,
+    budget_seconds: float = 3.0,
+    backoff_base: float = DB_RETRY_BASE_SECONDS,
+    cleanup_reserve: float = ISOLATED_CLEANUP_RESERVE_SECONDS,
+    log: Callable[[dict], None] | None = None,
+) -> bool:
+    """`fn(conn)`을 **전용 연결의 한 트랜잭션**으로 실행하고 커밋한다.
+
+    `budget_seconds`는 **절대 deadline**이다. 시도 사이에서만 예산을 보면 남은 시간이
+    0.1초여도 새로 2초짜리 시도가 시작돼, "예산 3초 / 실제 최악 7.35초" 같은 모순이
+    생긴다. 그래서 매 시도 전에 남은 시간을 계산하고
+    **그 시도의 busy_timeout을 남은 시간에 맞춰 줄인다.**
+
+      remaining = deadline - now - cleanup_reserve
+      attempt_busy_timeout = min(설정값, remaining)
+      remaining < ISOLATED_MIN_ATTEMPT_MS 이면 시도하지 않는다
+
+    이렇게 하면 전체 소요가 `budget_seconds + cleanup_reserve`를 넘지 않고, 그 값이
+    곧 코드 상수로 계산되는 하드 상한이 된다.
+
+    - 성공하면 True. 잠금으로 예산을 소진하면 False(예외 없음).
+    - 잠금이 아닌 예외는 rollback·close 뒤 **그대로 올린다**.
+    - 성공·잠금·예외·취소 어느 경로로 나가도 (미커밋이면) rollback하고 close한다.
+    - `asyncio.wait_for`로 취소하지 않는다. aiosqlite의 워커 스레드는 취소되지 않아
+      뒤에서 계속 돌고 연결 상태가 어긋난다. 각 시도가 자기 busy_timeout으로
+      스스로 끝난다.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + budget_seconds
+    delay = backoff_base
+    last: BaseException | None = None
+    tries = max(1, attempts)
+    for i in range(tries):
+        remaining = deadline - loop.time() - cleanup_reserve
+        if remaining * 1000 < ISOLATED_MIN_ATTEMPT_MS:
+            break                                   # 남은 시간으로는 의미 있는 시도 불가
+        attempt_busy = min(int(busy_timeout_ms), int(remaining * 1000))
+        conn = None
+        committed = False
+        try:
+            conn = await aiosqlite.connect(db_path)
+            conn.row_factory = aiosqlite.Row
+            await conn.execute(f"PRAGMA busy_timeout={attempt_busy}")
+            await fn(conn)
+            await conn.commit()
+            committed = True
+            _stats["writes"] += 1
+            return True
+        except Exception as e:                      # noqa: BLE001
+            last = e
+            if not is_locked(e):
+                raise
+        finally:
+            if conn is not None:
+                if not committed:
+                    try:
+                        await conn.rollback()
+                        _stats["rollbacks"] += 1
+                    except Exception:               # noqa: BLE001
+                        pass
+                try:
+                    await conn.close()
+                except Exception:                   # noqa: BLE001
+                    pass
+        if i + 1 >= tries:
+            break
+        # backoff도 deadline을 넘지 않는다
+        wait = min(delay + random.uniform(0, delay),
+                   deadline - loop.time() - cleanup_reserve)
+        if wait <= 0:
+            break
+        _stats["retries"] += 1
+        await asyncio.sleep(wait)
+        delay *= 2
+    _stats["giveups"] += 1
+    if log is not None:
+        log({"event": "db_locked_giveup", "level": "warning", "what": what,
+             "attempts": tries, "budgetSeconds": budget_seconds,
+             "detail": str(last)[:160]})
+    return False
+
+
+def isolated_worst_case_seconds(
+    *, budget_seconds: float,
+    cleanup_reserve: float = ISOLATED_CLEANUP_RESERVE_SECONDS,
+) -> float:
+    """전용 연결 쓰기의 **하드 상한**.
+
+    절대 deadline을 쓰므로 시도 횟수·busy_timeout과 무관하게
+    `예산 + 정리 여유`를 넘지 않는다. 마지막 시도가 남은 시간을 다 쓰고 실패해도
+    rollback/close 몫이 미리 확보돼 있다.
+    """
+    return budget_seconds + cleanup_reserve

@@ -144,6 +144,9 @@ LEFT JOIN singcup_streamers s  ON s.representative_clip_uid = c.clip_uid
 LEFT JOIN singcup_streamers so ON so.channel_id = c.owner_channel_id
 LEFT JOIN singcup_clips rc     ON rc.clip_uid = so.representative_clip_uid
 WHERE c.event_id = ? AND c.active = 1
+  -- 삭제가 확정된 클립은 매 회차마다 다시 물어보지 않는다. 복원 확인은 훨씬 긴
+  -- 주기로 singcup_clips.run_deletion_checks가 따로 한다(요청·실패율 절감).
+  AND c.deletion_state <> 'confirmed_deleted' 
   -- **시도** 시각 기준이다. last_metrics_at(둘 다 정상)으로 걸면 계속 실패하는
   -- 클립은 영원히 대상에 남아 한 회차 안에서 무한 재호출된다.
   AND (c.last_attempt_at IS NULL OR c.last_attempt_at < ?)
@@ -333,12 +336,20 @@ async def _persist_clip(t: dict, card: dict | None, detail: dict | None,
                                    "videoId": t["video_id"],
                                    "recId": t["rec_id"] or "{}"},
                                   "sweep card fetch failed", now)
+            # 카드 조회 실패도 약한 신호다. 삭제로 세지 않고 '상세 API로 한 번
+            # 확인해 보라'는 표시만 남긴다 — 카드가 아예 응답하지 않는 삭제 클립이
+            # 이 경로로만 드러나는 경우가 있다(살아 있으면 첫 확인에서 바로 풀린다).
+            await sc._flag_deletion_suspect(t["clip_uid"], "card_failed", now)
             state = "failed"
             return
         state = await sc._apply_metrics(
             t["clip_uid"], card["heart_count"], card["view_count"],
             card["heart_ok"], card["view_ok"], now)
         await sc._clear_retry(t["clip_uid"])
+        if not card["heart_ok"] and not card["view_ok"]:
+            # 약한 신호다. **여기서 삭제로 세지 않는다** — 카드가 원래 값을 안 주는
+            # 경우와 구분되지 않기 때문이다. 상세 API로 따로 확인할 대상으로만 표시한다.
+            await sc._flag_deletion_suspect(t["clip_uid"], "card_empty", now)
         if detail:
             # 상세가 빈 썸네일을 줬거나 이미 값이 있으면 False — 그때는 세지 않는다
             fixed = await sc.repair_clip_media(t["clip_uid"], detail)

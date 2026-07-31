@@ -19,6 +19,9 @@ from singcup_clips import (
     backfill_status,
     baseline_report,
     clip_diagnosis,
+    deleted_clip_audit,
+    recheck_clip_deletion,
+    restore_deleted_clips,
     discover_new_clips,
     load_main_entry,
     load_streamer_clips,
@@ -332,6 +335,46 @@ async def clips_sweep_stats(x_singcup_secret: str | None = Header(default=None))
     """
     _require_secret(x_singcup_secret)
     return await metrics_sweep_stats()
+
+
+@router.get("/clips/deleted")
+async def clips_deleted(limit: int = 200,
+                        x_singcup_secret: str | None = Header(default=None)):
+    """삭제로 확정된(또는 legacy 비활성) 클립 목록 — **롤백 대상 특정용 감사 쿼리**."""
+    _require_secret(x_singcup_secret)
+    return await deleted_clip_audit(limit)
+
+
+@router.post("/clips/restore")
+async def clips_restore(body: dict,
+                        x_singcup_secret: str | None = Header(default=None)):
+    """지정한 clip_uid만 되살린다(롤백).
+
+    전체를 무조건 되돌리지 않는다 — 진짜 삭제된 클립까지 살아나면 순위가 다시
+    틀어진다. `/clips/deleted`에서 대상을 골라 넘긴다. 되돌린 뒤에는 정상 경로로
+    대표·점수·순위·캐시·스냅샷이 다시 만들어진다.
+    """
+    _require_secret(x_singcup_secret)
+    uids = body.get("clipUids") if isinstance(body, dict) else None
+    if not isinstance(uids, list) or not all(isinstance(u, str) for u in uids):
+        raise HTTPException(status_code=400,
+                            detail="clipUids는 문자열 배열이어야 합니다.")
+    if not uids:
+        raise HTTPException(status_code=400, detail="clipUids가 비어 있습니다.")
+    return await restore_deleted_clips(uids[:500],
+                                       reason=str(body.get("reason") or "manual")[:40])
+
+
+@router.post("/clips/{clip_uid}/recheck-deletion")
+async def clips_recheck_deletion(clip_uid: str,
+                                 x_singcup_secret: str | None = Header(default=None)):
+    """이 클립이 정말 삭제됐는지 상세 API로 지금 한 번 더 확인한다.
+
+    **DB를 직접 고치지 않는다.** 자동 경로와 같은 판정 규칙(명시적 404 2회)을 타고,
+    상태가 바뀐 경우에만 대표·점수·순위·스냅샷을 정상 경로로 다시 만든다.
+    """
+    _require_secret(x_singcup_secret)
+    return await recheck_clip_deletion(clip_uid)
 
 
 @router.get("/clips/{clip_uid}/diagnose")

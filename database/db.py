@@ -934,6 +934,43 @@ async def init_db():
         # 기존 행은 last_metrics_at을 시도 시각의 근사로 삼는다(0이면 미시도)
         "UPDATE singcup_clips SET last_attempt_at=last_metrics_at "
         "WHERE last_attempt_at=0 AND last_metrics_at>0",
+        # ── 삭제된 클립의 soft delete 상태 ────────────────────────────────
+        # 배경: 치지직에서 삭제된 클립(상세 API가 404 + "삭제된 클립입니다")이
+        # 계속 대표 클립으로 남아, 하트가 굳은 채 순위를 차지하는 사고가 있었다
+        # (실측 2026-07-31: 79xM38ged7). active를 내리는 코드가 하나 있었지만
+        # 호출자가 없어 실제로는 아무것도 하지 않았다.
+        #
+        # 컬럼을 최소로 둔다. 아래 셋은 기존 컬럼으로 대체할 수 없다:
+        #   deletion_state     상태 기계(active/suspected_deleted/confirmed_deleted/
+        #                      recovered). active(0/1)로는 '의심 중'을 표현할 수 없고,
+        #                      의심 단계가 없으면 일시 오류 한 번에 삭제 처리하게 된다.
+        #   deletion_first_at  처음 의심한 시각(감사·복구 판단)
+        #   deletion_last_at   마지막으로 **명시적 삭제 404**를 확인한 시각.
+        #                      "최소 간격을 두고 서로 다른 두 번" 규칙의 기준값이다.
+        #                      last_attempt_at은 성공·실패를 가리지 않고 매번 오르므로
+        #                      이 용도로 쓸 수 없다.
+        #   deletion_reason    판정 근거(detail_404 / card_empty / list_absent)
+        # 확인 횟수는 **기존 missing_scan_count를 재사용**한다 — 이 컬럼의 유일한
+        # 기록자였던 _reconcile_missing_clips가 호출되지 않는 死코드였고, 이번에
+        # 그 함수를 대체하므로 의미 충돌이 없다.
+        # deleted_at은 두지 않는다: confirmed_deleted가 되면 스윕 대상에서 빠져
+        # deletion_last_at이 더 이상 움직이지 않으므로 그 값이 곧 확정 시각이다.
+        "ALTER TABLE singcup_clips ADD COLUMN deletion_state TEXT NOT NULL "
+        "DEFAULT 'active'",
+        "ALTER TABLE singcup_clips ADD COLUMN deletion_first_at INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE singcup_clips ADD COLUMN deletion_last_at INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE singcup_clips ADD COLUMN deletion_reason TEXT NOT NULL DEFAULT ''",
+        # 의심/확정 클립만 골라 재확인하는 경로 전용. 전체 클립 수가 6천 대라
+        # 인덱스 없이도 못 쓸 정도는 아니지만, 4분 루프가 매번 훑는 자리다.
+        "CREATE INDEX IF NOT EXISTS idx_singcup_clips_deletion "
+        "ON singcup_clips(event_id, deletion_state, deletion_last_at)",
+        # backfill로 삭제를 **확정하지 않는다.** active=0이 곧 '삭제됨'을 뜻한다는
+        # 보장이 없다(예전 코드에서는 '목록에서 연속 누락'이었고, 사람이 내렸을 수도
+        # 있다). 기존 비활성 행을 전부 confirmed_deleted로 바꾸면 강한 삭제 신호를
+        # 한 번도 확인하지 않고 삭제를 확정하는 셈이고, 되돌릴 근거도 남지 않는다.
+        # 그래서 legacy 비활성 행은 별도 상태로 '표시만' 한다 — 삭제로 취급되지 않는다.
+        "UPDATE singcup_clips SET deletion_state='unknown_legacy' "
+        "WHERE active=0 AND deletion_state='active'",
     ]:
         try:
             await db.execute(sql)
