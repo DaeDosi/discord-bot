@@ -2,7 +2,8 @@ import os
 import asyncio
 import httpx
 from datetime import datetime, timezone
-from database import get_db
+from database import DB_PATH, get_db
+from utils.db_write import db_write_isolated
 
 CHZZK_API     = "https://api.chzzk.naver.com"
 DISCORD_API   = "https://discord.com/api/v10"
@@ -179,6 +180,7 @@ async def _check_once():
         return
 
     _log(f"구독 {len(rows)}개 체크 중...")
+    pending: list[tuple[int, int]] = []
     for row in rows:
         try:
             name = row["chzzk_name"] or row["chzzk_channel_id"]
@@ -197,15 +199,34 @@ async def _check_once():
             elif not now_live and was_live:
                 await _send_offline_notification(row, info)
 
-            await db.execute(
-                "UPDATE chzzk_subscriptions SET is_live=? WHERE id=?",
-                (int(now_live), row["id"]),
-            )
+            pending.append((int(now_live), row["id"]))
 
         except Exception as e:
             _log(f"  오류 ({row['chzzk_channel_id']}): {e}")
 
-    await db.commit()
+    # 라이브 상태 반영은 **알림을 다 보낸 뒤 한 번에** 쓴다. 예전에는 채널마다
+    # execute를 쌓아 두고 마지막에 COMMIT 하나였는데, 그 사이에 외부 API 호출과
+    # 디스코드 전송이 끼어 있어 쓰기 트랜잭션이 그 시간만큼 열려 있었다.
+    # 그 창이 같은 파일을 쓰는 봇 프로세스의 database is locked로 나타났다.
+    #
+    # **공유 연결이 아니라 전용 연결로 쓴다.** 공유 연결의 busy_timeout은 10초라,
+    # 거기서 재시도하면 최악 4회 × 10초 + 백오프 = 실측 43.3초 동안 그 연결의
+    # 작업 큐가 통째로 막힌다 — 공개 GET /main이 정확히 그 뒤에 줄을 선다.
+    # 고치려던 증상을 오히려 키우는 셈이다. 전용 연결은 자기 큐에 앞선 작업이
+    # 없어 예산(3초)이 곧 하드 상한이고, 실패해도 공유 연결은 멈추지 않는다.
+    #
+    # 쓰기 자체는 멱등이라 다음 폴링이 같은 값을 다시 쓴다. 다만 **끝내 저장하지
+    # 못하면 방금 보낸 알림은 다시 나간다** — 다음 폴링이 DB의 옛 is_live를 보고
+    # 같은 전이로 판정하기 때문이다. 이건 이 변경으로 생긴 게 아니라 원래 COMMIT이
+    # 실패해도 같았고, 알림 중복이 '상태를 놓친 채 계속 도는 것'보다 낫다고 본다.
+    if pending:
+        async def _work(conn):
+            await conn.executemany(
+                "UPDATE chzzk_subscriptions SET is_live=? WHERE id=?", pending)
+
+        if not await db_write_isolated(DB_PATH, _work, what="monitor_is_live",
+                                       log=lambda p: _log(f"  {p}")):
+            _log(f"  is_live 저장 실패 {len(pending)}건 — 다음 폴링에서 다시 씁니다")
 
 
 async def start_monitor():

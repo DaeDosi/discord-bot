@@ -589,6 +589,110 @@ async def _upsert_streamer(s: dict, now: int):
          s["tagged_clip_count"], s["last_channel_updated_at"], now))
 
 
+# 랭킹 재계산은 참가자 전원을 한 번에 쓴다. 예전에는 위 함수를 사람 수만큼
+# await 했고 중간 COMMIT이 없어서, **하나의 쓰기 트랜잭션이 그 반복 내내 열려
+# 있었다.** 공유 aiosqlite 연결은 작업 하나짜리 큐라 그동안 공개 조회(/main)까지
+# 그 뒤에 줄을 서고(실측 10,298ms), 전용 연결로 여는 짧은 쓰기는 잠금에 걸린다.
+#
+# 중간 COMMIT으로 나누지 않는다 — 그러면 일부 스트리머만 새 랭킹으로 바뀐 상태가
+# 사용자에게 보이고, 중단되면 그 혼합 세대가 영구히 남는다. 대신 **쓰는 양 자체를
+# 줄인다**: 값이 실제로 바뀐 행만 골라 executemany 한 번 + COMMIT 한 번.
+# 원자성은 그대로고(트랜잭션 1개), 대부분의 회차에서 쓰는 행이 몇 개로 줄어든다.
+_STREAMER_UPSERT_SQL = """INSERT INTO singcup_streamers
+               (channel_id, event_id, channel_name, channel_image_url, follower_count,
+                verified_mark, representative_clip_uid, tagged_clip_count,
+                last_channel_updated_at, row_updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(channel_id) DO UPDATE SET
+               channel_name            = CASE WHEN excluded.channel_name != ''
+                                              THEN excluded.channel_name
+                                              ELSE channel_name END,
+               channel_image_url       = CASE WHEN excluded.channel_image_url != ''
+                                              THEN excluded.channel_image_url
+                                              ELSE channel_image_url END,
+               follower_count          = CASE WHEN excluded.last_channel_updated_at > 0
+                                              THEN excluded.follower_count
+                                              ELSE follower_count END,
+               verified_mark           = excluded.verified_mark,
+               representative_clip_uid = excluded.representative_clip_uid,
+               tagged_clip_count       = excluded.tagged_clip_count,
+               last_channel_updated_at = CASE WHEN excluded.last_channel_updated_at > 0
+                                              THEN excluded.last_channel_updated_at
+                                              ELSE last_channel_updated_at END,
+               row_updated_at          = excluded.row_updated_at"""
+
+
+def _streamer_target(new: dict, cur: dict | None, now: int) -> dict:
+    """UPSERT가 만들어 낼 최종 행. 위 SQL의 CASE 규칙을 그대로 옮긴 것이다.
+
+    규칙이 두 곳에 생기므로 테스트가 둘을 대조해 고정한다 — 한쪽만 고치면
+    '바뀌지 않았다'고 판단해 갱신을 건너뛰는 조용한 버그가 된다.
+    """
+    if cur is None:
+        return {"channel_name": new["channel_name"],
+                "channel_image_url": new["channel_image_url"],
+                "follower_count": new["follower_count"],
+                "verified_mark": new["verified_mark"],
+                "representative_clip_uid": new["representative_clip_uid"],
+                "tagged_clip_count": new["tagged_clip_count"],
+                "last_channel_updated_at": new["last_channel_updated_at"]}
+    upd = int(new["last_channel_updated_at"] or 0) > 0
+    return {
+        "channel_name": new["channel_name"] or cur["channel_name"],
+        "channel_image_url": new["channel_image_url"] or cur["channel_image_url"],
+        "follower_count": new["follower_count"] if upd else cur["follower_count"],
+        "verified_mark": new["verified_mark"],
+        "representative_clip_uid": new["representative_clip_uid"],
+        "tagged_clip_count": new["tagged_clip_count"],
+        "last_channel_updated_at": (new["last_channel_updated_at"] if upd
+                                    else cur["last_channel_updated_at"]),
+    }
+
+
+_STREAMER_FIELDS = ("channel_name", "channel_image_url", "follower_count",
+                    "verified_mark", "representative_clip_uid",
+                    "tagged_clip_count", "last_channel_updated_at")
+
+
+async def _upsert_streamers_bulk(rows: list[dict], now: int) -> dict:
+    """값이 바뀐 스트리머만 한 번에 쓴다. **COMMIT하지 않는다**(호출자 트랜잭션).
+
+    반환은 관측용 집계 — 몇 명을 보고 몇 명을 실제로 썼는지.
+    """
+    if not rows:
+        return {"considered": 0, "written": 0}
+    db = await get_db()
+    cur_rows = {r["channel_id"]: dict(r) for r in await (await db.execute(
+        "SELECT channel_id, channel_name, channel_image_url, follower_count, "
+        "verified_mark, representative_clip_uid, tagged_clip_count, "
+        "last_channel_updated_at FROM singcup_streamers WHERE event_id=?",
+        (EVENT_ID,))).fetchall()}
+
+    params = []
+    for s in rows:
+        cur = cur_rows.get(s["channel_id"])
+        target = _streamer_target(s, cur, now)
+        if cur is not None and all(
+                _norm(target[f]) == _norm(cur[f]) for f in _STREAMER_FIELDS):
+            continue                      # 바뀐 값이 없다 — 쓰지 않는다
+        params.append((s["channel_id"], EVENT_ID, s["channel_name"],
+                       s["channel_image_url"], s["follower_count"],
+                       s["verified_mark"], s["representative_clip_uid"],
+                       s["tagged_clip_count"], s["last_channel_updated_at"], now))
+    if params:
+        await db.executemany(_STREAMER_UPSERT_SQL, params)
+    return {"considered": len(rows), "written": len(params)}
+
+
+def _norm(v):
+    """0/None/'' 같은 표현 차이 때문에 '바뀌었다'로 오판하지 않게 정규화한다."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return int(v)
+    return v
+
+
 def snapshot_bucket(ts: int) -> int:
     """스냅샷 시간 버킷 — KST 정시 절삭. KST는 UTC+9 정시라 epoch 절삭으로 같다."""
     return int(ts) - int(ts) % 3600
@@ -1494,6 +1598,7 @@ async def recompute_ranking(now: int, *, client=None,
 
     await asyncio.gather(*[load_channel(r["owner_channel_id"]) for r in ranked])
 
+    payload = []
     for r in ranked:
         info = infos.get(r["owner_channel_id"]) or {}
         # 닉네임·이미지는 목록 응답(ownerChannel)을 우선한다 — 채널 API가 실패해도
@@ -1501,7 +1606,7 @@ async def recompute_ranking(now: int, *, client=None,
         name = r.get("owner_channel_name") or info.get("channel_name", "")
         image = r.get("owner_channel_image_url") or info.get("channel_image_url", "")
         r["follower_count"] = info.get("follower_count", 0)
-        await _upsert_streamer({
+        payload.append({
             "channel_id": r["owner_channel_id"],
             "channel_name": name,
             "channel_image_url": image,
@@ -1510,7 +1615,10 @@ async def recompute_ranking(now: int, *, client=None,
             "representative_clip_uid": r["clip_uid"],
             "tagged_clip_count": r["tagged_clip_count"],
             "last_channel_updated_at": now if info else 0,
-        }, now)
+        })
+    # 값이 바뀐 행만 한 번에 쓴다(트랜잭션은 여전히 하나 — 부분 랭킹이 보이지 않는다)
+    upsert_stat = await _upsert_streamers_bulk(payload, now)
+    for r in ranked:
         prev_uid = before_rep.get(r["owner_channel_id"])
         if prev_uid and prev_uid != r["clip_uid"]:
             # 대표가 바뀌면 1시간·24시간 증감이 새 클립 기준으로 다시 시작한다
@@ -1526,6 +1634,9 @@ async def recompute_ranking(now: int, *, client=None,
     if save_snapshot:
         await _save_snapshots(ranked, now)
     await db.commit()
+    if upsert_stat["written"]:
+        _log({"event": "streamers_upserted", "considered": upsert_stat["considered"],
+              "written": upsert_stat["written"]})
     # 순위가 바뀌었으니 /main 캐시를 즉시 버린다 — TTL이 만료될 때까지 옛 순위를
     # 보여주면 "갱신했는데 화면이 안 바뀐다"는 바로 그 증상이 다시 생긴다.
     invalidate_main_cache()

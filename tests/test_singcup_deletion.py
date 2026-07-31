@@ -430,7 +430,7 @@ def test_no_snapshot_is_published_when_ranking_fails_midway(db, monkeypatch):
 
     async def boom(*_a, **_k):
         raise RuntimeError("db down")
-    monkeypatch.setattr(sc, "_upsert_streamer", boom)
+    monkeypatch.setattr(sc, "_upsert_streamers_bulk", boom)
 
     with pytest.raises(RuntimeError):
         db(sc.recompute_ranking(NOW_TS))

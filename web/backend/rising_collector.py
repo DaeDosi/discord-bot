@@ -76,6 +76,21 @@ def _log(msg: str):
 # 서버 시작 시 DB에서 로드해 재시작 직후에도 이미지가 바로 보인다.
 _LATEST_IMAGES: dict[str, str] = {}
 _LAST_PERSIST_DATE = None  # 마지막으로 DB에 저장한 KST 날짜
+# 값이 그대로인 행의 updated_at을 다시 밀기까지 두는 간격. 정리 기준(30일)보다
+# 훨씬 짧아야 하고(안 그러면 살아 있는 행이 지워진다), 하루 주기보다는 길어야
+# 한다(안 그러면 매일 전체 행을 다시 쓴다).
+PROFILE_TOUCH_INTERVAL_SECONDS = int(
+    float(os.getenv("PROFILE_TOUCH_INTERVAL_DAYS", "7")) * 86400)
+PROFILE_RETENTION_SECONDS = int(
+    float(os.getenv("PROFILE_RETENTION_DAYS", "30")) * 86400)
+assert PROFILE_TOUCH_INTERVAL_SECONDS * 2 < PROFILE_RETENTION_SECONDS, (
+    "갱신 간격이 정리 기준에 너무 가까우면 살아 있는 프로필이 지워진다")
+# `IN (?,?,...)` 한 문장에 넣을 id 개수. **런타임 한도를 믿고 정하지 않는다.**
+# 같은 파이썬에서도 재는 방법에 따라 값이 다르게 나온다(실측: SELECT 형태는
+# 2,000 = SQLITE_MAX_COLUMN, IN 절은 250,000). 배포 이미지·SQLite 버전이 바뀌면
+# 999로 떨어질 수도 있으므로, 어느 빌드에서도 안전한 값을 고정한다.
+# 문장 하나의 총 변수 = PROFILE_TOUCH_CHUNK + 2 (SET의 now, 조건의 touch_before).
+PROFILE_TOUCH_CHUNK = 900
 
 
 def latest_image(channel_id: str) -> str:
@@ -100,13 +115,50 @@ async def _persist_profiles():
     try:
         db = await get_db()
         now = int(time.time())
-        await db.executemany(
-            """INSERT INTO channel_profiles(chzzk_channel_id, image_url, updated_at) VALUES(?,?,?)
-               ON CONFLICT(chzzk_channel_id) DO UPDATE SET image_url=excluded.image_url, updated_at=excluded.updated_at""",
-            [(cid, url, now) for cid, url in _LATEST_IMAGES.items() if url],
-        )
-        await db.execute("DELETE FROM channel_profiles WHERE updated_at < ?", (now - 30 * 86400,))
+        # **바뀐 행만 쓴다.** 예전에는 메모리에 있는 전부(약 2만 행)를 매일 한 번에
+        # UPSERT했고, 그 한 트랜잭션이 끝날 때까지 공유 연결이 잠겨 있었다. 같은
+        # 연결을 쓰는 공개 조회(/main)까지 그 뒤에 줄을 서서 10초를 넘긴 적이 있다.
+        # 프로필 이미지는 거의 바뀌지 않으므로 실제로 쓸 행은 매우 적다.
+        # 배치 COMMIT으로 쪼개지 않는 이유: 정리(DELETE)와 갱신이 갈라지면 중간
+        # 중단 시 '30일 지난 행은 지웠는데 갱신은 안 된' 상태가 남는다. 트랜잭션은
+        # 하나로 두고 **쓰는 양 자체를 줄인다.**
+        known = {r["chzzk_channel_id"]: r["image_url"] for r in await (
+            await db.execute("SELECT chzzk_channel_id, image_url FROM channel_profiles")
+        ).fetchall()}
+        changed = [(cid, url, now) for cid, url in _LATEST_IMAGES.items()
+                   if url and known.get(cid) != url]
+        # 값이 같아도 updated_at은 밀어 줘야 30일 정리에 걸리지 않는다. 다만
+        # **매일 2만 행을 다시 쓰면 줄인 의미가 없다**(실측: 바뀐 행만 UPSERT해도
+        # 시각 갱신 때문에 소요가 그대로였다). 정리 기준이 30일이고 이 함수는
+        # 하루 한 번 도니, 최근 7일 안에 이미 밀어 둔 행은 건드리지 않아도
+        # 안전하다 — 아래 UPDATE의 `updated_at < ?`가 그 행들을 걸러 낸다.
+        touch = [cid for cid, url in _LATEST_IMAGES.items()
+                 if url and known.get(cid) == url]
+        touch_before = now - PROFILE_TOUCH_INTERVAL_SECONDS
+        if changed:
+            await db.executemany(
+                """INSERT INTO channel_profiles(chzzk_channel_id, image_url, updated_at)
+                   VALUES(?,?,?)
+                   ON CONFLICT(chzzk_channel_id) DO UPDATE SET
+                       image_url=excluded.image_url, updated_at=excluded.updated_at""",
+                changed)
+        # SQL 문은 chunk로 나누되 **COMMIT은 나누지 않는다** — 아래 commit 하나가
+        # 갱신·시각밀기·정리 전체를 덮는다. 중간 chunk에서 실패하면 그때까지의
+        # chunk도 함께 되돌아가고, 다음 일일 실행이 처음부터 다시 시도한다.
+        touched = 0
+        for i in range(0, len(touch), PROFILE_TOUCH_CHUNK):
+            chunk = touch[i:i + PROFILE_TOUCH_CHUNK]
+            qs = ",".join("?" for _ in chunk)
+            cur = await db.execute(
+                "UPDATE channel_profiles SET updated_at=? "
+                f"WHERE chzzk_channel_id IN ({qs}) AND updated_at < ?",
+                (now, *chunk, touch_before))
+            touched += cur.rowcount or 0
+        await db.execute("DELETE FROM channel_profiles WHERE updated_at < ?",
+                         (now - PROFILE_RETENTION_SECONDS,))
         await db.commit()
+        _log(f"프로필 저장: 갱신 {len(changed)}건 / 시각만 {touched}건 "
+             f"(후보 {len(touch)}건 중) — 실제 쓴 행 {len(changed) + touched}")
         # 메모리도 DB(최근 30일)에 맞춰 재로드 — 무한 증가 방지
         rows = await (await db.execute("SELECT chzzk_channel_id, image_url FROM channel_profiles")).fetchall()
         _LATEST_IMAGES.clear()

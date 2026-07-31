@@ -22,10 +22,11 @@ import logging
 import discord
 from discord.ext import commands, tasks
 from datetime import datetime, timezone, timedelta
-from database import get_db
+from database import DB_PATH, get_db
 from utils.mc_rcon import rcon_command
 from utils.checks import member_is_mod_or_admin
 from utils.gambling import resolve_gambling_winner, calc_gambling_payout
+from utils.db_write import db_write_isolated
 
 log = logging.getLogger("chzzk_chat")
 
@@ -303,12 +304,21 @@ class ChzzkChatCog(commands.Cog):
         return event
 
     async def _mark_synced(self, guild_id: int):
-        db = await get_db()
-        await db.execute(
-            "UPDATE chzzk_subscriptions SET chat_last_sync_at=? WHERE guild_id=?",
-            (int(time.time()), guild_id)
-        )
-        await db.commit()
+        # 봇과 백엔드가 같은 SQLite 파일을 쓴다. 백엔드가 큰 쓰기를 하는 동안
+        # 이 한 줄이 busy_timeout을 넘겨 database is locked로 죽었고, 재시도가
+        # 없어서 그 예외가 동기화 루프 전체를 끊었다(실측 Traceback).
+        #
+        # 재시도는 **전용 연결**로 한다. 공유 연결의 busy_timeout은 10초여서
+        # 거기서 4번 재시도하면 최악 43초 동안 봇의 DB 작업 큐가 통째로 막힌다
+        # (실측). 전용 연결은 예산(3초)이 곧 하드 상한이다.
+        # 이 값은 '언제 동기화했나'라는 표시일 뿐이라 실패하면 다음 주기로
+        # 넘기는 것으로 충분하다 — 루프는 계속 돈다.
+        async def _work(db):
+            await db.execute(
+                "UPDATE chzzk_subscriptions SET chat_last_sync_at=? WHERE guild_id=?",
+                (int(time.time()), guild_id))
+
+        await db_write_isolated(DB_PATH, _work, what=f"mark_synced({guild_id})")
 
     async def _mark_event_received(self, guild_id: int):
         db = await get_db()
