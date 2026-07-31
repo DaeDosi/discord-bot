@@ -1535,7 +1535,12 @@ async def _seed_mover(now, *, before, after):
     await c.commit()
 
 
-def test_movers_are_saved_when_present(db):
+def test_movers_are_saved_outside_the_request_path(db):
+    """급상승 저장은 **조회가 아니라** 랭킹 계산 완료 뒤에 일어난다(P1.5).
+
+    예전에는 `load_main()`이 응답을 만들면서 저장까지 했다. 그 쓰기가 잠금에 걸리자
+    공개 GET 전체가 500이 됐다(실측 2026-07-31 Railway).
+    """
     db(_seed(1, 1))
     _install(_cards())
     now = int(time.time())
@@ -1546,8 +1551,11 @@ def test_movers_are_saved_when_present(db):
     assert main["topHeartMovers1h"][0]["heartDelta1h"] == 49
     assert main["topHeartMovers1hStale"] is False
     assert main["topHeartMovers1hComputedAt"]
+    saved, _base, _at = db(sc._last_top_movers())
+    assert saved == [], "조회는 저장하지 않는다"
 
-    saved, base, at = db(sc._last_top_movers())
+    assert db(sc.persist_top_movers_snapshot(source="test")) == "written"
+    saved, _base, at = db(sc._last_top_movers())
     assert len(saved) == 1 and at
 
 
@@ -1557,6 +1565,7 @@ def test_empty_movers_fall_back_to_last_result(db):
     _install(_cards())
     now = int(time.time())
     db(_seed_mover(now, before=1, after=50))
+    db(sc.persist_top_movers_snapshot(source="test"))    # 요청 경로 밖에서 저장
     first = db(sc.load_main())
     assert first["topHeartMovers1hStale"] is False
 
@@ -1581,7 +1590,7 @@ def test_no_baseline_also_falls_back(db):
     _install(_cards())
     now = int(time.time())
     db(_seed_mover(now, before=1, after=50))
-    db(sc.load_main())
+    db(sc.persist_top_movers_snapshot(source="test"))    # 요청 경로 밖에서 저장
 
     async def wipe():
         c = await database.get_db()
@@ -1610,7 +1619,7 @@ def test_fresh_movers_overwrite_the_saved_one(db):
     _install(_cards())
     now = int(time.time())
     db(_seed_mover(now, before=1, after=50))
-    db(sc.load_main())
+    db(sc.persist_top_movers_snapshot(source="test"))
 
     async def grow():
         c = await database.get_db()
@@ -1623,6 +1632,7 @@ def test_fresh_movers_overwrite_the_saved_one(db):
     main = db(sc.load_main())
     assert main["topHeartMovers1hStale"] is False
     assert main["topHeartMovers1h"][0]["heartDelta1h"] == 199
+    assert db(sc.persist_top_movers_snapshot(source="test")) == "written"
     saved, _b, _a = db(sc._last_top_movers())
     assert saved[0]["heartDelta1h"] == 199
 

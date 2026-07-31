@@ -775,15 +775,20 @@ def test_publish_performs_no_db_write(db, split_on):
     assert db(movers_row()) == before_movers, "top movers를 다시 쓰면 안 된다"
 
 
-def test_main_route_still_persists_top_movers(db):
-    """`/main`의 기존 동작(P1.5 범위)은 건드리지 않았다."""
+def test_main_read_path_writes_nothing(db):
+    """`/main` 계산 경로에는 DB 쓰기가 없다(P1.5).
+
+    예전에는 이 자리에서 `_save_top_movers()`가 UPDATE + COMMIT을 했고, 그 쓰기가
+    잠금에 걸리면 공개 GET 전체가 500이 됐다. 자세한 검증은
+    tests/test_singcup_public_read_only.py.
+    """
     import database
     _seed_main(db, 5)
     sc.invalidate_main_cache()
-    db(sc.load_main_entry(3000))            # 기본값 persist_top_movers=True
+    db(sc.load_main_entry(3000))
     c = db(database.get_db())
     row = db((db(c.execute("SELECT COUNT(*) n FROM singcup_top_movers"))).fetchone())
-    assert row["n"] >= 0                    # 스키마 접근이 정상(값 자체는 데이터 의존)
+    assert row["n"] == 0, "조회가 급상승 캐시를 쓰면 안 된다"
 
 
 # ── flag=false에서 아무 일도 하지 않는다 ──────────────────────────────────
@@ -827,3 +832,49 @@ def test_recompute_does_not_publish_when_flag_is_off(db, monkeypatch):
     monkeypatch.setattr(sc, "fetch_channel", _no_channel)
     db(sc.recompute_ranking(int(_t.time()), client=object()))
     assert split.latest() is None
+
+
+# ── 정렬 정확도 대조: /main 전체 정렬 상위 100 == Split 첫 페이지 ──────────
+# 클라이언트가 현재 페이지 100명만 다시 정렬하는 방식과 구분되는 지점이다.
+# 서버가 **전체 집합**을 정렬한 결과의 앞 100명과 정확히 같아야 한다.
+def _client_sort(streamers, sort, direction):
+    """분리 API가 없던 시절 화면이 하던 것과 같은 '전체 정렬'을 파이썬으로 재현."""
+    def key(s):
+        v = split.SORTS[sort](s)
+        has = 0 if v is None else 1
+        sign = 1.0 if direction == "asc" else -1.0
+        return (-has, sign * (0.0 if v is None else v),
+                -float(s.get("heartCount") or 0), -float(s.get("score") or 0),
+                str(s.get("channelId")))
+    return sorted(streamers, key=key)
+
+
+@pytest.mark.parametrize("sort", list(split.SORTS))
+@pytest.mark.parametrize("direction", ["desc", "asc"])
+def test_first_page_matches_full_sort_top100(sort, direction):
+    payload = _payload(450)
+    split.reset()
+    split.register(payload, version="p")
+    expected = [s["channelId"] for s in
+                _client_sort(payload["streamers"], sort, direction)[:100]]
+    page = split.rankings(size=100, sort=sort, direction=direction,
+                          snapshot_version="p")
+    assert [s["channelId"] for s in page["items"]] == expected
+    assert page["total"] == 450
+
+
+@pytest.mark.parametrize("sort", ["score", "heart1h", "heart24h", "volatility"])
+def test_all_pages_concatenated_match_full_sort(sort):
+    payload = _payload(450)
+    split.reset()
+    split.register(payload, version="p")
+    expected = [s["channelId"] for s in _client_sort(payload["streamers"], sort, "desc")]
+    got, cursor = [], None
+    while True:
+        page = split.rankings(size=100, cursor=cursor, sort=sort,
+                              snapshot_version="p")
+        got += [s["channelId"] for s in page["items"]]
+        if not page["hasMore"]:
+            break
+        cursor = page["nextCursor"]
+    assert got == expected

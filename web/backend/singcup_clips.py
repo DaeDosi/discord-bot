@@ -32,6 +32,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
+import aiosqlite
 import httpx
 from singcup_collector import (
     END_AT,
@@ -46,7 +47,7 @@ from singcup_collector import (
     event_status,
 )
 
-from database import get_db
+from database import DB_PATH, get_db
 
 CLIPS_API = "https://api.chzzk.naver.com/service/v1/categories/ETC/music/clips"
 CARD_API = "https://api-videohub.naver.com/shortformhub/feeds/v5/card"
@@ -237,6 +238,8 @@ async def reset_state():
     # 테스트는 매번 새 루프를 만들므로, 한 번이라도 동시 요청을 재현한 테스트가 있으면
     # 그 뒤의 테스트에서 "bound to a different event loop"로 터진다. 새로 만들어 끊는다.
     _main_lock = asyncio.Lock()
+    global _movers_persist_lock
+    _movers_persist_lock = asyncio.Lock()
 
 
 class FetchError(RuntimeError):
@@ -751,9 +754,15 @@ async def recompute_ranking(now: int, *, client=None,
     # 순위가 바뀌었으니 /main 캐시를 즉시 버린다 — TTL이 만료될 때까지 옛 순위를
     # 보여주면 "갱신했는데 화면이 안 바뀐다"는 바로 그 증상이 다시 생긴다.
     invalidate_main_cache()
-    # 랭킹 계산이 완전히 끝난 지점 = 분리 API 스냅샷의 유일한 생산 시점.
-    # 실패해도 수집·스윕을 죽이지 않는다.
+    # 랭킹 계산이 완전히 끝난 지점 = 영속화의 유일한 시점.
+    # 둘 다 best-effort다 — 실패해도 수집·스윕·랭킹 결과를 취소하지 않는다.
+    #
+    # **스냅샷 게시가 먼저다.** 화면이 보는 최신 랭킹이 부가 영속화보다 우선이기
+    # 때문이다. 급상승 저장은 시간 예산(PERSIST_BUDGET_SECONDS) 안에서만 시도하지만,
+    # 그마저도 스냅샷 뒤로 두면 게시가 그 예산만큼도 밀리지 않는다.
+    # 두 작업은 같은 `/main` 캐시 항목을 공유하므로 계산은 한 번만 돈다.
     await publish_snapshot(source="recompute")
+    await persist_top_movers_snapshot(source="recompute")
     return ranked
 
 
@@ -2566,16 +2575,202 @@ async def _baseline_report_uncached(window: int | None = None) -> dict:
     }
 
 
-async def _save_top_movers(movers: list[dict], base_at: int | None, now: int):
-    """직전 정상 집계를 덮어쓴다(이력이 아니라 최신 캐시라 행은 이벤트당 하나)."""
+# 급상승 캐시를 저장할 때 쓰는 응답 크기. publish_snapshot과 같은 값을 써야 두
+# 작업이 **같은 캐시 항목 하나**를 나눠 쓴다(계산이 두 번 돌지 않는다).
+TOP_MOVERS_LIMIT = int(os.getenv("SINGCUP_SNAPSHOT_LIMIT", "3000"))
+
+# ── best-effort 영속화의 시간 예산 ──────────────────────────────────────────
+# 이 저장은 랭킹·응답·스냅샷보다 **덜 중요하다.** 그런데 공용 연결로 쓰면 잠겼을 때
+# busy_timeout(10초) × 재시도 4회 = 40초를 기다린다. 그 40초 동안 랭킹 완료·캐시
+# 갱신·스냅샷 게시가 전부 멈춘다(실측: 잠긴 UPSERT 한 번에 10.8초).
+#
+# 그래서 전용 연결로 **짧게** 시도하고 예산을 넘기면 포기한다. 공용 연결의 PRAGMA는
+# 건드리지 않는다 — 그건 다른 모든 작업의 대기 시간을 함께 바꿔 버린다.
+PERSIST_BUSY_TIMEOUT_MS = int(os.getenv("SINGCUP_PERSIST_BUSY_TIMEOUT_MS", "250"))
+PERSIST_ATTEMPTS = int(os.getenv("SINGCUP_PERSIST_ATTEMPTS", "3"))
+PERSIST_BUDGET_SECONDS = float(os.getenv("SINGCUP_PERSIST_BUDGET_SECONDS", "2.0"))
+PERSIST_BACKOFF_BASE_SECONDS = float(
+    os.getenv("SINGCUP_PERSIST_BACKOFF_BASE_SECONDS", "0.05"))
+
+
+def persist_worst_case_seconds() -> float:
+    """상수만으로 계산한 최악 소요시간. 예산 안인지 테스트가 이 값으로 확인한다.
+
+    시도마다 busy_timeout을 꽉 채우고(잠금), 시도 사이에 backoff+최대 jitter를
+    기다리는 경우다. 연결 open/close는 실측 1~2ms라 시도당 5ms로 넉넉히 잡는다.
+    """
+    attempts = max(1, PERSIST_ATTEMPTS)
+    lock_wait = attempts * (PERSIST_BUSY_TIMEOUT_MS / 1000.0)
+    backoff = sum(PERSIST_BACKOFF_BASE_SECONDS * (2 ** i) * 2   # ×2 = jitter 상한
+                  for i in range(attempts - 1))
+    return lock_wait + backoff + attempts * 0.005
+# 내용이 달라도 이 간격 안에는 다시 쓰지 않는 안전판. **기본은 꺼 둔다(0).**
+# 중복 쓰기는 위의 read 비교가 이미 없앤다. 여기에 값을 넣으면 '진짜로 바뀐' 급상승이
+# 다음 회차(최대 4분)까지 저장되지 않으므로, 관측으로 churn이 확인될 때만 켠다.
+PERSIST_MIN_INTERVAL_SECONDS = int(os.getenv("SINGCUP_PERSIST_MIN_INTERVAL_SECONDS", "0"))
+
+_movers_persist_stats = {"written": 0, "unchanged": 0, "throttled": 0, "stale": 0,
+                         "failed": 0, "lastAt": None, "lastMs": None}
+# 같은 값을 여러 경로가 동시에 저장하려 하면 read 비교가 전부 '다르다'로 통과해
+# 중복 write가 난다(실측: 동시 20회 → write 5회). 하나씩만 들어가게 한다.
+# 큐를 만들지 않는다 — 대기자는 앞선 저장이 끝난 뒤 read 비교에서 unchanged가 된다.
+_movers_persist_lock = asyncio.Lock()
+
+
+def top_movers_persist_stats() -> dict:
+    return dict(_movers_persist_stats)
+
+
+async def _top_movers_is_current(payload: str, base_at: int | None) -> tuple[bool, int]:
+    """저장된 값이 이미 같은가. **읽기만 한다.**
+
+    조건부 UPSERT(`WHERE ... IS NOT excluded...`)로 충분할 줄 알았는데 아니었다.
+    실측: 다른 연결이 쓰기 잠금을 쥔 상태에서 **값이 완전히 동일해도** 그 UPSERT는
+    쓰기 트랜잭션을 시작하고 busy_timeout을 꽉 채운 뒤 `database is locked`로 실패한다
+    (10,770ms). rowcount가 0이 되는 것은 잠금을 잡은 **뒤**의 일이다.
+
+    반면 WAL에서 SELECT는 쓰기 잠금의 영향을 받지 않는다(같은 조건에서 0ms).
+    그래서 비교를 먼저 하고, 다를 때만 쓰기를 시도한다.
+
+    반환: (같은가, 마지막 저장 시각)
+    """
     db = await get_db()
-    await db.execute(
-        "INSERT INTO singcup_top_movers (event_id, payload, base_at, computed_at) "
-        "VALUES (?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET "
-        "payload=excluded.payload, base_at=excluded.base_at, "
-        "computed_at=excluded.computed_at",
-        (EVENT_ID, json.dumps(movers, ensure_ascii=False), base_at, now))
-    await db.commit()
+    row = await (await db.execute(
+        "SELECT payload, base_at, computed_at FROM singcup_top_movers WHERE event_id=?",
+        (EVENT_ID,))).fetchone()
+    if row is None:
+        return (False, 0)
+    same = (row["payload"] == payload
+            and (row["base_at"] if row["base_at"] is not None else None) == base_at)
+    return (same, int(row["computed_at"] or 0))
+
+
+async def _save_top_movers(movers: list[dict], base_at: int | None, now: int) -> str:
+    """직전 정상 집계를 덮어쓴다(이력이 아니라 최신 캐시라 행은 이벤트당 하나).
+
+    **요청 경로에서 부르지 않는다.** 랭킹 계산이 끝난 뒤에만 불린다. 예전에는 공개
+    GET `/main`이 응답을 계산하면서 여기까지 왔고, 잠금에 걸리면 조회가 500이 됐다.
+
+    쓰기는 **전용 연결**로 하고 시간 예산 안에서만 시도한다. 공용 연결을 쓰면 잠겼을 때
+    다른 모든 작업이 함께 기다리게 된다.
+
+    반환: "written" | "unchanged" | "throttled" | "failed"
+    """
+    payload = json.dumps(movers, ensure_ascii=False)
+
+    # ① 읽기 비교 — 같으면 쓰기를 **시도조차 하지 않는다**(잠금 획득 0회)
+    same, last_at = await _top_movers_is_current(payload, base_at)
+    if same:
+        return "unchanged"
+    if (PERSIST_MIN_INTERVAL_SECONDS > 0 and last_at
+            and now - last_at < PERSIST_MIN_INTERVAL_SECONDS):
+        # 내용은 달라도 너무 잦다 — 다음 회차에 저장된다(값은 어차피 최신으로 다시 계산된다)
+        return "throttled"
+
+    # ② 전용 연결로 짧게. 취소(asyncio.wait_for)를 쓰지 않는다 — aiosqlite의 워커
+    #    스레드는 취소되지 않아 뒤에서 계속 돌고 연결 상태가 어긋날 수 있다.
+    #    대신 busy_timeout 자체를 짧게 잡아 각 시도가 스스로 빨리 끝나게 하고,
+    #    예산 초과는 **시도 사이에서** 판단한다.
+    deadline = time.monotonic() + PERSIST_BUDGET_SECONDS
+    delay = PERSIST_BACKOFF_BASE_SECONDS
+    last_err: Exception | None = None
+    for attempt in range(max(1, PERSIST_ATTEMPTS)):
+        conn = None
+        committed = False
+        try:
+            conn = await aiosqlite.connect(DB_PATH)
+            await conn.execute(f"PRAGMA busy_timeout={PERSIST_BUSY_TIMEOUT_MS}")
+            await conn.execute(
+                "INSERT INTO singcup_top_movers (event_id, payload, base_at, computed_at) "
+                "VALUES (?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET "
+                "payload=excluded.payload, base_at=excluded.base_at, "
+                "computed_at=excluded.computed_at",
+                (EVENT_ID, payload, base_at, now))
+            await conn.commit()
+            committed = True
+            return "written"
+        except Exception as e:                      # noqa: BLE001
+            last_err = e
+            if not _is_locked_error(e):
+                _log({"event": "top_movers_write_error", "level": "warning",
+                      "detail": str(e)[:160]})
+                return "failed"
+        finally:
+            # 성공·잠금·예외·**취소(CancelledError)** 어느 경로로 나가도 여기를 지난다.
+            # 커밋하지 않았으면 되돌리고, 무슨 일이 있어도 연결은 닫는다.
+            if conn is not None:
+                if not committed:
+                    try:
+                        await conn.rollback()
+                    except Exception:               # noqa: BLE001
+                        pass
+                try:
+                    await conn.close()
+                except Exception:                   # noqa: BLE001
+                    pass
+        if attempt + 1 >= PERSIST_ATTEMPTS or time.monotonic() + delay >= deadline:
+            break
+        await asyncio.sleep(delay + random.uniform(0, delay))
+        delay *= 2
+    _log({"event": "top_movers_write_giveup", "level": "warning",
+          "attempts": attempt + 1, "budgetSeconds": PERSIST_BUDGET_SECONDS,
+          "detail": str(last_err)[:160]})
+    return "failed"
+
+
+def _is_locked_error(e: BaseException) -> bool:
+    m = str(e).lower()
+    return "database is locked" in m or "database is busy" in m
+
+
+async def persist_top_movers_snapshot(*, source: str) -> str:
+    """'직전 정상 급상승'을 갱신한다 — **내부 작업 전용, best-effort.**
+
+    랭킹 계산이 끝난 지점에서만 불린다. 실패해도 예외를 올리지 않는다: 이 저장이
+    수집·스윕·랭킹·스냅샷 게시를 취소하면 본말이 전도된다. 다음 주기에 다시 시도된다.
+
+    값은 `load_main_entry`(읽기 전용)가 이미 계산해 둔 것을 그대로 쓴다. 여기서
+    다시 계산하지 않으므로 산출물이 응답과 어긋날 수 없다.
+    """
+    t0 = time.perf_counter()
+    try:
+        async with _movers_persist_lock:
+            return await _persist_top_movers_locked(source, t0)
+    except Exception as e:                          # noqa: BLE001 — 여기서 끝낸다
+        _movers_persist_stats["failed"] += 1
+        _log({"event": "top_movers_persist_failed", "level": "warning",
+              "source": source, "detail": str(e)[:200]})
+        return "failed"
+
+
+async def _persist_top_movers_locked(source: str, t0: float) -> str:
+    try:
+        entry, _src = await load_main_entry(TOP_MOVERS_LIMIT)
+        data = entry["data"]
+        movers = data.get("topHeartMovers1h") or []
+        # stale이면 그건 이미 이 표에서 읽어 온 값이다 — 자기 자신을 다시 쓰지 않는다.
+        if not movers or data.get("topHeartMovers1hStale"):
+            _movers_persist_stats["stale"] += 1
+            return "skipped_stale"
+        base_iso = data.get("topHeartMovers1hBaseAt")
+        base_at = (int(datetime.fromisoformat(base_iso).timestamp())
+                   if base_iso else None)
+        result = await _save_top_movers(movers, base_at, int(time.time()))
+    except Exception as e:                          # noqa: BLE001 — 여기서 끝낸다
+        _movers_persist_stats["failed"] += 1
+        _log({"event": "top_movers_persist_failed", "level": "warning",
+              "source": source, "detail": str(e)[:200]})
+        return "failed"
+    ms = round((time.perf_counter() - t0) * 1000, 1)
+    _movers_persist_stats[result if result in _movers_persist_stats else "failed"] += 1
+    _movers_persist_stats["lastAt"] = _iso(int(time.time()))
+    _movers_persist_stats["lastMs"] = ms
+    # 이 로그가 '재계산 작업이 살아 있는가'의 관측 근거다. computed_at은 값이 실제로
+    # 바뀔 때만 갱신되므로(같은 값이면 쓰기 0회) 생존 판정에 쓰면 안 된다.
+    _log({"event": "top_movers_persisted", "source": source, "result": result,
+          "movers": len(movers), "ms": ms,
+          "persistenceAttemptAt": _iso(int(time.time()))})
+    return result
 
 
 async def _last_top_movers() -> tuple[list[dict], int | None, int | None]:
@@ -2708,9 +2903,17 @@ def _build_main_entry(data: dict) -> dict:
     return {"data": data, "body": body, "etag": f'W/"{digest}"'}
 
 
-async def load_main_entry(limit: int = 200, *,
-                          persist_top_movers: bool = True) -> tuple[dict, str]:
-    """(entry, source) — source는 hit/coalesced/miss."""
+async def load_main_entry(limit: int = 200) -> tuple[dict, str]:
+    """(entry, source) — source는 hit/coalesced/miss. **읽기 전용이다.**
+
+    이 경로에는 DB 쓰기가 없다. 예전에는 `persist_top_movers=True`가 기본이라
+    공개 GET이 응답을 만들면서 UPDATE + COMMIT까지 했고, 그 쓰기가 잠금에 걸리자
+    조회 요청 전체가 500이 됐다(실측 2026-07-31 Railway).
+
+    플래그의 기본값을 False로 바꾸는 대신 **매개변수를 없앴다.** 기본값 하나에
+    안전성을 맡기면 호출자가 실수로 True를 넘길 수 있고, 그 실수는 장애로만 드러난다.
+    저장이 필요하면 `persist_top_movers_snapshot()`을 내부 작업에서 부른다.
+    """
     hit = _main_cache.get(limit)
     now_m = time.monotonic()
     if hit and now_m - hit[0] < MAIN_CACHE_TTL:
@@ -2726,10 +2929,7 @@ async def load_main_entry(limit: int = 200, *,
             if hit and now_m - hit[0] < MAIN_CACHE_TTL:
                 _main_stats["coalesced"] += 1
                 return hit[1], "coalesced"
-            # 기본 경로는 예전과 **완전히 같은 호출 형태**를 유지한다. 새 인자를
-            # 항상 넘기면 이 함수를 대체하는 기존 테스트 스텁이 전부 깨진다.
-            data = (await _load_main_uncached(limit) if persist_top_movers
-                    else await _load_main_uncached(limit, persist_top_movers=False))
+            data = await _load_main_uncached(limit)
             entry = _build_main_entry(data)
             _main_cache[limit] = (time.monotonic(), entry)
             # 분리 API 스냅샷은 **여기서 만들지 않는다.** 조회 경로가 생산자가 되면
@@ -2755,8 +2955,7 @@ async def load_main(limit: int = 200) -> dict:
     return entry["data"]
 
 
-async def _load_main_uncached(limit: int = 200, *,
-                              persist_top_movers: bool = True) -> dict:
+async def _load_main_uncached(limit: int = 200) -> dict:
     """메인/랭킹 공용 데이터 — 스트리머별 대표 클립 + 점수 + 변화량 + 현재 라이브."""
     db = await get_db()
     rows = [dict(r) for r in await (await db.execute(
@@ -2935,11 +3134,9 @@ async def _load_main_uncached(limit: int = 200, *,
     if top_movers:
         movers_out, movers_stale = top_movers, False
         movers_base, movers_at = ref_ts, now
-        # 스냅샷 생산 경로는 이 저장을 건너뛴다. 게시할 때마다 같은 값을 다시 쓰면
-        # 스윕 종료 직후·warm-up마다 불필요한 UPDATE/COMMIT이 붙어, P1에서 겨우
-        # 없앤 잠금 경합을 되살릴 수 있다. 저장은 기존 /main 경로에만 남긴다.
-        if persist_top_movers:
-            await _save_top_movers(top_movers, ref_ts, now)
+        # **여기서 저장하지 않는다.** 이 함수는 공개 GET이 타는 경로이고, 응답을
+        # 만들면서 DB를 쓰면 잠금 하나가 조회 실패가 된다. 저장은 랭킹 계산이 끝난
+        # 뒤 persist_top_movers_snapshot()이 맡는다(요청 경로 밖).
     else:
         movers_out, movers_base, movers_at = await _last_top_movers()
         movers_stale = bool(movers_out)
@@ -3028,8 +3225,7 @@ async def publish_snapshot(*, source: str) -> str | None:
             # 비활성 배포에서는 계산도 메모리도 로그도 쓰지 않는다.
             return None
         # 게시는 순수 생산이다 — DB 쓰기를 하지 않는다.
-        entry, _src = await load_main_entry(_split.MAX_SNAPSHOT_LIMIT,
-                                            persist_top_movers=False)
+        entry, _src = await load_main_entry(_split.MAX_SNAPSHOT_LIMIT)
         data = entry["data"]
         rows = data.get("streamers") or []
         # 불완전한 결과는 게시하지 않는다. 참가자가 0명인 응답을 latest로 올리면
