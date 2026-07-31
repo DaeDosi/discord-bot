@@ -2031,7 +2031,20 @@ def _to_clip_row(item: dict, card: dict) -> dict:
 
 
 async def _scan_batch(client, items: list[dict], now: int) -> tuple[int, int, int]:
-    """후보 묶음을 카드 조회해 저장한다. (태그된 수, 신규 저장 수, 실패 수)."""
+    """후보 묶음을 카드 조회해 저장한다. (태그된 수, 신규 저장 수, 실패 수).
+
+    **단계가 엄격히 나뉜다: 외부 조회 → 락 획득 → 짧은 DB 트랜잭션 → 락 해제.**
+
+    예전에는 한 루프 안에서 DML과 `acquire_clip_lock`(최대 2초 `asyncio.sleep`
+    폴링)이 번갈아 실행됐다. 공유 연결은 `isolation_level=''`이라 첫 DML부터
+    SQLite 쓰기 잠금을 붙들므로, **그 폴링 시간만큼 프로세스 전체와 봇 프로세스의
+    쓰기까지 멈췄다.** 게다가 폴링 중 예외가 나면 트랜잭션이 열린 채 남아
+    (`_scan_batch`에 rollback이 없었다) 그 뒤 모든 쓰기가 영구히 막혔다 —
+    실측 2026-08-01: `loop_error: database is locked`가 46분 이상 지속되고
+    `sweep_start`·`streamers_upserted`·`rising_collector 완료`가 전부 0이 됐다.
+
+    이제 DB 구간에는 **DB 작업만** 있고, `db_write`가 커밋·롤백·재시도를 소유한다.
+    """
     sem = asyncio.Semaphore(max(1, CARD_CONCURRENCY))
     results: list[tuple[dict, dict | None]] = []
 
@@ -2040,13 +2053,36 @@ async def _scan_batch(client, items: list[dict], now: int) -> tuple[int, int, in
             card = await fetch_card(client, it)
         results.append((it, card))
 
+    # ── 1) 외부 조회 (DB 접근 없음)
     await asyncio.gather(*[one(it) for it in items])
 
-    tagged = inserted = failed = 0
+    # ── 2) 메모리에서 판정 (DB·네트워크 없음)
+    failed_items: list[tuple[str, dict]] = []
+    untagged: list[tuple[str, dict]] = []
+    tagged_rows: list[tuple[str, dict, dict, dict]] = []
     for it, card in results:
         uid = str(it["clipUID"])
         if card is None:
-            failed += 1
+            failed_items.append((uid, it))
+            continue
+        if not has_singcup_tag(card["description"]):
+            untagged.append((uid, it))
+            continue
+        tagged_rows.append((uid, it, card, _to_clip_row(it, card)))
+
+    # ── 3) 필요한 클립 락을 **트랜잭션 밖에서** 전부 받는다
+    tokens: dict[str, str | None] = {}
+    for uid, _it, _card, _row in tagged_rows:
+        tokens[uid] = await acquire_clip_lock(uid)
+
+    stat = {"inserted": 0}
+    inserted_owners: list[tuple[str, str]] = []
+
+    async def apply(_db):
+        # 재시도로 다시 불릴 수 있으므로 누적 상태를 매번 초기화한다.
+        stat["inserted"] = 0
+        inserted_owners.clear()
+        for uid, it in failed_items:
             await _queue_retry(it, "card fetch failed", now)
             # 카드 실패도 **스캔 상태로 남긴다**. 예전에는 재시도 큐에만 넣었는데,
             # 그 큐는 attempts가 한도(RETRY_MAX_ATTEMPTS)에 닿으면 다시 보지 않는다.
@@ -2054,29 +2090,35 @@ async def _scan_batch(client, items: list[dict], now: int) -> tuple[int, int, in
             # '고아'가 되어, 목록에서 1페이지를 벗어나는 순간 영영 사라진다.
             await _scan_upsert(uid, SCAN_FETCH_FAILED, now, item=it,
                                error="discover: card fetch failed")
-            continue
-        await _clear_retry(uid)
-        is_tag = has_singcup_tag(card["description"])
-        await _record_scan(uid, is_tag, now, it)
-        if not is_tag:
-            continue
-        tagged += 1
-        row = _to_clip_row(it, card)
-        if await _upsert_clip(row, now):
-            inserted += 1
-            # 새 클립이 들어온 소유자의 **기존** 클립을 권위 검사 앞줄에 세운다.
-            # 지우고 다시 올리는 흐름이 흔해 신호가 세지만, 정상 클립을 여러 개
-            # 올린 스트리머도 많으므로 **검사 예약만** 한다(비활성화 금지).
-            await _audit_hint_siblings(row["owner_channel_id"], uid)
-        # 같은 클립을 정기 스윕이 만지고 있으면 기다렸다 쓴다
-        tok = await acquire_clip_lock(uid)
-        try:
+        for uid, it in untagged:
+            await _clear_retry(uid)
+            await _record_scan(uid, False, now, it)
+        for uid, it, card, row in tagged_rows:
+            await _clear_retry(uid)
+            await _record_scan(uid, True, now, it)
+            if await _upsert_clip(row, now):
+                stat["inserted"] += 1
+                inserted_owners.append((row["owner_channel_id"], uid))
             await _apply_metrics(uid, row["heart_count"], row["view_count"],
                                  card["heart_ok"], card["view_ok"], now)
-        finally:
+
+    try:
+        ok = await db_write(get_db, apply, what="singcup.scan_batch", log=_log)
+    finally:
+        for uid, tok in tokens.items():
             await release_clip_lock(uid, tok)
-    await (await get_db()).commit()
-    return tagged, inserted, failed
+
+    if not ok:
+        # 잠금으로 못 썼다 — 아무것도 저장되지 않았고(롤백됨) 다음 회차가 다시 본다.
+        return 0, 0, len(items)
+
+    # 새 클립이 들어온 소유자의 **기존** 클립을 권위 검사 앞줄에 세운다.
+    # 지우고 다시 올리는 흐름이 흔해 신호가 세지만, 정상 클립을 여러 개 올린
+    # 스트리머도 많으므로 **검사 예약만** 한다(비활성화 금지).
+    # 자기 트랜잭션을 쓰므로 위 쓰기 구간 **밖에서** 부른다.
+    for owner, uid in inserted_owners:
+        await _audit_hint_siblings(owner, uid)
+    return len(tagged_rows), stat["inserted"], len(failed_items)
 
 
 # ── ① 백필 ─────────────────────────────────────────────────────────────────
@@ -2605,26 +2647,60 @@ async def refresh_metrics(limit: int | None = None) -> dict:
         tally = {"ok": 0, "partial": 0, "failed": 0, "fetch_failed": 0}
         no_heart = no_view = 0
 
+        # **조회와 저장을 분리한다.** 예전에는 `one()`이 카드 조회와 `_apply_metrics`
+        # (DML, 커밋은 상위가)를 함께 했고, gather가 끝난 뒤에야 한 번 커밋했다.
+        # 즉 **먼저 끝난 클립의 DML이 트랜잭션을 열어 둔 채, 나머지 클립의 HTTP를
+        # 전부 기다렸다.** 공유 연결은 첫 DML부터 쓰기 잠금을 붙들므로 그 시간 동안
+        # 프로세스 전체와 봇 프로세스의 쓰기가 멈춘다.
+        fetched: list[tuple[str, dict | None, dict | None]] = []
+
         async def one(r):
-            nonlocal no_heart, no_view
             uid = r["clip_uid"]
             item = {"clipUID": uid, "videoId": r["video_id"],
                     "recId": r["rec_id"] or "{}"}
             before = await _metrics_snapshot(uid) if uid == DEBUG_CLIP_UID else None
             async with sem:
                 card = await fetch_card(client, item)
-            tok = await acquire_clip_lock(uid)
-            try:
+            fetched.append((uid, card, before))
+
+        started = time.monotonic()
+        _take_api_counters()                       # 이 사이클분만 세도록 초기화
+        # 1) 외부 조회만
+        await asyncio.gather(*[one(r) for r in due])
+        # 2) 클립 락은 트랜잭션 밖에서 받는다
+        tokens: dict[str, str | None] = {}
+        for uid, _card, _before in fetched:
+            tokens[uid] = await acquire_clip_lock(uid)
+        states: dict[str, str] = {}
+
+        async def apply_metrics_batch(_db):
+            for k in tally:
+                tally[k] = 0
+            states.clear()
+            for uid, card, _before in fetched:
                 if card is None:
                     tally["fetch_failed"] += 1
                     tally["failed"] += 1
                     await _apply_metrics(uid, 0, 0, False, False, now)
-                    return
-                state = await _apply_metrics(
+                    continue
+                states[uid] = await _apply_metrics(
                     uid, card["heart_count"], card["view_count"],
                     card["heart_ok"], card["view_ok"], now)
-            finally:
+
+        try:
+            wrote = await db_write(get_db, apply_metrics_batch,
+                                   what="singcup.refresh_metrics", log=_log)
+        finally:
+            for uid, tok in tokens.items():
                 await release_clip_lock(uid, tok)
+        if not wrote:
+            return {"status": ST_SKIPPED, "note": "DB 잠금으로 저장하지 못했습니다.",
+                    "due": len(due)}
+        # 3) 집계·로그는 트랜잭션 밖에서
+        for uid, card, before in fetched:
+            if card is None:
+                continue
+            state = states.get(uid, "failed")
             tally[state] += 1
             if not card["heart_ok"]:
                 no_heart += 1
@@ -2637,17 +2713,11 @@ async def refresh_metrics(limit: int | None = None) -> dict:
                       "kept_heart": not card["heart_ok"], "kept_view": not card["view_ok"]})
             if before is not None:
                 # 지정한 클립 1건만 DB(전)·카드(신규)·DB(후)를 한 줄에 붙여 남긴다
-                await (await get_db()).commit()
                 _log({"event": "metrics_debug", "clip_uid": uid, "state": state,
                       "db_before": before, "fetched": {
                           "heart_count": card["heart_count"], "view_count": card["view_count"],
                           "heart_ok": card["heart_ok"], "view_ok": card["view_ok"]},
                       "db_after": await _metrics_snapshot(uid)})
-
-        started = time.monotonic()
-        _take_api_counters()                       # 이 사이클분만 세도록 초기화
-        await asyncio.gather(*[one(r) for r in due])
-        await (await get_db()).commit()
         await recompute_ranking(now, client=client)
         api = _take_api_counters()
         dur = int((time.monotonic() - started) * 1000)

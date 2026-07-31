@@ -23,6 +23,9 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import sys
+import time
+import weakref
 from typing import Awaitable, Callable
 
 import aiosqlite
@@ -56,6 +59,37 @@ async def _rollback(db) -> None:
         pass
 
 
+# ── 공유 연결의 쓰기 트랜잭션 직렬화 ────────────────────────────────────────
+# 공유 aiosqlite 연결은 `isolation_level=''`이라 **첫 DML부터 commit까지 SQLite
+# 쓰기 잠금을 붙든다**(실측). 그런데 여러 코루틴이 같은 연결에서 DML을 섞어 실행할
+# 수 있었고, 그중 하나가 트랜잭션이 열린 채 외부 await(HTTP·clip lock 폴링)에
+# 들어가면 그 시간만큼 **프로세스 전체와 다른 프로세스의 쓰기까지** 멈췄다.
+# 한 코루틴의 rollback이 다른 코루틴의 미커밋 작업을 되돌리는 문제도 같은 뿌리다.
+#
+# 그래서 공유 연결의 쓰기 트랜잭션은 이 락 안에서만 열린다. 락을 잡기 **전에**
+# 외부 조회를 끝내는 것은 호출부의 책임이고, 락 안에서는 DB 작업만 한다.
+# 이벤트 루프마다 따로 두는 이유: 테스트가 테스트마다 새 루프를 만드는데
+# asyncio.Lock은 처음 쓰인 루프에 묶인다.
+_shared_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def shared_write_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _shared_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _shared_locks[loop] = lock
+    return lock
+
+
+def process_role() -> str:
+    """로그의 `process` 필드 — 봇과 백엔드가 같은 파일을 쓰므로 구분이 필요하다."""
+    role = os.getenv("DB_PROCESS_ROLE", "").strip()
+    if role:
+        return role
+    return "web" if any("uvicorn" in str(a) for a in sys.argv) else "bot"
+
+
 async def db_write(
     get_db: Callable[[], Awaitable],
     fn: Callable[[object], Awaitable],
@@ -72,25 +106,40 @@ async def db_write(
     last: BaseException | None = None
     for i in range(max(1, attempts)):
         db = await get_db()
-        try:
-            await fn(db)
-            await db.commit()
-            _stats["writes"] += 1
-            return True
-        except Exception as e:                      # noqa: BLE001
-            await _rollback(db)
-            if not is_locked(e):
-                raise
-            last = e
-            if i + 1 >= attempts:
-                break
-            _stats["retries"] += 1
-            # jitter — 여러 워커가 같은 순간에 몰려 재충돌하는 것을 막는다
-            await asyncio.sleep(delay + random.uniform(0, delay))
-            delay *= 2
+        t0 = time.perf_counter()
+        # 트랜잭션 전체가 이 락 안에서 열리고 닫힌다 — 다른 코루틴의 DML이 끼어들지
+        # 못하고, 아래 rollback도 **내 작업만** 되돌린다.
+        async with shared_write_lock():
+            try:
+                await fn(db)
+                await db.commit()
+                _stats["writes"] += 1
+                return True
+            except BaseException as e:              # noqa: BLE001
+                # CancelledError에서도 롤백을 보장한다 — `except Exception`이면
+                # 취소된 작업이 **열린 트랜잭션을 그대로 남기고** 사라진다.
+                await _rollback(db)
+                if not isinstance(e, Exception) or not is_locked(e):
+                    raise
+                if log is not None:
+                    log({"event": "db_locked", "level": "warning", "operation": what,
+                         "process": process_role(), "pid": os.getpid(),
+                         "connection": "shared", "in_transaction": False,
+                         "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+                         "retry": i})
+                last = e
+        # 백오프는 **락 밖에서** 기다린다 — 락을 쥔 채 자면 다른 쓰기까지 멈춘다.
+        if i + 1 >= attempts:
+            break
+        _stats["retries"] += 1
+        # jitter — 여러 워커가 같은 순간에 몰려 재충돌하는 것을 막는다
+        await asyncio.sleep(delay + random.uniform(0, delay))
+        delay *= 2
     _stats["giveups"] += 1
     if log is not None:
         log({"event": "db_locked_giveup", "level": "warning", "what": what,
+             "operation": what, "process": process_role(), "pid": os.getpid(),
+             "connection": "shared",
              "attempts": attempts, "detail": str(last)[:160]})
     return False
 
