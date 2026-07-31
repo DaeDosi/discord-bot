@@ -441,14 +441,24 @@ def test_simulated_full_event_scale_has_no_starvation():
 def test_stable_offset_is_process_independent():
     """PYTHONHASHSEED가 달라도 같은 값이어야 한다(내장 hash 금지)."""
     import subprocess
+    # import 시점에 한국어 로그를 stdout에 찍는 모듈이 있으므로 (1) 파이프를 UTF-8로
+    # 고정하고 — 부모의 로케일이 cp949면 text=True 기본 디코딩이 깨진다 — (2) 값은
+    # 로그와 섞이지 않게 마커로 뽑는다.
     code = ("import sys; sys.path[:0]=['.','web/backend'];"
-            "import singcup_audit as a; print(a.stable_offset('abcDEF123', 43200))")
+            "import singcup_audit as a;"
+            "print('STABLE_OFFSET=%d' % a.stable_offset('abcDEF123', 43200))")
     outs = set()
     for seed in ("0", "1", "12345"):
-        env = dict(os.environ, PYTHONHASHSEED=seed, PYTHONUTF8="1")
+        env = dict(os.environ, PYTHONHASHSEED=seed,
+                   PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
         r = subprocess.run([sys.executable, "-c", code], cwd=str(ROOT),
-                           capture_output=True, text=True, env=env)
-        outs.add(r.stdout.strip().splitlines()[-1])
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="strict", env=env)
+        assert r.returncode == 0, r.stderr
+        values = [ln.split("=", 1)[1].strip() for ln in r.stdout.splitlines()
+                  if ln.startswith("STABLE_OFFSET=")]
+        assert len(values) == 1, r.stdout
+        outs.add(values[0])
     assert len(outs) == 1, outs
 
 
