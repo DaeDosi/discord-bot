@@ -45,7 +45,7 @@ from singcup_sweep import start_sweep_worker
 from singcup_collector import ADMIN_SECRET, start_singcup_collector
 from singcup_retention import start_retention_worker
 
-from database import init_db
+from database import close_db, get_db, init_db
 
 
 @asynccontextmanager
@@ -77,6 +77,17 @@ async def lifespan(app: FastAPI):
     # 실제 삭제는 SINGCUP_SNAPSHOT_PRUNE_ENABLED=true + DRY_RUN=false 일 때만.
     asyncio.create_task(start_retention_worker())
     yield
+    # 종료 훅 — 미커밋 트랜잭션을 남긴 채 프로세스가 사라지면 같은 파일을 쓰는
+    # 봇 프로세스가 그 잠금에 걸린다. 되돌린 뒤 연결을 닫는다.
+    try:
+        conn = await get_db()
+        await conn.rollback()
+    except Exception:                     # noqa: BLE001 — 종료 경로는 막지 않는다
+        pass
+    try:
+        await close_db()
+    except Exception:                     # noqa: BLE001
+        pass
 
 
 # 프로덕션에서는 API 문서를 노출하지 않는다 — 전체 엔드포인트 목록과 스키마가
