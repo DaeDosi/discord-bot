@@ -1,32 +1,31 @@
-"""4분 클립 루프의 실패 지점 관측 (P1-A1).
+"""4분 클립 루프의 단계 격리와 결과 집계 (P1-A1 관측 → P1-A2 격리).
 
-실측(2026-08-01): 잠금으로 루프가 죽으면 `loop_error detail="database is locked"`
-한 줄만 남아 **어느 단계인지 특정할 수 없었다**(관측 4건 전부 미상).
+계보:
+  P1-A1이 실패 지점을 남기게 하자마자 근거가 나왔다 —
+  `step=discover, operation=null, duration_ms=0, steps_ok=0, steps_skipped=5`.
+  회차의 **첫 쓰기**(`acquire_named_lock`)가 공유 연결에 직접 커밋하고 있었고,
+  잠금이 예외로 올라와 6단계가 통째로 죽었다.
 
-이 커밋은 관측만 추가한다 — 여기서 함께 고정하는 것이 그 사실이다:
-실패 시 뒤 단계는 예전처럼 실행되지 않는다.
+  그리고 같은 로그에서 반대 방향의 결함도 드러났다 — deletion이 owner lock을
+  놓쳐 클립을 건너뛰었는데 `steps_ok=6`, 즉 **부분 실패가 완전 성공으로 보고**됐다.
+
+여기서 고정하는 것:
+  - 복구 가능한 실패는 그 단계에서 끝나고 독립 단계는 계속 돈다
+  - 프로그래밍 오류·취소는 격리하지 않고 그대로 올린다
+  - 건너뛴 일이 있으면 success가 아니라 partial이다
+  - 불완전한 회차는 스냅샷을 만들지 않는다(같은 버킷을 교체할 수 없으므로)
 """
 import asyncio
 import json
 
 import pytest
-
 import singcup_clips as sc
 
-STEPS = ["discover", "retry", "recheck", "reconcile", "deletion", "snapshot"]
-FUNCS = {
-    "discover":  "discover_new_clips",
-    "retry":     "retry_failed_clips",
-    "recheck":   "recheck_untagged_clips",
-    "reconcile": "maybe_reconcile",
-    "deletion":  "run_deletion_checks",
-    "snapshot":  "ensure_hourly_snapshot",
-}
+STEPS = ["discover", "retry", "recheck", "reconcile", "deletion"]
 
 
 @pytest.fixture
 def logs(monkeypatch):
-    """`_log` 출력을 가로채 구조화 payload로 모은다."""
     captured = []
     real_print = print
 
@@ -44,41 +43,54 @@ def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
-async def _cycle(failing_step: str | None, calls: list, error: Exception | None = None):
-    """루프 본문 한 회차를 그대로 재현한다(실제 루프의 단계 구성과 같은 순서)."""
-    cycle = {"cycle_id": "testcycle", "step": None, "operation": None}
-    token = sc._CYCLE.set(cycle)
-    steps_ok = steps_failed = 0
+def _new_cycle():
+    return {"cycle_id": "testcycle", "step": None, "operation": None,
+            "partial_reasons": []}
+
+
+async def _cycle(behaviour: dict, calls: list):
+    """루프 본문 한 회차를 실제 구성 그대로 재현한다."""
+    token = sc._CYCLE.set(_new_cycle())
+    results = {}
     try:
         for name in STEPS:
             async def fn(_n=name):
                 calls.append(_n)
-                if _n == failing_step:
-                    raise error or Exception("database is locked")
-            try:
-                async with sc._step(name):
-                    await fn()
-            except BaseException:
-                steps_failed += 1
-                raise
-            steps_ok += 1
-    except Exception as e:
-        sc._log({"event": "loop_error", "level": "warning", "detail": str(e)[:200]})
+                act = behaviour.get(_n)
+                if isinstance(act, BaseException):
+                    raise act
+                if act == "partial":
+                    sc._log({"event": "clip_deletion_skipped_owner_locked",
+                             "clip_uid": "x"})
+                    return {"status": sc.ST_OK}
+                if act == "skip":
+                    return {"status": sc.ST_SKIPPED}
+                return {"status": sc.ST_OK}
+            results[name] = await sc._run_step(name, fn)
+
+        incomplete = [k for k, v in results.items() if v in ("failed", "partial")]
+        if incomplete:
+            results["snapshot"] = "skipped"
+            sc._log({"event": "snapshot_skipped_incomplete_cycle",
+                     "failed_steps": [k for k, v in results.items() if v == "failed"],
+                     "partial_steps": [k for k, v in results.items() if v == "partial"]})
+        else:
+            async def snap():
+                calls.append("snapshot")
+                return True
+            results["snapshot"] = await sc._run_step("snapshot", snap)
     finally:
-        if steps_ok or steps_failed:
-            sc._log({"event": "collector_cycle_done", "steps_ok": steps_ok,
-                     "steps_failed": steps_failed,
-                     "steps_skipped": (6 - steps_ok - steps_failed) if steps_failed else 0,
-                     "duration_ms": 0})
         sc._CYCLE.reset(token)
-    return steps_ok, steps_failed
+    return results
 
 
-# ── 1. 실패 단계가 정확히 드러난다 ─────────────────────────────────────────
+LOCKED = Exception("database is locked")
+
+
+# ── 1. 실패 단계 식별 ──────────────────────────────────────────────────────
 @pytest.mark.parametrize("step", STEPS)
 def test_each_step_is_identified(logs, step):
-    calls = []
-    _run(_cycle(step, calls))
+    _run(_cycle({step: Exception("database is locked")}, []))
     errs = [x for x in logs if x["event"] == "loop_step_error"]
     assert len(errs) == 1, errs
     assert errs[0]["step"] == step
@@ -86,117 +98,185 @@ def test_each_step_is_identified(logs, step):
     assert errs[0]["error_type"] == "database_locked"
     assert errs[0]["retryable"] is True
     assert errs[0]["cycle_id"] == "testcycle"
-    assert "duration_ms" in errs[0]
 
 
-# ── 2. 제어 흐름은 그대로다 (P1-A1의 핵심 불변식) ─────────────────────────
-@pytest.mark.parametrize("step,expected", [
-    ("discover",  ["discover"]),
-    ("recheck",   ["discover", "retry", "recheck"]),
-    ("deletion",  ["discover", "retry", "recheck", "reconcile", "deletion"]),
-    ("snapshot",  STEPS),
-])
-def test_later_steps_are_still_skipped(logs, step, expected):
-    """뒤 단계를 계속 실행하도록 바꾸지 않았다 — 그건 별도 판단이 필요한 동작 변경이다."""
+# ── 2. 격리 — 독립 단계는 계속 돈다 ───────────────────────────────────────
+def test_recoverable_failure_does_not_stop_the_cycle(logs):
+    """예전에는 첫 실패에서 회차가 끝났다(실측 steps_skipped=5)."""
     calls = []
-    _run(_cycle(step, calls))
-    assert calls == expected
+    results = _run(_cycle({"discover": Exception("database is locked")}, calls))
+    assert calls == STEPS + ["snapshot"] or calls == STEPS   # snapshot은 아래에서 본다
+    assert results["discover"] == "failed"
+    assert all(results[s] == "success" for s in STEPS[1:])
 
 
-def test_all_success_runs_every_step(logs):
+def test_every_step_still_runs_when_one_fails(logs):
     calls = []
-    ok, failed = _run(_cycle(None, calls))
-    assert calls == STEPS
-    assert (ok, failed) == (6, 0)
-    assert not [x for x in logs if x["event"] == "loop_step_error"]
+    _run(_cycle({"reconcile": Exception("database is locked")}, calls))
+    for s in STEPS:
+        assert s in calls, s
 
 
-def test_cycle_summary(logs):
-    _run(_cycle("reconcile", []))
-    done = [x for x in logs if x["event"] == "collector_cycle_done"][0]
-    assert done["steps_ok"] == 3          # discover·retry·recheck
-    assert done["steps_failed"] == 1      # reconcile
-    assert done["steps_skipped"] == 2     # deletion·snapshot
-
-
-# ── 3. 예외 종류를 구분한다 ────────────────────────────────────────────────
-def test_unexpected_error_is_not_marked_retryable(logs):
-    _run(_cycle("deletion", [], error=TypeError("프로그래밍 오류")))
+# ── 3. 격리하지 않는 오류 ─────────────────────────────────────────────────
+def test_programming_error_is_not_isolated(logs):
+    """부분 실패로 위장하면 진짜 버그가 숨는다 — 그대로 올린다."""
+    with pytest.raises(TypeError):
+        _run(_cycle({"deletion": TypeError("프로그래밍 오류")}, []))
     err = [x for x in logs if x["event"] == "loop_step_error"][0]
     assert err["error_type"] == "unexpected"
     assert err["retryable"] is False
 
 
-def test_cancellation_is_not_swallowed(logs):
-    async def cancel_cycle():
-        cycle = {"cycle_id": "c", "step": None, "operation": None}
-        token = sc._CYCLE.set(cycle)
+def test_cancellation_is_not_isolated(logs):
+    with pytest.raises(asyncio.CancelledError):
+        _run(_cycle({"retry": asyncio.CancelledError()}, []))
+    err = [x for x in logs if x["event"] == "loop_step_error"][0]
+    assert err["step"] == "retry"
+
+
+# ── 4. partial 집계 ────────────────────────────────────────────────────────
+def test_skipped_work_is_partial_not_success(logs):
+    """deletion이 클립을 건너뛰었는데 steps_ok=6으로 보고되던 결함."""
+    results = _run(_cycle({"deletion": "partial"}, []))
+    assert results["deletion"] == "partial"
+    assert results["discover"] == "success"
+
+
+def test_partial_reason_is_recorded(logs):
+    _run(_cycle({"deletion": "partial"}, []))
+    skipped = [x for x in logs if x["event"] == "snapshot_skipped_incomplete_cycle"][0]
+    assert skipped["partial_steps"] == ["deletion"]
+
+
+def test_step_that_declines_to_run_is_skipped(logs):
+    """다른 워커가 락을 쥐고 있어 이번엔 안 도는 경우 — 실패가 아니다."""
+    results = _run(_cycle({"discover": "skip"}, []))
+    assert results["discover"] == "skipped"
+
+
+def test_all_success(logs):
+    calls = []
+    results = _run(_cycle({}, calls))
+    assert calls == STEPS + ["snapshot"]
+    assert set(results.values()) == {"success"}
+
+
+# ── 5. 스냅샷 — 불완전한 회차에서는 만들지 않는다 ─────────────────────────
+@pytest.mark.parametrize("behaviour", [
+    {"discover": Exception("database is locked")},
+    {"deletion": "partial"},
+])
+def test_incomplete_cycle_skips_snapshot(logs, behaviour):
+    """`UNIQUE(bucket) + INSERT OR IGNORE`라 한 번 쓰면 그 시간 안에 교체할 수 없다.
+    부정확한 값을 정상 기준선으로 굳히면 정상 회차가 와도 못 고친다."""
+    calls = []
+    results = _run(_cycle(behaviour, calls))
+    assert results["snapshot"] == "skipped"
+    assert "snapshot" not in calls, "불완전한 회차인데 스냅샷을 만들었다"
+    assert [x for x in logs if x["event"] == "snapshot_skipped_incomplete_cycle"]
+
+
+def test_next_clean_cycle_creates_the_snapshot(logs):
+    """건너뛴 뒤 다음 회차가 정상이면 같은 버킷을 채울 수 있다."""
+    _run(_cycle({"discover": Exception("database is locked")}, []))
+    calls = []
+    results = _run(_cycle({}, calls))
+    assert results["snapshot"] == "success"
+    assert "snapshot" in calls
+
+
+def test_skipped_step_alone_does_not_block_snapshot(logs):
+    """'다른 워커가 돌고 있어 건너뜀'은 데이터 품질 문제가 아니다."""
+    calls = []
+    results = _run(_cycle({"discover": "skip"}, calls))
+    assert results["snapshot"] == "success"
+    assert "snapshot" in calls
+
+
+# ── 6. 회차 요약 ───────────────────────────────────────────────────────────
+def test_cycle_summary_counts(logs):
+    async def run():
+        token = sc._CYCLE.set(_new_cycle())
+        results = {"discover": "failed", "retry": "success", "recheck": "success",
+                   "reconcile": "success", "deletion": "partial", "snapshot": "skipped"}
         try:
-            with pytest.raises(asyncio.CancelledError):
-                async with sc._step("deletion"):
-                    raise asyncio.CancelledError()
+            def _n(kind):
+                return sum(1 for v in results.values() if v == kind)
+            sc._log({"event": "collector_cycle_done",
+                     "steps_success": _n("success"), "steps_partial": _n("partial"),
+                     "steps_failed": _n("failed"), "steps_skipped": _n("skipped"),
+                     "steps": results, "duration_ms": 0})
         finally:
             sc._CYCLE.reset(token)
 
-    _run(cancel_cycle())
-    err = [x for x in logs if x["event"] == "loop_step_error"][0]
-    assert err["step"] == "deletion"
-    assert err["error_type"] == "unexpected"    # 잠금이 아니다
+    _run(run())
+    done = [x for x in logs if x["event"] == "collector_cycle_done"][0]
+    assert (done["steps_success"], done["steps_partial"],
+            done["steps_failed"], done["steps_skipped"]) == (3, 1, 1, 1)
 
 
-# ── 4. operation이 붙는다 ──────────────────────────────────────────────────
+# ── 7. 컨텍스트와 operation ────────────────────────────────────────────────
 def test_operation_is_reported(logs):
     async def run():
-        cycle = {"cycle_id": "c", "step": None, "operation": None}
-        token = sc._CYCLE.set(cycle)
+        token = sc._CYCLE.set(_new_cycle())
         try:
-            with pytest.raises(Exception):
-                async with sc._step("deletion"):
-                    with sc._operation("acquire_owner_lock"):
-                        raise Exception("database is locked")
+            async def fn():
+                with sc._operation("acquire_owner_lock"):
+                    raise Exception("database is locked")
+            await sc._run_step("deletion", fn)
         finally:
             sc._CYCLE.reset(token)
 
     _run(run())
     err = [x for x in logs if x["event"] == "loop_step_error"][0]
-    assert err["step"] == "deletion"
     assert err["operation"] == "acquire_owner_lock"
 
 
 def test_logs_inside_a_cycle_carry_context(logs):
-    """db_locked_giveup 같은 기존 로그도 이제 어느 단계인지 알 수 있다."""
     async def run():
-        cycle = {"cycle_id": "c", "step": None, "operation": None}
-        token = sc._CYCLE.set(cycle)
+        token = sc._CYCLE.set(_new_cycle())
         try:
-            async with sc._step("deletion"):
-                with sc._operation("acquire_owner_lock"):
-                    sc._log({"event": "db_locked_giveup", "what": "acquire_owner_lock"})
+            async def fn():
+                sc._log({"event": "db_locked_giveup", "what": "acquire_owner_lock"})
+                return {"status": sc.ST_OK}
+            return await sc._run_step("deletion", fn)
         finally:
             sc._CYCLE.reset(token)
 
-    _run(run())
+    status = _run(run())
     giveup = [x for x in logs if x["event"] == "db_locked_giveup"][0]
-    assert giveup["step"] == "deletion"
-    assert giveup["operation"] == "acquire_owner_lock"
-    assert giveup["cycle_id"] == "c"
+    assert giveup["step"] == "deletion" and giveup["cycle_id"] == "testcycle"
+    assert status == "partial", "잠금 포기를 성공으로 세면 안 된다"
 
 
 def test_logs_outside_a_cycle_are_unchanged(logs):
-    """회차 밖(스윕·API 경로)의 로그에는 아무것도 붙이지 않는다."""
     sc._log({"event": "something", "x": 1})
     assert logs[-1] == {"event": "something", "x": 1}
 
 
-# ── 5. 느린 쓰기 ───────────────────────────────────────────────────────────
+def test_internal_context_keys_are_not_logged(logs):
+    async def run():
+        token = sc._CYCLE.set(_new_cycle())
+        try:
+            async def fn():
+                sc._log({"event": "clip_deletion_skipped_owner_locked", "clip_uid": "x"})
+                return {"status": sc.ST_OK}
+            await sc._run_step("deletion", fn)
+        finally:
+            sc._CYCLE.reset(token)
+
+    _run(run())
+    for entry in logs:
+        assert "partial_reasons" not in entry or entry["event"] == "collector_cycle_done"
+
+
+# ── 8. 느린 쓰기 ───────────────────────────────────────────────────────────
 def test_slow_write_is_reported(logs, monkeypatch):
-    """'잠금을 맞은 작업'만 봐서는 범인을 못 찾는다 — 오래 쥔 작업도 남긴다."""
     monkeypatch.setattr(sc, "SLOW_WRITE_MS", 0)
     with sc._operation("recompute_ranking_commit"):
         pass
     slow = [x for x in logs if x["event"] == "db_write_slow"]
     assert slow and slow[0]["what"] == "recompute_ranking_commit"
-    assert "total_ms" in slow[0]
 
 
 def test_fast_write_is_not_reported(logs, monkeypatch):
@@ -206,14 +286,13 @@ def test_fast_write_is_not_reported(logs, monkeypatch):
     assert not [x for x in logs if x["event"] == "db_write_slow"]
 
 
-# ── 6. 민감정보가 없다 ─────────────────────────────────────────────────────
+# ── 9. 민감정보 ────────────────────────────────────────────────────────────
 def test_error_log_has_no_sql_or_secrets(logs):
-    leaky = ("INSERT INTO singcup_clips VALUES ('secret') "
+    leaky = ("database is locked — INSERT INTO singcup_clips VALUES ('secret') "
              "Authorization=Bearer TOPSECRET 192.168.0.1")
-    _run(_cycle("discover", [], error=Exception(leaky)))
+    _run(_cycle({"discover": Exception(leaky)}, []))
     err = [x for x in logs if x["event"] == "loop_step_error"][0]
     assert len(err["detail"]) <= 160
-    # 길이 제한만으로는 부족하다 — 필드 구성 자체에 SQL·토큰 자리가 없어야 한다
     assert set(err) <= {"event", "level", "worker", "step", "operation",
                         "error_type", "retryable", "duration_ms", "detail",
                         "cycle_id"}

@@ -107,11 +107,32 @@ _CYCLE: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar(
 SLOW_WRITE_MS = int(os.getenv("SINGCUP_SLOW_WRITE_MS", "1000"))
 
 
+# 이 이벤트가 회차 안에서 나오면 그 단계는 **부분 성공**이다. 예외 없이 끝났다는
+# 이유로 success로 세면(실측: deletion이 owner lock을 놓쳐 클립을 건너뛰었는데
+# steps_ok=6) 처리 못 한 일이 있었다는 사실이 통째로 사라진다.
+# 여기(로그 한 곳)에서 판정하므로 새 giveup 경로가 생겨도 자동으로 잡힌다.
+_PARTIAL_EVENTS = frozenset({
+    "db_locked_giveup",
+    "clip_deletion_skipped_owner_locked",
+    "clip_deletion_skipped_lock_error",
+    "owner_lock_release_failed",
+    "top_movers_write_giveup",
+})
+
+# 회차 컨텍스트에는 싣지 않는(로그에 붙이지 않는) 내부 키.
+_CTX_INTERNAL = frozenset({"partial_reasons"})
+
+
 def _log(payload: dict):
     ctx = _CYCLE.get()
     if ctx is not None:
+        event = payload.get("event")
+        if event in _PARTIAL_EVENTS and ctx.get("step"):
+            ctx["partial_reasons"].append(f"{ctx['step']}:{event}")
         # 회차 안에서 난 로그에는 실행 위치를 붙인다(값이 없으면 붙이지 않는다).
-        payload = {**payload, **{k: v for k, v in ctx.items() if v is not None}}
+        payload = {**payload,
+                   **{k: v for k, v in ctx.items()
+                      if v is not None and k not in _CTX_INTERNAL}}
     print(f"[singcup_clips] {json.dumps(payload, ensure_ascii=False, default=str)}", flush=True)
 
 
@@ -150,21 +171,23 @@ def _operation(name: str):
                   "what": name, "total_ms": total})
 
 
-@contextlib.asynccontextmanager
-async def _step(name: str):
-    """루프 단계 하나. **실패하면 그대로 올린다 — 제어 흐름은 그대로다.**
+async def _run_step(name: str, fn) -> str:
+    """루프 단계 하나를 실행하고 결과를 돌려준다: success / partial / failed / skipped.
 
-    (뒤 단계를 계속 실행할지는 단계별 의존성 판단이 필요해 여기서 하지 않는다.)
+    **복구 가능한 오류만 격리한다.** SQLite 잠금·타임아웃은 이 단계에서 끝내고
+    다른 독립 단계는 계속 돌린다(실측: 회차 첫 쓰기 하나가 잠기자 6단계가 통째로
+    건너뛰어졌다). 반대로 프로그래밍 오류·취소·종료 신호는 **그대로 올린다** —
+    부분 실패로 위장하면 진짜 버그가 숨는다.
     """
     ctx = _CYCLE.get()
     if ctx is not None:
         ctx["step"] = name
         ctx["operation"] = None
+        before = len(ctx["partial_reasons"])
     t0 = time.perf_counter()
     try:
-        yield
+        result = await fn()
     except BaseException as e:                      # noqa: BLE001
-        # CancelledError·종료 신호도 기록만 하고 그대로 올린다(삼키지 않는다).
         kind, retryable = _error_kind(e)
         _log({"event": "loop_step_error", "level": "warning",
               "worker": "singcup_clips", "step": name,
@@ -172,11 +195,19 @@ async def _step(name: str):
               "error_type": kind, "retryable": retryable,
               "duration_ms": int((time.perf_counter() - t0) * 1000),
               "detail": str(e)[:160]})
-        raise
+        if not retryable:
+            raise                                   # 프로그래밍 오류·취소는 올린다
+        return "failed"
     finally:
         if ctx is not None:
             ctx["step"] = None
             ctx["operation"] = None
+
+    if isinstance(result, dict) and result.get("status") == ST_SKIPPED:
+        return "skipped"
+    if ctx is not None and len(ctx["partial_reasons"]) > before:
+        return "partial"
+    return "success"
 
 
 # ── 순수 함수 (테스트 대상) ─────────────────────────────────────────────────
@@ -1242,6 +1273,23 @@ async def _confirm_deleted_and_reselect(row: dict, now: int, reason: str,
     """
     uid = row["clip_uid"]
     owner = row.get("owner_channel_id") or ""
+
+    # 락 없이 먼저 본다. 이미 끝난 상태면 어차피 아무것도 바꾸지 않는데, 락 획득만
+    # 해도 쓰기 트랜잭션이 2건(획득·해제) 나간다. 실측에서 noop이 몰린 구간에
+    # `acquire_owner_lock` 잠금 포기가 반복됐다.
+    # **이건 최적화일 뿐 최종 판정이 아니다** — 아래 트랜잭션 안에서 다시 확인한다.
+    pre = await (await (await get_db()).execute(
+        "SELECT deletion_state FROM singcup_clips WHERE clip_uid=? AND event_id=?",
+        (uid, EVENT_ID))).fetchone()
+    if pre is None:
+        _log({"event": "clip_deletion_noop", "clip_uid": uid, "note": "row_gone",
+              "precheck": True})
+        return False
+    if pre["deletion_state"] == DEL_CONFIRMED:
+        _log({"event": "clip_deletion_noop", "clip_uid": uid,
+              "note": "already_confirmed", "precheck": True})
+        return False
+
     # owner 락도 **전용 연결**로 잡는다. 공유 연결을 쓰면 락 획득이 공유 큐 뒤에서
     # 상한 없이 기다리고, 그동안 clip 락이 계속 잡혀 있다.
     try:
@@ -1807,7 +1855,19 @@ BF_IDLE, BF_RUNNING, BF_PAUSED, BF_DONE, BF_FAILED = (
 
 # ── 이름 있는 분산 락 ───────────────────────────────────────────────────────
 async def acquire_named_lock(name: str, ttl: int) -> str | None:
-    """조건부 UPDATE의 rowcount로 획득을 판정한다(check-then-set 경합 방지)."""
+    """조건부 UPDATE의 rowcount로 획득을 판정한다(check-then-set 경합 방지).
+
+    **주의 — 여기가 4분 루프 실패의 실제 지점이다(실측 2026-08-01).**
+    이 쓰기는 `db_write`를 지나지 않고 공유 연결에 직접 커밋한다. 그래서
+    `database is locked`가 예외로 그대로 올라오고, 이 함수가 회차의 **첫 쓰기**라
+    회차가 시작하자마자 죽었다(`step=discover, operation=null, duration_ms=0`).
+
+    `db_write`로 감싸 None(=미획득)으로 흘려보내는 것이 자연스러워 보이지만,
+    시도해 보니 **P0 불변식 테스트를 건드린다** — `acquire_clip_lock`이 이 함수를
+    쓰는 핫 패스라(회차당 수백 건) 락 획득 자체가 트랜잭션이 되어
+    "락을 트랜잭션 **전에** 잡는다"는 P0 순서 검증이 깨진다. 별도 설계가 필요해
+    여기서는 손대지 않았다. 지금은 단계 격리(P1-A2)가 피해를 그 단계로 가둔다.
+    """
     now = int(time.time())
     token = uuid.uuid4().hex[:12]
     db = await get_db()
@@ -1829,6 +1889,14 @@ async def renew_named_lock(name: str, token: str, ttl: int) -> bool:
         (int(time.time()) + ttl, name, token))
     await db.commit()
     return cur.rowcount == 1
+
+
+async def release_named_lock(name: str, token: str):
+    db = await get_db()
+    await db.execute(
+        "UPDATE singcup_locks SET locked_until=0, owner='' WHERE name=? AND owner=?",
+        (name, token))
+    await db.commit()
 
 
 # ── 클립 단위 락 ────────────────────────────────────────────────────────────
@@ -1897,14 +1965,6 @@ async def acquire_clip_lock(clip_uid: str, *, wait: float | None = None) -> str 
 async def release_clip_lock(clip_uid: str, token: str | None):
     if token:
         await release_named_lock(clip_lock_name(clip_uid), token)
-
-
-async def release_named_lock(name: str, token: str):
-    db = await get_db()
-    await db.execute(
-        "UPDATE singcup_locks SET locked_until=0, owner='' WHERE name=? AND owner=?",
-        (name, token))
-    await db.commit()
 
 
 # ── scan / retry 상태 ───────────────────────────────────────────────────────
@@ -4455,18 +4515,19 @@ async def start_clip_collector():
     await asyncio.sleep(float(os.getenv("SINGCUP_CLIP_START_DELAY_SECONDS", "40")))
     while True:
         wait = CLIP_INTERVAL_MINUTES
-        cycle = {"cycle_id": uuid.uuid4().hex[:12], "step": None, "operation": None}
+        cycle = {"cycle_id": uuid.uuid4().hex[:12], "step": None, "operation": None,
+                 "partial_reasons": []}
         token = _CYCLE.set(cycle)
         cycle_t0 = time.perf_counter()
-        steps_ok, steps_failed = 0, 0
+        results: dict[str, str] = {}
         try:
             st = event_status()
             if st == "LIVE":
                 # 지표 갱신은 여기서 하지 않는다 — singcup_sweep이 KST 매시 정각에
                 # 대표·일반을 가리지 않고 전체를 한 번씩 훑는다. 이 루프는 새 클립을
                 # 빨리 찾는 역할만 남긴다(정각까지 기다리면 신규 등장이 늦어진다).
-                # 단계마다 이름을 붙여 실패 지점을 남긴다. **순서와 중단 규칙은
-                # 그대로다** — 한 단계가 실패하면 예전처럼 뒤 단계를 건너뛴다.
+                # 다섯 단계는 서로 독립이다 — 한 단계가 잠금으로 실패해도 나머지는
+                # 돌린다. 예전에는 첫 실패에서 회차 전체가 끝났다.
                 for name, fn in (
                     ("discover",  discover_new_clips),
                     ("retry",     retry_failed_clips),
@@ -4477,17 +4538,22 @@ async def start_clip_collector():
                     # 삭제 의심/확정 클립만 소량 재확인한다. 대상이 없으면 요청 0건이라
                     # 별도 워커를 만들지 않고 이 루프에 얹는다.
                     ("deletion",  run_deletion_checks),
-                    # 1시간 증감의 기준선. 정각 회차 완료에 묶으면 회차가 한 시간을
-                    # 넘길 때 이력이 끊겨 증감이 통째로 굳는다 — 시각에만 묶는다.
-                    ("snapshot",  ensure_hourly_snapshot),
                 ):
-                    try:
-                        async with _step(name):
-                            await fn()
-                    except BaseException:
-                        steps_failed += 1
-                        raise
-                    steps_ok += 1
+                    results[name] = await _run_step(name, fn)
+
+                # 스냅샷은 다르다. `UNIQUE(bucket)` + `INSERT OR IGNORE`라 한 번
+                # 쓰면 그 시간 안에는 **교체할 수 없다.** 불완전한 회차의 값을
+                # 정상 기준선으로 굳히면 정상 회차가 와도 못 고친다.
+                # 건너뛰면 다음 4분 회차가 같은 버킷을 정상으로 채울 수 있다.
+                incomplete = [k for k, v in results.items()
+                              if v in ("failed", "partial")]
+                if incomplete:
+                    results["snapshot"] = "skipped"
+                    _log({"event": "snapshot_skipped_incomplete_cycle",
+                          "failed_steps": [k for k, v in results.items() if v == "failed"],
+                          "partial_steps": [k for k, v in results.items() if v == "partial"]})
+                else:
+                    results["snapshot"] = await _run_step("snapshot", ensure_hourly_snapshot)
             elif st == "UPCOMING":
                 wait = 30.0
             else:
@@ -4495,10 +4561,14 @@ async def start_clip_collector():
         except Exception as e:
             _log({"event": "loop_error", "level": "warning", "detail": str(e)[:200]})
         finally:
-            if steps_ok or steps_failed:        # 이벤트 기간 밖에서는 남기지 않는다
+            if results:                         # 이벤트 기간 밖에서는 남기지 않는다
+                def _n(kind):
+                    return sum(1 for v in results.values() if v == kind)
                 _log({"event": "collector_cycle_done",
-                      "steps_ok": steps_ok, "steps_failed": steps_failed,
-                      "steps_skipped": (6 - steps_ok - steps_failed) if steps_failed else 0,
+                      "steps_success": _n("success"), "steps_partial": _n("partial"),
+                      "steps_failed": _n("failed"), "steps_skipped": _n("skipped"),
+                      "steps": results,
+                      "partial_reasons": cycle["partial_reasons"][:8] or None,
                       "duration_ms": int((time.perf_counter() - cycle_t0) * 1000)})
             _CYCLE.reset(token)
         await asyncio.sleep(max(60.0, wait * 60))
