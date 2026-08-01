@@ -18,6 +18,7 @@ from deps import get_current_user, require_guild_admin
 from database import get_db
 from chzzk_monitor import check_once_debug
 from auth import FRONTEND_URL
+from utils import oauth_backoff as ob
 
 router = APIRouter(prefix="/api/chzzk", tags=["chzzk"])
 
@@ -495,6 +496,30 @@ def _validate_trigger(trigger: str):
         )
 
 
+# ── 재연동 필요 상태 보호 ─────────────────────────────────────────────────────
+# 프론트에서 버튼을 비활성화하는 것만으로는 부족하다 — API를 직접 부르면 그만이고,
+# 그러면 무효 토큰을 쓰는 경로(테스트 메시지 큐 → 봇의 실제 채팅 전송)가 되살아난다.
+# 그래서 **쓰기 경로는 서버에서도 막는다.** 조회는 막지 않는다(상태를 봐야 재연동한다).
+REAUTH_REQUIRED_CODE = "CHZZK_REAUTH_REQUIRED"
+_REAUTH_MESSAGE = "치지직 계정을 다시 연결해 주세요."
+
+
+async def _block_if_reauth_required(guild_id: str) -> None:
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT token_state FROM chzzk_subscriptions WHERE guild_id=?",
+        (int(guild_id),)
+    )).fetchone()
+    if row is None or (row["token_state"] or "") != ob.STATE_REAUTH:
+        return
+    # 내부 오류 코드(INVALID_TOKEN)·토큰·치지직 응답 원문은 내보내지 않는다.
+    raise HTTPException(status_code=409, detail={
+        "code": REAUTH_REQUIRED_CODE,
+        "message": _REAUTH_MESSAGE,
+        "reauthRequired": True,
+    })
+
+
 @router.get("/{guild_id}/chat-commands")
 async def list_chat_commands(
     guild_id: str,
@@ -519,6 +544,7 @@ async def create_chat_command(
     user: dict = Depends(get_current_user),
     _: None = Depends(require_guild_admin),
 ):
+    await _block_if_reauth_required(guild_id)
     trigger = _normalize_trigger(body.trigger_text)
     if not trigger:
         raise HTTPException(status_code=400, detail="명령어를 입력해주세요.")
@@ -562,6 +588,7 @@ async def update_chat_command(
     user: dict = Depends(get_current_user),
     _: None = Depends(require_guild_admin),
 ):
+    await _block_if_reauth_required(guild_id)
     trigger = _normalize_trigger(body.trigger_text)
     if not trigger:
         raise HTTPException(status_code=400, detail="명령어를 입력해주세요.")
@@ -596,6 +623,7 @@ async def delete_chat_command(
     user: dict = Depends(get_current_user),
     _: None = Depends(require_guild_admin),
 ):
+    await _block_if_reauth_required(guild_id)
     db = await get_db()
     result = await db.execute(
         "DELETE FROM chzzk_chat_commands WHERE id=? AND guild_id=?",
@@ -621,7 +649,9 @@ async def get_chat_status(
     sub = await (await db.execute(
         "SELECT chzzk_channel_id, chat_last_sync_at, chat_last_event_at,"
         " token_state, token_fail_count, token_last_fail_at, token_last_error_code,"
-        " token_last_success_at"
+        " token_last_success_at, token_next_try_at,"
+        # 토큰 값은 꺼내지 않는다 — 보유 여부만 SQL에서 boolean으로 만든다.
+        " (streamer_refresh_token IS NOT NULL) AS has_streamer_token"
         " FROM chzzk_subscriptions WHERE guild_id=?",
         (int(guild_id),)
     )).fetchone()
@@ -630,9 +660,13 @@ async def get_chat_status(
             "registered": False, "connected": False,
             "last_sync_at": None, "last_event_at": None,
             "today_checkins": 0, "recent_checkins": [],
-            "token_state": "ok", "reauth_required": False,
+            # 구독 행 자체가 없다 = 아직 연동한 적 없음. 'ok'로 내려보내면
+            # 프론트가 정상 연결과 구분하지 못한다.
+            "token_state": None, "reauth_required": False,
+            "streamer_linked": False,
+            "token_fail_count": 0,
             "token_last_fail_at": None, "token_last_error_code": None,
-            "token_last_success_at": None,
+            "token_last_success_at": None, "token_next_try_at": None,
         }
 
     now = _time.time()
@@ -668,7 +702,10 @@ async def get_chat_status(
                 name = await _fetch_member_name(client, guild_id, str(r["user_id"])) if r["user_id"] else "알 수 없음"
                 recent_checkins.append({"user_name": name, "checked_at": r["checked_at"]})
 
-    token_state = sub["token_state"] or "ok"
+    # 구독 행은 있지만 스트리머 OAuth를 한 적이 없으면 컬럼 기본값이 'ok'다 —
+    # 그대로 내보내면 '연동한 적 없음'이 '정상'으로 보인다.
+    linked = bool(sub["has_streamer_token"])
+    token_state = (sub["token_state"] or ob.STATE_OK) if linked else None
     return {
         "registered":      True,
         "connected":        connected,
@@ -678,11 +715,13 @@ async def get_chat_status(
         "recent_checkins":  recent_checkins,
         # 재연동 안내용. **토큰은 어떤 형태로도 내려보내지 않는다.**
         "token_state":         token_state,
-        "reauth_required":     token_state == "reauth_required",
-        "token_fail_count":    int(sub["token_fail_count"] or 0),
-        "token_last_fail_at":  int(sub["token_last_fail_at"] or 0) or None,
-        "token_last_error_code": sub["token_last_error_code"] or None,
-        "token_last_success_at": int(sub["token_last_success_at"] or 0) or None,
+        "reauth_required":     token_state == ob.STATE_REAUTH,
+        "streamer_linked":     linked,
+        "token_fail_count":    int(sub["token_fail_count"] or 0) if linked else 0,
+        "token_last_fail_at":  (int(sub["token_last_fail_at"] or 0) or None) if linked else None,
+        "token_last_error_code": (sub["token_last_error_code"] or None) if linked else None,
+        "token_last_success_at": (int(sub["token_last_success_at"] or 0) or None) if linked else None,
+        "token_next_try_at":  (int(sub["token_next_try_at"] or 0) or None) if linked else None,
     }
 
 
@@ -716,6 +755,9 @@ async def send_chat_test_message(
 ):
     """실제 치지직 방송 없이 명령어를 테스트하기 위한 가짜 채팅 메시지 큐잉.
     봇 프로세스가 별도로 폴링해 실제 채팅과 동일한 처리 로직을 태운다."""
+    # 이 큐는 봇이 그대로 명령 처리에 태우고, 살아 있는 세션이 있으면 **실제 채팅에도
+    # 응답을 보낸다.** 재연동이 필요한 상태에서 열어 두면 안 되는 경로다.
+    await _block_if_reauth_required(guild_id)
     content = body.content.strip()
     if not content:
         raise HTTPException(status_code=400, detail="내용을 입력해주세요.")

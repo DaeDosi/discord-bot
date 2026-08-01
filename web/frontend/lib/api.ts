@@ -1,3 +1,5 @@
+import type { ChatStatus } from "./types";
+
 export const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // ── 공유 응답 캐시 + in-flight 중복 제거 ───────────────────────────────────────
@@ -135,6 +137,23 @@ function getToken(): string | null {
   return localStorage.getItem("token");
 }
 
+/** 서버가 코드로 구분해 준 오류. 호출부가 문자열을 다시 파싱하지 않아도 되게 한다. */
+export class ApiError extends Error {
+  status: number;
+  code: string | null;
+  constructor(message: string, status: number, code: string | null = null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/** 치지직 재연동이 필요해 막힌 요청인가. */
+export function isReauthRequiredError(e: unknown): boolean {
+  return e instanceof ApiError && e.code === "CHZZK_REAUTH_REQUIRED";
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {}
@@ -154,7 +173,14 @@ async function request<T>(
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || `HTTP ${res.status}`);
+    // detail은 대부분 문자열이지만, 코드로 구분해야 하는 오류는 객체로 온다
+    // (예: 치지직 재연동 필요). 둘 다 받는다.
+    const detail = err?.detail;
+    if (detail && typeof detail === "object") {
+      throw new ApiError(detail.message || `HTTP ${res.status}`, res.status,
+                         detail.code ?? null);
+    }
+    throw new ApiError(detail || `HTTP ${res.status}`, res.status);
   }
   return res.json();
 }
@@ -447,12 +473,7 @@ export const api = {
         request(`/api/chzzk/${gid}/chat-commands/${id}`, { method: "DELETE" }),
     },
     chatStatus: (gid: string) =>
-      request<{
-        registered: boolean; connected: boolean;
-        last_sync_at: number | null; last_event_at: number | null;
-        today_checkins: number;
-        recent_checkins: { user_name: string; checked_at: number }[];
-      }>(`/api/chzzk/${gid}/chat-status`),
+      request<ChatStatus>(`/api/chzzk/${gid}/chat-status`),
     chatLog: (gid: string) =>
       request<{ direction: "in" | "out"; nickname: string; content: string; created_at: number }[]>(
         `/api/chzzk/${gid}/chat-log`

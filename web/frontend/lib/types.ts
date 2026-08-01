@@ -183,6 +183,28 @@ export interface ChatCommand {
   is_active:     boolean;
 }
 
+/** 치지직 OAuth 토큰 상태. 값은 백엔드 `utils/oauth_backoff.py`의 상수와 같다.
+ *  `null`은 "아직 스트리머 연동을 한 적 없음"이다 — 'ok'와 반드시 구분해야 한다. */
+export type ChzzkTokenState = "ok" | "retrying" | "reauth_required" | "disabled";
+
+export interface ChatStatus {
+  registered:      boolean;
+  connected:       boolean;
+  last_sync_at:    number | null;
+  last_event_at:   number | null;
+  today_checkins:  number;
+  recent_checkins: { user_name: string; checked_at: number }[];
+  // 재연동 안내용. 토큰 값은 어떤 형태로도 오지 않는다.
+  token_state:           ChzzkTokenState | null;
+  reauth_required:       boolean;
+  streamer_linked:       boolean;
+  token_fail_count:      number;
+  token_last_fail_at:    number | null;
+  token_last_error_code: string | null;
+  token_last_success_at: number | null;
+  token_next_try_at:     number | null;
+}
+
 // ── CHZZK Rising (분석 포털) ──────────────────────────────────────────────────
 export interface RisingTier {
   key:           string;

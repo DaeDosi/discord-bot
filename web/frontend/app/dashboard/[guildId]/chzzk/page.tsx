@@ -8,11 +8,11 @@ import {
   Radio, Trash2, Bell, BellOff,
   ExternalLink, Plus, Users, X, ChevronLeft, ChevronRight,
   MessageSquare, Edit2, Sparkles, RefreshCw, HelpCircle,
-  Power, Crown,
+  Power, Crown, Unlink,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, BASE, isReauthRequiredError } from "@/lib/api";
 import Switch from "@/components/Switch";
-import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier, ChzzkVerification, ChatCommand } from "@/lib/types";
+import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier, ChzzkVerification, ChatCommand, ChatStatus } from "@/lib/types";
 
 type DetailTab = "streamer" | "chat-commands";
 
@@ -326,12 +326,38 @@ function ChatCommandModal({
 }
 
 // ── 실시간 채팅 명령어 패널 ───────────────────────────────────────────────────
-type ChatStatus = {
-  registered: boolean; connected: boolean;
-  last_sync_at: number | null; last_event_at: number | null;
-  today_checkins: number;
-  recent_checkins: { user_name: string; checked_at: number }[];
+/** 인증 상태에서 파생되는 화면 모드. 조회 실패를 재연동 필요로 오판하지 않는다 —
+ *  잠깐 못 부른 것과 토큰이 죽은 것은 완전히 다른 상황이다. */
+type ChatHealth = {
+  needsReconnect: boolean;
+  isRetrying:     boolean;
+  isUnlinked:     boolean;
+  nextTryAt:      number | null;
+  unavailable:    boolean;      // 상태를 아직/못 불러왔다
 };
+
+function chatHealth(status: ChatStatus | null, failed: boolean): ChatHealth {
+  if (!status) {
+    return { needsReconnect: false, isRetrying: false, isUnlinked: false,
+             nextTryAt: null, unavailable: true };
+  }
+  const state = status.token_state;
+  return {
+    needsReconnect: status.reauth_required || state === "reauth_required",
+    isRetrying:     state === "retrying",
+    isUnlinked:     status.streamer_linked === false || state == null,
+    nextTryAt:      status.token_next_try_at,
+    unavailable:    failed,
+  };
+}
+
+/** 다음 재시도까지 남은 시간. 사용자에게 epoch를 보여주지 않는다. */
+function timeUntil(unixSeconds: number): string {
+  const diff = unixSeconds - Date.now() / 1000;
+  if (diff <= 0) return "곧";
+  if (diff < 60) return `${Math.ceil(diff)}초 후`;
+  return `${Math.ceil(diff / 60)}분 후`;
+}
 
 function timeAgo(unixSeconds: number | null): string {
   if (!unixSeconds) return "아직 없음";
@@ -342,23 +368,50 @@ function timeAgo(unixSeconds: number | null): string {
   return `${Math.floor(diff / 86400)}일 전`;
 }
 
+// ── 재연동 필요 안내 ──────────────────────────────────────────────────────────
+// 이 카드가 없으면 사용자는 기능이 멈춘 이유를 알 수 없고, 자동 갱신은 재연동 전까지
+// 영원히 열리지 않으므로 연동이 사실상 영구히 죽는다(Change Set C의 회로 차단).
+function ReauthRequiredCard({ guildId, onRefresh }: { guildId: string; onRefresh: () => void }) {
+  return (
+    <div
+      className="card space-y-3 border"
+      style={{ borderColor: "rgba(248,113,113,0.45)", background: "rgba(127,29,29,0.12)" }}
+      role="alert"
+    >
+      <h2 className="section-title flex items-center gap-2" style={{ color: "#FCA5A5" }}>
+        <Unlink size={16} /> 치지직 재연동이 필요합니다
+      </h2>
+      <p className="text-sm text-fg/90 leading-relaxed">
+        치지직 인증이 만료되어 실시간 채팅 명령어와 채팅 미리보기 기능이 일시 중지되었습니다.
+      </p>
+      <p className="text-sm text-muted leading-relaxed">
+        기존 명령어 설정은 안전하게 보관되어 있으며, 치지직 계정을 다시 연결하면 그대로 사용할 수 있습니다.
+      </p>
+      <div className="flex items-center gap-2 flex-wrap pt-1">
+        <a href={`${BASE}/api/chzzk-auth/login?guild_id=${guildId}`} className="btn-primary text-sm">
+          치지직 다시 연결
+        </a>
+        <button onClick={onRefresh} className="btn-secondary text-sm flex items-center gap-1.5">
+          <RefreshCw size={13} /> 상태 새로고침
+        </button>
+        <span className="text-xs px-2 py-1 rounded-md"
+              style={{ background: "rgba(248,113,113,0.15)", color: "#FCA5A5" }}>
+          기능 일시 중지
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // ── 실시간 채팅 연동 ON/OFF + 연결 상태 (하나로 통합) ──────────────────────────
 function ChatConnectionCard({
-  guildId, mainSub, onChanged,
-}: { guildId: string; mainSub?: ChzzkSubscription; onChanged: () => void }) {
-  const [status, setStatus] = useState<ChatStatus | null>(null);
+  guildId, mainSub, onChanged, status, health, onRefresh,
+}: {
+  guildId: string; mainSub?: ChzzkSubscription; onChanged: () => void;
+  status: ChatStatus | null; health: ChatHealth; onRefresh: () => void;
+}) {
   const [saving, setSaving] = useState(false);
-
-  const load = () => api.chzzk.chatStatus(guildId).then(setStatus).catch(() => {});
-
-  useEffect(() => {
-    // 등록된 치지직 구독이 없으면 보여줄 상태 자체가 없으므로 폴링하지 않음 — 그래도 훅
-    // 자체는 항상 호출해야 하므로(Rules of Hooks) return null 가드보다 먼저 두면 안 된다.
-    if (!mainSub) return;
-    load();
-    const timer = setInterval(load, 15000);
-    return () => clearInterval(timer);
-  }, [guildId, mainSub?.id]);
+  const load = onRefresh;
 
   if (!mainSub) {
     return (
@@ -382,7 +435,14 @@ function ChatConnectionCard({
 
   let dotClass = "bg-danger";
   let statusText = "현재 봇이 작동중이지 않습니다.";
-  if (enabled) {
+  if (health.needsReconnect) {
+    // 인증이 죽었는데 "봇이 꺼져 있다"고 하면 엉뚱한 곳을 고치게 된다.
+    dotClass = "bg-danger";
+    statusText = "치지직 인증이 만료되어 일시 중지되었습니다.";
+  } else if (health.isRetrying) {
+    dotClass = "bg-warning";
+    statusText = "일시적으로 연결 상태를 확인하고 있습니다.";
+  } else if (enabled) {
     if (connected) {
       dotClass = "bg-success animate-pulse";
       statusText = "봇이 작동중입니다.";
@@ -403,7 +463,7 @@ function ChatConnectionCard({
             켜면 치지직 방송 채팅에 봇이 접속해 아래 출석체크·자동응답·포인트·도박 명령어가 동작합니다.
           </p>
         </div>
-        <Switch checked={enabled} disabled={saving} onChange={toggle} />
+        <Switch checked={enabled} disabled={saving || health.needsReconnect} onChange={toggle} />
       </label>
 
       <div className="pt-3 border-t border-border space-y-3">
@@ -422,7 +482,18 @@ function ChatConnectionCard({
             </div>
           )}
         </div>
-        {enabled && !connected && (
+        {health.unavailable && (
+          <p className="text-xs text-muted">
+            현재 치지직 연결 상태를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.
+          </p>
+        )}
+        {health.isRetrying && (
+          <p className="text-xs text-warning">
+            연결이 잠시 불안정합니다. 자동으로 다시 확인하고 있으니 그대로 두셔도 됩니다.
+            {health.nextTryAt ? ` (다음 확인: ${timeUntil(health.nextTryAt)})` : ""}
+          </p>
+        )}
+        {enabled && !connected && !health.needsReconnect && !health.isRetrying && (
           <p className="text-xs text-warning">
             봇이 아직 이 채널의 채팅 세션을 확인하지 못했습니다. 스트리머 계정이 채팅 조회/쓰기 권한으로 연동돼 있는지,
             봇이 켜져 있는지 확인해주세요. (연동 화면에서 "치지직 계정으로 연동하기"를 다시 눌러야 새 권한이 적용됩니다)
@@ -447,21 +518,31 @@ function ChatConnectionCard({
 type ChatLogEntry = { direction: "in" | "out"; nickname: string; content: string; created_at: number };
 
 // ── 실시간 채팅 미리보기 (디버그용, 기본 숨김 — 버튼으로 펼침) ─────────────────
-function ChzzkChatFeed({ guildId }: { guildId: string }) {
+function ChzzkChatFeed({ guildId, health }: { guildId: string; health: ChatHealth }) {
   const [open, setOpen] = useState(false);
   const [log, setLog] = useState<ChatLogEntry[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
   const [testInput, setTestInput]   = useState("");
   const [asStreamer, setAsStreamer] = useState(false);
   const [sending, setSending]       = useState(false);
+  const blocked = health.needsReconnect;
 
   useEffect(() => {
-    if (!open) return;
-    const load = () => api.chzzk.chatLog(guildId).then(setLog).catch(() => {});
+    // 재연동이 필요한 상태에서는 **폴링을 시작하지 않고, 이미 돌고 있으면 즉시 멈춘다.**
+    // (blocked가 의존성에 있어 상태가 바뀌는 순간 cleanup이 돈다)
+    if (!open || blocked) return;
+    const ctrl = new AbortController();
+    const load = () => api.chzzk.chatLog(guildId).then((l) => {
+      if (!ctrl.signal.aborted) setLog(l);
+    }).catch(() => {});
     load();
     const timer = setInterval(load, 3000);
-    return () => clearInterval(timer);
-  }, [guildId, open]);
+    return () => { ctrl.abort(); clearInterval(timer); };
+  }, [guildId, open, blocked]);
+
+  // 인증이 만료되면 열려 있던 미리보기도 닫는다 — 멈춘 로그를 계속 보여주면
+  // "채팅이 안 오는 중"으로 오해한다.
+  useEffect(() => { if (blocked) setOpen(false); }, [blocked]);
 
   const sendTest = async () => {
     const content = testInput.trim();
@@ -490,12 +571,19 @@ function ChzzkChatFeed({ guildId }: { guildId: string }) {
         </h2>
         <button
           onClick={() => setOpen((v) => !v)}
-          className="flex items-center gap-1.5 text-sm font-medium text-accent hover:text-fg transition-colors"
+          disabled={blocked}
+          aria-disabled={blocked}
+          className="flex items-center gap-1.5 text-sm font-medium text-accent hover:text-fg transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-accent"
         >
           {open ? "닫기" : "미리보기 열기"}
         </button>
       </div>
-      {!open ? (
+      {blocked ? (
+        <p className="text-sm text-muted">
+          치지직 연결이 만료되어 채팅을 불러올 수 없습니다.
+          재연동 후 채팅 미리보기를 다시 사용할 수 있습니다.
+        </p>
+      ) : !open ? (
         <p className="text-sm text-muted">
           치지직 채팅에서 실제로 수신된 메시지와 봇의 응답을 확인하려면 위 버튼을 눌러주세요.
         </p>
@@ -635,6 +723,8 @@ function ChatCommandsPanel({
   const [loading, setLoading]   = useState(true);
   const [modal, setModal]       = useState<{ type: "checkin" | "reply"; initial?: ChatCommand } | null>(null);
   const [toast, setToast]       = useState("");
+  const [status, setStatus]       = useState<ChatStatus | null>(null);
+  const [statusFailed, setFailed] = useState(false);
 
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(""), 2500); };
 
@@ -642,6 +732,23 @@ function ChatCommandsPanel({
     api.chzzk.chatCommands.list(guildId).then(setCommands).catch(() => {}).finally(() => setLoading(false));
 
   useEffect(() => { load(); }, [guildId]);
+
+  // 인증 상태는 여기서 한 번만 받아 아래 카드들이 나눠 쓴다 — 카드마다 따로 폴링하면
+  // 같은 요청이 여러 벌 나가고, 무엇보다 카드끼리 상태가 어긋난다.
+  const loadStatus = () => api.chzzk.chatStatus(guildId)
+    .then((s) => { setStatus(s); setFailed(false); })
+    .catch(() => setFailed(true));
+
+  useEffect(() => {
+    if (!mainSub) return;
+    loadStatus();
+    const timer = setInterval(loadStatus, 15000);
+    return () => clearInterval(timer);
+  }, [guildId, mainSub?.id]);
+
+  const health   = chatHealth(status, statusFailed);
+  const blocked  = health.needsReconnect;
+  const disabledReason = blocked ? "치지직 재연동 후 사용할 수 있습니다." : undefined;
 
   const checkinCmd = commands.find((c) => c.command_type === "checkin");
   const replyCmds  = commands.filter((c) => c.command_type === "reply");
@@ -658,13 +765,28 @@ function ChatCommandsPanel({
       load();
       showToast("저장되었습니다.");
     } catch (e: unknown) {
+      // 서버가 막은 경우(재연동 필요)에는 상태를 다시 읽어 화면을 맞춘다 —
+      // 다른 탭에서 만료됐다면 이 화면은 아직 정상으로 보이고 있을 수 있다.
+      if (isReauthRequiredError(e)) {
+        loadStatus();
+        showToast("치지직 재연동이 필요합니다.");
+        return;
+      }
       showToast(e instanceof Error ? e.message : "저장 실패");
     }
   };
 
   const remove = async (id: number) => {
     if (!confirm("이 명령어를 삭제하시겠습니까?")) return;
-    await api.chzzk.chatCommands.remove(guildId, id).catch(() => {});
+    try {
+      await api.chzzk.chatCommands.remove(guildId, id);
+    } catch (e: unknown) {
+      if (isReauthRequiredError(e)) {
+        loadStatus();
+        showToast("치지직 재연동이 필요합니다.");
+        return;
+      }
+    }
     load();
   };
 
@@ -688,20 +810,25 @@ function ChatCommandsPanel({
         />
       )}
 
-      <ChatConnectionCard guildId={guildId} mainSub={mainSub} onChanged={onSubChanged} />
-      <ChzzkChatFeed guildId={guildId} />
+      {blocked && <ReauthRequiredCard guildId={guildId} onRefresh={loadStatus} />}
+      <ChatConnectionCard guildId={guildId} mainSub={mainSub} onChanged={onSubChanged}
+                          status={status} health={health} onRefresh={loadStatus} />
+      <ChzzkChatFeed guildId={guildId} health={health} />
       <ChatCommandGuideCard commands={commands} />
       <GamblingManagerCard guildId={guildId} mainSub={mainSub} />
 
       {/* 출석체크 */}
-      <div className="card space-y-4">
+      <div className={clsx("card space-y-4", blocked && "opacity-60")}>
         <div className="flex items-center justify-between">
           <h2 className="section-title flex items-center gap-2">
             <Sparkles size={16} className="text-accent" /> 출석체크
           </h2>
           <button
             onClick={() => setModal({ type: "checkin", initial: checkinCmd })}
-            className="btn-primary text-sm flex items-center gap-1.5"
+            disabled={blocked}
+            aria-disabled={blocked}
+            title={disabledReason}
+            className="btn-primary text-sm flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Edit2 size={14} /> {checkinCmd ? "설정 수정" : "설정하기"}
           </button>
@@ -723,7 +850,7 @@ function ChatCommandsPanel({
       </div>
 
       {/* 추가 명령어 (자동 응답) */}
-      <div className="card space-y-4">
+      <div className={clsx("card space-y-4", blocked && "opacity-60")}>
         <div className="flex items-center justify-between">
           <h2 className="section-title flex items-center gap-2">
             <MessageSquare size={16} className="text-accent" /> 추가 명령어 (자동 응답)
@@ -731,12 +858,20 @@ function ChatCommandsPanel({
           {replyCmds.length < 5 && (
             <button
               onClick={() => setModal({ type: "reply" })}
-              className="btn-primary text-sm flex items-center gap-1.5"
+              disabled={blocked}
+              aria-disabled={blocked}
+              title={disabledReason}
+              className="btn-primary text-sm flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Plus size={14} /> 명령어 추가
             </button>
           )}
         </div>
+        {blocked && (
+          <p className="text-xs text-muted">
+            치지직 재연동 후 수정할 수 있습니다. 아래 설정은 그대로 보관되어 있습니다.
+          </p>
+        )}
         <p className="text-sm text-muted">
           출석체크 외에 원하는 명령어를 등록하면, 치지직 채팅에 해당 단어가 입력됐을 때 지정한 문구로 자동 응답합니다. (최대 5개)
         </p>
@@ -752,11 +887,13 @@ function ChatCommandsPanel({
                 </div>
                 <div className="flex gap-1 shrink-0">
                   <button onClick={() => setModal({ type: "reply", initial: c })}
-                    className="p-1.5 rounded-lg text-muted hover:text-fg hover:bg-bg-hover transition-colors">
+                    disabled={blocked} aria-disabled={blocked} title={disabledReason}
+                    className="p-1.5 rounded-lg text-muted hover:text-fg hover:bg-bg-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                     <Edit2 size={14} />
                   </button>
                   <button onClick={() => remove(c.id)}
-                    className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors">
+                    disabled={blocked} aria-disabled={blocked} title={disabledReason}
+                    className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                     <Trash2 size={14} />
                   </button>
                 </div>
