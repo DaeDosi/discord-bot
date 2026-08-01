@@ -199,7 +199,14 @@ async def _check_once():
             elif not now_live and was_live:
                 await _send_offline_notification(row, info)
 
-            pending.append((int(now_live), row["id"]))
+            # **값이 바뀐 채널만 쓴다.** 방송 상태는 대부분의 폴링에서 그대로인데
+            # 예전에는 매번 모든 채널을 UPDATE해 같은 값을 다시 썼다. 그 쓰기가 같은
+            # SQLite 파일을 쓰는 다른 워커와 불필요하게 경합했다(실측: monitor_is_live
+            # db_locked_giveup 3회 연속). 이 테이블에는 '마지막 확인 시각' 컬럼이
+            # 없으므로 생략해도 잃는 정보가 없다.
+            # 판정은 위 알림 분기와 **같은 값**을 쓴다 — 상태 변화를 놓칠 수 없다.
+            if now_live != was_live:
+                pending.append((int(now_live), row["id"]))
 
         except Exception as e:
             _log(f"  오류 ({row['chzzk_channel_id']}): {e}")
