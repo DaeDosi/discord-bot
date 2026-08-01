@@ -21,6 +21,8 @@
 알 수 없으므로 구현하지 않고, 태그 클립 전체를 하나의 통합 풀로 계산한다.
 """
 import asyncio
+import contextlib
+import contextvars
 import hashlib
 import json
 import os
@@ -87,8 +89,94 @@ _HEADERS = {"User-Agent": os.getenv("SINGCUP_USER_AGENT", "NexBot-SingcupCollect
             "Accept": "application/json"}
 
 
+# ── 회차 실행 컨텍스트 ──────────────────────────────────────────────────────
+# 왜 필요한가 — 실측(2026-08-01): 4분 루프가 `database is locked`로 죽으면
+# `loop_error detail="database is locked"` 한 줄만 남았다. 어느 단계인지도,
+# 어떤 쓰기였는지도 알 수 없어 원인을 특정할 수 없었다(관측된 4건 전부 미상).
+#
+# 단계 이름만으로도 부족하다. `recompute_ranking`처럼 **여러 단계가 공유하는
+# 쓰기 경로**가 있어서 같은 operation이 discover에서도 deletion에서도 나온다.
+# 그래서 step과 operation을 나눠 둔다.
+#
+# 이 컨텍스트는 로그에만 쓴다 — 제어 흐름·트랜잭션·재시도는 건드리지 않는다.
+_CYCLE: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar(
+    "singcup_cycle", default=None)
+
+# 이보다 오래 걸린 쓰기는 남긴다. "잠금을 맞은 작업"만 봐서는 범인을 못 찾는다 —
+# 그 시각에 **락을 오래 쥐고 있던 작업**이 진짜 원인일 수 있다.
+SLOW_WRITE_MS = int(os.getenv("SINGCUP_SLOW_WRITE_MS", "1000"))
+
+
 def _log(payload: dict):
+    ctx = _CYCLE.get()
+    if ctx is not None:
+        # 회차 안에서 난 로그에는 실행 위치를 붙인다(값이 없으면 붙이지 않는다).
+        payload = {**payload, **{k: v for k, v in ctx.items() if v is not None}}
     print(f"[singcup_clips] {json.dumps(payload, ensure_ascii=False, default=str)}", flush=True)
+
+
+def _error_kind(e: BaseException) -> tuple[str, bool]:
+    """(error_type, retryable). 예외 메시지 원문은 그대로 내보내지 않는다."""
+    if isinstance(e, Exception) and _is_locked_error(e):
+        return "database_locked", True
+    if isinstance(e, asyncio.TimeoutError):
+        return "timeout", True
+    return "unexpected", False
+
+
+@contextlib.contextmanager
+def _operation(name: str):
+    """공유 쓰기 경로에 이름을 붙인다. 오래 걸리면 그 사실도 남긴다."""
+    ctx = _CYCLE.get()
+    prev = ctx.get("operation") if ctx is not None else None
+    if ctx is not None:
+        ctx["operation"] = name
+    t0 = time.perf_counter()
+    try:
+        yield
+    except BaseException:
+        # **실패 시에는 이름을 되돌리지 않는다** — 되돌리면 상위 `_step`이
+        # 어느 쓰기에서 났는지 모른 채 로그를 남긴다(그게 원래 문제였다).
+        raise
+    else:
+        if ctx is not None:
+            ctx["operation"] = prev
+    finally:
+        total = int((time.perf_counter() - t0) * 1000)
+        if total >= SLOW_WRITE_MS:
+            # 큐 대기/BEGIN 대기/COMMIT을 따로 재려면 utils/db_write.py(P0 코드)를
+            # 손봐야 한다 — 여기서는 총 소요만 남긴다.
+            _log({"event": "db_write_slow", "level": "warning",
+                  "what": name, "total_ms": total})
+
+
+@contextlib.asynccontextmanager
+async def _step(name: str):
+    """루프 단계 하나. **실패하면 그대로 올린다 — 제어 흐름은 그대로다.**
+
+    (뒤 단계를 계속 실행할지는 단계별 의존성 판단이 필요해 여기서 하지 않는다.)
+    """
+    ctx = _CYCLE.get()
+    if ctx is not None:
+        ctx["step"] = name
+        ctx["operation"] = None
+    t0 = time.perf_counter()
+    try:
+        yield
+    except BaseException as e:                      # noqa: BLE001
+        # CancelledError·종료 신호도 기록만 하고 그대로 올린다(삼키지 않는다).
+        kind, retryable = _error_kind(e)
+        _log({"event": "loop_step_error", "level": "warning",
+              "worker": "singcup_clips", "step": name,
+              "operation": (ctx or {}).get("operation"),
+              "error_type": kind, "retryable": retryable,
+              "duration_ms": int((time.perf_counter() - t0) * 1000),
+              "detail": str(e)[:160]})
+        raise
+    finally:
+        if ctx is not None:
+            ctx["step"] = None
+            ctx["operation"] = None
 
 
 # ── 순수 함수 (테스트 대상) ─────────────────────────────────────────────────
@@ -1642,9 +1730,14 @@ async def recompute_ranking(now: int, *, client=None,
             # 대부분이지만, 대표가 삭제돼 바뀐 경우도 여기로 온다 — 어느 쪽인지는
             # 상세 API만 안다. **여기서 상태를 바꾸지 않는다.**
             await _audit_hint(prev_uid, "rep_changed")
-    if save_snapshot:
-        await _save_snapshots(ranked, now)
-    await db.commit()
+    # 여러 단계가 공유하는 쓰기 경로다(discover·recheck·deletion·snapshot).
+    # 이름을 붙여 둬야 `loop_step_error`의 operation으로 드러난다.
+    # **이 경로는 db_write를 지나지 않고 공유 연결에 직접 커밋한다** — 잠금이 나면
+    # False가 아니라 예외로 올라와 그 회차의 뒤 단계가 통째로 건너뛰어진다.
+    with _operation("recompute_ranking_commit"):
+        if save_snapshot:
+            await _save_snapshots(ranked, now)
+        await db.commit()
     if upsert_stat["written"]:
         _log({"event": "streamers_upserted", "considered": upsert_stat["considered"],
               "written": upsert_stat["written"]})
@@ -4362,28 +4455,50 @@ async def start_clip_collector():
     await asyncio.sleep(float(os.getenv("SINGCUP_CLIP_START_DELAY_SECONDS", "40")))
     while True:
         wait = CLIP_INTERVAL_MINUTES
+        cycle = {"cycle_id": uuid.uuid4().hex[:12], "step": None, "operation": None}
+        token = _CYCLE.set(cycle)
+        cycle_t0 = time.perf_counter()
+        steps_ok, steps_failed = 0, 0
         try:
             st = event_status()
             if st == "LIVE":
                 # 지표 갱신은 여기서 하지 않는다 — singcup_sweep이 KST 매시 정각에
                 # 대표·일반을 가리지 않고 전체를 한 번씩 훑는다. 이 루프는 새 클립을
                 # 빨리 찾는 역할만 남긴다(정각까지 기다리면 신규 등장이 늦어진다).
-                await discover_new_clips()
-                await retry_failed_clips()
-                # 설명이 나중에 바뀐 클립을 데려온다(스캔 기록 기준)
-                await recheck_untagged_clips()
-                # 어떤 이유로든 양쪽 표에 다 없는 '고아'를 되찾는다(주기적 전체 대조)
-                await maybe_reconcile()
-                # 삭제 의심/확정 클립만 소량 재확인한다. 대상이 없으면 요청 0건이라
-                # 별도 워커를 만들지 않고 이 루프에 얹는다.
-                await run_deletion_checks()
-                # 1시간 증감의 기준선. 정각 회차 완료에 묶으면 회차가 한 시간을
-                # 넘길 때 이력이 끊겨 증감이 통째로 굳는다 — 시각에만 묶는다.
-                await ensure_hourly_snapshot()
+                # 단계마다 이름을 붙여 실패 지점을 남긴다. **순서와 중단 규칙은
+                # 그대로다** — 한 단계가 실패하면 예전처럼 뒤 단계를 건너뛴다.
+                for name, fn in (
+                    ("discover",  discover_new_clips),
+                    ("retry",     retry_failed_clips),
+                    # 설명이 나중에 바뀐 클립을 데려온다(스캔 기록 기준)
+                    ("recheck",   recheck_untagged_clips),
+                    # 양쪽 표에 다 없는 '고아'를 되찾는다(주기적 전체 대조)
+                    ("reconcile", maybe_reconcile),
+                    # 삭제 의심/확정 클립만 소량 재확인한다. 대상이 없으면 요청 0건이라
+                    # 별도 워커를 만들지 않고 이 루프에 얹는다.
+                    ("deletion",  run_deletion_checks),
+                    # 1시간 증감의 기준선. 정각 회차 완료에 묶으면 회차가 한 시간을
+                    # 넘길 때 이력이 끊겨 증감이 통째로 굳는다 — 시각에만 묶는다.
+                    ("snapshot",  ensure_hourly_snapshot),
+                ):
+                    try:
+                        async with _step(name):
+                            await fn()
+                    except BaseException:
+                        steps_failed += 1
+                        raise
+                    steps_ok += 1
             elif st == "UPCOMING":
                 wait = 30.0
             else:
                 wait = 360.0          # 종료 후에는 사실상 멈춘다
         except Exception as e:
             _log({"event": "loop_error", "level": "warning", "detail": str(e)[:200]})
+        finally:
+            if steps_ok or steps_failed:        # 이벤트 기간 밖에서는 남기지 않는다
+                _log({"event": "collector_cycle_done",
+                      "steps_ok": steps_ok, "steps_failed": steps_failed,
+                      "steps_skipped": (6 - steps_ok - steps_failed) if steps_failed else 0,
+                      "duration_ms": int((time.perf_counter() - cycle_t0) * 1000)})
+            _CYCLE.reset(token)
         await asyncio.sleep(max(60.0, wait * 60))
