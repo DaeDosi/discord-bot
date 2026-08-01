@@ -5,6 +5,8 @@
 데이터가 쌓이기 전(수집 시작 직후)에는 일부 지표(라이징/히트맵)가 비어 있을 수 있다.
 """
 import asyncio
+import hashlib
+import json
 import re
 import time
 from collections import Counter
@@ -12,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from chzzk_channel_history import get_channel_history
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request, Response
 from rising_collector import _fetch_channel_meta, latest_image
 
 from database import get_db
@@ -955,6 +957,92 @@ async def _fetch_first_broadcast(channel_id: str) -> str | None:
         return min(dates) if dates else None
     except Exception:
         return None
+
+
+META_WINDOW_DAYS = 30
+# 스냅샷 간격(분) — 라이브 1구간 근사. 아래 streamer()의 snap_min과 같은 값이어야 한다.
+_META_SNAP_MIN = 10
+
+
+def _meta_etag(payload: dict) -> str:
+    """응답 전체의 canonical JSON을 해시한다.
+
+    일부 필드(최신 hour_ts 등)로만 만들면 채널명·이미지·집계값이 바뀌어도 ETag가
+    그대로라 크롤러가 옛 메타를 계속 쓴다. **본문이 1바이트라도 다르면 다른 ETag**여야 한다.
+    """
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":"))
+    return '"' + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32] + '"'
+
+
+@router.get("/streamer/{channel_id}/meta")
+async def streamer_meta(channel_id: str, request: Request, response: Response):
+    """SEO 메타데이터 전용 최소 응답.
+
+    왜 따로 있나 — 실측(2026-08-01): 스트리머 페이지의 SSR(`layout.tsx`)이 메타데이터를
+    만들려고 **전체 대시보드**(30일 시계열 + 일간/주간 집계 + 카테고리 + 첫방송일)를
+    받아 갔다. 실제로 쓰는 값은 채널명·이미지·요약 3개뿐이다.
+    게다가 모든 방문자·크롤러의 SSR이 하나의 rate-limit 버킷으로 합쳐져, 크롤러가
+    페이지를 훑으면 429가 났고 그때 **`robots: index=false` 폴백**이 붙었다 —
+    크롤링당하는 순간 색인에서 빠지는 구조였다.
+
+    여기서는 롤업을 한 번 집계한다. 외부 호출·첫방송일 수집·시계열 생성을 하지 않는다.
+    """
+    since = int(time.time()) - META_WINDOW_DAYS * 86400
+    db = await get_db()
+    # idx_rising_roll_channel(chzzk_channel_id, hour_ts) 사용 — 30일이면 최대 720행
+    row = await (await db.execute(
+        """SELECT SUM(snaps) AS snaps, SUM(sum_viewers) AS sv,
+                  MAX(peak_viewers) AS peak, MAX(hour_ts) AS last_ts
+           FROM rising_hourly_rollup
+           WHERE chzzk_channel_id=? AND hour_ts >= ?""",
+        (channel_id, since)
+    )).fetchone()
+
+    snaps = int(row["snaps"] or 0) if row else 0
+    if not snaps:
+        payload = {"found": False, "channel_id": channel_id, "channel_name": None,
+                   "channel_image_url": latest_image(channel_id) or None,
+                   "summary": None, "updated_at": None}
+    else:
+        # 채널명은 최신 원본 스냅샷이 가장 정확하다(롤업에도 있지만 갱신이 늦다).
+        # idx_rising_snap_channel(chzzk_channel_id, collected_at) 사용, 1행만 읽는다.
+        live = await (await db.execute(
+            """SELECT channel_name FROM rising_live_snapshots
+               WHERE chzzk_channel_id=? ORDER BY collected_at DESC LIMIT 1""",
+            (channel_id,)
+        )).fetchone()
+        name_row = await (await db.execute(
+            """SELECT channel_name FROM rising_hourly_rollup
+               WHERE chzzk_channel_id=? AND hour_ts >= ?
+               ORDER BY hour_ts DESC LIMIT 1""",
+            (channel_id, since)
+        )).fetchone()
+        sv = int(row["sv"] or 0)
+        payload = {
+            "found": True,
+            "channel_id": channel_id,
+            "channel_name": ((live["channel_name"] if live else None)
+                             or (name_row["channel_name"] if name_row else None)),
+            "channel_image_url": latest_image(channel_id) or None,
+            "summary": {
+                "avg_viewers": round(sv / snaps) if snaps else 0,
+                "peak_viewers": int(row["peak"] or 0),
+                "broadcast_hours": round(snaps * _META_SNAP_MIN / 60, 1),
+            },
+            "updated_at": int(row["last_ts"] or 0) or None,
+        }
+
+    etag = _meta_etag(payload)
+    # 사용자별 데이터가 없으므로 공유 캐시에 올려도 된다(테스트로 고정).
+    cache_control = "public, max-age=60, s-maxage=600, stale-while-revalidate=60"
+    if request.headers.get("if-none-match") == etag:
+        # 304에서도 캐시 헤더를 유지해야 중간 캐시가 만료를 갱신한다.
+        return Response(status_code=304,
+                        headers={"ETag": etag, "Cache-Control": cache_control})
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = cache_control
+    return payload
 
 
 @router.get("/streamer/{channel_id}")

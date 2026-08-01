@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { BASE } from "@/lib/api";
-import type { StreamerDashboard } from "@/lib/types";
+import { fetchStreamerMeta, shouldNoIndex } from "@/lib/streamerMeta";
 import Footer from "@/components/Footer";
 import CollapsibleAbout from "@/components/CollapsibleAbout";
 
@@ -16,21 +15,10 @@ import CollapsibleAbout from "@/components/CollapsibleAbout";
 //  3) 채널명이 서버 HTML에 없으면 수천 개 페이지 본문이 전부 동일해져 중복 콘텐츠가 된다.
 //     제목·설명·본문에 채널명을 넣어 페이지마다 실제로 다른 내용이 되게 한다.
 //
-// revalidate 600s: 수집 주기가 약 10분이라 그보다 자주 재검증할 이유가 없고,
+// 데이터는 `lib/streamerMeta.ts`가 가져온다(메타 전용 경량 API + 오류 분류).
+// 예전에는 여기서 무거운 대시보드 API를 부르고 실패를 전부 null로 뭉갰다 —
+// 그래서 일시적인 429가 곧바로 `robots: index=false`가 됐다.
 // generateMetadata와 레이아웃이 같은 URL을 부르므로 백엔드 호출은 1회로 합쳐진다.
-async function getStreamer(channelId: string): Promise<StreamerDashboard | null> {
-  try {
-    const res = await fetch(
-      `${BASE}/api/rising/streamer/${encodeURIComponent(channelId)}?days=30`,
-      { next: { revalidate: 600 } },
-    );
-    if (!res.ok) return null;
-    return (await res.json()) as StreamerDashboard;
-  } catch {
-    // 백엔드가 죽어도 페이지 자체는 떠야 한다 — 메타데이터만 폴백으로 넘어간다.
-    return null;
-  }
-}
 
 const SITE = "https://nexbot.shop";
 
@@ -38,7 +26,8 @@ export async function generateMetadata(
   { params }: { params: Promise<{ channelId: string }> },
 ): Promise<Metadata> {
   const { channelId } = await params;
-  const d = await getStreamer(channelId);
+  const result = await fetchStreamerMeta(channelId);
+  const d = result.data;
   const url = `${SITE}/stats/streamer/${channelId}`;
   const name = d?.found && d.channel_name ? d.channel_name : null;
 
@@ -48,7 +37,9 @@ export async function generateMetadata(
       description:
         "치지직 스트리머의 동시 시청자, 방송 시간, 시청 시간, 카테고리 비중과 방송 기록을 분석합니다.",
       alternates: { canonical: url },
-      robots: { index: false, follow: true }, // 데이터 없는 채널은 색인 대상에서 제외
+      // **실제로 없는 채널일 때만** 색인에서 뺀다. 429·5xx·timeout은 잠시 후
+      // 정상이 될 수 있는데, 그때 noindex를 달면 크롤링당하는 순간 페이지가 사라진다.
+      ...(shouldNoIndex(result) ? { robots: { index: false, follow: true } } : {}),
     };
   }
 
@@ -80,7 +71,7 @@ export default async function StreamerLayout(
   { children, params }: { children: React.ReactNode; params: Promise<{ channelId: string }> },
 ) {
   const { channelId } = await params;
-  const d = await getStreamer(channelId);
+  const d = (await fetchStreamerMeta(channelId)).data;
   const name = d?.found && d.channel_name ? d.channel_name : null;
   const sm = d?.summary;
 

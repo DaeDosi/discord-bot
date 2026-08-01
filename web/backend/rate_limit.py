@@ -10,6 +10,8 @@ Railway에서 컨테이너 1개로 돌아가므로 프로세스 내 메모리 �
 (여러 인스턴스로 늘리면 Redis 같은 공유 저장소가 필요해진다.)
 """
 import os
+import re
+import secrets
 import time
 from collections import deque
 
@@ -54,9 +56,67 @@ _VISIT_PATH = "/api/stats/visit"
 VISIT_LIMIT = int(os.getenv("RATE_LIMIT_VISIT", "5"))
 
 
+# ── SSR 메타데이터 ─────────────────────────────────────────────────────────
+# `/streamer/{id}/meta`는 롤업 집계 한 번이라 heavy가 아니다. 문제는 비용이 아니라
+# **호출자가 전부 하나**라는 점이었다 — Next.js 서버가 모든 방문자·크롤러를 대신해
+# 부르므로 IP 버킷 하나에 합쳐져, 크롤러가 페이지를 훑으면 40/분이 즉시 소진됐다.
+# 그래서 경로를 heavy에서 빼고, **서버임이 증명된 요청만** 별도 버킷으로 보낸다.
+# 경로는 **정확히** 매칭한다. substring 검사면 `/api/rising/metadata/...`나
+# 쿼리스트링에 `/meta`가 든 요청까지 SSR 그룹으로 새어 들어간다.
+# channel_id는 치지직 채널 해시 형식(영숫자)만 받는다.
+_META_RE = re.compile(r"^/api/rising/streamer/[A-Za-z0-9_-]{1,64}/meta$")
+
+
+def _ssr_limit() -> int:
+    """실측 근거: 크롤러 버스트 22요청/6초 ≈ 220/분(관측 최대). 그 위 첫 단계로 240.
+
+    면제가 아니다 — 이 값을 넘으면 SSR도 429를 받는다.
+    잘못된 값(0·음수·비정수·과도한 값)은 기본값으로 되돌린다 — 설정 실수 하나로
+    제한이 사실상 풀리면 안 된다.
+    """
+    raw = os.getenv("RATE_LIMIT_SSR", "").strip()
+    if not raw:
+        return 240
+    try:
+        v = int(raw)
+    except ValueError:
+        return 240
+    return v if 1 <= v <= 10_000 else 240
+
+
+SSR_LIMIT = _ssr_limit()
+# 서버 증명용 공유 시크릿. **비어 있으면 헤더를 신뢰하지 않는다**(자동 면제 금지).
+_SSR_SECRET = os.getenv("SSR_SHARED_SECRET", "").strip()
+_SSR_HEADER = "x-internal-ssr"
+_ssr_warned = False
+
+
+def _is_meta(path: str) -> bool:
+    return _META_RE.match(path) is not None
+
+
+def _is_trusted_ssr(request: Request) -> bool:
+    """이 요청이 우리 Next.js 서버에서 온 것인가.
+
+    시크릿이 없으면 항상 False다 — 헤더만 보고 통과시키면 아무나 붙일 수 있다.
+    비교는 상수시간으로 한다(길이·내용 유출 방지).
+    """
+    global _ssr_warned
+    if not _SSR_SECRET:
+        if not _ssr_warned:
+            _ssr_warned = True          # 요청마다 반복하지 않는다
+            print("[rate_limit] SSR_SHARED_SECRET 미설정 — SSR 요청도 일반 버킷을 씁니다.",
+                  flush=True)
+        return False
+    got = request.headers.get(_SSR_HEADER)
+    return bool(got) and secrets.compare_digest(got, _SSR_SECRET)
+
+
 def _is_heavy(path: str) -> bool:
     if path.startswith(_HEAVY_MARKERS):
         return True
+    if _is_meta(path):
+        return False                    # 메타는 가볍다 — 아래에서 따로 센다
     # /api/rising/streamer/{id} 와 그 하위(detail, session)는 전부 무겁다
     return path.startswith("/api/rising/streamer/")
 
@@ -102,14 +162,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         now = time.monotonic()
         self._sweep(now)
 
-        ip = _client_ip(request)
         path = request.url.path
+        # SSR 메타 요청은 **서버임이 증명될 때만** 전용 키를 쓴다. 헤더가 없거나
+        # 틀리면 평범한 사용자 요청으로 취급한다(자동 면제 없음).
+        ssr = _is_meta(path) and _is_trusted_ssr(request)
+        ip = "__ssr__" if ssr else _client_ip(request)
         heavy = _is_heavy(path)
         visit = path == _VISIT_PATH
         buckets = self._hits.setdefault(ip, (deque(), deque()))
         # 방문 집계는 '비싼 경로' 버킷을 공유하되 훨씬 낮은 상한을 쓴다
-        q = buckets[1] if (heavy or visit) else buckets[0]
-        limit = VISIT_LIMIT if visit else (HEAVY_LIMIT if heavy else DEFAULT_LIMIT)
+        q = buckets[1] if (heavy or visit or ssr) else buckets[0]
+        limit = (SSR_LIMIT if ssr
+                 else VISIT_LIMIT if visit
+                 else HEAVY_LIMIT if heavy else DEFAULT_LIMIT)
 
         cutoff = now - WINDOW
         while q and q[0] < cutoff:
