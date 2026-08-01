@@ -11,7 +11,7 @@ _KST = timezone(timedelta(hours=9))
 
 def _today_kst() -> date:
     return datetime.now(_KST).date()
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Response
 from pydantic import BaseModel
 from typing import Optional
 from deps import get_current_user, require_guild_admin
@@ -19,6 +19,7 @@ from database import get_db
 from chzzk_monitor import check_once_debug
 from auth import FRONTEND_URL
 from utils import oauth_backoff as ob
+from utils.ids import snowflake_str
 
 router = APIRouter(prefix="/api/chzzk", tags=["chzzk"])
 
@@ -90,10 +91,13 @@ async def list_subscriptions(
     result = []
     for r in rows:
         d = dict(r)
-        if d.get("follow_role_1month") is not None:
-            d["follow_role_1month"] = str(d["follow_role_1month"])
-        if d.get("follow_role_3month") is not None:
-            d["follow_role_3month"] = str(d["follow_role_3month"])
+        # 스노플레이크는 **전부** 문자열로 내보낸다. JSON number가 되는 순간
+        # 브라우저에서 정밀도가 깎이고(2^53 초과), 그 뒤로는 복구할 수 없다 —
+        # 채널이 매칭되지 않거나 손상된 id가 저장 요청에 실려 나간다.
+        for key in ("discord_channel", "mention_role_id",
+                    "follow_role_1month", "follow_role_3month"):
+            if key in d:
+                d[key] = snowflake_str(d[key])
         d["chat_enabled"] = bool(d["chat_enabled"]) if d.get("chat_enabled") is not None else True
         result.append(d)
     return result
@@ -642,9 +646,12 @@ _CHAT_SYNC_STALE_AFTER = 45 * 60
 @router.get("/{guild_id}/chat-status")
 async def get_chat_status(
     guild_id: str,
+    response: Response,
     user: dict = Depends(get_current_user),
     _: None = Depends(require_guild_admin),
 ):
+    # 인증 상태가 담긴 응답이다 — 공유 캐시·CDN에 올라가면 안 된다.
+    response.headers["Cache-Control"] = "private, no-store"
     db = await get_db()
     sub = await (await db.execute(
         "SELECT chzzk_channel_id, chat_last_sync_at, chat_last_event_at,"

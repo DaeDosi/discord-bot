@@ -985,7 +985,7 @@ export default function ChzzkPage() {
     setSubs((p) => p.filter((s) => s.id !== id));
   };
 
-  const findChannel = (id: number) => channels.find((c) => String(c.id) === String(id));
+  const findChannel = (id: string) => channels.find((c) => String(c.id) === id);
 
   // 서버당 1명만 등록 가능하므로 팔로워 역할 지급 섹션은 유일한 등록 스트리머를 기준으로 동작
   const mainSub = subs[0];
@@ -993,7 +993,7 @@ export default function ChzzkPage() {
     if (!mainSub) return;
     try {
       const d = await api.chzzkAuth.getStreamerLoginUrl(
-        guildId, String(mainSub.discord_channel), !!mainSub.mention_everyone
+        guildId, mainSub.discord_channel, !!mainSub.mention_everyone
       );
       window.location.href = d.url;
     } catch {}

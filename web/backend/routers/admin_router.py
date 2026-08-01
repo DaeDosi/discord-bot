@@ -15,6 +15,7 @@ from typing import Optional
 from deps import get_current_user
 from database import get_db
 from utils import oauth_backoff as ob
+from utils.ids import snowflake_str
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -284,6 +285,11 @@ async def chzzk_all(response: Response, user: dict = Depends(_require_owner)):
         # 내보내면 **연동한 적 없는 서버가 '정상'으로 보인다** — null로 구분한다.
         linked = bool(row.pop("has_streamer_token", 0))
         state = (row["token_state"] or ob.STATE_OK) if linked else None
+        # 스노플레이크는 경계에서 전부 문자열로 (utils/ids.py 참고).
+        for key in ("guild_id", "discord_channel",
+                    "follow_role_1month", "follow_role_3month"):
+            if key in row:
+                row[key] = snowflake_str(row[key])
         row.update({
             "guild_name": guild_name_map.get(str(r["guild_id"]), str(r["guild_id"])),
             "streamer_linked":        linked,
@@ -501,7 +507,10 @@ async def admin_delete_chzzk(sub_id: int, user: dict = Depends(_require_owner)):
 
 
 @router.get("/guilds/{guild_id}")
-async def guild_detail(guild_id: str, user: dict = Depends(_require_owner)):
+async def guild_detail(guild_id: str, response: Response,
+                       user: dict = Depends(_require_owner)):
+    # 인증 상태와 서버 설정이 담긴 응답이다 — 공유 캐시에 올라가면 안 된다.
+    response.headers["Cache-Control"] = "private, no-store"
     db = await get_db()
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(
@@ -537,7 +546,8 @@ async def guild_detail(guild_id: str, user: dict = Depends(_require_owner)):
         "member_count": g.get("approximate_member_count", 0),
         "description":  g.get("description"),
         "chzzk": ({**dict(chzzk_row),
-                   "streamer_connected": bool(chzzk_row["streamer_connected"])}
+                   "streamer_connected": bool(chzzk_row["streamer_connected"]),
+                   "discord_channel": snowflake_str(chzzk_row["discord_channel"])}
                   if chzzk_row else None),
         "verif_count": verif_count,
     }

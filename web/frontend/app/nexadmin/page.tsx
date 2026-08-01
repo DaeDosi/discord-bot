@@ -80,7 +80,7 @@ export interface Guild {
 interface ChzzkSub {
   id: number; guild_id: number; guild_name: string;
   chzzk_channel_id: string; chzzk_name: string; chzzk_image_url: string | null;
-  discord_channel: number; mention_everyone: number; is_live: number;
+  discord_channel: string; mention_everyone: number; is_live: number;
   follow_months_tier1: number; follow_months_tier2: number;
   // 치지직 OAuth 상태. 토큰 값은 응답에 없다(백엔드가 boolean·상태만 내려준다).
   streamer_linked: boolean;
@@ -154,7 +154,7 @@ interface GuildDetail {
   owner_id: string | null; member_count: number; description: string | null;
   chzzk: {
     chzzk_channel_id: string; chzzk_name: string; chzzk_image_url: string | null;
-    discord_channel: number;
+    discord_channel: string;
     // 토큰 원문은 더 이상 내려오지 않는다 — 연동 여부와 상태만 온다.
     is_live: number; streamer_connected: boolean;
     token_state: string | null;

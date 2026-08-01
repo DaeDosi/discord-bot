@@ -121,7 +121,9 @@ export interface LevelReward {
 
 export interface ChzzkSubscription {
   id:                 number;
-  discord_channel:    number;
+  /** Discord 스노플레이크 — **문자열**이다. number로 두면 2^53을 넘어
+   *  정밀도가 깎인다(utils/ids.py 참고). */
+  discord_channel:    string;
   chzzk_channel_id:  string;
   chzzk_name:        string;
   chzzk_image_url:   string | null;
