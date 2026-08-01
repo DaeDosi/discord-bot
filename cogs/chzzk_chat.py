@@ -19,6 +19,7 @@ import sqlite3
 import random
 import asyncio
 import logging
+import weakref
 import discord
 from discord.ext import commands, tasks
 from datetime import datetime, timezone, timedelta
@@ -26,7 +27,8 @@ from database import DB_PATH, get_db
 from utils.mc_rcon import rcon_command
 from utils.checks import member_is_mod_or_admin
 from utils.gambling import resolve_gambling_winner, calc_gambling_payout
-from utils.db_write import db_write_isolated
+from utils import oauth_backoff as ob
+from utils.db_write import db_write, db_write_isolated
 
 log = logging.getLogger("chzzk_chat")
 
@@ -178,26 +180,156 @@ class ChzzkChatCog(commands.Cog):
             return False
         return True
 
-    async def _ensure_fresh_token(self, row) -> tuple[str, str, int] | tuple[None, None, None]:
-        now = int(time.time())
+    # 갱신 실패 로그를 매분 찍지 않기 위한 마지막 출력 시각(guild_id -> epoch).
+    # DB에 둘 값은 아니다 — 프로세스가 살아 있는 동안만 의미가 있다.
+    _token_log_at: dict = {}
+    # DB 저장이 잠금으로 실패했을 때의 임시 백오프(프로세스 메모리).
+    # DB 상태와 어긋날 수 있지만, 어긋나는 방향이 **더 보수적**이다(덜 시도한다).
+    _token_next_try_mem: dict = {}
+    # guild별 갱신 단일화. 지금은 sync_loop(tasks.loop) 하나만 갱신을 부르므로 실제
+    # 경합이 없지만, 그 사실은 **호출부의 성질**이라 호출부가 늘면 조용히 깨진다.
+    # 토큰 갱신은 성공 시 refresh token이 회전하므로 중복 호출이 곧 토큰 폐기다.
+    # 토큰 갱신은 봇 프로세스에서만 일어나(웹은 OAuth 콜백에서 저장만 한다)
+    # DB lease까지는 필요 없다 — 프로세스 안 잠금으로 충분하다.
+    # 이벤트 루프별로 나눠 둔다 — asyncio.Lock은 처음 쓰인 루프에 묶이고,
+    # 테스트는 테스트마다 새 루프를 만든다(utils/db_write.py와 같은 이유).
+    _token_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+    def _token_lock(self, guild_id) -> asyncio.Lock:
+        per_loop = self._token_locks.setdefault(asyncio.get_running_loop(), {})
+        lock = per_loop.get(guild_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            per_loop[guild_id] = lock
+        return lock
+
+    async def _save_token_state(self, guild_id, st: dict, code: str = "") -> bool:
+        """토큰 상태만 갱신한다. **토큰 원문은 건드리지 않는다.**
+
+        한 UPDATE 문으로 원자적으로 쓰고, 잠금이면 제한된 횟수만 재시도한 뒤
+        포기한다(예외를 올리지 않는다). 저장에 실패해도 다른 guild 처리는 계속된다.
+        """
+        async def _work(db):
+            await db.execute(
+                """UPDATE chzzk_subscriptions
+                   SET token_state=?, token_fail_count=?, token_next_try_at=?,
+                       token_last_fail_at=?, token_last_error_code=?
+                   WHERE guild_id=?""",
+                (st["state"], st["fail_count"], st["next_try_at"],
+                 st.get("last_fail_at", int(time.time())), code[:40], guild_id))
+
+        return await db_write(
+            get_db, _work, what="save_token_state",
+            log=lambda p: log.warning("치지직 토큰 상태 저장 실패 guild=%s (%s)",
+                                      guild_id, p.get("what")))
+
+    @staticmethod
+    def _still_valid(row, now: int):
+        """아직 여유 있는 access token이면 그대로 돌려준다(그 외에는 None)."""
         if (row["streamer_token_expires_at"] or 0) > now + 300:
-            return row["streamer_access_token"], row["streamer_refresh_token"], row["streamer_token_expires_at"]
+            return (row["streamer_access_token"], row["streamer_refresh_token"],
+                    row["streamer_token_expires_at"])
+        return None
+
+    async def _reload_token_row(self, guild_id):
+        """갱신 직전에 DB의 최신 상태를 다시 읽는다(락 대기 중 바뀌었을 수 있다)."""
+        db = await get_db()
+        return await (await db.execute(
+            """SELECT guild_id, streamer_access_token, streamer_refresh_token,
+                      streamer_token_expires_at, token_state, token_fail_count,
+                      token_next_try_at
+               FROM chzzk_subscriptions WHERE guild_id=?""", (guild_id,))).fetchone()
+
+    async def _ensure_fresh_token(self, row) -> tuple[str, str, int] | tuple[None, None, None]:
+        """access token을 최신으로 만든다. 필요하면 refresh token으로 재발급한다.
+
+        refresh가 **영구적으로** 실패하는 경우(INVALID_TOKEN 등)를 일시 장애와 같은
+        정책으로 다루면 60초마다 영원히 같은 요청과 같은 로그가 반복된다(실측 확인).
+        그래서 실패를 분류하고, 영구 오류가 몇 번 반복되면 자동 갱신을 멈춘다
+        (`reauth_required`) — 사용자가 다시 연동해야만 풀린다.
+
+        guild 단위 락 안에서만 실제 갱신을 한다. 치지직은 갱신에 성공하면 refresh
+        token을 회전시키므로, 같은 토큰으로 두 번 부르면 두 번째가 무효 토큰을 쓰게 된다
+        — 즉 중복 호출 자체가 INVALID_TOKEN을 만든다. 락을 **기다린 뒤에는 DB를 다시
+        읽는다**: 앞선 호출이 이미 갱신을 끝냈다면 요청을 보내지 않고 그 결과를 쓴다.
+        """
+        valid = self._still_valid(row, int(time.time()))
+        if valid is not None:
+            return valid                    # 흔한 경로 — 락을 잡을 것도 없다
+
+        async with self._token_lock(row["guild_id"]):
+            fresh = await self._reload_token_row(row["guild_id"])
+            if fresh is not None:
+                row = fresh
+                valid = self._still_valid(row, int(time.time()))
+                if valid is not None:
+                    return valid            # 락을 기다리는 동안 누가 갱신해 뒀다
+            return await self._refresh_token_locked(row)
+
+    async def _refresh_token_locked(self, row) -> tuple[str, str, int] | tuple[None, None, None]:
+        """실제 갱신. **반드시 `_token_lock` 안에서 부른다.**"""
+        now = int(time.time())
+        guild_id = row["guild_id"]
+        state = (row["token_state"] if "token_state" in row.keys() else None) or ob.STATE_OK
+        fail_count = (row["token_fail_count"] if "token_fail_count" in row.keys() else 0) or 0
+        next_try_at = (row["token_next_try_at"] if "token_next_try_at" in row.keys() else 0) or 0
+
+        # DB 저장 실패로 상태가 남지 않은 경우를 메모리 값으로 보정한다.
+        next_try_at = max(int(next_try_at), int(self._token_next_try_mem.get(guild_id, 0)))
+        if not ob.should_attempt_refresh(state, next_try_at, now):
+            # 재연동 대기 중이거나 백오프 안이다 — **요청을 보내지 않는다.**
+            return None, None, None
 
         try:
             refreshed = await self.client.refresh_access_token(row["streamer_refresh_token"])
-        except Exception as e:
-            log.warning(f"치지직 토큰 갱신 실패 guild={row['guild_id']}: {e}")
+        except Exception as e:      # noqa: BLE001 — 라이브러리 예외 종류가 다양하다
+            kind, code = ob.classify_token_error(e)
+            st = ob.next_after_failure(kind=kind, fail_count=fail_count, now=now,
+                                       retry_after=ob.retry_after_seconds(e))
+            st["last_fail_at"] = now
+            changed = st["state"] != state
+            saved = await self._save_token_state(guild_id, st, code)
+            if not saved:
+                # DB 잠금으로 상태를 못 남겼다. 메모리에서라도 다음 시도 시각을
+                # 기억해 둔다 — 그러지 않으면 다음 사이클이 상태를 'ok'로 읽고
+                # 매분 재시도로 되돌아간다(이번 사고의 원인과 같은 모양).
+                self._token_next_try_mem[guild_id] = st["next_try_at"] or (
+                    now + ob.PERMANENT_BACKOFF_SECONDS[-1])
+            if ob.should_log(changed, self._token_log_at.get(guild_id, 0), now):
+                self._token_log_at[guild_id] = now
+                # 토큰·응답 본문은 남기지 않는다. 안전한 코드만.
+                log.warning(
+                    "치지직 토큰 갱신 실패 guild=%s code=%s kind=%s 시도=%d 다음=%s 상태=%s",
+                    guild_id, code, kind, st["fail_count"],
+                    (f"{st['next_try_at'] - now}초 뒤" if st["next_try_at"] else "없음"),
+                    st["state"])
             return None, None, None
 
         new_exp = now + refreshed.expires_in
-        db = await get_db()
-        await db.execute(
-            """UPDATE chzzk_subscriptions
-               SET streamer_access_token=?, streamer_refresh_token=?, streamer_token_expires_at=?
-               WHERE guild_id=?""",
-            (refreshed.access_token, refreshed.refresh_token, new_exp, row["guild_id"])
-        )
-        await db.commit()
+
+        # 토큰과 상태를 **한 문장으로** 쓴다 — 토큰만 저장되고 실패 상태가 남는
+        # 중간 상태를 만들지 않는다. 잠금이면 롤백 후 제한 재시도.
+        async def _work(db):
+            await db.execute(
+                """UPDATE chzzk_subscriptions
+                   SET streamer_access_token=?, streamer_refresh_token=?,
+                       streamer_token_expires_at=?, token_state=?, token_fail_count=0,
+                       token_next_try_at=0, token_last_error_code='',
+                       token_last_fail_at=0, token_last_success_at=?
+                   WHERE guild_id=?""",
+                (refreshed.access_token, refreshed.refresh_token, new_exp,
+                 ob.STATE_OK, now, guild_id))
+
+        if not await db_write(get_db, _work, what="save_refreshed_token",
+                              log=lambda p: log.warning(
+                                  "치지직 토큰 저장 실패 guild=%s", guild_id)):
+            # 저장에 실패했으면 **메모리에서도 새 토큰을 쓰지 않는다.** 다음 사이클이
+            # DB의 옛 토큰으로 다시 갱신을 시도한다(refresh token은 아직 유효하다).
+            return None, None, None
+        self._token_next_try_mem.pop(guild_id, None)
+        if state != ob.STATE_OK:
+            self._token_log_at.pop(guild_id, None)
+            log.info("치지직 토큰 갱신 복구 guild=%s (이전 상태=%s)", guild_id, state)
         return refreshed.access_token, refreshed.refresh_token, new_exp
 
     async def _sync_channels(self):
@@ -209,7 +341,8 @@ class ChzzkChatCog(commands.Cog):
         db = await get_db()
         rows = await (await db.execute(
             """SELECT guild_id, chzzk_channel_id, streamer_access_token,
-                      streamer_refresh_token, streamer_token_expires_at
+                      streamer_refresh_token, streamer_token_expires_at,
+                      token_state, token_fail_count, token_next_try_at
                FROM chzzk_subscriptions
                WHERE streamer_access_token IS NOT NULL AND streamer_refresh_token IS NOT NULL
                  AND chat_enabled=1"""
@@ -242,6 +375,21 @@ class ChzzkChatCog(commands.Cog):
                 await self._mark_synced(row["guild_id"])
                 continue
 
+            if row["token_state"] == ob.STATE_REAUTH:
+                # 재연동이 필요한 연결이다. 여기서 매분 두드려 봐야 결과가 같다.
+                # **레코드는 지우지 않는다** — 사용자가 다시 연동하면 그대로 살아난다.
+                # 봇이 그 서버에서 이미 나갔는지도 함께 남긴다. 확인이 되더라도
+                # 자동 삭제하지 않는다(오래된 고아인지 일시적 캐시 미스인지 여기서
+                # 구분할 수 없고, 잘못 지우면 사용자가 설정을 통째로 잃는다).
+                # 이 줄도 사이클마다 찍으면 끊었던 로그 반복이 그대로 되살아난다 —
+                # 갱신 실패 로그와 같은 시간 예산(_token_log_at)을 쓴다.
+                gid = row["guild_id"]
+                if (self.bot is not None and self.bot.get_guild(int(gid)) is None
+                        and ob.should_log(False, self._token_log_at.get(gid, 0), int(time.time()))):
+                    self._token_log_at[gid] = int(time.time())
+                    log.info("치지직 재연동 대기 guild=%s (봇이 이 서버에 없음 — "
+                             "레코드는 보존)", gid)
+                continue
             at, rt, exp = await self._ensure_fresh_token(row)
             if not at:
                 continue

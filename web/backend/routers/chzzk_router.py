@@ -619,7 +619,10 @@ async def get_chat_status(
 ):
     db = await get_db()
     sub = await (await db.execute(
-        "SELECT chzzk_channel_id, chat_last_sync_at, chat_last_event_at FROM chzzk_subscriptions WHERE guild_id=?",
+        "SELECT chzzk_channel_id, chat_last_sync_at, chat_last_event_at,"
+        " token_state, token_fail_count, token_last_fail_at, token_last_error_code,"
+        " token_last_success_at"
+        " FROM chzzk_subscriptions WHERE guild_id=?",
         (int(guild_id),)
     )).fetchone()
     if not sub:
@@ -627,6 +630,9 @@ async def get_chat_status(
             "registered": False, "connected": False,
             "last_sync_at": None, "last_event_at": None,
             "today_checkins": 0, "recent_checkins": [],
+            "token_state": "ok", "reauth_required": False,
+            "token_last_fail_at": None, "token_last_error_code": None,
+            "token_last_success_at": None,
         }
 
     now = _time.time()
@@ -662,6 +668,7 @@ async def get_chat_status(
                 name = await _fetch_member_name(client, guild_id, str(r["user_id"])) if r["user_id"] else "알 수 없음"
                 recent_checkins.append({"user_name": name, "checked_at": r["checked_at"]})
 
+    token_state = sub["token_state"] or "ok"
     return {
         "registered":      True,
         "connected":        connected,
@@ -669,6 +676,13 @@ async def get_chat_status(
         "last_event_at":    int(sub["chat_last_event_at"] or 0) or None,
         "today_checkins":   today_checkins,
         "recent_checkins":  recent_checkins,
+        # 재연동 안내용. **토큰은 어떤 형태로도 내려보내지 않는다.**
+        "token_state":         token_state,
+        "reauth_required":     token_state == "reauth_required",
+        "token_fail_count":    int(sub["token_fail_count"] or 0),
+        "token_last_fail_at":  int(sub["token_last_fail_at"] or 0) or None,
+        "token_last_error_code": sub["token_last_error_code"] or None,
+        "token_last_success_at": int(sub["token_last_success_at"] or 0) or None,
     }
 
 

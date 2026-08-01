@@ -387,11 +387,18 @@ async def _handle_streamer_registration(
 
         if count >= 1:
             # 이미 등록됨 → 토큰만 갱신 (재연동)
+            # 실제 재연동에 성공했을 때만 토큰 상태를 초기화한다. 페이지를 새로고침한
+            # 정도로는 풀리지 않아야 한다(여기는 OAuth 콜백이 성공한 지점이다).
             await db.execute(
                 """UPDATE chzzk_subscriptions
-                   SET streamer_access_token=?, streamer_refresh_token=?, streamer_token_expires_at=?
+                   SET streamer_access_token=?, streamer_refresh_token=?,
+                       streamer_token_expires_at=?, token_state='ok',
+                       token_fail_count=0, token_next_try_at=0,
+                       token_last_error_code='', token_last_fail_at=0,
+                       token_last_success_at=?
                    WHERE guild_id=?""",
-                (access_token, refresh_token, token_expires_at, int(guild_id))
+                (access_token, refresh_token, token_expires_at,
+                 int(time.time()), int(guild_id))
             )
             await db.commit()
             print(f"[chzzk-auth] streamer tokens refreshed for guild={guild_id}")

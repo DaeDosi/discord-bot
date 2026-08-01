@@ -1005,6 +1005,23 @@ async def init_db():
         "ON singcup_clips(event_id, active, audit_next_at, clip_uid)",
         "CREATE INDEX IF NOT EXISTS idx_singcup_clips_audit_hint "
         "ON singcup_clips(event_id, audit_hint_at)",
+        # ── 치지직 OAuth 토큰 상태 ────────────────────────────────────────
+        # refresh token이 무효(INVALID_TOKEN)가 되면 60초마다 영원히 재시도하며
+        # 같은 로그를 남겼다(실측: 24분간 25회). 영구 오류와 일시 오류를 나누고
+        # 임계치를 넘으면 자동 갱신을 멈춘다.
+        # 토큰 원문이나 응답 본문은 저장하지 않는다 — 안전한 코드만 남긴다.
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN token_state TEXT NOT NULL "
+        "DEFAULT 'ok'",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN token_fail_count INTEGER NOT NULL "
+        "DEFAULT 0",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN token_last_fail_at INTEGER NOT NULL "
+        "DEFAULT 0",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN token_next_try_at INTEGER NOT NULL "
+        "DEFAULT 0",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN token_last_error_code TEXT NOT NULL "
+        "DEFAULT ''",
+        "ALTER TABLE chzzk_subscriptions ADD COLUMN token_last_success_at INTEGER NOT NULL "
+        "DEFAULT 0",
     ]:
         try:
             await db.execute(sql)
