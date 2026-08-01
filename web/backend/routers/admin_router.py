@@ -203,24 +203,50 @@ async def force_refresh(user: dict = Depends(_require_owner)):
 
 
 @router.get("/guilds")
-async def guilds(user: dict = Depends(_require_owner)):
+async def guilds(response: Response, user: dict = Depends(_require_owner)):
+    """서버 목록 + 치지직 인증 상태.
+
+    상태를 **여기서 붙여 준다.** 프론트에서 guild_id로 조인하면 안 된다 —
+    discord 스노플레이크는 2^53을 넘어서 JSON number로 오가는 순간 정밀도가
+    깎이고(886237674665549865 → …800), 그러면 어떤 서버와도 매칭되지 않는다.
+    """
     db          = await get_db()
     guilds_list = await _bot_guilds()
 
     chzzk_rows = await (await db.execute(
-        "SELECT guild_id, chzzk_name FROM chzzk_subscriptions"
+        # 토큰 값은 꺼내지 않는다 — 보유 여부만 SQL에서 boolean으로 만든다.
+        "SELECT guild_id, chzzk_name, token_state, token_fail_count,"
+        " token_last_fail_at, token_next_try_at, token_last_success_at,"
+        " (streamer_refresh_token IS NOT NULL) AS has_streamer_token"
+        " FROM chzzk_subscriptions"
     )).fetchall()
-    chzzk_map = {str(r["guild_id"]): r["chzzk_name"] for r in chzzk_rows}
+    chzzk_map = {str(r["guild_id"]): r for r in chzzk_rows}
 
-    return [
-        {
+    out = []
+    for g in guilds_list:
+        r = chzzk_map.get(g["id"])
+        auth = None
+        if r is not None:
+            linked = bool(r["has_streamer_token"])
+            state = (r["token_state"] or ob.STATE_OK) if linked else None
+            auth = {
+                "streamer_linked":       linked,
+                "token_state":           state,
+                "reauth_required":       state == ob.STATE_REAUTH,
+                "token_fail_count":      int(r["token_fail_count"] or 0) if linked else 0,
+                "token_last_fail_at":    _epoch_or_none(r["token_last_fail_at"]) if linked else None,
+                "token_next_try_at":     _epoch_or_none(r["token_next_try_at"]) if linked else None,
+                "token_last_success_at": _epoch_or_none(r["token_last_success_at"]) if linked else None,
+            }
+        out.append({
             "id":         g["id"],
             "name":       g["name"],
             "icon":       g.get("icon"),
-            "chzzk_name": chzzk_map.get(g["id"]),
-        }
-        for g in guilds_list
-    ]
+            "chzzk_name": r["chzzk_name"] if r is not None else None,
+            "auth":       auth,
+        })
+    response.headers["Cache-Control"] = "private, no-store"
+    return out
 
 
 def _epoch_or_none(v) -> int | None:
@@ -488,9 +514,12 @@ async def guild_detail(guild_id: str, user: dict = Depends(_require_owner)):
     g = resp.json()
 
     chzzk_row = await (await db.execute(
+        # `streamer_access_token`을 그대로 SELECT해 dict(row)로 내려보내고 있었다 —
+        # 프론트는 진위 여부만 쓰는데 토큰 원문이 브라우저까지 갔다. boolean으로 바꾼다.
         """SELECT chzzk_channel_id, chzzk_name, chzzk_image_url,
                   discord_channel, notify_vod, notify_clip, notify_community,
-                  is_live, streamer_access_token
+                  is_live, token_state,
+                  (streamer_access_token IS NOT NULL) AS streamer_connected
            FROM chzzk_subscriptions WHERE guild_id=?""",
         (int(guild_id),)
     )).fetchone()
@@ -507,7 +536,9 @@ async def guild_detail(guild_id: str, user: dict = Depends(_require_owner)):
         "owner_id":     g.get("owner_id"),
         "member_count": g.get("approximate_member_count", 0),
         "description":  g.get("description"),
-        "chzzk": dict(chzzk_row) if chzzk_row else None,
+        "chzzk": ({**dict(chzzk_row),
+                   "streamer_connected": bool(chzzk_row["streamer_connected"])}
+                  if chzzk_row else None),
         "verif_count": verif_count,
     }
 

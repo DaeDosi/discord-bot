@@ -62,12 +62,74 @@ interface Overview {
   verifications: number;
   today_visitors: number;
 }
-export interface Guild { id: string; name: string; icon: string | null; chzzk_name: string | null }
+/** 치지직 인증 상태. 서버가 guild에 붙여서 준다 — 프론트에서 guild_id로 조인하면
+ *  스노플레이크가 2^53을 넘어 JSON number 정밀도가 깎이고 매칭이 전부 실패한다. */
+export interface GuildAuth {
+  streamer_linked:       boolean;
+  token_state:           "ok" | "retrying" | "reauth_required" | "disabled" | null;
+  reauth_required:       boolean;
+  token_fail_count:      number;
+  token_last_fail_at:    number | null;
+  token_next_try_at:     number | null;
+  token_last_success_at: number | null;
+}
+export interface Guild {
+  id: string; name: string; icon: string | null; chzzk_name: string | null;
+  auth?: GuildAuth | null;
+}
 interface ChzzkSub {
   id: number; guild_id: number; guild_name: string;
   chzzk_channel_id: string; chzzk_name: string; chzzk_image_url: string | null;
   discord_channel: number; mention_everyone: number; is_live: number;
   follow_months_tier1: number; follow_months_tier2: number;
+  // 치지직 OAuth 상태. 토큰 값은 응답에 없다(백엔드가 boolean·상태만 내려준다).
+  streamer_linked: boolean;
+  token_state: "ok" | "retrying" | "reauth_required" | "disabled" | null;
+  reauth_required: boolean;
+  token_fail_count: number;
+  token_last_fail_at: number | null;
+  token_next_try_at: number | null;
+  token_last_success_at: number | null;
+}
+
+// ── 치지직 인증 상태 표시 ─────────────────────────────────────────────────────
+type AuthKey = "ok" | "retrying" | "reauth_required" | "unlinked" | "disabled";
+
+const AUTH_META: Record<AuthKey, { label: string; color: string; bg: string }> = {
+  ok:              { label: "정상",        color: "#4ADE80", bg: "rgba(74,222,128,0.12)" },
+  retrying:        { label: "재시도 대기",  color: "#FBBF24", bg: "rgba(251,191,36,0.12)" },
+  reauth_required: { label: "재연동 필요",  color: "#F87171", bg: "rgba(248,113,113,0.14)" },
+  unlinked:        { label: "연결 안 됨",   color: "#9CA3AF", bg: "rgba(156,163,175,0.10)" },
+  disabled:        { label: "비활성",      color: "#6B7280", bg: "rgba(107,114,128,0.12)" },
+};
+
+const AUTH_ORDER: AuthKey[] = ["ok", "retrying", "reauth_required", "unlinked", "disabled"];
+
+function authKey(auth: GuildAuth | null | undefined): AuthKey {
+  if (!auth || auth.streamer_linked === false || auth.token_state == null) return "unlinked";
+  if (auth.token_state === "disabled") return "disabled";
+  if (auth.reauth_required || auth.token_state === "reauth_required") return "reauth_required";
+  if (auth.token_state === "retrying") return "retrying";
+  return "ok";
+}
+
+function AuthBadge({ k }: { k: AuthKey }) {
+  const m = AUTH_META[k];
+  return (
+    <span className="text-xs px-2 py-0.5 rounded-full border whitespace-nowrap"
+          style={{ color: m.color, background: m.bg, borderColor: `${m.color}40` }}>
+      {m.label}
+    </span>
+  );
+}
+
+/** epoch 초 → KST 표기. 관리자 화면에 정수를 그대로 두지 않는다. */
+function kstTime(epochSeconds: number | null): string {
+  if (!epochSeconds) return "—";
+  return new Date(epochSeconds * 1000).toLocaleString("ko-KR", {
+    timeZone: "Asia/Seoul", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  });
 }
 interface VerifUser {
   guild_id: string; guild_name: string;
@@ -93,7 +155,9 @@ interface GuildDetail {
   chzzk: {
     chzzk_channel_id: string; chzzk_name: string; chzzk_image_url: string | null;
     discord_channel: number;
-    is_live: number; streamer_access_token: string | null;
+    // 토큰 원문은 더 이상 내려오지 않는다 — 연동 여부와 상태만 온다.
+    is_live: number; streamer_connected: boolean;
+    token_state: string | null;
   } | null;
   verif_count: number;
 }
@@ -356,8 +420,17 @@ function GuildDetailModal({ guildId, onClose, onLeft }: { guildId: string; onClo
                     <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ color: "#03C75A", background: "rgba(3,199,90,0.15)" }}>LIVE</span>
                   ) : null}
                 </div>
-                <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs mt-1">
-                  <span className="text-muted">스트리머 연동</span><span className={detail.chzzk.streamer_access_token ? "text-accent" : "text-muted"}>{detail.chzzk.streamer_access_token ? "연동됨" : "미연동"}</span>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs mt-1 items-center">
+                  <span className="text-muted">스트리머 연동</span>
+                  <span className={detail.chzzk.streamer_connected ? "text-accent" : "text-muted"}>
+                    {detail.chzzk.streamer_connected ? "연동됨" : "미연동"}
+                  </span>
+                  <span className="text-muted">인증 상태</span>
+                  <span>
+                    <AuthBadge k={detail.chzzk.streamer_connected
+                      ? ((detail.chzzk.token_state as AuthKey) ?? "unlinked")
+                      : "unlinked"} />
+                  </span>
                 </div>
               </div>
             )}
@@ -633,6 +706,7 @@ export default function AdminPage() {
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null);
   const [statsError, setStatsError]   = useState<string | null>(null);
   const [phase1Error, setPhase1Error] = useState<string | null>(null);
+  const [authFilter, setAuthFilter]   = useState<AuthKey | null>(null);
 
   const leaveGuild = useCallback((guildId: string) => {
     setGuilds((prev) => prev.filter((g) => g.id !== guildId));
@@ -758,6 +832,15 @@ export default function AdminPage() {
   const followCount = followStats?.reduce((s, f) => s + f.users.length, 0) ?? null;
   const verifCount  = verifUsers?.length ?? null;
 
+  // 상태는 서버가 guild에 붙여 준다(위 GuildAuth 주석 참고).
+  const authCounts = AUTH_ORDER.reduce((acc, k) => {
+    acc[k] = guilds.filter((g) => authKey(g.auth) === k).length;
+    return acc;
+  }, {} as Record<AuthKey, number>);
+  const visibleGuilds = authFilter
+    ? guilds.filter((g) => authKey(g.auth) === authFilter)
+    : guilds;
+
   const tabs = [
     { key: "guilds", label: `서버 목록 (${guilds.length})` },
     { key: "verif",  label: verifUsers === null ? "인증 현황 (로딩 중...)" : `인증 현황 (${verifCount}명)` },
@@ -841,45 +924,106 @@ export default function AdminPage() {
 
         {/* ── 서버 목록 ── */}
         {activeTab === "guilds" && (
-          <div className="rounded-2xl border border-border overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border bg-bg-card/60">
-                  <th className="text-left px-4 py-3 text-muted font-medium w-8">#</th>
-                  <th className="text-left px-4 py-3 text-muted font-medium">서버명</th>
-                  <th className="text-left px-4 py-3 text-muted font-medium">서버 ID</th>
-                  <th className="text-left px-4 py-3 text-muted font-medium">치지직</th>
-                  <th className="px-4 py-3 w-10"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {guilds.map((g, i) => (
-                  <tr key={g.id}
-                      onClick={() => setSelectedGuildId(g.id)}
-                      className="hover:bg-bg-hover/40 transition-colors cursor-pointer">
-                    <td className="px-4 py-3 text-muted text-xs">{i + 1}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <GuildIcon guild={g} />
-                        <span className="font-medium text-fg">{g.name}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 font-mono text-xs text-muted select-all">{g.id}</td>
-                    <td className="px-4 py-3">
-                      {g.chzzk_name
-                        ? <span className="text-xs px-2 py-0.5 rounded-full bg-chzzk/10 text-chzzk border border-chzzk/20">{g.chzzk_name}</span>
-                        : <span className="text-xs text-muted">—</span>}
-                    </td>
-                    <td className="px-2 py-3 text-right">
-                      <LeaveGuildButton guildId={g.id} guildName={g.name} onLeft={() => leaveGuild(g.id)} />
-                    </td>
-                  </tr>
+          <div className="space-y-3">
+            {/* 치지직 인증 요약 — '등록 서버'(봇이 있는 서버)와 다른 수다.
+                여기 합계는 **치지직 구독이 있는 서버**만 센다. */}
+            <div className="rounded-2xl border border-border bg-bg-card/60 p-4 space-y-3">
+              <div className="flex items-baseline justify-between flex-wrap gap-2">
+                <p className="text-sm font-semibold text-fg">
+                  치지직 인증 <span className="text-muted font-normal">{chzzk.length}</span>
+                </p>
+                <p className="text-xs text-muted">
+                  등록 서버 {guilds.length} · 치지직 구독 {chzzk.length}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => setAuthFilter(null)}
+                  className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                    authFilter === null
+                      ? "border-accent text-accent bg-accent/10"
+                      : "border-border text-muted hover:text-fg"}`}
+                >
+                  전체 {guilds.length}
+                </button>
+                {AUTH_ORDER.map((k) => (
+                  <button
+                    key={k}
+                    onClick={() => setAuthFilter(authFilter === k ? null : k)}
+                    aria-pressed={authFilter === k}
+                    className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                      authFilter === k ? "" : "opacity-70 hover:opacity-100"}`}
+                    style={{
+                      color: AUTH_META[k].color,
+                      background: authFilter === k ? AUTH_META[k].bg : "transparent",
+                      borderColor: `${AUTH_META[k].color}${authFilter === k ? "80" : "30"}`,
+                    }}
+                  >
+                    {AUTH_META[k].label} {authCounts[k]}
+                  </button>
                 ))}
-                {guilds.length === 0 && (
-                  <tr><td colSpan={5} className="px-4 py-8 text-center text-muted">서버 없음</td></tr>
-                )}
-              </tbody>
-            </table>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-border overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-bg-card/60">
+                    <th className="text-left px-4 py-3 text-muted font-medium w-8">#</th>
+                    <th className="text-left px-4 py-3 text-muted font-medium">서버명</th>
+                    <th className="text-left px-4 py-3 text-muted font-medium">서버 ID</th>
+                    <th className="text-left px-4 py-3 text-muted font-medium">치지직</th>
+                    <th className="text-left px-4 py-3 text-muted font-medium">인증 상태</th>
+                    <th className="px-4 py-3 w-10"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {visibleGuilds.map((g, i) => {
+                    const auth = g.auth;
+                    const k    = authKey(auth);
+                    return (
+                      <tr key={g.id}
+                          onClick={() => setSelectedGuildId(g.id)}
+                          className="hover:bg-bg-hover/40 transition-colors cursor-pointer">
+                        <td className="px-4 py-3 text-muted text-xs">{i + 1}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <GuildIcon guild={g} />
+                            <span className="font-medium text-fg">{g.name}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs text-muted select-all">{g.id}</td>
+                        <td className="px-4 py-3">
+                          {g.chzzk_name
+                            ? <span className="text-xs px-2 py-0.5 rounded-full bg-chzzk/10 text-chzzk border border-chzzk/20">{g.chzzk_name}</span>
+                            : <span className="text-xs text-muted">—</span>}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <AuthBadge k={k} />
+                          {auth && k !== "unlinked" && (
+                            <span className="block text-[11px] text-muted mt-1">
+                              {k === "ok"
+                                ? `마지막 성공 ${kstTime(auth.token_last_success_at)}`
+                                : `마지막 실패 ${kstTime(auth.token_last_fail_at)}`}
+                              {k === "retrying" && auth.token_next_try_at
+                                ? ` · 다음 ${kstTime(auth.token_next_try_at)}` : ""}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-2 py-3 text-right">
+                          <LeaveGuildButton guildId={g.id} guildName={g.name} onLeft={() => leaveGuild(g.id)} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {visibleGuilds.length === 0 && (
+                    <tr><td colSpan={6} className="px-4 py-8 text-center text-muted">
+                      {authFilter ? "해당 상태의 서버가 없습니다." : "서버 없음"}
+                    </td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
 

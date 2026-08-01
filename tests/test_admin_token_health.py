@@ -191,3 +191,75 @@ def test_existing_fields_are_preserved(db, client):
               "follow_role_1month", "follow_role_3month",
               "follow_months_tier1", "follow_months_tier2", "guild_name"):
         assert k in item, k
+
+
+# ── 11. guild 상세에 토큰 원문이 없다 ──────────────────────────────────────
+def test_guild_detail_does_not_return_the_token(db, client, monkeypatch):
+    """`streamer_access_token`을 그대로 SELECT해 dict(row)로 내려보내고 있었다 —
+    프론트는 진위 여부만 쓰는데 토큰 원문이 브라우저까지 갔다."""
+    import routers.admin_router as ar
+    db(_seed(state=ob.STATE_REAUTH))
+
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {"id": str(GUILD), "name": "만화소녀의 사탕월드", "icon": None,
+                    "owner_id": "1", "approximate_member_count": 3, "description": None}
+
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, *a, **k): return _Resp()
+
+    monkeypatch.setattr(ar.httpx, "AsyncClient", lambda *a, **k: _Client())
+    r = _as_owner(client).get(f"/api/admin/guilds/{GUILD}")
+    assert r.status_code == 200, r.text
+    assert "AT_SECRET_VALUE" not in r.text
+    assert "streamer_access_token" not in r.text
+    body = r.json()["chzzk"]
+    assert body["streamer_connected"] is True
+    assert body["token_state"] == "reauth_required"
+
+
+# ── 12. /guilds에 인증 상태가 붙어 온다 ────────────────────────────────────
+def test_guilds_carry_auth_state(db, client, monkeypatch):
+    """상태를 서버에서 붙여 준다. 프론트에서 guild_id로 조인하면 안 된다 —
+    discord 스노플레이크는 2^53을 넘어 JSON number로 오가면 정밀도가 깎이고
+    (886237674665549865 → …800) 어떤 서버와도 매칭되지 않는다(실제로 깨졌다)."""
+    db(_seed(state=ob.STATE_REAUTH, fail_count=2, error_code="INVALID_TOKEN",
+             last_fail_at=1_785_554_706))
+    r = _as_owner(client).get("/api/admin/guilds")
+    assert r.status_code == 200, r.text
+    row = next(x for x in r.json() if x["id"] == str(GUILD))
+    assert row["chzzk_name"] == "만화소녀"
+    assert row["auth"]["token_state"] == "reauth_required"
+    assert row["auth"]["reauth_required"] is True
+    assert row["auth"]["streamer_linked"] is True
+    assert row["auth"]["token_last_fail_at"] == 1_785_554_706
+    # id는 문자열이어야 한다(정밀도 손실 방지)
+    assert isinstance(row["id"], str)
+    assert row["id"] == "886237674665549865"
+
+
+def test_guilds_without_subscription_have_no_auth(db, client):
+    db(_seed())
+
+    async def wipe():
+        conn = await database.get_db()
+        await conn.execute("DELETE FROM chzzk_subscriptions")
+        await conn.commit()
+
+    db(wipe())
+    r = _as_owner(client).get("/api/admin/guilds")
+    row = next(x for x in r.json() if x["id"] == str(GUILD))
+    assert row["auth"] is None
+    assert row["chzzk_name"] is None
+
+
+def test_guilds_response_has_no_secrets(db, client):
+    db(_seed(state=ob.STATE_REAUTH))
+    r = _as_owner(client).get("/api/admin/guilds")
+    for key in ("RT_SECRET_VALUE", "AT_SECRET_VALUE", "streamer_refresh_token",
+                "has_streamer_token"):
+        assert key not in r.text, key
+    assert "no-store" in r.headers.get("Cache-Control", "")
