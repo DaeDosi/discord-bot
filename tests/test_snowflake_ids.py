@@ -141,3 +141,40 @@ def test_auth_state_responses_are_not_cacheable(db, client, path):
     cc = client.get(path).headers.get("Cache-Control", "")
     assert "no-store" in cc and "private" in cc, f"{path}: {cc!r}"
     assert "public" not in cc
+
+
+def test_admin_follow_stats_returns_string_ids(db, client):
+    """지금은 조인에 안 쓰여도 문자열로 낸다 — 나중에 쓰이는 순간 조용히 깨진다.
+    실제로 nexadmin의 서버 나가기 필터가 String(number)로 비교하고 있었다."""
+    async def seed_verif():
+        conn = await database.get_db()
+        await conn.execute("DELETE FROM chzzk_verifications")
+        await conn.execute(
+            "INSERT INTO chzzk_verifications (guild_id, user_id, chzzk_channel_id,"
+            " tier_months, verified_at) VALUES (?,?,?,?,?)",
+            (GUILD, CHANNEL, "ch1", 1, 0))
+        await conn.commit()
+
+    db(seed_verif())
+    r = client.get("/api/admin/follow-stats")
+    assert r.status_code == 200, r.text
+    row = r.json()[0]
+    assert row["guild_id"] == "886237674665549865"
+    assert row["users"][0]["user_id"] == "1234567890123456789"
+    _assert_no_big_numbers(r.text, "admin/follow-stats")
+
+
+def test_admin_verifications_returns_string_ids(db, client):
+    async def seed_verif():
+        conn = await database.get_db()
+        await conn.execute("DELETE FROM chzzk_verifications")
+        await conn.execute(
+            "INSERT INTO chzzk_verifications (guild_id, user_id, chzzk_channel_id,"
+            " tier_months, verified_at) VALUES (?,?,?,?,?)",
+            (GUILD, CHANNEL, "ch1", 1, 0))
+        await conn.commit()
+
+    db(seed_verif())
+    r = client.get("/api/admin/verifications")
+    assert r.status_code == 200, r.text
+    _assert_no_big_numbers(r.text, "admin/verifications")

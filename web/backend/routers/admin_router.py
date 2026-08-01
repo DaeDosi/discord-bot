@@ -421,7 +421,7 @@ async def follow_stats(user: dict = Depends(_require_owner)):
         uid = str(v["user_id"])
         name = member_map_by_guild.get(str(v["guild_id"]), {}).get(uid, uid)
         verif_by_guild.setdefault(v["guild_id"], []).append({
-            "user_id":     v["user_id"],
+            "user_id":     uid,          # 스노플레이크 — 문자열 (utils/ids.py)
             "user_name":   name,
             "tier_months": v["tier_months"],
             "verified_at": v["verified_at"],
@@ -430,7 +430,9 @@ async def follow_stats(user: dict = Depends(_require_owner)):
     return [
         {
             "sub_id":            s["id"],
-            "guild_id":          s["guild_id"],
+            # 사용처가 없어도 문자열로 낸다 — 나중에 조인에 쓰이는 순간
+            # 같은 정밀도 문제가 조용히 재발한다(실제로 아래 프론트 필터가 그랬다).
+            "guild_id":          snowflake_str(s["guild_id"]),
             "guild_name":        guild_name_map.get(str(s["guild_id"])),
             "chzzk_name":        s["chzzk_name"],
             "chzzk_image_url":   s["chzzk_image_url"],

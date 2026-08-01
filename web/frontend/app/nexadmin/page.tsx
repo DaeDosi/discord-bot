@@ -141,10 +141,10 @@ interface VerifUser {
   verified_at: number;
 }
 interface FollowUser {
-  user_id: number; user_name: string; tier_months: number; verified_at: number;
+  user_id: string; user_name: string; tier_months: number; verified_at: number;
 }
 interface FollowStat {
-  sub_id: number; guild_id: number; guild_name: string | null;
+  sub_id: number; guild_id: string; guild_name: string | null;
   chzzk_name: string; chzzk_image_url: string | null;
   follow_months_tier1: number; follow_months_tier2: number;
   users: FollowUser[];
@@ -710,7 +710,7 @@ export default function AdminPage() {
 
   const leaveGuild = useCallback((guildId: string) => {
     setGuilds((prev) => prev.filter((g) => g.id !== guildId));
-    setFollowStats((prev) => prev ? prev.filter((s) => String(s.guild_id) !== guildId) : prev);
+    setFollowStats((prev) => prev ? prev.filter((s) => s.guild_id !== guildId) : prev);
   }, []);
 
   const deleteFollowSub = useCallback((subId: number) => {
