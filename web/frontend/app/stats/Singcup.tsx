@@ -19,19 +19,22 @@ import {
 // 썸네일 카드로 둘러보는 화면은 '싱드컵 라이브'(/stats/singcup/live),
 // 자유게시판 버프 목록은 '자유게시판 홍보글' 드로어(?view=board)로 나가 있다.
 
-type SortKey = "score" | "heart" | "heart1h" | "heart24h" | "view" | "follower";
+type SortKey = "score" | "heart" | "heart1h" | "view";
 type SortDir = "desc" | "asc";
 const SORTS: { k: SortKey; label: string }[] = [
   { k: "score",    label: "예상 인기점수" },
   { k: "heart",    label: "하트 많은 순" },
-  // 최근 1시간 '증가량' 기준. 24시간은 증가'율'이라 기준이 다르므로 이름을 나눠 둔다.
-  { k: "heart1h",  label: "1시간 하트 급상승" },
-  { k: "heart24h", label: "24시간 하트 급상승" },
+  // 기준 스냅샷 대비 '증가량'. 실제 비교 간격은 회차마다 달라서 카드 쪽에 분 단위로
+  // 같이 적는다(제목에 '1시간'을 박아두면 37분 비교를 1시간이라고 말하게 된다).
+  { k: "heart1h",  label: "하트 급상승" },
   { k: "view",     label: "조회수 많은 순" },
-  { k: "follower", label: "팔로워 많은 순" },
 ];
 const isSort = (v: string | null): v is SortKey =>
   !!v && SORTS.some((s) => s.k === v);
+
+// 폐지된 정렬(하트 24시간 급상승 / 팔로워 많은 순)이 담긴 기존 공유 링크·뒤로가기
+// 이력이 남아 있다. `isSort`가 false를 주는 값은 전부 기본 정렬로 되돌리고 URL에서도
+// 지운다 — 그냥 무시하면 주소창과 화면 상태가 서로 어긋난다.
 
 /** '이 라이브 숫자는 언제 확인한 것인가' — 60초 폴링과 실제 갱신 주기가 다르다는 걸 알린다 */
 function LiveFreshness({ live }: { live?: SingcupMain["live"] }) {
@@ -103,28 +106,122 @@ function Tile({ label, value, unit, accent, delta, windowMin, baseAt, foot }:
   );
 }
 
-/** 최근 1시간 하트 급상승 Top 5. 백엔드가 이미 골라 보낸 목록을 그대로 그린다
- *  (프론트에서 전체 배열로 다시 계산하면 대표 클립 교체 같은 조건이 누락된다). */
-function HeartMovers({ movers }: { movers: SingcupHeartMover[] }) {
-  // 표시는 예전 그대로다. 증가가 없는 구간에도 카드가 사라지지 않는 건 백엔드가
-  // 직전 정상 집계를 대신 내려주기 때문이고(load_main의 movers_out), 화면에는
-  // 별도 표시를 붙이지 않는다.
+// ── 급상승 카드의 시각 표시용 순수 함수 ───────────────────────────────────────
+// 이 값들은 전부 백엔드에서 온 문자열이라 프론트가 신뢰할 근거가 없다. 한 곳이라도
+// 파싱에 실패하면 화면에 "Invalid Date"나 "NaN분"이 그대로 찍히므로, 파싱과 표시를
+// 작은 함수로 떼어 각 단계에서 null로 떨어지게 한다.
+
+/** 파싱 가능한 시각이면 epoch ms, 아니면 null. `new Date("x")`는 던지지 않고
+ *  NaN을 주기 때문에 호출부마다 검사가 흩어지는 걸 막는다. */
+function parseAt(v?: string | null): number | null {
+  if (!v) return null;
+  const t = new Date(v).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
+/** 싱드컵 이벤트 시각은 전부 KST 기준이다. 타임존을 지정하지 않으면 해외에서 보는
+ *  브라우저가 자기 로컬 시각으로 바꿔 그려서 "02:06 기준"이 다른 시각이 된다. */
+const KST = "Asia/Seoul";
+function hhmmKst(ms: number): string {
+  return new Date(ms).toLocaleTimeString("ko-KR",
+    { hour: "2-digit", minute: "2-digit", timeZone: KST });
+}
+/** 날짜 경계를 넘긴 값은 시:분만 보면 오늘 것으로 오해된다 — 월·일을 같이 적는다. */
+function mdhmKst(ms: number): string {
+  return new Date(ms).toLocaleString("ko-KR",
+    { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: KST });
+}
+
+/** 비교 간격(분). 두 값이 모두 유효하고 computedAt이 뒤설 때만 양수를 준다.
+ *  시계 역전(computedAt < baseAt)이나 0분은 표시할 값이 아니므로 null이다. */
+function gapMinutes(baseAt?: string | null, computedAt?: string | null): number | null {
+  const b = parseAt(baseAt), c = parseAt(computedAt);
+  if (b == null || c == null) return null;
+  const m = Math.round((c - b) / 60000);
+  return m > 0 ? m : null;
+}
+
+/** 실제 비교 간격이 55~65분일 때만 '약 1시간'이라고 부를 수 있다.
+ *  실측(2026-08-02 02:43 KST): baseAt 02:06:23 / computedAt 02:43:44 → 37분 21초인데
+ *  화면은 "최근 1시간"이라고 적고 있었다. 기준 버킷은 `find_reference_baseline`이
+ *  거리 기준으로 고르므로 회차마다 달라진다 — 제목에 '1시간'을 고정으로 박아 두면
+ *  주기적으로 거짓말을 하게 된다. */
+const isAboutAnHour = (gap: number | null) => gap != null && gap >= 55 && gap <= 65;
+
+/** "02:06 기준 · 02:43 계산 · 비교 37분" — 실제 비교 간격을 숨기지 않는다.
+ *  유효한 부분만 골라 그린다(기준만 유효하면 기준만 나온다). */
+function MoversMeta({ baseAt, computedAt }: { baseAt?: string | null;
+                                              computedAt?: string | null }) {
+  const b = parseAt(baseAt);
+  if (b == null) return null;
+  const c = parseAt(computedAt);
+  const gap = gapMinutes(baseAt, computedAt);
+  return (
+    <span className="tabular-nums">
+      {hhmmKst(b)} 기준
+      {c != null && <> · {hhmmKst(c)} 계산</>}
+      {gap != null && <> · 비교 {gap}분</>}
+    </span>
+  );
+}
+
+function HeartMovers({ movers, baseAt, computedAt, stale, collector }: {
+  movers: SingcupHeartMover[];
+  baseAt?: string | null;
+  computedAt?: string | null;
+  stale?: boolean;
+  collector?: SingcupMain["collector"];
+}) {
+  // 두 stale은 다른 것이다. `stale`(topHeartMovers1hStale)은 '이번 구간에 새 목록을
+  // 계산하지 못해 직전 정상 집계를 재사용했다'는 뜻뿐이다 — 기준선 부재, 대표 클립
+  // 교체, metrics recovering 제외, 양수 후보 없음 등 여러 사유가 전부 이 하나로
+  // 합쳐져 오므로 **원인을 지목할 수 없다.** 화면 문구에서 원인을 열거하지 말 것
+  // (일부만 적으면 그 자체가 틀린 진단이 된다).
+  // `collector.stale`은 수집기 전체가 마지막 성공 이후 오래됐다는 뜻이다.
+  // 하나로 합치면 어느 쪽이 문제인지 알 수 없다.
+  const collectorStale = !!collector?.stale;
+  const lastOk = parseAt(collector?.lastSuccessAt);
+  const aboutAnHour = isAboutAnHour(gapMinutes(baseAt, computedAt));
   return (
     <section className="card !p-4">
       <div>
-        {/* '실시간'이라고 하면 초 단위로 갱신되는 것처럼 오해된다 */}
-        <h2 className="flex items-center gap-1.5 text-base font-extrabold">
-          <Heart size={15} style={{ color: VERMILION }} /> 최근 1시간 하트 급상승
+        {/* '실시간'이라고 하면 초 단위로 갱신되는 것처럼 오해된다.
+            '1시간'도 마찬가지로 실제 비교 간격이 그만큼일 때만 쓴다. */}
+        <h2 className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-base font-extrabold">
+          <Heart size={15} style={{ color: VERMILION }} />
+          {aboutAnHour ? "최근 약 1시간 하트 급상승" : "기준 시각 대비 하트 급상승"}
+          {stale && (
+            <span className="rounded px-1.5 py-0.5 text-[10px] font-bold"
+                  style={{ background: `${GOLD}26`, color: GOLD }}
+                  title="현재 구간에서 새 급상승 목록을 계산하지 못해 직전 정상 집계를 보여주고 있습니다. 다음 정상 집계가 완료되면 자동으로 갱신됩니다.">
+              이전 집계
+            </span>
+          )}
+          {collectorStale && (
+            <span className="rounded px-1.5 py-0.5 text-[10px] font-bold"
+                  style={{ background: "rgba(245,158,11,0.15)", color: "#F59E0B" }}
+                  title="수집기의 마지막 성공 이후 시간이 오래 지났습니다.">
+              수집 지연
+            </span>
+          )}
         </h2>
         {/* 집계 시각은 페이지 우측 상단에 하나만 둔다 — 같은 값을 두 번 보이면 잡음이다 */}
-        <p className="mt-0.5 text-[12px] text-muted">
-          대표 클립의 하트가 1시간 동안 가장 많이 증가한 스트리머입니다.
+        <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[12px] text-muted">
+          <span>대표 클립의 하트가 가장 많이 증가한 스트리머입니다.</span>
+          <MoversMeta baseAt={baseAt} computedAt={computedAt} />
+          {collectorStale && lastOk != null && (
+            <span className="tabular-nums" style={{ color: "#F59E0B" }}>
+              · 마지막 정상 수집 {mdhmKst(lastOk)}
+            </span>
+          )}
         </p>
       </div>
 
       {movers.length === 0 ? (
         <p className="py-6 text-center text-sm text-muted">
-          최근 1시간 동안 확인된 하트 증가가 없습니다.
+          {parseAt(baseAt) != null
+            ? "이 기준 시각 이후 확인된 하트 증가가 없습니다."
+            : "비교할 수 있는 기준 시각이 아직 없습니다."}
         </p>
       ) : (
         // 데스크톱 5열 → 태블릿 3열 → 모바일 2열. 카드 내용이 잘리지 않게 최소 폭을 준다.
@@ -139,7 +236,7 @@ function HeartMovers({ movers }: { movers: SingcupHeartMover[] }) {
                   #{m.rank}
                 </span>
                 <span className="flex items-center gap-0.5 text-xs font-extrabold tabular-nums"
-                      style={{ color: GREEN }} title="최근 1시간 하트 증가량">
+                      style={{ color: GREEN }} title="기준 시각 이후 하트 증가량">
                   ▲ {nf(m.heartDelta1h)}
                 </span>
               </div>
@@ -179,9 +276,6 @@ function HeartMovers({ movers }: { movers: SingcupHeartMover[] }) {
               </p>
               <p className="mt-1 flex items-center gap-1 text-[11px] tabular-nums text-muted">
                 <Heart size={10} /> 현재 {nf(m.heartCount)}
-                {m.heartDelta24h != null && m.heartDelta24h > 0 && (
-                  <span className="ml-auto text-muted/70">24h +{nf(m.heartDelta24h)}</span>
-                )}
               </p>
             </article>
           ))}
@@ -264,20 +358,14 @@ function Row({ s, index }: { s: SingcupStreamer; index: number }) {
 
       {/* 하트 변화량 — 점수와 버튼 사이의 독립된 칸으로 읽히도록 좌우에 구분선을 두고
           여백을 넉넉히 준다. 구분선이 없으면 버튼 쪽에 붙어 보인다. */}
-      <span className="flex shrink-0 items-center justify-center gap-5 border-border
-                       px-4 sm:min-w-[172px] sm:border-x">
-        <span className="text-center" title="1시간 전과 비교한 하트 증감입니다. '-'는 변화가 없거나 비교할 기록이 아직 없다는 뜻입니다.">
-          <span className="block whitespace-nowrap text-xs text-muted">1시간</span>
+      {/* 24시간 증가율 칸을 걷어내면서 최소 폭도 같이 줄인다 — 그대로 두면 한 칸만
+          남은 자리에 172px 공백이 생긴다. */}
+      <span className="flex shrink-0 items-center justify-center border-border
+                       px-4 sm:min-w-[92px] sm:border-x">
+        <span className="text-center" title="기준 스냅샷과 비교한 하트 증감입니다. '-'는 변화가 없거나 비교할 기록이 아직 없다는 뜻입니다.">
+          <span className="block whitespace-nowrap text-xs text-muted">하트 증감</span>
           <span className="mt-0.5 block whitespace-nowrap text-[15px]">
             <Delta value={s.heartDelta} />
-          </span>
-        </span>
-        <span className="text-center" title="24시간 전 대비 하트 증가율입니다. 'NEW'는 24시간 전 기록이 없거나 그때 하트가 0이라 증가율을 낼 수 없다는 뜻입니다.">
-          <span className="block whitespace-nowrap text-xs text-muted">24시간</span>
-          <span className="mt-0.5 block whitespace-nowrap text-[15px]">
-            {s.heartChangeRate24h === null
-              ? <span className="font-bold" style={{ color: GOLD }}>NEW</span>
-              : <Delta value={s.heartChangeRate24h} suffix="%" />}
           </span>
         </span>
       </span>
@@ -484,6 +572,14 @@ export default function Singcup() {
     setBoardOpen(p.get("view") === "board");
     const s = p.get("sort");
     if (isSort(s)) setSort(s);
+    else if (s) {
+      // 폐지된 정렬이든 오타든 기본 정렬로 정규화하고 주소창도 맞춘다.
+      const url = new URL(window.location.href);
+      url.searchParams.delete("sort");
+      url.searchParams.delete("dir");
+      window.history.replaceState(null, "", url.toString());
+      return;
+    }
     if (p.get("dir") === "asc") setDir("asc");
   }, []);
 
@@ -520,12 +616,8 @@ export default function Singcup() {
     const list = [...matched];
     if (sort === "heart") list.sort((a, b) => b.heartCount - a.heartCount);
     else if (sort === "view") list.sort((a, b) => b.viewCount - a.viewCount);
-    else if (sort === "follower") list.sort((a, b) => b.followerCount - a.followerCount);
-    else if (sort === "heart24h") {
-      list.sort((a, b) => (b.heartChangeRate24h ?? -1e9) - (a.heartChangeRate24h ?? -1e9));
-    }
     else if (sort === "heart1h") {
-      // 최근 1시간 동안 하트를 가장 많이 받은 순. 비교 기록이 없으면(대표 클립 교체 등)
+      // 기준 스냅샷 이후 하트를 가장 많이 받은 순. 비교 기록이 없으면(대표 클립 교체 등)
       // 0으로 치지 않고 정상 비교 항목 뒤로 보낸다 — 0과 '모름'은 다르다.
       const d = (s: SingcupStreamer) => (s.heartDelta == null ? -1 : s.heartDelta);
       list.sort((a, b) =>
@@ -634,9 +726,13 @@ export default function Singcup() {
         </div>
       )}
 
-      {/* 최근 1시간 하트 급상승 — KPI 위에 둔다(제목/설명 바로 다음) */}
+      {/* 하트 급상승 — KPI 위에 둔다(제목/설명 바로 다음) */}
       {data && (
-        <HeartMovers movers={data.topHeartMovers1h} />
+        <HeartMovers movers={data.topHeartMovers1h}
+                     baseAt={data.topHeartMovers1hBaseAt}
+                     computedAt={data.topHeartMovers1hComputedAt}
+                     stale={data.topHeartMovers1hStale}
+                     collector={data.collector} />
       )}
 
       {/* 요약 */}
@@ -714,13 +810,13 @@ export default function Singcup() {
         </p>
       )}
 
-      {/* 표기 안내 — '1시간 -' / '24시간 NEW'가 무슨 뜻인지 화면에서 바로 알 수 있게 */}
+      {/* 표기 안내 — '하트 증감 -'이 무슨 뜻인지 화면에서 바로 알 수 있게 */}
       <p className="text-[11px] leading-relaxed text-muted/80">
-        <b className="text-muted">1시간</b>은 1시간 전과 비교한 하트 증감,{" "}
-        <b className="text-muted">24시간</b>은 하루 전 대비 하트 증가율입니다.{" "}
-        <span className="text-muted">-</span> 는 변화가 없거나 비교할 기록이 아직 없다는 뜻이고,{" "}
-        <b style={{ color: GOLD }}>NEW</b> 는 24시간 전 기록이 없어(또는 그때 하트가 0이라)
-        증가율을 낼 수 없다는 뜻입니다. 수집을 막 시작한 동안에는 대부분 이렇게 표시됩니다.
+        <b className="text-muted">하트 증감</b>은 직전 기준 스냅샷과 비교한 하트 증가량입니다.
+        비교 기준 시각과 실제 비교 간격은 위 <b className="text-muted">하트 급상승</b> 카드에
+        적혀 있습니다.{" "}
+        <span className="text-muted">-</span> 는 변화가 없거나 비교할 기록이 아직 없다는 뜻입니다.
+        수집을 막 시작한 동안에는 대부분 이렇게 표시됩니다.
       </p>
 
       {/* 랭킹 */}

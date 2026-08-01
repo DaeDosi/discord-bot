@@ -16,12 +16,13 @@ import {
 
 // 싱드컵 라이브 — #싱드컵 태그 참가자 중 **지금 방송 중인 채널만** 보여주는 화면.
 // 오프라인 참가자와 전체 순위는 싱드컵 메인(/stats 의 싱드컵 탭 = 랭킹)에서 본다.
-type SortKey = "viewers" | "heart" | "recent" | "follower";
+// 정렬 상태는 URL에 싣지 않는다(이 화면은 예전부터 로컬 상태만 쓴다). 그래서
+// 폐지된 ?sort=follower 링크가 들어와도 읽는 쪽이 없어 기본 정렬로 열린다.
+type SortKey = "viewers" | "heart" | "recent";
 const SORTS: { k: SortKey; label: string }[] = [
   { k: "viewers",  label: "시청자 많은 순" },
   { k: "heart",    label: "하트 많은 순" },
   { k: "recent",   label: "최근 클립" },
-  { k: "follower", label: "팔로워 많은 순" },
 ];
 
 function GridSkeleton() {
@@ -213,7 +214,6 @@ export default function SingcupLivePage() {
     const list = (data?.streamers ?? []).filter((s) => s.live);
     if (sort === "heart") list.sort((a, b) => b.heartCount - a.heartCount);
     else if (sort === "recent") list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    else if (sort === "follower") list.sort((a, b) => b.followerCount - a.followerCount);
     else list.sort((a, b) =>
       (b.live?.concurrentViewers ?? 0) - (a.live?.concurrentViewers ?? 0));
     return list;

@@ -601,7 +601,6 @@ export interface SingcupHeartMover {
   heartCount: number;
   /** 동일 clipUid의 약 1시간 전 하트와의 차이(양수만 노출된다) */
   heartDelta1h: number;
-  heartDelta24h: number | null;
   score: number;
   live: SingcupLive | null;
 }
@@ -632,8 +631,6 @@ export interface SingcupStreamer {
   rankDelta:          number | null;
   /** 1시간 전 예상 인기점수와의 차이 */
   scoreDelta:         number | null;
-  heartDelta24h:      number | null;
-  heartChangeRate24h: number | null;
   isNew:              boolean;
   live:               SingcupLive | null;
 }
@@ -647,10 +644,14 @@ export interface SingcupMain {
     /** 실제로 비교한 수집 회차 시각 */
     deltaBaseAt: string | null;
   };
-  /** 최근 1시간 하트 급상승 — 스트리머당 현재 대표 클립 하나만, 동일 clipUid끼리 비교 */
+  /** 기준 스냅샷 대비 하트 급상승 — 스트리머당 현재 대표 클립 하나만, 동일 clipUid끼리
+   *  비교. 실제 비교 간격은 회차마다 다르므로 baseAt/computedAt으로 화면에 함께 적는다. */
   topHeartMovers1h: SingcupHeartMover[];
-  /** true면 지금 계산한 값이 아니라 '직전 정상 집계'다(이번 구간에 증가가 없었다).
-   *  화면에는 표시하지 않는다 — 카드가 사라지지 않게 하는 게 목적이고, 진단·모니터링용. */
+  /** true면 지금 계산한 값이 아니라 '직전 정상 집계'다. 백엔드는 이번 구간의 목록이
+   *  비면 사유를 가리지 않고 이 경로를 타므로, 이 값이 뜻하는 것은 **'새 목록을
+   *  계산하지 못했다'는 사실 하나뿐**이다 — 기준선 부재·대표 클립 교체·recovering
+   *  제외·양수 후보 없음 등이 모두 여기로 합쳐지며 원인은 구분되지 않는다.
+   *  화면에 '이전 집계' 배지로 표시하되 원인을 열거하지 말 것. */
   topHeartMovers1hStale?: boolean;
   topHeartMovers1hBaseAt?: string | null;
   topHeartMovers1hComputedAt?: string | null;
