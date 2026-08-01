@@ -9,11 +9,12 @@ _KST = timezone(timedelta(hours=9))
 
 def _today_kst() -> date:
     return datetime.now(_KST).date()
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Response
 from pydantic import BaseModel
 from typing import Optional
 from deps import get_current_user
 from database import get_db
+from utils import oauth_backoff as ob
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -222,24 +223,61 @@ async def guilds(user: dict = Depends(_require_owner)):
     ]
 
 
+def _epoch_or_none(v) -> int | None:
+    """0은 '없음'을 뜻한다(컬럼이 NOT NULL DEFAULT 0이라 NULL이 못 들어온다)."""
+    return int(v or 0) or None
+
+
 @router.get("/chzzk")
-async def chzzk_all(user: dict = Depends(_require_owner)):
+async def chzzk_all(response: Response, user: dict = Depends(_require_owner)):
+    """치지직 구독 목록 + **안전한** OAuth 토큰 건강 상태.
+
+    컬럼은 하나씩 명시한다 — `SELECT *`로 바꾸면 아래 `dict(r)` 전개에
+    `streamer_access_token`·`streamer_refresh_token`이 그대로 실려 나간다.
+    토큰 보유 여부는 값을 꺼내지 않고 SQL에서 boolean으로만 만든다.
+    """
     db          = await get_db()
     rows        = await (await db.execute(
         """SELECT id, guild_id, chzzk_channel_id, chzzk_name, chzzk_image_url,
                   discord_channel, mention_everyone, is_live,
                   follow_role_1month, follow_role_3month,
-                  follow_months_tier1, follow_months_tier2
+                  follow_months_tier1, follow_months_tier2,
+                  token_state, token_fail_count, token_last_error_code,
+                  token_last_fail_at, token_next_try_at, token_last_success_at,
+                  (streamer_refresh_token IS NOT NULL) AS has_streamer_token
            FROM chzzk_subscriptions ORDER BY guild_id"""
     )).fetchall()
 
     guilds_list    = await _bot_guilds()
     guild_name_map = {g["id"]: g["name"] for g in guilds_list}
 
-    return [
-        {**dict(r), "guild_name": guild_name_map.get(str(r["guild_id"]), str(r["guild_id"]))}
-        for r in rows
-    ]
+    out = []
+    for r in rows:
+        row = dict(r)
+        # 스트리머 OAuth를 한 적이 없는 구독이다. 컬럼 기본값이 'ok'라 그대로
+        # 내보내면 **연동한 적 없는 서버가 '정상'으로 보인다** — null로 구분한다.
+        linked = bool(row.pop("has_streamer_token", 0))
+        state = (row["token_state"] or ob.STATE_OK) if linked else None
+        row.update({
+            "guild_name": guild_name_map.get(str(r["guild_id"]), str(r["guild_id"])),
+            "streamer_linked":        linked,
+            "token_state":           state,
+            "reauth_required":       state == ob.STATE_REAUTH,
+            "token_fail_count":      int(row["token_fail_count"] or 0) if linked else 0,
+            "token_last_error_code": (row["token_last_error_code"] or None) if linked else None,
+            "token_last_fail_at":    _epoch_or_none(row["token_last_fail_at"]),
+            "token_next_try_at":     _epoch_or_none(row["token_next_try_at"]),
+            "token_last_success_at": _epoch_or_none(row["token_last_success_at"]),
+        })
+        if not linked:
+            # 미연동 행에 남아 있는 값은 의미가 없다 — 전부 비운다.
+            for k in ("token_last_fail_at", "token_next_try_at", "token_last_success_at"):
+                row[k] = None
+        out.append(row)
+
+    # 인증 상태가 담긴 응답이다 — 공유 캐시에 올라가면 안 된다.
+    response.headers["Cache-Control"] = "private, no-store"
+    return out
 
 
 @router.get("/verifications")
