@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import time
 import secrets
 import traceback
@@ -29,6 +30,69 @@ CHZZK_USER_URL   = "https://openapi.chzzk.naver.com/open/v1/users/me"
 CHZZK_FOLLOWERS_URL = "https://openapi.chzzk.naver.com/open/v1/channels/followers"
 DISCORD_API      = "https://discord.com/api/v10"
 _BOT_TOKEN       = os.getenv("DISCORD_TOKEN", "")
+
+
+# ── 토큰 요청 로그 ────────────────────────────────────────────────────────────
+# 예전에는 토큰 발급·갱신 응답을 `body={resp.text[:300]}`로 그대로 찍었다. 이 응답의
+# content에는 accessToken과 refreshToken이 들어 있고 선두 300자 안에 잡히므로,
+# **장기 자격증명이 운영 로그에 평문으로 남았다.**
+#
+# 그래서 응답에서 임의로 값을 꺼내 쓰지 않고 **allowlist된 필드만** 남긴다. provider의
+# message는 계약상 자격증명이 섞이지 않는다고 확정할 근거가 없어 쓰지 않는다 —
+# status와 provider error code만으로도 "왜 실패했는지"는 충분히 좁혀진다.
+
+# provider가 내려준 값도 **신뢰 경계 밖**이다. 아주 긴 문자열, 줄바꿈(로그 인젝션),
+# 토큰처럼 생긴 값이 `code`에 들어올 수 있으므로 짧은 안전 문자열만 통과시킨다.
+_SAFE_PROVIDER_CODE = re.compile(r"\A[A-Za-z0-9_.:-]{1,64}\Z")
+
+
+def _token_error_code(resp) -> tuple[str | None, str | None]:
+    """`(provider_code, error_kind)`.
+
+    응답 JSON의 최상위 `code`만 꺼낸다(치지직 공통 응답 봉투의 상태 코드). 본문을
+    로그로 넘기지 않기 위해 여기서 파싱과 검증까지 끝내고 **짧은 스칼라 하나만**
+    돌려준다.
+
+    - 파싱 실패 → `(None, "response_parse_failed")`
+    - code 없음/None → `(None, None)`
+    - dict·list 등 예상 밖 타입 → `(None, "unsafe_provider_code")`
+      (그 안에 무엇이 들었는지 알 수 없으므로 원문을 남기지 않는다)
+    - 길이 64 초과, 줄바꿈·공백·제어문자 포함 → `(None, "unsafe_provider_code")`
+
+    거부된 값은 **어떤 형태로도 기록하지 않는다** — 앞뒤 일부도, 길이도, 해시도.
+    """
+    try:
+        v = resp.json().get("code")
+    except Exception:
+        return None, "response_parse_failed"
+    if v is None:
+        return None, None
+    if not isinstance(v, (int, str)) or isinstance(v, bool):
+        return None, "unsafe_provider_code"
+    s = str(v)
+    if not _SAFE_PROVIDER_CODE.match(s):
+        return None, "unsafe_provider_code"
+    return s, None
+
+
+def _log_token_op(operation: str, status: int | None, *,
+                  duration_ms: int, error_kind: str | None = None,
+                  error_code: str | None = None) -> None:
+    """토큰 발급/갱신 결과를 자격증명 없이 한 줄로 남긴다.
+
+    로깅이 실패해도 OAuth 처리에는 영향을 주지 않는다 — 자격증명을 지키려다 로그인
+    자체를 깨뜨리면 더 나쁘다.
+    """
+    try:
+        payload = {"event": "chzzk_token_op", "operation": operation,
+                   "status": status, "duration_ms": duration_ms}
+        if error_kind:
+            payload["error_kind"] = error_kind
+        if error_code is not None:
+            payload["provider_code"] = error_code
+        print(f"[chzzk-auth] {json.dumps(payload, ensure_ascii=False)}", flush=True)
+    except Exception:
+        pass
 
 
 # ── 유틸 헬퍼 ─────────────────────────────────────────────────────────────────
@@ -107,6 +171,7 @@ async def _set_discord_nickname(guild_id: str, user_id: str, nickname: str) -> N
 
 async def _refresh_chzzk_token(refresh_token: str) -> tuple[str | None, str | None, int]:
     """Returns (access_token, new_refresh_token, expires_at_unix)."""
+    started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
@@ -118,15 +183,28 @@ async def _refresh_chzzk_token(refresh_token: str) -> tuple[str | None, str | No
                     "refreshToken": refresh_token,
                 },
             )
-            print(f"[chzzk-auth] token refresh status={resp.status_code} body={resp.text[:300]}")
+            took = int((time.monotonic() - started) * 1000)
             if resp.status_code == 200:
-                c  = resp.json().get("content", {})
+                try:
+                    c = resp.json().get("content", {})
+                except Exception:
+                    _log_token_op("refresh", resp.status_code, duration_ms=took,
+                                  error_kind="response_parse_failed")
+                    return None, None, 0
                 at = c.get("accessToken")
                 rt = c.get("refreshToken") or refresh_token
                 ei = c.get("expiresIn", 86400)
+                _log_token_op("refresh", resp.status_code, duration_ms=took)
                 return at, rt, int(time.time()) + ei
+            code, kind = _token_error_code(resp)
+            _log_token_op("refresh", resp.status_code, duration_ms=took,
+                          error_kind=kind, error_code=code)
     except Exception as e:
-        print(f"[chzzk-auth] token refresh error: {repr(e)}")
+        # 예외 문자열에는 본문이 실리지 않는다(POST body이고 URL에 쿼리가 없다).
+        # 그래도 종류만 남기고 repr 전체는 쓰지 않는다.
+        _log_token_op("refresh", None,
+                      duration_ms=int((time.monotonic() - started) * 1000),
+                      error_kind=type(e).__name__)
     return None, None, 0
 
 
@@ -564,6 +642,7 @@ async def chzzk_callback(
         return _err("discord_user_missing", guild_id)
 
     # ── Chzzk code → token 교환 ──────────────────────────────────────────────
+    _started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             token_resp = await client.post(
@@ -576,10 +655,26 @@ async def chzzk_callback(
                     "state":        state,
                 },
             )
-            print(f"[chzzk-auth] token status={token_resp.status_code} body={token_resp.text[:300]}")
-            token_data = token_resp.json()
+            _took = int((time.monotonic() - _started) * 1000)
+            try:
+                token_data = token_resp.json()
+            except Exception:
+                # 본문을 찍지 않는다 — 파싱에 실패했다는 사실만 남긴다.
+                _log_token_op("exchange", token_resp.status_code, duration_ms=_took,
+                              error_kind="response_parse_failed")
+                return _err("oauth_failed", guild_id)
+            if token_resp.status_code == 200:
+                _log_token_op("exchange", token_resp.status_code, duration_ms=_took)
+            else:
+                _code, _kind = _token_error_code(token_resp)
+                _log_token_op("exchange", token_resp.status_code, duration_ms=_took,
+                              error_kind=_kind, error_code=_code)
     except Exception as e:
-        print(f"[chzzk-auth] token request failed: {e}")
+        # 예외 문자열에 code/state가 실릴 수 있는 경로(URL 쿼리)가 아니지만,
+        # 종류만 남기고 메시지 전체는 쓰지 않는다.
+        _log_token_op("exchange", None,
+                      duration_ms=int((time.monotonic() - _started) * 1000),
+                      error_kind=type(e).__name__)
         return _err("oauth_failed", guild_id)
 
     content          = token_data.get("content", {})
@@ -589,7 +684,12 @@ async def chzzk_callback(
     token_expires_at = int(time.time()) + expires_in
 
     if not access_token:
-        print(f"[chzzk-auth] No accessToken in response: {token_data}")
+        # 예전에는 `token_data` 전체를 찍었다. accessToken이 없더라도 같은 응답에
+        # refreshToken이 들어 있을 수 있어 자격증명이 그대로 새는 경로였다.
+        # 어떤 key가 왔는지만 알면 진단에는 충분하다 — **값은 넣지 않는다.**
+        _mc, _ = _token_error_code(token_resp)
+        _log_token_op("exchange", 200, duration_ms=_took,
+                      error_kind="missing_access_token", error_code=_mc)
         return _err("token_failed", guild_id)
 
     # ── 스트리머 등록 플로우 ──────────────────────────────────────────────────

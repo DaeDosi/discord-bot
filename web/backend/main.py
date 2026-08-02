@@ -7,9 +7,17 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from log_redaction import install_query_redaction
 from rate_limit import RateLimitMiddleware
 from security import IS_PROD, SecurityHeadersMiddleware, allowed_origins
 from timing import ServerTimingMiddleware, stats_snapshot
+
+# OAuth 콜백의 `?code=`·`?state=`가 uvicorn access log에 평문으로 남던 것을 막는다.
+# **import 시점**에 설치한다. lifespan도 첫 요청보다는 먼저 돌지만, import 시점이면
+# 이 모듈이 로드되는 모든 경로(테스트·`uvicorn main:app` 모두)에서 동일하게 보장되고
+# 첫 콜백 요청부터 확실히 걸린다. 봇 프로세스는 이 모듈을 import하지 않으므로 영향이
+# 없고, 설치 함수가 중복 추가를 스스로 막는다(reload·반복 import에서 누적되지 않는다).
+install_query_redaction()
 
 load_dotenv()
 
