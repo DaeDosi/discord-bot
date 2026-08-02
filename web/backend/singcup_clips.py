@@ -25,6 +25,7 @@ import contextlib
 import contextvars
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -3661,6 +3662,156 @@ def baseline_report_stats() -> dict:
     return dict(_baseline_stats)
 
 
+# ── owner별 비교 간격 분포 (관리자 진단 전용) ──────────────────────────────
+# 화면은 기준 시각과 비교 간격을 **하나씩만** 보여준다. 그런데 `deltaBaseAt`은 버킷의
+# `MIN(collected_at)`이고 화면의 '비교 N분'은 `now - lo`, 즉 owner 간 **최댓값**이다.
+# 한 버킷 안에 collected_at이 흩어져 있으면(실측 2026-08-02: 14:02:13~14:41:04,
+# 38.9분 폭) owner마다 실제 비교 창이 다르고, 창이 긴 쪽이 급상승 순위에서 유리하다.
+# 그 편차가 실제로 얼마인지 볼 수단이 없어서 여기에 집계값만 더한다.
+#
+# owner id·clip uid·닉네임은 넣지 않는다. 진단에 필요한 것은 분포이지 명단이 아니다.
+
+# 히스토그램 경계(초). 반개구간 [lo, hi)로 나누고 **마지막 구간만** x >= 5400 이다.
+# 경계를 닫힌 구간으로 두면 정확히 600초인 표본이 두 칸에 잡히거나 어디에도 안 잡힌다.
+_INTERVAL_BUCKETS = (
+    (0, 600), (600, 1200), (1200, 1800), (1800, 2400), (2400, 3000),
+    (3000, 3600), (3600, 4500), (4500, 5400), (5400, None),
+)
+
+
+def _percentile(sorted_vals: list[int], q: float) -> int | None:
+    """**nearest-rank** 백분위. `statistics`의 암묵적 보간에 기대지 않는다.
+
+    표본 수가 짝수든 홀수든 1개든, 반환값은 **항상 실제 표본 중 하나**이고 같은
+    입력이면 같은 값이 나온다. 보간을 쓰면 존재하지 않는 시각이 p50으로 나와
+    "이 값이 어느 owner 것이냐"는 질문에 답할 수 없게 된다.
+
+    정의: rank = ceil(q * n), 1-indexed. q=0.5, n=4 → rank 2 → 두 번째로 작은 값.
+    """
+    n = len(sorted_vals)
+    if n == 0:
+        return None
+    rank = math.ceil(q * n)
+    return sorted_vals[max(1, min(n, rank)) - 1]
+
+
+def _interval_summary(vals: list[int]) -> dict:
+    """min/p50/p90/p95/max/average(초). 표본이 없으면 전부 null."""
+    if not vals:
+        return {"owners": 0, "minSeconds": None, "p50Seconds": None,
+                "p90Seconds": None, "p95Seconds": None, "maxSeconds": None,
+                "averageSeconds": None}
+    s = sorted(vals)
+    return {
+        "owners": len(s),
+        "minSeconds": s[0],
+        "p50Seconds": _percentile(s, 0.50),
+        "p90Seconds": _percentile(s, 0.90),
+        "p95Seconds": _percentile(s, 0.95),
+        "maxSeconds": s[-1],
+        "averageSeconds": round(sum(s) / len(s), 1),
+    }
+
+
+def _interval_histogram(vals: list[int]) -> list[dict]:
+    """반개구간 히스토그램. 모든 표본이 정확히 한 칸에만 들어간다."""
+    out = []
+    for lo, hi in _INTERVAL_BUCKETS:
+        n = sum(1 for v in vals if (v >= lo and (hi is None or v < hi)))
+        out.append({"fromSeconds": lo, "toSeconds": hi, "owners": n})
+    return out
+
+
+def _m(sec: int | None) -> float | None:
+    """초 → 분(소수 1자리). 값이 없으면 null을 그대로 넘긴다 — 0으로 만들지 않는다."""
+    return None if sec is None else round(sec / 60.0, 1)
+
+
+def _interval_stats(vals: list[int], window: int) -> dict:
+    """분포 하나의 전체 계약. 표본이 0이면 백분위는 전부 null이고 카운터만 0이다.
+
+    '계산할 수 없음'과 '0분'은 다른 뜻이다. 표본이 없을 때 0을 넣으면 "모두 즉시
+    비교됐다"로 읽히므로 반드시 null을 유지한다.
+    """
+    s = sorted(vals)
+    base = _interval_summary(s)
+    return {
+        "owners": base["owners"],
+        "minMinutes": _m(base["minSeconds"]),
+        "p25Minutes": _m(_percentile(s, 0.25) if s else None),
+        "p50Minutes": _m(base["p50Seconds"]),
+        "p75Minutes": _m(_percentile(s, 0.75) if s else None),
+        "p90Minutes": _m(base["p90Seconds"]),
+        "p95Minutes": _m(base["p95Seconds"]),
+        "maxMinutes": _m(base["maxSeconds"]),
+        "averageMinutes": _m(base["averageSeconds"]),
+        "histogram": _interval_histogram(s),
+        # 목표 창(기본 3600초)과의 관계. 경계는 정확히 window와 같은 값만 exact다.
+        "exact60m": sum(1 for v in s if v == window),
+        "under60m": sum(1 for v in s if v < window),
+        "over60m": sum(1 for v in s if v > window),
+    }
+
+
+# ── 현재 지표 신선도 (기준선 비교 간격과 **다른 지표**) ───────────────────
+# 기준선 간격이 정상이어도 현재 하트 값이 오래됐을 수 있다. 실측 2026-08-02:
+# 디온·노바 두 대표 클립이 원본보다 22·77 하트 뒤처져 있었는데, 기준선 커버리지는
+# 정상이었고 원인은 회차 안에서 아직 처리되지 않은 것이었다. 그 상태를 볼 수단이
+# 없어서 이 분포를 더한다. **두 지표를 한 값으로 합치지 않는다.**
+#
+# 기준 필드는 `last_heart_at`이다. database/db.py 주석이 정의하듯 "하트를 **정상으로
+# 받은** 마지막 시각"이고, `_apply_metrics`는 `heart_ok`이면 값이 변하지 않아도
+# 갱신한다. `last_attempt_at`은 **실패한 시도에도 갱신되므로** freshness로 쓰면 안 된다.
+# `last_success_at` 컬럼은 존재하지 않으며 새로 만들지 않는다(스키마 변경 없음).
+#
+# 버킷 경계는 baseline 쪽(_INTERVAL_BUCKETS)과 다르다. 신선도는 훨씬 넓게 퍼지므로
+# 뒤쪽을 성기게 잡는다. 형식(fromSeconds/toSeconds/owners)은 그대로 재사용한다.
+_AGE_BUCKETS = (
+    (0, 600), (600, 1200), (1200, 1800), (1800, 2700), (2700, 3600),
+    (3600, 5400), (5400, 7200), (7200, None),
+)
+
+
+def _age_histogram(vals: list[int]) -> list[dict]:
+    return [{"fromSeconds": lo, "toSeconds": hi,
+             "owners": sum(1 for v in vals if v >= lo and (hi is None or v < hi))}
+            for lo, hi in _AGE_BUCKETS]
+
+
+def _metrics_age_stats(ages: list[int], *, count: int, missing: int, future: int,
+                       now: int) -> dict:
+    """현재 지표 신선도 분포.
+
+    `count`는 모집단 전체(=currentEligible과 같은 수)이고, `observedCount`는 그중
+    실제로 age를 계산할 수 있었던 수다. 둘의 차이가 missing + future다 —
+    **관측 이력이 없는 대상을 0초로 섞으면 "방금 갱신됨"이 되어버린다.**
+    """
+    s = sorted(ages)
+    def sec(q):
+        return _percentile(s, q) if s else None
+    out = {
+        "unit": "seconds",
+        "generatedAt": _iso(now),
+        "field": "last_heart_at",
+        "percentileRule": "nearest-rank (rank = ceil(q*n), 1-indexed)",
+        "histogramRule": "half-open [fromSeconds, toSeconds); last bucket is open-ended",
+        "count": count,
+        "observedCount": len(s),
+        "missingObservedAt": missing,
+        "futureObservedAt": future,
+        "minSeconds": s[0] if s else None,
+        "p50Seconds": sec(0.50), "p90Seconds": sec(0.90),
+        "p95Seconds": sec(0.95), "p99Seconds": sec(0.99),
+        "maxSeconds": s[-1] if s else None,
+        "averageSeconds": round(sum(s) / len(s), 1) if s else None,
+        "histogram": _age_histogram(s),
+    }
+    # 읽는 사람이 초를 분으로 다시 나누지 않도록 같은 값을 분으로도 준다.
+    for k in ("min", "p50", "p90", "p95", "p99", "max", "average"):
+        out[f"{k}Minutes"] = _m(out[f"{k}Seconds"])
+    return out
+
+
 async def baseline_report(window: int | None = None) -> dict:
     """기준선 진단(read-only). 짧은 TTL 캐시 + single-flight."""
     key = int(DELTA_WINDOW_SECONDS if window is None else window)
@@ -3702,6 +3853,98 @@ async def _baseline_report_uncached(window: int | None = None) -> dict:
     current = int(cur["n"] or 0)
     cands = await _bucket_candidates(ref, DELTA_TOLERANCE_SECONDS, detail=True)
     chosen = await find_reference_baseline(now, win)
+
+    # ── owner별 실제 비교 간격 ────────────────────────────────────────────
+    # 선택 규칙은 `select_baseline_rows()` 하나로 공유한다. 여기서 비슷한 구현을
+    # 다시 쓰면 진단이 화면과 다른 행을 고를 수 있고, 그러면 진단이 거짓말을 한다.
+    #
+    # 모집단을 셋으로 나눈다. 하나로 뭉쳐 놓으면 "과거 스냅샷에 남아 있을 뿐 지금은
+    # 비활성인 owner"까지 현재 랭킹 품질 지표처럼 읽힌다.
+    owner_intervals = {"available": False, "reason": "no_baseline_bucket"}
+    if chosen is not None:
+        b0 = int(chosen["bucket"])
+        rows = await (await db.execute(
+            "SELECT owner_channel_id, clip_uid, heart_count, collected_at, id "
+            "FROM singcup_snapshots WHERE event_id=? AND collected_at>=? AND collected_at<?",
+            (EVENT_ID, b0, b0 + 3600))).fetchall()
+        picked = select_baseline_rows(rows, ref)
+
+        # 현재 판정 대상 — load_main의 `ranked`와 **같은 조건**이어야 한다.
+        # (singcup_streamers JOIN singcup_clips, active=1, 대표 클립 기준)
+        cur_rows = await (await db.execute(
+            "SELECT s.channel_id, s.representative_clip_uid AS uid, c.heart_count, "
+            "       c.metrics_recovered_at, c.last_heart_at "
+            "FROM singcup_streamers s "
+            "JOIN singcup_clips c ON c.clip_uid = s.representative_clip_uid "
+            "WHERE s.event_id=? AND c.active=1", (EVENT_ID,))).fetchall()
+
+        base_gaps, eligible_gaps, positive_gaps = [], [], []
+        # 신선도는 **eligible과 정확히 같은 대상**에서만 모은다. 다른 모집단을 쓰면
+        # 두 분포의 대상 수가 달라지고 그 차이를 설명할 수 없게 된다.
+        eligible_ages: list[int] = []
+        age_missing = age_future = 0
+        missing_baseline = rep_changed = recovering = 0
+        for _k, r in picked.values():
+            base_gaps.append(now - int(r["collected_at"]))
+        for cr in cur_rows:
+            hit = picked.get(cr["channel_id"])
+            if hit is None:
+                missing_baseline += 1                    # 기준선 없음
+                continue
+            b = hit[1]
+            gap = now - int(b["collected_at"])
+            if str(b["clip_uid"]) != str(cr["uid"]):
+                rep_changed += 1                         # 대표 클립 교체
+                continue
+            # load_main과 **완전히 같은 복구 가드**. 이 줄이 빠지면 화면에서는
+            # recovering으로 제외된 owner가 진단에서는 양수 급상승으로 잡힌다.
+            if ref and int(cr["metrics_recovered_at"] or 0) >= ref:
+                recovering += 1
+                continue
+            eligible_gaps.append(gap)
+            lha = int(cr["last_heart_at"] or 0)
+            if lha <= 0:
+                age_missing += 1              # 하트를 한 번도 정상 수신한 적 없음
+            elif lha > now:
+                age_future += 1               # 시계 역전 — 0초로 숨기지 않는다
+            else:
+                eligible_ages.append(now - lha)
+            if int(cr["heart_count"]) - int(b["heart_count"]) > 0:
+                positive_gaps.append(gap)
+
+        # 창 밖(선택된 버킷에 있으나 지금은 대상이 아닌) owner 수
+        cur_ids = {cr["channel_id"] for cr in cur_rows}
+        out_of_window = sum(1 for o in picked if o not in cur_ids)
+
+        owner_intervals = {
+            "available": True,
+            "bucketAt": _iso(b0),
+            "targetAt": _iso(ref),
+            "targetWindowSeconds": win,
+            "rowsScanned": len(rows),
+            "percentileRule": "nearest-rank (rank = ceil(q*n), 1-indexed)",
+            "histogramRule": "half-open [lo, hi); last bucket is x >= 5400",
+            "counters": {
+                "outOfWindowOwners": out_of_window,
+                "missingBaselineOwners": missing_baseline,
+                "representativeChangedOwners": rep_changed,
+                "recoveringOwners": recovering,
+            },
+            # 선택된 스냅샷에 존재하는 **전체** owner (비활성·탈락 포함)
+            "baselineOwnerIntervalDistribution": _interval_stats(base_gaps, win),
+            # 현재 active 대표 클립이 있고 실제로 증감을 계산할 수 있는 owner
+            "currentEligibleOwnerIntervalDistribution": _interval_stats(eligible_gaps, win),
+            # 기준선 간격이 아니라 **현재 하트 값이 얼마나 오래됐는가**.
+            # count는 currentEligible의 owners와 항상 같다(같은 루프에서 모은다).
+            "currentMetricsAgeDistribution": _metrics_age_stats(
+                eligible_ages, count=len(eligible_gaps),
+                missing=age_missing, future=age_future, now=now),
+            # production 판정에서 heartDelta > 0 인 owner
+            "positiveMoverIntervalDistribution": {
+                **_interval_stats(positive_gaps, win),
+                "positiveOwners": len(positive_gaps),
+            },
+        }
 
     # 24시간 쪽은 owner별 MAX(collected_at)<=목표라 '얼마나 오래된 샘플을 썼는지'가
     # owner마다 다르다. 이번 부분 세트 버그와는 별개의 위험이라 수치로 드러낸다.
@@ -3752,6 +3995,7 @@ async def _baseline_report_uncached(window: int | None = None) -> dict:
             "partial": c["partial"],
         } for c in cands],
         # V2 Phase 5 개선 대상 — 24시간 기준 샘플이 목표에서 얼마나 떨어져 있는가
+        "ownerIntervals": owner_intervals,
         "day24h": {
             "targetAt": _iso(tgt24),
             "owners": int(d24["n"] or 0),
@@ -3978,6 +4222,32 @@ async def _last_top_movers() -> tuple[list[dict], int | None, int | None]:
     return (data if isinstance(data, list) else []), row["base_at"], row["computed_at"]
 
 
+def select_baseline_rows(rows, ref: int) -> dict:
+    """owner별 기준 스냅샷 행을 고른다 — `{owner: ((distance, -at, -id), row)}`.
+
+    **`_delta_maps()`와 관리자 진단이 반드시 같은 규칙을 쓰게 하려고 떼어 놓았다.**
+    진단 쪽에 비슷한 구현을 하나 더 두면 "화면에 보이는 값"과 "진단이 말하는 값"이
+    조용히 갈라진다 — 그러면 진단의 존재 이유가 없어진다.
+
+    동점 기준을 끝까지 고정해 같은 입력이면 항상 같은 행이 뽑히게 한다.
+      ① 기준 시각과의 거리   ② collected_at DESC(같은 거리면 더 최근 값)
+      ③ id DESC             (같은 시각의 중복 행 — 나중에 쓰인 행)
+
+    이 순서를 SQL의 `ORDER BY ABS(...)`로 만들면 정렬 가능한 인덱스가 없어 임시
+    B-tree가 생긴다(실측 5,000명에서 유의미). 대신 인덱스 순서(collected_at ASC)로
+    그냥 읽고 승자만 파이썬에서 고른다 — 비교 키가 명시적이라 결정성은 같다.
+    """
+    best: dict[str, tuple] = {}
+    for r in rows:
+        owner = r["owner_channel_id"]
+        at = int(r["collected_at"])
+        key = (abs(at - ref), -at, -int(r["id"]))
+        cur = best.get(owner)
+        if cur is None or key < cur[0]:
+            best[owner] = (key, r)
+    return best
+
+
 async def _delta_maps(now: int) -> tuple[dict, dict, dict | None]:
     """(1시간 전 스냅샷, 24시간 전 스냅샷, 1시간 기준 버킷 정보).
 
@@ -4002,17 +4272,10 @@ async def _delta_maps(now: int) -> tuple[dict, dict, dict | None]:
         # (collected_at ASC)로 그냥 읽고 승자만 파이썬에서 고른다 — 비교 키가
         # 명시적이라 결정성은 SQL로 정렬할 때와 같다.
         ref = now - DELTA_WINDOW_SECONDS
-        best: dict[str, tuple] = {}
-        for r in await (await db.execute(
+        best = select_baseline_rows(await (await db.execute(
             "SELECT owner_channel_id, clip_uid, heart_count, rank, score, collected_at, id "
             "FROM singcup_snapshots WHERE event_id=? AND collected_at>=? AND collected_at<?",
-            (EVENT_ID, b, b + 3600))).fetchall():
-            owner = r["owner_channel_id"]
-            at = int(r["collected_at"])
-            key = (abs(at - ref), -at, -int(r["id"]))
-            cur = best.get(owner)
-            if cur is None or key < cur[0]:
-                best[owner] = (key, r)
+            (EVENT_ID, b, b + 3600))).fetchall(), ref)
         # clip_uid까지 들고 있어야 '같은 대표 클립끼리만' 하트를 뺄 수 있다.
         # collected_at도 함께 둔다 — owner별 실제 기준 시각을 알아야 '1시간'이
         # 실제로 몇 분인지 말할 수 있다.
