@@ -553,40 +553,11 @@ export interface RisingPeriodAnalysis {
 // 백엔드(singcup_collector)가 네이버 라운지 응답을 정규화해 내려준다.
 // 프론트는 원본 API 구조를 전혀 모른다.
 export type SingcupStatus = "UPCOMING" | "LIVE" | "ENDED";
-export interface SingcupEntry {
-  rank:                  number;
-  feedId:                number;
-  authorIdHash:          string;
-  authorNickname:        string;
-  authorProfileImageUrl: string;
-  authorVerified:        boolean;
-  title:                 string;
-  buffCount:             number;
-  nerfCount:             number;
-  viewCount:             number;
-  commentCount:          number;
-  createdAt:             string | null;
-  clipUrl:               string | null;
-  postUrl:               string;
-  mobilePostUrl:         string;
-}
-export interface SingcupRankings {
-  event: {
-    id: string; name: string; startAt: string; endAt: string; status: SingcupStatus;
-  };
-  summary: {
-    submissionCount: number; participantCount: number; totalBuffCount: number;
-    topNickname: string | null;
-  };
-  collector: {
-    lastSuccessAt: string | null; lastAttemptAt: string | null;
-    status: string; stale: boolean; staleAfterMinutes: number;
-  };
-  rankings: SingcupEntry[];
-}
 
 // ── 싱드컵: 클립 기반 메인/랭킹 ─────────────────────────────────────────────
-// 자유게시판 버프(SingcupRankings)와는 별개 데이터다.
+// 자유게시판 버프 순위(GET /api/singcup/rankings)와는 별개 데이터다. 그쪽 UI는
+// 제거됐고 타입도 같이 지웠다 — 백엔드 API와 응답 계약은
+// docs/작업정리_2026-08-02_싱드컵_자유게시판_홍보글_API.md 에 보존돼 있다.
 // 백엔드가 대표 클립·점수·변화량·현재 라이브까지 계산해 내려주므로
 // 프론트에서 다시 그룹화하거나 정렬 기준을 재계산하지 않는다.
 export interface SingcupLive {

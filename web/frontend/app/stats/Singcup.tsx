@@ -2,13 +2,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
-  Trophy, ExternalLink, Play, Eye, Heart, Loader2, Radio, ClipboardList, X,
+  Trophy, ExternalLink, Play, Eye, Heart, Radio, X,
   Search, ArrowDown, ArrowUp, RefreshCw,
 } from "lucide-react";
-import { api } from "@/lib/api";
 import { useSingcupMain } from "@/lib/useSingcupMain";
 import type {
-  SingcupHeartMover, SingcupMain, SingcupStreamer, SingcupRankings,
+  SingcupHeartMover, SingcupMain, SingcupStreamer,
 } from "@/lib/types";
 import {
   Delta, Disclaimer, EventBadge, GOLD, GREEN, MEDAL, RankDelta, SCORE_GRAD, ScoreFormula,
@@ -16,8 +15,9 @@ import {
 } from "./singcupShared";
 
 // 싱드컵 메인 = 랭킹 화면.
-// 썸네일 카드로 둘러보는 화면은 '싱드컵 라이브'(/stats/singcup/live),
-// 자유게시판 버프 목록은 '자유게시판 홍보글' 드로어(?view=board)로 나가 있다.
+// 썸네일 카드로 둘러보는 화면은 '싱드컵 라이브'(/stats/singcup/live)로 나가 있다.
+// '자유게시판 홍보글' 드로어(?view=board)는 제거됐다 — 백엔드 API와 계약은
+// docs/작업정리_2026-08-02_싱드컵_자유게시판_홍보글_API.md 에 보존돼 있다.
 
 type SortKey = "score" | "heart" | "heart1h" | "view";
 type SortDir = "desc" | "asc";
@@ -387,117 +387,6 @@ function Row({ s, index }: { s: SingcupStreamer; index: number }) {
   );
 }
 
-// ── 자유게시판 홍보글 드로어 ────────────────────────────────────────────────
-// 기존 자유게시판 버프 랭킹을 보조 화면으로 옮겨 왔다(수집기·API는 그대로).
-function BoardDrawer({ onClose }: { onClose: () => void }) {
-  const [data, setData] = useState<SingcupRankings | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    api.singcup.rankings(100)
-      .then((d) => { if (alive) setData(d); })
-      .catch(() => { if (alive) setFailed(true); });
-    return () => { alive = false; };
-  }, []);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  return (
-    <div className="fixed inset-0 z-[60] flex justify-end bg-black/60" onClick={onClose}>
-      {/* 데스크톱: 우측 드로어 / 모바일: 전체 화면 */}
-      <div onClick={(e) => e.stopPropagation()}
-           role="dialog" aria-label="자유게시판 홍보글"
-           className="flex h-full w-full flex-col border-l border-border bg-bg
-                      sm:w-[520px] md:w-[620px]">
-        <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
-          <h3 className="flex items-center gap-2 text-base font-extrabold">
-            <ClipboardList size={16} style={{ color: GOLD }} /> 자유게시판 홍보글
-          </h3>
-          <button onClick={onClose} aria-label="닫기"
-                  className="rounded-lg p-1.5 text-muted transition-colors hover:text-fg">
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
-          <p className="text-[13px] leading-relaxed text-muted">
-            치지직 라운지 자유게시판의 <b className="text-fg">[싱드컵]</b> 말머리 게시글입니다.
-            게시판 <b className="text-fg">버프는 예상 인기점수에 합산하지 않습니다.</b>
-          </p>
-
-          {failed ? (
-            <p className="py-10 text-center text-sm text-muted">
-              홍보글을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.
-            </p>
-          ) : !data ? (
-            <div className="flex items-center gap-2 py-10 text-sm text-muted">
-              <Loader2 size={15} className="animate-spin" /> 불러오는 중...
-            </div>
-          ) : data.rankings.length === 0 ? (
-            <p className="py-10 text-center text-sm text-muted">
-              등록된 홍보글이 아직 없습니다.
-            </p>
-          ) : (
-            <div className="mt-4 space-y-2">
-              {data.rankings.map((e) => (
-                <div key={e.feedId} className="rounded-xl border border-border p-3">
-                  <div className="flex items-center gap-2">
-                    <span className="w-6 shrink-0 text-center text-xs tabular-nums text-muted">
-                      {e.rank}
-                    </span>
-                    <span className="h-7 w-7 shrink-0 overflow-hidden rounded-full bg-bg-hover">
-                      {e.authorProfileImageUrl && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={e.authorProfileImageUrl} alt="" width={28} height={28}
-                             loading="lazy" onError={hideBrokenImage}
-                             className="h-full w-full object-cover" />
-                      )}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-sm font-bold text-fg">
-                      {e.authorNickname}
-                    </span>
-                    <span className="shrink-0 text-right">
-                      <span className="block text-base font-extrabold tabular-nums"
-                            style={{ color: GOLD }}>{nf(e.buffCount)}</span>
-                      <span className="block text-[10px] text-muted">버프</span>
-                    </span>
-                  </div>
-                  <p className="mt-1.5 line-clamp-2 text-[13px] leading-snug text-muted"
-                     title={e.title}>{e.title}</p>
-                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1
-                                  text-[11px] text-muted/80">
-                    <span>조회 {nf(e.viewCount)}</span>
-                    <span>댓글 {nf(e.commentCount)}</span>
-                    <span className="tabular-nums">{fmtDateTime(e.createdAt)}</span>
-                  </div>
-                  <div className="mt-2 flex items-center gap-1.5">
-                    {e.clipUrl && (
-                      <a href={e.clipUrl} target="_blank" rel="noopener noreferrer"
-                         className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px]
-                                    font-bold text-[#04140d]" style={{ background: GREEN }}>
-                        <Play size={11} /> 클립
-                      </a>
-                    )}
-                    <a href={e.postUrl} target="_blank" rel="noopener noreferrer"
-                       className="btn-secondary flex items-center gap-1 !px-2 !py-1.5 text-[11px]">
-                      원문 <ExternalLink size={10} />
-                    </a>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 const PAGE_SIZE = 50;
 // 한 번에 보여줄 페이지 번호 개수. 참가자가 수백 명이면 페이지가 10개를 넘으므로
 // 전부 늘어놓지 않고 현재 페이지 주변만 보여준다(모바일에서 줄이 넘치지 않게).
@@ -564,21 +453,27 @@ export default function Singcup() {
   const [sort, setSort] = useState<SortKey>("score");
   const [dir, setDir] = useState<SortDir>("desc");
   const [query, setQuery] = useState("");
-  const [boardOpen, setBoardOpen] = useState(false);
 
-  // ?view=board / ?sort= 로 상태를 유지한다(새로고침·뒤로가기·공유에도 그대로)
+  // ?sort= 로 상태를 유지한다(새로고침·뒤로가기·공유에도 그대로).
+  // 폐지된 `?view=board`(자유게시판 홍보글 드로어)가 담긴 링크가 남아 있으므로,
+  // 읽지는 않되 주소창에서는 한 번 지운다 — 열리지도 않는 상태가 URL에 남아 있으면
+  // 공유했을 때 무엇이 열릴지 오해하게 된다. 정리는 이 effect에서 **1회**만 하고
+  // replaceState라 뒤로가기 이력을 늘리지 않는다.
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
-    setBoardOpen(p.get("view") === "board");
     const s = p.get("sort");
+    const stale = p.has("view") || (!!s && !isSort(s));
     if (isSort(s)) setSort(s);
-    else if (s) {
-      // 폐지된 정렬이든 오타든 기본 정렬로 정규화하고 주소창도 맞춘다.
+    if (stale) {
       const url = new URL(window.location.href);
-      url.searchParams.delete("sort");
-      url.searchParams.delete("dir");
+      url.searchParams.delete("view");
+      if (s && !isSort(s)) {
+        // 폐지된 정렬이든 오타든 기본 정렬로 정규화한다(sort/dir 함께 제거).
+        url.searchParams.delete("sort");
+        url.searchParams.delete("dir");
+      }
       window.history.replaceState(null, "", url.toString());
-      return;
+      if (s && !isSort(s)) return;   // 기본 정렬로 되돌렸으니 dir도 읽지 않는다
     }
     if (p.get("dir") === "asc") setDir("asc");
   }, []);
@@ -594,13 +489,6 @@ export default function Singcup() {
     window.history.replaceState(null, "", url.toString());
   }, []);
 
-  const setView = useCallback((open: boolean) => {
-    setBoardOpen(open);
-    const url = new URL(window.location.href);
-    if (open) url.searchParams.set("view", "board");
-    else url.searchParams.delete("view");
-    window.history.replaceState(null, "", url.toString());
-  }, []);
 
   // 검색은 이미 받아온 참가자 목록 안에서만 한다 — 싱드컵에 등록된 사람만 찾아진다.
   // 대상은 치지직 닉네임(channelName) 하나뿐이다. 클립 제목까지 넣으면 노래 제목이
@@ -709,10 +597,6 @@ export default function Singcup() {
                   style={{ background: GOLD }}>
               <Radio size={15} /> 싱드컵 라이브
             </Link>
-            <button onClick={() => setView(true)}
-                    className="btn-secondary flex items-center gap-1.5 text-sm">
-              <ClipboardList size={15} /> 자유게시판 홍보글
-            </button>
           </div>
         </div>
       </div>
@@ -871,7 +755,6 @@ export default function Singcup() {
 
       <Disclaimer />
 
-      {boardOpen && <BoardDrawer onClose={() => setView(false)} />}
     </div>
   );
 }

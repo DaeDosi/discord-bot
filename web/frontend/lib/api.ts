@@ -322,9 +322,6 @@ export const api = {
 
   // 싱드컵 이벤트 — 네이버 라운지 수집 결과(백엔드가 정규화한 형태만 내려온다)
   singcup: {
-    // 자유게시판 홍보글(버프) — 보조 화면
-    rankings: (limit = 200) =>
-      fetch(`${BASE}/api/singcup/rankings?limit=${limit}`).then(r => r.json()) as Promise<import("./types").SingcupRankings>,
     // #싱드컵 태그 클립 — 메인/랭킹의 근거.
     // 응답이 커서(참가자 전원) 중복 호출 비용이 크다. 공유 캐시 + in-flight 합류를
     // 태워 "여러 컴포넌트가 동시에 불러도 네트워크는 1회"를 보장한다.
