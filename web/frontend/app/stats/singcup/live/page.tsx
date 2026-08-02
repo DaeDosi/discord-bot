@@ -2,11 +2,10 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import {
-  ArrowLeft, Bot, Trophy, ExternalLink, Play, Eye, Heart, Radio, ChevronDown, RefreshCw,
+  ArrowLeft, Bot, Trophy, ExternalLink, Play, Eye, Heart, Radio, RefreshCw,
 } from "lucide-react";
-import { api } from "@/lib/api";
 import { useSingcupMain } from "@/lib/useSingcupMain";
-import type { SingcupStreamer, SingcupClip } from "@/lib/types";
+import type { SingcupStreamer } from "@/lib/types";
 import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
 import {
@@ -24,6 +23,22 @@ const SORTS: { k: SortKey; label: string }[] = [
   { k: "heart",    label: "하트 많은 순" },
   { k: "recent",   label: "최근 클립" },
 ];
+
+// 클립 UID 계약 — 백엔드 `singcup_clips.py`의 `_CLIP_UID_RE`와 **같은 규칙**이다.
+// 여기서 새 규칙을 만들면 두 쪽이 조용히 갈라지므로 그대로 옮겨 적는다.
+const CLIP_UID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** 대표 클립 URL. 계약을 만족하는 UID일 때만 만들고, 아니면 null이다.
+ *
+ *  빈 값만 막으면 `abc/def`·`abc?x=1`·`../abc`·URL 통째로 같은 값이 그대로
+ *  `chzzk.naver.com/clips/...` 뒤에 붙어 엉뚱한 곳을 가리키는 링크가 된다.
+ *  **trim으로 보정하거나 encodeURIComponent로 위험 문자를 살려 링크를 만들지 않는다** —
+ *  값이 계약을 벗어났다는 것은 우리가 그 클립을 안다고 말할 수 없다는 뜻이다. */
+function clipHref(clipUid: unknown): string | null {
+  return typeof clipUid === "string" && CLIP_UID_RE.test(clipUid)
+    ? `https://chzzk.naver.com/clips/${clipUid}`
+    : null;
+}
 
 function GridSkeleton() {
   return (
@@ -44,26 +59,24 @@ function GridSkeleton() {
 // 스트리머 카드 — 이 화면은 라이브만 넘어오지만, 데이터가 비는 경우를 대비해
 // 오프라인 표시도 남겨 둔다(대표 클립 정보로 대체).
 function StreamerCard({ s }: { s: SingcupStreamer }) {
-  const [open, setOpen] = useState(false);
-  const [clips, setClips] = useState<SingcupClip[] | null>(null);
   const live = s.live;
 
-  const toggle = () => {
-    setOpen((v) => !v);
-    if (!clips) {
-      api.singcup.streamerClips(s.channelId)
-        .then((d) => setClips(d.clips))
-        .catch(() => setClips([]));
-    }
-  };
+  // 카드는 **현재 대표 클립 하나만** 보여준다. 예전에는 여기서 owner의 나머지 클립
+  // 목록을 펼쳐 보여줬는데, 참가 단위가 '스트리머 1명 = 대표 클립 1개'라 부가 목록이
+  // 순위와 무관한 잡음이었다.
+  //
+  // 대표 클립 UID가 계약을 벗어나면 링크를 만들지 않는다(clipHref 참고). 백엔드는
+  // `singcup_streamers JOIN singcup_clips ON clip_uid = representative_clip_uid`를
+  // `active=1`로 걸어 조립하므로(singcup_clips.py `_load_main_uncached`) 대표가 없거나
+  // 비활성·삭제 확정이면 그 owner는 응답에 **아예 들어오지 않는다.** 그래도 값이
+  // 비정상이면 깨진 URL을 내보내는 대신 버튼을 잠근다.
+  // **프론트에서 다른 클립을 대표로 고르지 않는다** — 대표 선정은 백엔드 계약이다.
+  const clipUrl = clipHref(s.clipUid);
+  const thumbUrl = live ? `https://chzzk.naver.com/live/${s.channelId}` : clipUrl;
 
-  return (
-    <div className="card !p-0 overflow-hidden">
-      <a href={live ? `https://chzzk.naver.com/live/${s.channelId}`
-                    : `https://chzzk.naver.com/clips/${s.clipUid}`}
-         target="_blank" rel="noopener noreferrer"
-         className="group relative block aspect-video w-full overflow-hidden bg-bg-hover">
-        {s.clipThumbnailUrl && (
+  const thumbInner = (
+    <>
+      {s.clipThumbnailUrl && (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={s.clipThumbnailUrl} alt="" loading="lazy" onError={hideBrokenImage}
                className="h-full w-full object-cover transition-transform group-hover:scale-105" />
@@ -89,7 +102,21 @@ function StreamerCard({ s }: { s: SingcupStreamer }) {
               style={{ background: "rgba(0,0,0,0.65)", color: "#fff" }}>
           #{s.rank}
         </span>
-      </a>
+    </>
+  );
+
+  return (
+    <div className="card !p-0 overflow-hidden">
+      {thumbUrl ? (
+        <a href={thumbUrl} target="_blank" rel="noopener noreferrer"
+           className="group relative block aspect-video w-full overflow-hidden bg-bg-hover">
+          {thumbInner}
+        </a>
+      ) : (
+        <div className="group relative block aspect-video w-full overflow-hidden bg-bg-hover">
+          {thumbInner}
+        </div>
+      )}
 
       <div className="p-3">
         <div className="flex items-center gap-2">
@@ -142,55 +169,24 @@ function StreamerCard({ s }: { s: SingcupStreamer }) {
           </div>
         )}
 
-        {s.taggedClipCount > 1 ? (
-          <button onClick={toggle}
-                  className="mt-2.5 flex w-full items-center justify-between rounded-lg border
-                             border-border px-2.5 py-1.5 text-[11px] text-muted
-                             transition-colors hover:text-fg">
-            싱드컵 태그 클립 {s.taggedClipCount}개
-            <ChevronDown size={13} className="transition-transform"
-                         style={{ transform: open ? "rotate(180deg)" : "none" }} />
-          </button>
-        ) : (
-          <p className="mt-2.5 text-[11px] text-muted/70">싱드컵 태그 클립 1개</p>
-        )}
-
-        {open && (
-          <div className="mt-2 space-y-1.5">
-            {clips === null ? (
-              <p className="py-2 text-center text-[11px] text-muted">불러오는 중...</p>
-            ) : clips.length === 0 ? (
-              <p className="py-2 text-center text-[11px] text-muted">클립이 없습니다.</p>
-            ) : clips.map((c) => (
-              <a key={c.clipUid} href={`https://chzzk.naver.com/clips/${c.clipUid}`}
-                 target="_blank" rel="noopener noreferrer"
-                 className="flex items-center gap-2 rounded-lg p-1.5 transition-colors hover:bg-bg-hover">
-                <span className="h-8 w-14 shrink-0 overflow-hidden rounded bg-bg-hover">
-                  {c.clipThumbnailUrl && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={c.clipThumbnailUrl} alt="" loading="lazy" onError={hideBrokenImage}
-                         className="h-full w-full object-cover" />
-                  )}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[11px] text-fg">{c.clipTitle}</span>
-                  <span className="block text-[10px] text-muted">
-                    ♥ {nf(c.heartCount)} · {nf(c.viewCount)}회
-                  </span>
-                </span>
-              </a>
-            ))}
-          </div>
-        )}
-
         <div className="mt-2.5 flex items-center gap-1.5">
-          <a href={`https://chzzk.naver.com/clips/${s.clipUid}`} target="_blank"
-             rel="noopener noreferrer"
-             className="flex flex-1 items-center justify-center gap-1 rounded-lg px-2 py-1.5
-                        text-xs font-bold text-[#04140d]"
-             style={{ background: GREEN }}>
-            <Play size={12} /> 클립
-          </a>
+          {clipUrl ? (
+            <a href={clipUrl} target="_blank" rel="noopener noreferrer"
+               className="flex flex-1 items-center justify-center gap-1 rounded-lg px-2 py-1.5
+                          text-xs font-bold text-[#04140d]"
+               style={{ background: GREEN }}>
+              <Play size={12} /> 클립
+            </a>
+          ) : (
+            // 링크를 만들 수 없으면 비활성으로 두고 이유를 읽을 수 있게 남긴다.
+            <span aria-disabled="true"
+                  title="대표 클립 정보를 아직 확인하지 못해 이동할 수 없습니다."
+                  className="flex flex-1 cursor-not-allowed items-center justify-center gap-1
+                             rounded-lg border border-border px-2 py-1.5 text-xs font-bold
+                             text-muted opacity-70">
+              <Play size={12} /> 클립 없음
+            </span>
+          )}
           <a href={`https://chzzk.naver.com/${s.channelId}`} target="_blank"
              rel="noopener noreferrer"
              className="btn-secondary flex flex-1 items-center justify-center gap-1 !px-2 !py-1.5 text-xs">
