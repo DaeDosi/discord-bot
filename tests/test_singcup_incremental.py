@@ -376,6 +376,11 @@ def test_load_main_shape(db):
     assert set(d) == {"event", "summary", "collector", "live",
                       "topHeartMovers1hStale", "topHeartMovers1hBaseAt",
                       "topHeartMovers1hComputedAt",
+                      # 후보 계산을 마지막으로 **실행한** 시각. ComputedAt과 다르다 —
+                      # stale이면 ComputedAt은 옛 집계 시각에 멈추고 이것만 전진한다.
+                      "topHeartMovers1hEvaluatedAt",
+                      # 이번 평가의 양수 owner 수. 화면 카드 수와 다르다.
+                      "topHeartMovers1hPositiveCount",
                       "topHeartMovers1h", "streamers"}
     # 라이브 신선도 — 화면이 '언제 확인한 라이브인지' 표시할 수 있어야 한다
     assert set(d["live"]) == {"collectedAt", "nextExpectedAt", "intervalSeconds", "isStale"}

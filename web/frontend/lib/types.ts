@@ -626,6 +626,15 @@ export interface SingcupMain {
   topHeartMovers1hStale?: boolean;
   topHeartMovers1hBaseAt?: string | null;
   topHeartMovers1hComputedAt?: string | null;
+  /** 후보 계산을 **마지막으로 실제 실행한** 시각. ComputedAt과 다르다 —
+   *  stale일 때 ComputedAt은 옛 집계 자신의 시각이라 멈춰 있지만 이 값은 계속
+   *  전진한다. "계산이 멈춘 것"과 "계산했지만 후보가 없는 것"을 구분하는 근거다.
+   *  캐시된 응답을 다시 줄 때는 함께 캐시돼 바뀌지 않는다(요청 시각이 아니다). */
+  topHeartMovers1hEvaluatedAt?: string | null;
+  /** 이번 평가에서 실제로 하트가 증가한 owner 수. **화면 카드 수와 다르다** —
+   *  fallback 중이면 카드는 옛 결과이고 이 값은 0이다. 상위 5개로 자르기 전 값이라
+   *  6명 이상이면 5보다 클 수 있다. */
+  topHeartMovers1hPositiveCount?: number;
   /** 라이브 표시의 신선도. 싱드컵 수집기가 아니라 전체 라이브 스캔 주기에 묶여 있다. */
   live: {
     collectedAt: string | null; nextExpectedAt: string | null;

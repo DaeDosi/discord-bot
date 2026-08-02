@@ -4340,10 +4340,24 @@ def main_cache_stats() -> dict:
 def _build_main_entry(data: dict) -> dict:
     """응답 dict → 전송용 bytes + ETag.
 
-    ETag 지문에서 `topHeartMovers1hComputedAt`은 뺀다. 이 필드는 '급상승을 언제
-    계산했는가'라 캐시를 채울 때마다(20초) 값이 바뀌는데, 순위와 수치가 그대로인데도
-    ETag가 달라지면 304가 영영 성립하지 않아 검증 요청이 전부 850KB 전송이 된다.
-    내용이 같으면 같은 ETag가 나오는 것이 조건부 요청의 전제다.
+    ETag 지문에서 `topHeartMovers1hComputedAt`은 뺀다. 캐시를 채울 때마다(20초)
+    값이 바뀌는데 순위와 수치가 그대로인데도 ETag가 달라지면 304가 성립하지 않기
+    때문이다.
+
+    `topHeartMovers1hEvaluatedAt`은 **일부러 빼지 않는다.** 화면이 이 값을
+    "마지막 재확인 시각"으로 보여주는데, 지문에서 빼면 서버가 다시 계산해 값이
+    바뀌어도 ETag가 같아 304가 나가고, 클라이언트는 옛 evaluatedAt을 계속 표시한다
+    — 사용자에게 거짓 시각을 보여주게 된다.
+
+    비용은 늘지 않는다. 지문에는 이미 `summary.deltaBaseline.intervalSecondsMin/Max`
+    (= `now - base[...]`)가 들어 있어 **uncached 재계산마다 지문이 어차피 달라진다**
+    (실측: 같은 내용에 now만 2분 차이 → ETag 불일치). 즉 evaluatedAt을 넣고 빼는
+    것으로 200/304 비율이 달라지지 않는다. ComputedAt 제외도 같은 이유로 실효가
+    없지만, 기존 계약을 바꾸지 않으려고 그대로 둔다.
+
+    304가 실제로 이득을 주는 구간은 `MAIN_CACHE_TTL`(20초) 안에서 같은 캐시 항목이
+    여러 클라이언트에게 나갈 때다. 그 창 안에서는 bytes가 동일하므로 evaluatedAt도
+    같고 ETag도 같다 — 넣어도 그 이득은 그대로 유지된다.
 
     starlette의 JSONResponse와 같은 옵션으로 직렬화한다 — 다른 옵션을 쓰면 같은
     데이터가 다른 bytes가 돼 Content-Length와 실제 응답이 어긋난다.
@@ -4645,6 +4659,23 @@ async def _load_main_uncached(limit: int = 200) -> dict:
                                    if movers_base else None),
         "topHeartMovers1hComputedAt": (datetime.fromtimestamp(movers_at, _KST).isoformat()
                                        if movers_at else None),
+        # **후보 계산을 마지막으로 실제 실행한 시각.** ComputedAt과 다르다.
+        #
+        # 실시간 후보가 0명이면 응답은 직전 정상 집계로 되돌아가고(stale=true),
+        # 그때 BaseAt/ComputedAt은 **그 옛 집계 자신의 시각**이라 그대로 멈춰 있다.
+        # 실측 2026-08-02: 21:59 집계가 23:05에도 그대로 보였고, 사용자는 계산이
+        # 멈춘 것으로 오해했다. 실제로는 매 회차 다시 계산했지만 조건을 만족하는
+        # 후보가 없었을 뿐이다. 그 사실을 말할 수 있는 값이 응답에 없었다.
+        #
+        # 그래서 stale이든 아니든 **이번 계산의 now**를 그대로 싣는다. 이 값은
+        # `_load_main_uncached`가 새로 돌 때만 바뀌고, 캐시가 같은 응답을 다시 줄
+        # 때는 함께 캐시돼 그대로 나온다 — "요청을 받은 시각"이 아니다.
+        "topHeartMovers1hEvaluatedAt": datetime.fromtimestamp(now, _KST).isoformat(),
+        # **이번 평가에서 실제로 양수였던 owner 수.** 화면에 보이는 카드 수와 다르다 —
+        # fallback 중이면 카드는 옛 결과이고 이 값은 0이다. "이전 결과가 보이는데
+        # 지금은 후보가 없다"를 이 숫자 하나로 말할 수 있다.
+        # 최대 5개로 자르기 **전** 값이라 6명 이상이면 5보다 클 수 있다.
+        "topHeartMovers1hPositiveCount": len(movers),
         "live": live_info,
         "collector": {
             "lastSuccessAt": datetime.fromtimestamp(last_at, _KST).isoformat()

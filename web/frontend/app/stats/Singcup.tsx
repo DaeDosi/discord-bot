@@ -165,10 +165,15 @@ function MoversMeta({ baseAt, computedAt }: { baseAt?: string | null;
   );
 }
 
-function HeartMovers({ movers, baseAt, computedAt, stale, collector }: {
+function HeartMovers({ movers, baseAt, computedAt, evaluatedAt, positiveCount,
+                      stale, collector }: {
   movers: SingcupHeartMover[];
   baseAt?: string | null;
   computedAt?: string | null;
+  /** 후보 계산을 마지막으로 실제 실행한 시각. stale일 때 이 값만 계속 전진한다. */
+  evaluatedAt?: string | null;
+  /** 이번 평가의 양수 증가자 수. 화면 카드 수(fallback일 수 있다)와 다르다. */
+  positiveCount?: number;
   stale?: boolean;
   collector?: SingcupMain["collector"];
 }) {
@@ -181,6 +186,7 @@ function HeartMovers({ movers, baseAt, computedAt, stale, collector }: {
   // 하나로 합치면 어느 쪽이 문제인지 알 수 없다.
   const collectorStale = !!collector?.stale;
   const lastOk = parseAt(collector?.lastSuccessAt);
+  const evaluated = parseAt(evaluatedAt);
   const aboutAnHour = isAboutAnHour(gapMinutes(baseAt, computedAt));
   return (
     <section className="card !p-4">
@@ -205,10 +211,31 @@ function HeartMovers({ movers, baseAt, computedAt, stale, collector }: {
             </span>
           )}
         </h2>
-        {/* 집계 시각은 페이지 우측 상단에 하나만 둔다 — 같은 값을 두 번 보이면 잡음이다 */}
+        {/* 집계 시각은 페이지 우측 상단에 하나만 둔다 — 같은 값을 두 번 보이면 잡음이다.
+            stale일 때만 예외로, '이전 집계'와 '마지막 재확인'을 여기서 나눠 준다.
+            둘을 구분하지 않으면 "21:59 결과가 23:05에도 그대로"가 계산 중단으로
+            오해된다 — 실제로는 계속 계산했지만 조건을 만족한 후보가 없었을 뿐이다. */}
         <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[12px] text-muted">
-          <span>대표 클립의 하트가 가장 많이 증가한 스트리머입니다.</span>
-          <MoversMeta baseAt={baseAt} computedAt={computedAt} />
+          {stale ? (
+            <>
+              <span>현재 조건을 충족한 새 후보가 없어 이전 완료 집계를 표시합니다.</span>
+              <span className="tabular-nums">
+                {computedAt && parseAt(computedAt) != null
+                  && <>이전 집계 {hhmmKst(parseAt(computedAt)!)}</>}
+                {evaluated != null && (
+                  <> · 마지막 재확인 {hhmmKst(evaluated)}</>
+                )}
+                {typeof positiveCount === "number" && (
+                  <> · 현재 증가 후보 {positiveCount}명</>
+                )}
+              </span>
+            </>
+          ) : (
+            <>
+              <span>대표 클립의 하트가 가장 많이 증가한 스트리머입니다.</span>
+              <MoversMeta baseAt={baseAt} computedAt={computedAt} />
+            </>
+          )}
           {collectorStale && lastOk != null && (
             <span className="tabular-nums" style={{ color: "#F59E0B" }}>
               · 마지막 정상 수집 {mdhmKst(lastOk)}
@@ -219,9 +246,9 @@ function HeartMovers({ movers, baseAt, computedAt, stale, collector }: {
 
       {movers.length === 0 ? (
         <p className="py-6 text-center text-sm text-muted">
-          {parseAt(baseAt) != null
-            ? "이 기준 시각 이후 확인된 하트 증가가 없습니다."
-            : "비교할 수 있는 기준 시각이 아직 없습니다."}
+          {parseAt(baseAt) == null
+            ? "비교할 수 있는 기준 시각이 아직 없습니다."
+            : "현재 조건을 충족한 하트 증가자가 없습니다."}
         </p>
       ) : (
         // 데스크톱 5열 → 태블릿 3열 → 모바일 2열. 카드 내용이 잘리지 않게 최소 폭을 준다.
@@ -615,6 +642,8 @@ export default function Singcup() {
         <HeartMovers movers={data.topHeartMovers1h}
                      baseAt={data.topHeartMovers1hBaseAt}
                      computedAt={data.topHeartMovers1hComputedAt}
+                     evaluatedAt={data.topHeartMovers1hEvaluatedAt}
+                     positiveCount={data.topHeartMovers1hPositiveCount}
                      stale={data.topHeartMovers1hStale}
                      collector={data.collector} />
       )}
