@@ -2,6 +2,36 @@
 builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
+# 이 저장소는 봇·백엔드·프론트가 한 곳에 있고, Railway는 기본적으로 **main의 모든
+# push**에 재배포한다. 그래서 프론트 5파일만 바꾼 커밋(12840fe)도 컨테이너를 내렸고,
+# 진행 중이던 싱드컵 스윕 회차가 그대로 끊겼다(실측 2026-08-02: 14:58 SEC-1 push와
+# 15:37 프론트 push가 각각 회차를 중단시켜 14:41:06 이후 완주가 한 번도 없었다).
+# 배포 한 번의 비용은 재빌드 시간 + STALE_RUN_SECONDS(600초) 자가복구 창이다.
+#
+# 아래 목록은 "이 파일이 바뀌면 백엔드 런타임이 달라지는가"로 정했다. import 전수
+# 조사 결과 web/backend는 database·utils를, cogs도 database·utils를 쓰고,
+# 파이썬 코드가 web/frontend를 import하는 곳은 **0건**이다.
+watchPatterns = [
+  "main.py",              # 봇 진입점 (start.sh가 직접 실행)
+  "start.sh",             # 두 프로세스 기동·종료 처리
+  "Dockerfile",           # 이미지 정의
+  "railway.toml",         # 이 파일 자체
+  "requirements.txt",     # 런타임 의존성
+  ".dockerignore",        # 빌드 컨텍스트 정의
+  "cogs/**",              # 봇 기능 (database·utils 의존)
+  "database/**",          # 스키마·연결 — 봇과 백엔드가 공유
+  "utils/**",             # db_write·ids·token_bucket·checks·gambling·mc_rcon
+  "web/backend/**",       # FastAPI 백엔드 전체
+]
+# 의도적으로 뺀 것:
+#   web/frontend/**  Vercel이 배포한다. 파이썬이 import하지 않는다.
+#   docs/**, *.md    문서만 바뀐 커밋으로 운영 이미지를 다시 만들 이유가 없다.
+#   tests/**         런타임에 실행되지 않는다.
+#   relay/**         Railway가 아니라 한국 IP 호스트에서 따로 돈다.
+#   pyproject.toml   ruff 설정 전용(런타임 영향 없음).
+#
+# 되돌리려면 이 watchPatterns 블록만 지우면 된다 — 전량 감시로 돌아간다.
+
 [deploy]
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
