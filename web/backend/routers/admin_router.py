@@ -172,7 +172,9 @@ async def overview(user: dict = Depends(_require_owner)):
         "SELECT COUNT(*) FROM chzzk_verifications"
     )).fetchone())[0]
 
-    today = date.today().isoformat()
+    # daily_visitors는 KST 날짜를 키로 쓴다(stats_router.today_kst). Railway 로컬은
+    # UTC라 date.today()를 쓰면 KST 00:00~08:59 동안 전날 행을 세게 된다.
+    today = _today_kst().isoformat()
     tv_row = await (await db.execute(
         "SELECT COUNT(*) FROM daily_visitors WHERE date=?", (today,)
     )).fetchone()
