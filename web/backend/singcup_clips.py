@@ -243,6 +243,54 @@ def safe_count(value) -> int:
     return max(0, n)
 
 
+# 지표 상한. JSON이 정확히 표현할 수 있는 정수 한계(2^53)를 넘는 값은 스키마 이상으로
+# 본다 — 실제 조회수·하트가 이 규모일 수 없고, sqlite INTEGER 범위를 넘기면 저장 자체가
+# 실패해 회차가 통째로 죽는다.
+_MAX_COUNT = 2 ** 53
+
+
+def valid_count(value) -> int | None:
+    """유효한 비음수 정수일 때만 값, 아니면 None(= '못 읽음').
+
+    지표에는 `safe_count`를 쓸 수 없다. 그쪽은 malformed·음수를 **0으로 정규화**하는데,
+    지표에서 0은 '진짜 0'이라는 뜻이다. 정규화된 0이 그대로 저장되면
+    (a) '한 번도 못 읽음'과 구분이 사라지고 (b) 조회수 70% 가중 점수에 진짜 0으로
+    들어가 순위를 왜곡한다. 여기서는 읽지 못한 것을 읽지 못한 것으로 둔다.
+
+    판정 계약(테스트 `test_valid_count_contract`가 고정한다):
+      None / "" / list / dict / 그 밖의 파싱 불가 → None
+      bool                → None. **파이썬에서 bool은 int의 하위 타입**이라 그냥 두면
+                            True가 1로, False가 0으로 저장된다(0은 '진짜 0'이 된다).
+                            isinstance(value, int)보다 **먼저** 걸러야 한다.
+      NaN / ±Infinity     → None (int() 변환에서 ValueError/OverflowError)
+      음수                → None (거부. 0으로 깎지 않는다)
+      소수(12.5)          → None. 조회수는 정수다 — 소수가 오면 스키마 이상으로 본다.
+                            단 12.0처럼 정수와 같은 값은 허용한다.
+      정수형 문자열("345") → 345. 기존 `safe_count`가 허용해 온 동작이라 회귀를 만들지
+                            않기 위해 유지한다(치지직이 숫자를 문자열로 주는 회차가 있다).
+      2^53 초과            → None (위 상한)
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        n = value
+    else:
+        try:
+            f = float(value)                    # str/float 모두 여기로
+        except (TypeError, ValueError):
+            return None
+        # NaN·±Inf는 int()에서 각각 ValueError·OverflowError를 낸다
+        try:
+            n = int(f)
+        except (ValueError, OverflowError):
+            return None
+        if n != f:                              # 12.5 같은 진짜 소수는 거부
+            return None
+    if n < 0 or n > _MAX_COUNT:
+        return None
+    return n
+
+
 def extract_heart(card: dict) -> tuple[int, bool]:
     """(하트 수, 읽기 성공 여부). reactions/like가 없으면 (0, False)로 구분한다."""
     inter = card.get("interaction")
@@ -256,7 +304,8 @@ def extract_heart(card: dict) -> tuple[int, bool]:
         return (0, False)
     for r in reactions:
         if isinstance(r, dict) and r.get("reactionType") == "like":
-            return (safe_count(r.get("count")), True)
+            n = valid_count(r.get("count"))
+            return (0, False) if n is None else (n, True)
     # like 리액션 자체가 없는 경우는 '하트 0'으로 본다(구조는 정상)
     return (0, True)
 
@@ -268,7 +317,8 @@ def extract_view(card: dict) -> tuple[int, bool]:
     vod = content.get("vod")
     if not isinstance(vod, dict) or "count" not in vod:
         return (0, False)
-    return (safe_count(vod.get("count")), True)
+    n = valid_count(vod.get("count"))
+    return (0, False) if n is None else (n, True)
 
 
 def extract_description(card: dict) -> str:
@@ -386,6 +436,48 @@ class FetchError(RuntimeError):
         self.detail = detail
 
 
+class CallBudget:
+    """클립 하나의 **논리 작업**이 쓸 수 있는 실제 transport 호출 예산.
+
+    `_get_json`의 HTTP 재시도와 지표 partial 재시도가 **같은 예산을 나눠 쓴다.**
+    두 계층이 각자 상한을 갖게 두면 곱해진다 — 실측으로 500 → 500 → 200(partial)
+    뒤에 partial 재시도가 2회 더 붙어 한 클립이 5회를 썼다. 토큰 버킷을 통과하더라도
+    한 클립이 5개 토큰을 먹으면 장애와 partial이 겹친 순간 스윕 전체가 밀린다.
+
+    호출 순서 계약(반드시 이 순서):
+      1. 예산 확인   → 없으면 토큰도 세마포어도 잡지 않고 HTTP도 쏘지 않는다
+      2. 토큰 버킷   → 재시도가 속도 제한을 우회하지 못하게
+      3. 세마포어    → 동시성 상한
+      4. 실제 HTTP
+
+    그래서 **토큰 획득 수 == 실제 transport 호출 수**가 항상 성립한다.
+    """
+
+    def __init__(self, limit: int, *, acquire=None, sem=None):
+        self.limit = max(0, int(limit))
+        self.remaining = self.limit
+        self.used = 0
+        self._acquire = acquire
+        self._sem = sem
+
+    @property
+    def available(self) -> bool:
+        return self.remaining > 0
+
+    async def run(self, fn):
+        """예산 1을 차감하고 토큰·세마포어를 거쳐 fn()을 실행한다."""
+        if self.remaining <= 0:                     # 방어 — 호출부가 이미 확인한다
+            raise FetchError(ST_FAILED, "호출 예산 소진")
+        self.remaining -= 1
+        self.used += 1
+        if self._acquire is not None:
+            await self._acquire()
+        if self._sem is not None:
+            async with self._sem:
+                return await fn()
+        return await fn()
+
+
 def _retry_delay(attempt: int, retry_after: str | None) -> float:
     if retry_after:
         try:
@@ -395,13 +487,27 @@ def _retry_delay(attempt: int, retry_after: str | None) -> float:
     return min(BACKOFF_MAX, BACKOFF_BASE * (2 ** attempt)) + random.uniform(0, BACKOFF_BASE or 0.1)
 
 
-async def _get_json(client, url, *, params=None, headers=None, what="request"):
-    """408/429/5xx/timeout만 재시도. 400/401/403/404는 즉시 실패."""
+async def _get_json(client, url, *, params=None, headers=None, what="request",
+                    gate: "CallBudget | None" = None):
+    """408/429/5xx/timeout만 재시도. 400/401/403/404는 즉시 실패.
+
+    `gate`를 주면 **내부 재시도까지 그 예산에서 차감**한다(기본 None이면 기존
+    소비자 계약 그대로 — 이 파일의 다른 호출부는 영향받지 않는다).
+    """
     for attempt in range(MAX_RETRIES):
+        if gate is not None and not gate.available:
+            # 예산 소진 — 토큰도 세마포어도 잡지 않고 여기서 끝낸다.
+            raise FetchError(ST_FAILED, f"{what}: 호출 예산 소진")
         _api_counter["calls"] += 1
         try:
-            r = await client.get(url, params=params, headers=headers or _HEADERS,
-                                 timeout=REQUEST_TIMEOUT)
+            if gate is None:
+                r = await client.get(url, params=params,
+                                     headers=headers or _HEADERS,
+                                     timeout=REQUEST_TIMEOUT)
+            else:
+                r = await gate.run(lambda: client.get(
+                    url, params=params, headers=headers or _HEADERS,
+                    timeout=REQUEST_TIMEOUT))
         except (httpx.TimeoutException, httpx.TransportError) as e:
             if attempt + 1 >= MAX_RETRIES:
                 raise FetchError(ST_FAILED, f"{what}: {type(e).__name__}")
@@ -459,7 +565,8 @@ async def fetch_clip_page(client, cursor: str | None) -> tuple[list[dict], str |
     return data, (str(nxt) if nxt else None)
 
 
-async def fetch_card(client, item: dict) -> dict | None:
+async def fetch_card(client, item: dict, *,
+                     gate: "CallBudget | None" = None) -> dict | None:
     """클립 카드에서 태그/하트/조회수를 읽는다. 실패하면 None."""
     clip_uid = str(item.get("clipUID"))
     referer = f"https://chzzk.naver.com/clips/{quote(clip_uid, safe='')}"
@@ -475,7 +582,8 @@ async def fetch_card(client, item: dict) -> dict | None:
     headers["Referer"] = referer
     try:
         payload = await _get_json(client, CARD_API, params=params,
-                                  headers=headers, what=f"card({clip_uid})")
+                                  headers=headers, what=f"card({clip_uid})",
+                                  gate=gate)
     except (FetchError, SchemaError) as e:
         _log({"event": "card_failed", "level": "warning",
               "clip_uid": clip_uid, "detail": str(e)[:160]})
@@ -486,18 +594,218 @@ async def fetch_card(client, item: dict) -> dict | None:
         return None
     heart, heart_ok = extract_heart(card)
     view, view_ok = extract_view(card)
-    if not heart_ok or not view_ok:
+    reason = "" if (heart_ok and view_ok) else _missing_reason(card, heart_ok, view_ok)
+    if reason:
         # 실제 0과 '못 읽음'을 구분해 남긴다.
         # 어느 쪽이 왜 비었는지까지 남겨야 '카드가 원래 안 주는 값'인지
         # '스키마가 바뀐 것'인지 로그만 보고 판단할 수 있다.
         _log({"event": "card_metrics_missing", "level": "warning", "clip_uid": clip_uid,
-              "heart_ok": heart_ok, "view_ok": view_ok,
-              "reason": _missing_reason(card, heart_ok, view_ok)})
+              "heart_ok": heart_ok, "view_ok": view_ok, "reason": reason})
     return {"description": extract_description(card), "heart_count": heart,
             "view_count": view, "heart_ok": heart_ok, "view_ok": view_ok,
             "metrics_ok": bool(heart_ok and view_ok),
+            # 결손 사유를 반환값에도 싣는다 — 재시도 판정이 로그를 다시 파싱하지
+            # 않고 이 값 하나로 끝나게 한다(로그는 사람이 읽는 용도로 남는다).
+            "missing_reason": reason,
             "title": extract_title(card),
             "owner_channel_id": extract_owner_channel_id(card)}
+
+
+# ── 부분 결손(partial) bounded retry ────────────────────────────────────────
+# 카드 API가 200을 주면서 `content.vod`만 빠뜨리는 회차가 있다(실측 로그:
+# heart_ok=true, view_ok=false, reason=view:no_vod). 저장 계약이 "못 읽은 필드는
+# 보존"이라 그 클립의 view_count는 삽입 초기값 0으로 남고, 다음 기회는 다음
+# 사이클(70분+)이다. 그동안 0이 조회수 70% 가중 점수에 진짜 0처럼 들어간다.
+#
+# 그래서 **그 자리에서** 짧게 다시 물어본다. 세 가지를 지킨다.
+#   1) 호출부는 결과를 **하나만** 받는다 → run_sweep의 processed 집계가 그대로다
+#      (초기 partial을 먼저 세고 나중에 되돌리는 구조가 아니다).
+#   2) 재시도 대상은 사유가 전부 leaf 계열일 때뿐이다(아래 판정표).
+#   3) 한 번 제대로 받은 필드는 뒤 시도가 비어 와도 버리지 않는다(field-wise merge).
+#   4) **HTTP 내부 재시도와 partial 재시도가 같은 transport 예산을 나눠 쓴다.**
+#      각자 상한을 가지면 곱해진다 — 실측으로 500 → 500 → 200(partial) 뒤에 partial
+#      재시도가 2회 더 붙어 한 클립이 5회를 썼다. 한 클립이 토큰 5개를 먹으면
+#      장애와 partial이 겹친 순간 스윕 전체가 밀린다.
+
+
+def _env_int(name: str, default: int, lo: int, hi: int) -> int:
+    """정수 환경변수를 안전하게 읽는다. 잘못된 값에 기동을 실패시키지 않는다.
+
+    미설정·공백·숫자 아님·NaN·Infinity → 기본값. 범위를 벗어나면 clamp.
+    경고만 남기며 값 외의 정보(비밀정보 등)는 로그하지 않는다.
+    """
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        f = float(str(raw).strip())
+        v = int(f)
+        if v != f and abs(f - v) > 0:               # 12.7 같은 값은 절삭됨을 알린다
+            _log({"event": "env_truncated", "level": "warning",
+                  "name": name, "to": v})
+    except (TypeError, ValueError, OverflowError):  # "abc" / "nan" / "inf"
+        _log({"event": "env_invalid", "level": "warning",
+              "name": name, "fallback": default})
+        return default
+    if v < lo or v > hi:
+        c = max(lo, min(hi, v))
+        _log({"event": "env_clamped", "level": "warning",
+              "name": name, "value": v, "clamped_to": c})
+        return c
+    return v
+
+
+# 한 클립의 논리 작업이 쓸 수 있는 **실제 transport 호출 총량**.
+# HTTP 내부 재시도 + partial 재시도가 여기서 함께 차감된다.
+CARD_TRANSPORT_BUDGET = _env_int("SINGCUP_CARD_TRANSPORT_BUDGET", 3, 1, 3)
+# 최초 호출 **이후** 허용되는 partial 재시도 최대 수(0~2, 기본 2).
+# 0이면 partial 추가 재시도 비활성. HTTP 내부 재시도가 예산을 먼저 쓰면 실제 가능
+# 횟수는 그만큼 자동으로 줄어든다 — 상한은 언제나 CARD_TRANSPORT_BUDGET이다.
+PARTIAL_RETRY_MAX = _env_int("SINGCUP_PARTIAL_RETRY_MAX", 2, 0, 2)
+# 추가 대기의 절대 상한. 이 시간을 넘길 재시도는 아예 시작하지 않는다 —
+# 클립 락을 쥔 채 늘어지면 수동 갱신이 그만큼 막힌다.
+PARTIAL_RETRY_BUDGET_SECONDS = float(
+    os.getenv("SINGCUP_PARTIAL_RETRY_BUDGET_SECONDS", "10") or "10")
+
+
+def is_retryable_metrics_partial(card: dict | None) -> bool:
+    """다시 물어볼 가치가 있는 결손인가. **사유(reason)로만** 판정한다.
+
+    네 조건이 동시에 성립해야 한다.
+      1. HTTP fetch 자체는 성공했다   → `card is not None`
+         (실패는 `_get_json`이 이미 재시도했다. 여기서 또 하면 이중 중첩이다)
+      2. 아직 못 채운 필드가 있다     → `not metrics_ok`
+      3. 결손 사유가 **하나도 빠짐없이** leaf 계열이다
+         (`leaf_missing` 그릇은 왔는데 숫자만 없음 / `leaf_invalid` 값이 깨짐)
+      4. `container_absent`(상위 블록 부재)가 하나라도 섞이면 재시도하지 않는다
+
+    **XOR로 판정하지 않는다.** 하트·조회수가 *둘 다* 없더라도 둘 다 leaf 결손이면
+    (예: `heart:no_reactions,view:no_vod`) metrics leaf만 일시적으로 빠진 형태이므로
+    다시 물어본다. 반대로 한쪽만 결손이어도 사유가 `view:no_content`처럼 구조적이면
+    재시도하지 않는다. 판정의 축은 '몇 개가 비었나'가 아니라 **'왜 비었나'**다.
+
+    잘못된 clip / owner 불일치 / 삭제 / 영구 404는 여기 오지 않는다 — `_get_json`이
+    400·401·403·404를 즉시 실패로 확정해 `fetch_card`가 None을 돌려주므로 조건 1에서
+    걸러진다.
+    """
+    if not card or card.get("metrics_ok"):
+        return False
+    reasons = [r for r in str(card.get("missing_reason") or "").split(",") if r]
+    return bool(reasons) and all(r in _RETRYABLE_REASONS for r in reasons)
+
+
+def _merge_card(prev: dict | None, new: dict) -> dict:
+    """두 시도의 결과를 **필드 단위로** 합친다.
+
+    규칙은 둘뿐이다. 뒤 시도가 정상으로 준 필드는 덮고(그 사이 값이 올랐을 수
+    있다), 비어 온 필드는 앞 시도 값을 그대로 둔다. 후속 missing이 이미 확보한
+    값을 지우면 재시도가 상황을 악화시키는 셈이 된다.
+    """
+    if prev is None:
+        return dict(new)
+    out = dict(prev)
+    if new.get("heart_ok"):
+        out["heart_count"], out["heart_ok"] = new["heart_count"], True
+    if new.get("view_ok"):
+        out["view_count"], out["view_ok"] = new["view_count"], True
+    for k in ("description", "title", "owner_channel_id"):
+        if new.get(k):
+            out[k] = new[k]
+    out["metrics_ok"] = bool(out["heart_ok"] and out["view_ok"])
+    # 병합 후 **아직 못 채운 필드**의 사유만 남긴다. 이미 확보한 필드의 사유를 끌고
+    # 가면 재시도 판정이 오염된다 — 예를 들어 하트를 이미 받아 둔 상태에서 마지막
+    # 시도가 'heart:no_interaction'을 줬다고 재시도를 포기하면 안 된다.
+    out["missing_reason"] = ",".join(
+        r for r in str(new.get("missing_reason") or "").split(",")
+        if r and ((r.startswith("heart:") and not out["heart_ok"])
+                  or (r.startswith("view:") and not out["view_ok"])))
+    return out
+
+
+def _observed_fields(card: dict | None) -> str:
+    if not card:
+        return "none"
+    got = [n for n, ok in (("heart", card.get("heart_ok")),
+                           ("view", card.get("view_ok"))) if ok]
+    return ",".join(got) or "none"
+
+
+async def fetch_card_metrics(client, item: dict, *, acquire=None, sem=None,
+                             max_retries: int | None = None,
+                             trace: list | None = None) -> dict | None:
+    """카드 지표 한 건 — 부분 결손이면 짧게 다시 물어보고 필드 단위로 합친다.
+
+    반환값은 `fetch_card`와 **같은 모양**이다(실패하면 None). 호출부는 결과를 하나만
+    받으므로 집계·저장 계약이 달라지지 않는다. 시도 횟수는 통계·진단용으로
+    `attempts`/`retried` 키에만 실린다.
+
+    `acquire`는 전역 토큰 버킷, `sem`은 동시성 세마포어다. 둘 다 `CallBudget`이
+    **실제 transport 호출 직전에** 거치므로 `토큰 획득 수 == 실제 HTTP 호출 수`가
+    항상 성립한다(내부 재시도도 포함). 백오프 대기는 세마포어 밖에서 한다 —
+    안에서 자면 동시성 슬롯 하나가 그동안 놀게 된다.
+
+    **호출 예산은 하나로 공유한다.** `CARD_TRANSPORT_BUDGET`(기본 3)에서 HTTP 내부
+    재시도와 partial 재시도가 함께 차감된다. 예산이 0이면 토큰도 세마포어도 잡지
+    않고 즉시 종료하며, 그때까지 병합한 결과로 terminal을 정한다.
+
+    `trace`를 주면 시도별 관측 필드를 담아 준다(관리자 Preview가 "어느 시도에서
+    무엇을 얻었는지" 보여주는 데 쓴다). 수치 외의 원본 응답은 담지 않는다.
+    """
+    limit = PARTIAL_RETRY_MAX if max_retries is None else max(0, max_retries)
+    clip_uid = str(item.get("clipUID"))
+    budget = CallBudget(CARD_TRANSPORT_BUDGET, acquire=acquire, sem=sem)
+    merged: dict | None = None
+    attempts, waited = 0, 0.0
+
+    for i in range(limit + 1):
+        if not budget.available:
+            # 예산 소진 — 추가 호출 없이 현재까지의 병합 결과로 끝낸다.
+            break
+        card = await fetch_card(client, item, gate=budget)
+        attempts += 1
+        if trace is not None:
+            trace.append({
+                "attempt": attempts, "ok": card is not None,
+                "fieldsObserved": _observed_fields(card),
+                "heartCount": card["heart_count"] if card and card["heart_ok"] else None,
+                "viewCount": card["view_count"] if card and card["view_ok"] else None,
+                "missingReason": (card or {}).get("missing_reason") or "",
+            })
+
+        if card is None:
+            # 조회 자체의 실패는 `_get_json`이 같은 예산 안에서 이미 재시도했다.
+            # 앞 시도에서 받아 둔 필드가 있으면 그것을 살려서 내보낸다.
+            break
+        merged = _merge_card(merged, card)
+        if merged["metrics_ok"]:
+            break
+        # 판정은 **병합 후** 상태로 한다(이미 채운 필드는 사유에서 빠져 있다).
+        if not is_retryable_metrics_partial(merged) or i >= limit:
+            break
+        if not budget.available:
+            break                                   # 남은 예산 없음 → terminal
+        reason = merged["missing_reason"]
+        delay = _retry_delay(i, None)
+        if waited + delay > PARTIAL_RETRY_BUDGET_SECONDS:
+            break                                   # 대기 예산 초과 — 다음 사이클에
+        _log({"event": "card_metrics_retry", "clip_uid": clip_uid,
+              "attempt": attempts, "max_attempts": limit + 1, "reason": reason,
+              "wait_ms": int(delay * 1000), "transport_used": budget.used,
+              "transport_remaining": budget.remaining,
+              "fields_observed": _observed_fields(merged)})
+        await asyncio.sleep(delay)
+        waited += delay
+
+    if merged is None:
+        return None
+    merged["attempts"], merged["retried"] = attempts, attempts - 1
+    merged["transport_calls"] = budget.used
+    if attempts > 1 or budget.used > 1:
+        _log({"event": "card_metrics_retry_result", "clip_uid": clip_uid,
+              "attempts": attempts, "transport_calls": budget.used,
+              "fields_observed": _observed_fields(merged),
+              "final_result": "success" if merged["metrics_ok"] else "partial"})
+    return merged
 
 
 def extract_title(card: dict) -> str:
@@ -517,21 +825,52 @@ def extract_owner_channel_id(card: dict) -> str:
     return str((sub or {}).get("channelId") or "") if isinstance(sub, dict) else ""
 
 
+# 결손 사유 분류. **재시도 판정이 이 분류에만 의존한다** — 그래서 "그릇이 없다"와
+# "숫자만 없다"와 "숫자가 깨졌다"를 반드시 서로 다른 사유로 남겨야 한다.
+#
+#   container_absent  상위 블록(content / interaction / emotion)이 통째로 없다.
+#                     실측: 잘못된 videoId로 부르면 vod와 like가 **함께** 사라진다.
+#                     입력·대상이 잘못된 쪽이므로 다시 불러도 같은 답이 온다 → 재시도 금지.
+#   leaf_missing      그릇은 왔는데 숫자 필드만 없다 → 일시적일 수 있다 → 재시도.
+#   leaf_invalid      숫자 필드는 있는데 값이 malformed·음수·NaN 등이다.
+#                     일시적 직렬화/집계 오류일 수 있어 재시도하되, **절대 0으로 저장하지
+#                     않는다**. 별도 사유로 남겨 로그에서 추적할 수 있게 한다.
+_CONTAINER_ABSENT = frozenset({
+    "view:no_content", "heart:no_interaction", "heart:no_emotion"})
+_LEAF_MISSING = frozenset({"view:no_vod", "view:no_count", "heart:no_reactions"})
+_LEAF_INVALID = frozenset({"view:invalid_count", "heart:invalid_count"})
+# 재시도해도 되는 사유 = leaf 계열 전부
+_RETRYABLE_REASONS = _LEAF_MISSING | _LEAF_INVALID
+
+
 def _missing_reason(card: dict, heart_ok: bool, view_ok: bool) -> str:
-    """어느 단계에서 값이 끊겼는지 짧게 표기한다(로그 전용)."""
+    """어느 단계에서 값이 끊겼는지 표기한다. 재시도 판정의 **유일한** 입력이다."""
     parts = []
     if not heart_ok:
         inter = card.get("interaction")
         emo = inter.get("emotion") if isinstance(inter, dict) else None
-        parts.append("heart:no_interaction" if not isinstance(inter, dict)
-                     else "heart:no_emotion" if not isinstance(emo, dict)
-                     else "heart:no_reactions")
+        reactions = emo.get("reactions") if isinstance(emo, dict) else None
+        if not isinstance(inter, dict):
+            parts.append("heart:no_interaction")
+        elif not isinstance(emo, dict):
+            parts.append("heart:no_emotion")
+        elif not isinstance(reactions, list):
+            parts.append("heart:no_reactions")
+        else:
+            # like 리액션이 없으면 extract_heart가 (0, True)를 준다. 여기까지 왔다는 것은
+            # like는 있는데 count 값이 유효하지 않다는 뜻이다.
+            parts.append("heart:invalid_count")
     if not view_ok:
         content = card.get("content")
         vod = content.get("vod") if isinstance(content, dict) else None
-        parts.append("view:no_content" if not isinstance(content, dict)
-                     else "view:no_vod" if not isinstance(vod, dict)
-                     else "view:no_count")
+        if not isinstance(content, dict):
+            parts.append("view:no_content")
+        elif not isinstance(vod, dict):
+            parts.append("view:no_vod")
+        elif "count" not in vod:
+            parts.append("view:no_count")
+        else:
+            parts.append("view:invalid_count")      # 키는 있는데 값이 깨졌다
     return ",".join(parts)
 
 
@@ -1965,26 +2304,39 @@ def _worst_clip_seconds() -> float:
     """클립 하나를 잡고 있을 수 있는 최대 시간 — **상수에서 유도한다**.
 
     락을 쥔 채 벌어지는 일:
-      토큰 대기 → 카드 조회 → 토큰 대기 → 상세 조회 → DB 쓰기
-    각 HTTP는 MAX_RETRIES회까지 타임아웃을 다 쓸 수 있고, DB 쓰기는 시도마다
-    sqlite busy_timeout까지 기다릴 수 있다. 임의로 정한 TTL을 쓰면 상수를 바꿨을 때
-    조용히 만료돼 두 작업이 같은 클립을 동시에 만지게 된다.
+      카드 지표(공유 예산 안에서 최대 CARD_TRANSPORT_BUDGET회 호출)
+      → 상세 조회(별도 논리 작업, 최대 MAX_RETRIES회) → DB 쓰기
+
+    **호출 수를 중복 합산하지 않는 것**이 이 공식의 핵심이다. 예전 공식은
+    `fetches × http_once` 였는데 `http_once` 자체가 `MAX_RETRIES × timeout`을
+    품고 있어 카드 호출을 12회분으로 세고 있었다(실제 상한은 3회). 지금은 HTTP
+    내부 재시도와 partial 재시도가 **같은 예산**을 쓰므로 호출 수가 곧 예산이다.
+
+    임의로 정한 TTL을 쓰면 상수를 바꿨을 때 조용히 만료돼 두 작업이 같은 클립을
+    동시에 만지게 된다. 그래서 상수에서 유도한다.
     """
     from database.db import BUSY_TIMEOUT_MS
-    backoff = sum(min(BACKOFF_MAX, BACKOFF_BASE * (2 ** a)) + BACKOFF_BASE
-                  for a in range(max(0, MAX_RETRIES - 1)))
-    http_once = MAX_RETRIES * REQUEST_TIMEOUT + backoff
+    # HTTP 재시도 **사이**의 대기 합(호출 자체의 시간이 아니다)
+    http_backoff = sum(min(BACKOFF_MAX, BACKOFF_BASE * (2 ** a)) + BACKOFF_BASE
+                       for a in range(max(0, MAX_RETRIES - 1)))
     # 토큰 버킷은 최저 속도일 때 가장 오래 기다린다(1건/최저속도)
     min_rate = max(0.01, float(os.getenv("SINGCUP_SWEEP_MIN_RATE", "0.2")))
     token_wait = 1.0 / min_rate
+    per_call = token_wait + REQUEST_TIMEOUT          # 호출 1회의 최악 소요
     db_attempts = max(1, int(os.getenv("SINGCUP_DB_RETRY_ATTEMPTS", "4")))
     db_base = float(os.getenv("SINGCUP_DB_RETRY_BASE_SECONDS", "0.05"))
     db_wait = (db_attempts * (BUSY_TIMEOUT_MS / 1000.0)
                + sum(db_base * (2 ** i) * 2 for i in range(db_attempts - 1)))
-    return 2 * (token_wait + http_once) + db_wait
+    # 카드 지표 — 공유 예산이 실제 호출 상한이다. 그 위에 HTTP 재시도 간 대기와
+    # partial 재시도 대기 예산을 더한다(둘 다 '대기'이지 '호출'이 아니다).
+    card = (CARD_TRANSPORT_BUDGET * per_call + http_backoff
+            + PARTIAL_RETRY_BUDGET_SECONDS)
+    # 상세 조회는 별도 논리 작업이라 예산을 공유하지 않는다.
+    detail = MAX_RETRIES * per_call + http_backoff
+    return card + detail + db_wait
 
 
-# 유도값의 1.5배(안전계수). 계산 기준 약 121초 → 182초.
+# 유도값의 1.5배(안전계수).
 # 상수를 바꾸면 이 값도 따라 움직이고, tests가 TTL ≥ 최악×1.2 를 강제한다.
 CLIP_LOCK_TTL = int(os.getenv(
     "SINGCUP_CLIP_LOCK_TTL", str(int(_worst_clip_seconds() * 1.5) + 1)))
@@ -2166,6 +2518,36 @@ async def _apply_metrics(clip_uid: str, heart: int, view: int,
         f"UPDATE singcup_clips SET {', '.join(sets)} WHERE clip_uid=?", params)
     return "ok" if (heart_ok and view_ok) else "failed" if not (heart_ok or view_ok) \
         else "partial"
+
+
+def _field_state(seen_at, count) -> str:
+    """'한 번도 못 읽음'과 '진짜 0'을 구분한다 — **신규 컬럼 없이**.
+
+    `last_view_at`/`last_heart_at`은 NOT NULL DEFAULT 0이라 sentinel이 NULL이
+    아니라 0이다. 그리고 두 컬럼은 나중에 추가돼서 그 이전 행은 전부 0이다.
+    그래서 시각만으로는 판정할 수 없고 값을 같이 봐야 한다.
+
+      unknown          시각 0 · 값 0   한 번도 정상 수신하지 못함
+      observed         시각>0 · 값>0   정상 수신
+      observed_zero    시각>0 · 값 0   정상 수신, **진짜 0**
+      observed_legacy  시각 0 · 값>0   컬럼 도입 이전에 수신된 값
+
+    legacy 분기가 이 계약을 신규 스키마 없이 성립시키는 핵심이다. 값은 **오직**
+    해당 필드를 정상 수신했을 때만 쓰이므로(_apply_metrics의 `if view_ok:` 블록이
+    유일한 writer다), 0보다 크면 과거 어느 시점에 반드시 정상 수신된 것이다.
+    """
+    at, n = int(seen_at or 0), int(count or 0)
+    if at > 0:
+        return "observed" if n > 0 else "observed_zero"
+    return "observed_legacy" if n > 0 else "unknown"
+
+
+def view_state(row) -> str:
+    return _field_state(row["last_view_at"], row["view_count"])
+
+
+def heart_state(row) -> str:
+    return _field_state(row["last_heart_at"], row["heart_count"])
 
 
 def metrics_state(row, now: int, stale_seconds: int = 2 * 3600) -> str:

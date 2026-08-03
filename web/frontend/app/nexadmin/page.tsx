@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import McEventPanel from "./McEventPanel";
 import SingcupRepPanel from "./SingcupRepPanel";
+import SingcupClipMetricsPanel from "./SingcupClipMetricsPanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -1126,7 +1127,14 @@ export default function AdminPage() {
         {/* ── MC 이벤트 ── */}
         {activeTab === "mc-event" && <McEventPanel guilds={guilds} />}
 
-        {activeTab === "singcup-rep" && <SingcupRepPanel />}
+        {/* 대표 지정과 지표 갱신은 **다른 동작**이다. 같은 탭에 두되 카드를 나눠
+            둔다 — 합치면 "대표를 바꾸려다 지표만 갱신했다"가 실제로 일어난다. */}
+        {activeTab === "singcup-rep" && (
+          <div className="space-y-6">
+            <SingcupRepPanel />
+            <SingcupClipMetricsPanel />
+          </div>
+        )}
 
       </main>
     </div>

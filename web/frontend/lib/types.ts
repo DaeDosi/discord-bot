@@ -774,3 +774,100 @@ export interface SingcupRepApplyResult {
   effectiveRepresentativeClipUid?: string | null;
   state: SingcupRepState;
 }
+
+/**
+ * 클립 지표 단건 갱신 — 대표 지정과는 **별개 동작**이다.
+ *
+ * `viewState`가 이 화면의 존재 이유다. 저장된 조회수 0이 '한 번도 못 읽음'인지
+ * '진짜 0'인지 구분되지 않으면, 0을 앞에 두고 고장인지 정상인지 판단할 수 없다.
+ */
+export type SingcupMetricState =
+  | "unknown"          // 한 번도 정상 수신하지 못함
+  | "observed"         // 정상 수신, 값 > 0
+  | "observed_zero"    // 정상 수신, 진짜 0
+  | "observed_legacy"; // 컬럼 도입 이전에 수신된 값
+
+export interface SingcupClipMetricsStored {
+  clipUid: string;
+  eventId: string;
+  ownerChannelId: string;
+  channelName: string;
+  clipTitle: string;
+  heartCount: number;
+  viewCount: number;
+  metricsOk: boolean;
+  lastAttemptAt: number;
+  lastHeartAt: number;
+  lastViewAt: number;
+  lastMetricsAt: number;
+  metricsRecoveredAt: number;
+  viewState: SingcupMetricState;
+  heartState: SingcupMetricState;
+  active: boolean;
+  deletionState: string;
+  blindType: string;
+  isRepresentative: boolean;
+  /** 이 참가자의 현재 대표 clip UID(이 클립이 아닐 수도 있다). */
+  ownerRepresentativeClipUid: string | null;
+  /** 수동 대표 override가 걸려 있으면 재계산 후에도 대표가 유지된다. */
+  hasOverride: boolean;
+  overrideClipUid: string | null;
+}
+
+export interface SingcupClipMetricsAttempt {
+  attempt: number;
+  ok: boolean;
+  fieldsObserved: string;
+  heartCount: number | null;
+  viewCount: number | null;
+  missingReason: string;
+}
+
+export interface SingcupClipMetricsExternal {
+  ok: boolean;
+  attempts: number;
+  maxAttempts: number;
+  heartCount: number | null;
+  viewCount: number | null;
+  heartOk: boolean;
+  viewOk: boolean;
+  partial: boolean;
+  missingReason: string;
+  attemptTrace: SingcupClipMetricsAttempt[];
+}
+
+export interface SingcupClipMetricsPreview {
+  clipUid: string;
+  stored: SingcupClipMetricsStored;
+  external: SingcupClipMetricsExternal;
+  pending: {
+    heartCount: number;
+    viewCount: number;
+    heartWillChange: boolean;
+    viewWillChange: boolean;
+  };
+  /** 갱신하면 자동 대표가 움직일 수 있는가(override가 있으면 유지된다). */
+  representativeRisk: {
+    hasOverride: boolean;
+    overrideClipUid: string | null;
+    currentRepresentativeClipUid: string | null;
+    mayChangeAutoRepresentative: boolean;
+  };
+  note: string;
+}
+
+export interface SingcupClipMetricsApplyResult {
+  ok: boolean;
+  clipUid: string;
+  recomputed: boolean;
+  before: SingcupClipMetricsStored;
+  after: SingcupClipMetricsStored;
+  external: SingcupClipMetricsExternal;
+  /** 자동 선정 결과가 바뀌어 대표가 이동했는가. 변경이 없으면 false. */
+  autoRepresentativeChanged: boolean;
+  representativeBeforeClipUid: string | null;
+  representativeAfterClipUid: string | null;
+  hasOverride: boolean;
+  /** 하위 호환 — `!autoRepresentativeChanged`와 같다. */
+  representativeUnchanged: boolean;
+}

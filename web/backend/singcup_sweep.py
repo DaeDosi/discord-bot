@@ -465,13 +465,16 @@ async def run_sweep(scheduled_at: int | None = None, *, run_id: str | None = Non
             # 카드 조회를 기다렸고, 25건마다 커밋했다. 그 사이 쓰기 잠금이 25~30초
             # 유지돼 봇 프로세스(chzzk_chat, chzzk_monitor)와 rising_collector가
             # busy_timeout(10초)을 넘겨 'database is locked'로 실패했다.
-            await bucket.acquire()
             item = {"clipUID": t["clip_uid"], "videoId": t["video_id"],
                     "recId": t["rec_id"] or "{}"}
             t0 = time.monotonic()
             before_429 = sc._api_counter["http_429"]
-            async with sem:
-                card = await sc.fetch_card(client, item)
+            # 카드가 200을 주면서 조회수만 빠뜨리는 회차가 있다. 여기서 짧게 다시
+            # 물어보고 필드 단위로 합쳐 **결과 하나**를 받는다 — 시도가 몇 번이든
+            # 이 클립은 아래에서 정확히 한 번 집계된다(processed 불변식).
+            # 토큰 버킷과 세마포어를 넘겨 재시도도 같은 속도 제한을 통과하게 한다.
+            card = await sc.fetch_card_metrics(client, item,
+                                               acquire=bucket.acquire, sem=sem)
             dt = int((time.monotonic() - t0) * 1000)
 
             detail = None

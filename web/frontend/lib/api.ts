@@ -284,6 +284,22 @@ export const api = {
           method: "POST",
           body: JSON.stringify({ channelId }),
         }),
+
+    // 클립 지표 단건 갱신. 대표 지정과 **다른 동작**이라 경로도 이름도 나눠 둔다.
+    // 숫자를 보내지 않는다 — 값의 출처는 언제나 카드 API다. 서버가 clipInput에서
+    // uid만 뽑아 쓰므로 임의 주소가 외부 요청으로 나가지 않는다.
+    singcupClipMetricsPreview: (clipInput: string) =>
+      request<import("./types").SingcupClipMetricsPreview>(
+        "/api/admin/singcup/clips/metrics/preview", {
+          method: "POST",
+          body: JSON.stringify({ clipInput }),
+        }),
+    singcupClipMetricsApply: (clipInput: string) =>
+      request<import("./types").SingcupClipMetricsApplyResult>(
+        "/api/admin/singcup/clips/metrics/apply", {
+          method: "POST",
+          body: JSON.stringify({ clipInput }),
+        }),
   },
 
   moderation: {

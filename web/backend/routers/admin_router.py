@@ -867,6 +867,247 @@ async def singcup_rep_apply(body: RepOverrideApply,
             "state": state}
 
 
+# ── 싱드컵 클립 지표 단건 갱신 (OWNER 전용) ─────────────────────────────────
+# 위의 대표 클립 지정과는 **다른 동작**이다. 여기서는 대표를 바꾸지 않는다 —
+# 한 클립의 하트·조회수를 지금 다시 읽어 오는 것뿐이다.
+#
+# 있어야 하는 이유: 카드 API가 200을 주면서 조회수만 빠뜨리는 회차가 있고, 그때
+# 저장 계약("못 읽은 필드는 보존")대로 값이 삽입 초기값 0으로 남는다. 자동 복구는
+# 다음 사이클(70분+) 뒤라, 그동안 0이 조회수 70% 가중 점수에 진짜 0처럼 들어간다.
+#
+# 이 영역이 지키는 것:
+#   1) 숫자를 **직접 입력받지 않는다**. 값의 출처는 언제나 카드 API다.
+#   2) 입력은 clip_uid 하나로 축소된다(SSRF) — 대표 지정과 같은 파서를 쓴다.
+#   3) 외부 호출은 DB 트랜잭션 **밖**이고, 자동 스윕과 **같은** bounded fetch
+#      경로를 재사용한다(두 경로가 서로 다른 계약을 갖지 않게).
+#   4) 같은 clip_uid에 대해 자동 스윕과 겹치지 않는다 — 스윕이 쓰는 것과
+#      **같은** 클립 락을 잡는다(중복 클릭 방지도 여기서 같이 해결된다).
+
+class ClipMetricsRefresh(BaseModel):
+    clipInput: str          # 클립 URL 또는 UID
+
+
+_METRICS_WINDOW = 60.0
+_METRICS_LIMIT = int(os.getenv("SINGCUP_METRICS_REFRESH_RATE_LIMIT", "10"))
+_metrics_hits: list[float] = []
+
+
+def _metrics_rate_limit():
+    """Preview·Apply 공용 한도. 둘 다 외부 호출을 유발하므로 같은 예산에서 쓴다."""
+    now = _time.monotonic()
+    cutoff = now - _METRICS_WINDOW
+    while _metrics_hits and _metrics_hits[0] < cutoff:
+        _metrics_hits.pop(0)
+    if len(_metrics_hits) >= _METRICS_LIMIT:
+        raise HTTPException(status_code=429,
+                            detail="갱신 요청이 너무 잦습니다. 잠시 후 다시 시도하세요.")
+    _metrics_hits.append(now)
+
+
+async def _clip_metrics_row(uid: str) -> dict:
+    """DB에 저장된 현재 상태. 없으면 404."""
+    import singcup_clips as sc
+    db = await get_db()
+    r = await (await db.execute(
+        "SELECT c.clip_uid, c.event_id, c.owner_channel_id, c.clip_title,"
+        "       c.video_id, c.rec_id, c.heart_count, c.view_count, c.metrics_ok,"
+        "       c.active, c.deletion_state, c.blind_type, c.last_attempt_at,"
+        "       c.last_heart_at, c.last_view_at, c.last_metrics_at,"
+        "       c.metrics_recovered_at, s.channel_name,"
+        "       s.representative_clip_uid,"
+        "       (s.representative_clip_uid = c.clip_uid) AS is_rep,"
+        "       (SELECT o.override_clip_uid FROM singcup_representative_overrides o"
+        "         WHERE o.event_id=c.event_id AND o.owner_channel_id=c.owner_channel_id"
+        "           AND o.cleared_at IS NULL) AS override_clip_uid "
+        "FROM singcup_clips c "
+        "LEFT JOIN singcup_streamers s ON s.channel_id = c.owner_channel_id "
+        "WHERE c.clip_uid=? AND c.event_id=?", (uid, sc.EVENT_ID))).fetchone()
+    if r is None:
+        raise HTTPException(status_code=404,
+                            detail="이 이벤트에 등록된 클립이 아닙니다.")
+    row = dict(r)
+    return {
+        "clipUid": row["clip_uid"], "eventId": row["event_id"],
+        "ownerChannelId": row["owner_channel_id"],
+        "channelName": row["channel_name"] or "",
+        "clipTitle": row["clip_title"] or "",
+        "heartCount": int(row["heart_count"] or 0),
+        "viewCount": int(row["view_count"] or 0),
+        "metricsOk": bool(row["metrics_ok"]),
+        "lastAttemptAt": int(row["last_attempt_at"] or 0),
+        "lastHeartAt": int(row["last_heart_at"] or 0),
+        "lastViewAt": int(row["last_view_at"] or 0),
+        "lastMetricsAt": int(row["last_metrics_at"] or 0),
+        "metricsRecoveredAt": int(row["metrics_recovered_at"] or 0),
+        # '한 번도 못 읽음'과 '진짜 0'을 구분해 보여준다 — 이걸 못 보면 조회수 0을
+        # 앞에 두고 고장인지 정상인지 판단할 수 없다.
+        "viewState": sc.view_state(row), "heartState": sc.heart_state(row),
+        "active": bool(row["active"]),
+        "deletionState": row["deletion_state"] or "",
+        "blindType": row["blind_type"] or "",
+        "isRepresentative": bool(row["is_rep"]),
+        # 이 참가자의 **현재 대표**와 수동 override 유무. 지표를 갱신하면 자동 선정
+        # 규칙(하트↓ → 조회수↓)의 1등이 달라질 수 있어서, 화면이 그 가능성을 미리
+        # 경고하고 결과에서 전후를 대조할 수 있어야 한다.
+        "ownerRepresentativeClipUid": row["representative_clip_uid"],
+        "hasOverride": bool(row["override_clip_uid"]),
+        "overrideClipUid": row["override_clip_uid"],
+        "_video_id": row["video_id"], "_rec_id": row["rec_id"],
+    }
+
+
+async def _fetch_clip_metrics(stored: dict) -> tuple[dict | None, list[dict]]:
+    """자동 스윕과 **같은** bounded fetch 경로. (병합 결과, 시도별 관측)."""
+    import singcup_clips as sc
+    trace: list[dict] = []
+    item = {"clipUID": stored["clipUid"], "videoId": stored["_video_id"] or "",
+            "recId": stored["_rec_id"] or "{}"}
+    card = await sc.fetch_card_metrics(sc._get_client(), item, trace=trace)
+    return card, trace
+
+
+def _external_view(card: dict | None, trace: list[dict]) -> dict:
+    import singcup_clips as sc
+    return {
+        "ok": card is not None,
+        "attempts": len(trace),
+        "maxAttempts": 1 + sc.PARTIAL_RETRY_MAX,
+        "heartCount": card["heart_count"] if card and card["heart_ok"] else None,
+        "viewCount": card["view_count"] if card and card["view_ok"] else None,
+        "heartOk": bool(card and card["heart_ok"]),
+        "viewOk": bool(card and card["view_ok"]),
+        "partial": bool(card and not card["metrics_ok"]),
+        "missingReason": (card or {}).get("missing_reason") or "",
+        "attemptTrace": trace,
+    }
+
+
+@router.post("/singcup/clips/metrics/preview")
+async def singcup_clip_metrics_preview(body: ClipMetricsRefresh,
+                                       user: dict = Depends(_require_owner)):
+    """갱신 전 확인. **아무것도 쓰지 않는다.**
+
+    외부 호출 횟수는 bounded retry 계약을 그대로 따른다(최대 1+PARTIAL_RETRY_MAX회).
+    응답의 `external.attempts`가 실제 호출 수다.
+    """
+    _metrics_rate_limit()
+    uid = _parse_clip_input(body.clipInput)
+    stored = await _clip_metrics_row(uid)
+    card, trace = await _fetch_clip_metrics(stored)
+
+    # 저장한다면 어떤 값이 되는가 — 읽지 못한 필드는 그대로 보존된다.
+    pending = {
+        "heartCount": (card["heart_count"] if card and card["heart_ok"]
+                       else stored["heartCount"]),
+        "viewCount": (card["view_count"] if card and card["view_ok"]
+                      else stored["viewCount"]),
+        "heartWillChange": bool(card and card["heart_ok"]
+                                and card["heart_count"] != stored["heartCount"]),
+        "viewWillChange": bool(card and card["view_ok"]
+                               and card["view_count"] != stored["viewCount"]),
+    }
+    # 갱신하면 자동 대표가 움직일 수 있는가. override가 걸려 있으면 재계산이
+    # override를 우선하므로 대표는 유지된다.
+    rep_risk = {
+        "hasOverride": stored["hasOverride"],
+        "overrideClipUid": stored["overrideClipUid"],
+        "currentRepresentativeClipUid": stored["ownerRepresentativeClipUid"],
+        # override가 없고 값이 실제로 바뀔 예정이면 순서가 뒤집힐 수 있다
+        "mayChangeAutoRepresentative": bool(
+            not stored["hasOverride"]
+            and (pending["heartWillChange"] or pending["viewWillChange"])),
+    }
+    stored = {k: v for k, v in stored.items() if not k.startswith("_")}
+    return {"clipUid": uid, "stored": stored,
+            "external": _external_view(card, trace), "pending": pending,
+            "representativeRisk": rep_risk,
+            "note": ("" if card else "외부 조회에 실패했습니다. 저장할 값이 없습니다.")}
+
+
+@router.post("/singcup/clips/metrics/apply")
+async def singcup_clip_metrics_apply(body: ClipMetricsRefresh,
+                                     user: dict = Depends(_require_owner)):
+    """지표를 지금 갱신한다. 대표 클립은 **바꾸지 않는다.**
+
+    순서: 입력 축소 → DB 재검증 → 클립 락 → 외부 bounded fetch(트랜잭션 밖) →
+    DB 재검증 → `_apply_metrics`(읽은 필드만) → 순위 재계산 → `/main` 캐시 무효화.
+
+    Preview의 값을 그대로 저장하지 않는다 — 오래된 미리보기가 되살아나 최신 값을
+    덮는 것을 막기 위해, Apply는 자기 몫의 조회를 새로 한다.
+    """
+    import singcup_clips as sc
+    import singcup_sweep as sw
+    _metrics_rate_limit()
+    uid = _parse_clip_input(body.clipInput)
+    await _clip_metrics_row(uid)                    # 존재 확인(404)
+
+    # 자동 스윕이 쓰는 것과 **같은** 락이다. 잡히면 그 클립은 지금 스윕이 처리
+    # 중이거나 다른 Apply가 진행 중이다 — 중복 클릭도 여기서 막힌다.
+    token = await sc.acquire_clip_lock(uid)
+    if token is None:
+        raise HTTPException(status_code=409,
+                            detail="이 클립을 다른 작업이 처리 중입니다. 잠시 후 다시 시도하세요.")
+    try:
+        stored = await _clip_metrics_row(uid)       # 락을 잡은 뒤 다시 읽는다
+        card, trace = await _fetch_clip_metrics(stored)
+        if card is None or not (card["heart_ok"] or card["view_ok"]):
+            raise HTTPException(
+                status_code=502,
+                detail="외부 조회에서 유효한 값을 받지 못했습니다. 저장하지 않았습니다.")
+
+        now = int(_time.time())
+
+        async def work(_db):
+            await sc._apply_metrics(uid, card["heart_count"], card["view_count"],
+                                    card["heart_ok"], card["view_ok"], now)
+
+        if not await sw.db_write(work, what=f"admin_metrics({uid})"):
+            raise HTTPException(status_code=503,
+                                detail="DB 잠금으로 저장하지 못했습니다. 잠시 후 다시 시도하세요.")
+    finally:
+        await sc.release_clip_lock(uid, token)
+
+    # 감사 기록. 값과 시도 횟수만 남긴다 — 토큰·시크릿·원본 응답은 남기지 않는다.
+    sc._log({"event": "admin_clip_metrics_applied", "clip_uid": uid,
+             "actor": str(user.get("sub") or "")[:32], "attempts": len(trace),
+             "heart_ok": card["heart_ok"], "view_ok": card["view_ok"],
+             "heart_from": stored["heartCount"], "heart_to": card["heart_count"],
+             "view_from": stored["viewCount"], "view_to": card["view_count"],
+             "view_state_from": stored["viewState"]})
+
+    # 재계산은 외부 채널 API를 부르지만 트랜잭션 밖이다. 실패해도 지표는 이미
+    # 저장됐으므로 다음 정기 회차가 순위를 맞춘다.
+    try:
+        await sc.recompute_ranking(now)
+        recomputed = True
+    except Exception:                                   # noqa: BLE001
+        recomputed = False
+    sc.invalidate_main_cache()                          # ETag는 다음 요청에 새로 만들어진다
+
+    after = await _clip_metrics_row(uid)
+    rep_before = stored["ownerRepresentativeClipUid"]
+    rep_after = after["ownerRepresentativeClipUid"]
+    changed = rep_before != rep_after
+    if changed:
+        sc._log({"event": "admin_clip_metrics_auto_rep_changed", "clip_uid": uid,
+                 "owner_channel_id": after["ownerChannelId"],
+                 "rep_from": rep_before, "rep_to": rep_after,
+                 "had_override": after["hasOverride"]})
+    return {"ok": True, "clipUid": uid, "recomputed": recomputed,
+            "before": {k: v for k, v in stored.items() if not k.startswith("_")},
+            "after": {k: v for k, v in after.items() if not k.startswith("_")},
+            "external": _external_view(card, trace),
+            # 이 동작은 대표를 **지정**하지 않는다. 다만 갱신된 지표로 순위를 다시
+            # 계산하므로 자동 선정 규칙의 1등이 바뀌면 대표도 따라 움직인다.
+            # 전후 clip UID를 함께 돌려줘 화면이 그 전이를 설명할 수 있게 한다.
+            "autoRepresentativeChanged": changed,
+            "representativeBeforeClipUid": rep_before,
+            "representativeAfterClipUid": rep_after,
+            "hasOverride": after["hasOverride"],
+            # 하위 호환 — 기존 필드명 유지
+            "representativeUnchanged": not changed}
+
+
 @router.post("/singcup/representative/clear")
 async def singcup_rep_clear(body: RepOverrideClear,
                             user: dict = Depends(_require_owner)):
