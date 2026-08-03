@@ -256,6 +256,34 @@ export const api = {
         method: "PUT",
         body: JSON.stringify({ message }),
       }),
+
+    // 싱드컵 대표 클립 수동 지정 — 전부 OWNER 전용이다(서버가 403으로 막는다).
+    // sharedGet 캐시를 쓰지 않는다: 지정 직후의 상태를 봐야 하는 화면이라
+    // 몇 초라도 옛 값을 보여주면 "적용했는데 안 바뀐다"로 읽힌다.
+    singcupRepSearch: (q: string) =>
+      request<import("./types").SingcupRepSearchResult>(
+        `/api/admin/singcup/representative/search?q=${encodeURIComponent(q)}`),
+    singcupRepState: (channelId: string) =>
+      request<import("./types").SingcupRepState>(
+        `/api/admin/singcup/representative/${encodeURIComponent(channelId)}`),
+    singcupRepPreview: (channelId: string, clipInput: string) =>
+      request<import("./types").SingcupRepPreview>(
+        "/api/admin/singcup/representative/preview", {
+          method: "POST",
+          body: JSON.stringify({ channelId, clipInput }),
+        }),
+    singcupRepApply: (channelId: string, clipInput: string, reason: string) =>
+      request<import("./types").SingcupRepApplyResult>(
+        "/api/admin/singcup/representative/apply", {
+          method: "POST",
+          body: JSON.stringify({ channelId, clipInput, reason }),
+        }),
+    singcupRepClear: (channelId: string) =>
+      request<import("./types").SingcupRepApplyResult>(
+        "/api/admin/singcup/representative/clear", {
+          method: "POST",
+          body: JSON.stringify({ channelId }),
+        }),
   },
 
   moderation: {

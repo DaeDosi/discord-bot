@@ -688,3 +688,89 @@ export interface SingcupMovers {
   stale: boolean;
   baseAt: string | null;
 }
+
+// ── 싱드컵 대표 클립 수동 지정 (Nexadmin, OWNER 전용) ────────────────────────
+// 화면이 세 가지를 **구분해서** 보여줘야 하므로 타입에서도 나눠 둔다.
+//   autoRepresentative      자동 규칙이 골랐을 클립 (규칙은 바뀌지 않는다)
+//   override                사람이 지정한 클립 (없으면 null)
+//   effectiveRepresentative 실제로 적용 중인 대표 = 저장된 값
+// 셋을 하나로 합치면 "지정했는데 왜 자동이 보이지"를 화면에서 설명할 수 없다.
+export interface SingcupRepClip {
+  clipUid: string;
+  clipTitle: string;
+  heartCount: number;
+  viewCount: number;
+  createdAt: number;
+  thumbnailImageUrl: string;
+}
+
+export interface SingcupRepState {
+  channelId: string;
+  channelName: string;
+  channelImageUrl: string;
+  taggedClipCount: number;
+  autoRepresentative: SingcupRepClip | null;
+  effectiveRepresentative: SingcupRepClip | null;
+  effectiveRepresentativeClipUid: string | null;
+  override: {
+    clipUid: string;
+    reason: string;
+    updatedAt: number;
+    /** 지정한 클립이 삭제·비활성이면 행은 남되 효력을 잃는다(자동으로 복귀). */
+    active: boolean;
+  } | null;
+  clips: SingcupRepClip[];
+}
+
+export interface SingcupRepSearchItem {
+  channelId: string;
+  channelName: string;
+  channelImageUrl: string;
+  taggedClipCount: number;
+  effectiveRepresentativeClipUid: string | null;
+  hasOverride: boolean;
+  overrideClipUid: string | null;
+}
+
+export interface SingcupRepSearchResult {
+  eventId: string;
+  query: string;
+  items: SingcupRepSearchItem[];
+}
+
+export interface SingcupRepPreview {
+  clipUid: string;
+  channelId: string;
+  eligible: boolean;
+  reason: string;
+  reasonText: string;
+  /** 이미 같은 클립이 지정돼 있다 — 적용해도 바뀌는 것이 없다. */
+  noop: boolean;
+  currentRepresentative: SingcupRepClip | null;
+  targetClip: SingcupRepClip | null;
+  /** 점수는 조회 70% + 하트 30%라 지정으로 순위가 내려갈 수 있다. */
+  impact: {
+    heartDelta: number;
+    viewDelta: number;
+    rankLikelyDrops: boolean;
+  } | null;
+  /** 치지직 상세 재확인. ok=null은 외부 장애(지정을 막지는 않는다). */
+  liveCheck: {
+    checked: boolean;
+    ok: boolean | null;
+    note: string;
+    clipTitle?: string;
+    blindType?: string;
+  };
+  state: SingcupRepState;
+}
+
+export interface SingcupRepApplyResult {
+  ok: boolean;
+  clipUid?: string;
+  cleared?: boolean;
+  recomputed: boolean;
+  note?: string;
+  effectiveRepresentativeClipUid?: string | null;
+  state: SingcupRepState;
+}

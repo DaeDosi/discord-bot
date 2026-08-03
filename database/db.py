@@ -1022,6 +1022,32 @@ async def init_db():
         "DEFAULT ''",
         "ALTER TABLE chzzk_subscriptions ADD COLUMN token_last_success_at INTEGER NOT NULL "
         "DEFAULT 0",
+        # ── 싱드컵 대표 클립 수동 지정(override) ──────────────────────────
+        # 자동 선정 규칙(하트↓ → 조회수↓ → 생성↑ → uid↑)은 정상이며 바꾸지 않는다.
+        # 다만 참가자가 제출본을 **나중에** 올리면 하트가 앞선 옛 클립이 대표가 된다.
+        # 그 경우를 사람이 바로잡는 통로다.
+        #
+        # `singcup_streamers.representative_clip_uid`를 직접 UPDATE하지 않는 이유:
+        # 그 컬럼은 랭킹 재계산의 upsert가 `excluded.representative_clip_uid`로
+        # **조건 없이 덮어쓴다**. 직접 쓴 값은 다음 회차에 사라진다. 그래서 의도를
+        # 별도 테이블에 영속화하고, 대표를 *고르는* 두 지점이 이 표를 함께 본다.
+        """CREATE TABLE IF NOT EXISTS singcup_representative_overrides (
+               id                INTEGER PRIMARY KEY AUTOINCREMENT,
+               event_id          TEXT    NOT NULL,
+               owner_channel_id  TEXT    NOT NULL,
+               override_clip_uid TEXT    NOT NULL,
+               reason            TEXT    NOT NULL DEFAULT '',
+               created_at        INTEGER NOT NULL DEFAULT 0,
+               updated_at        INTEGER NOT NULL DEFAULT 0,
+               cleared_at        INTEGER
+           )""",
+        # 활성 override는 (이벤트, 스트리머)당 **하나**다. 해제는 행 삭제가 아니라
+        # cleared_at 기록이므로(이력 보존) 유니크는 부분 인덱스여야 한다.
+        # 애플리케이션 레벨 check-then-insert로 두지 않는 이유는 chzzk 도박 세션과
+        # 같다 — 두 요청이 겹치면 SELECT-then-INSERT 경쟁이 실제로 난다.
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_singcup_rep_override_active "
+        "ON singcup_representative_overrides(event_id, owner_channel_id) "
+        "WHERE cleared_at IS NULL",
     ]:
         try:
             await db.execute(sql)

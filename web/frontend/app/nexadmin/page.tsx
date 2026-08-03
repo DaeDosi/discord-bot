@@ -7,6 +7,7 @@ import {
   Megaphone, Save, CheckCircle,
 } from "lucide-react";
 import McEventPanel from "./McEventPanel";
+import SingcupRepPanel from "./SingcupRepPanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -700,7 +701,7 @@ export default function AdminPage() {
   const [verifUsers, setVerifUsers]   = useState<VerifUser[] | null>(null);
   const [loading, setLoading]         = useState(true);
   const [showAdd, setShowAdd]         = useState(false);
-  const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow" | "announcement" | "mc-event">("guilds");
+  const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow" | "announcement" | "mc-event" | "singcup-rep">("guilds");
   const [refreshing, setRefreshing]   = useState(false);
   const [selectedVerif, setSelectedVerif] = useState<VerifUser | null>(null);
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null);
@@ -847,6 +848,7 @@ export default function AdminPage() {
     { key: "follow", label: followStats === null ? "팔로우 관리 (로딩 중...)" : `팔로우 관리 (${followCount}명)` },
     { key: "announcement", label: "공지 관리" },
     { key: "mc-event", label: "MC 이벤트" },
+    { key: "singcup-rep", label: "싱드컵 대표 클립" },
   ] as const;
 
   return (
@@ -908,11 +910,14 @@ export default function AdminPage() {
           </div>
         )}
 
-        {/* 탭 */}
-        <div className="flex gap-1 border-b border-border">
+        {/* 탭 — 좁은 화면에서는 가로 스크롤한다.
+            줄바꿈을 허용하면 탭이 세로로 접혀 "서/버/목/록" 처럼 글자 단위로 쪼개진다
+            (390px 실측: 탭 줄 높이 117px). 탭은 개수가 늘어나는 자리라 폭에 기대면
+            안 된다 — 넘치면 접지 말고 밀어 둔다. */}
+        <div className="flex gap-1 border-b border-border overflow-x-auto">
           {tabs.map((t) => (
             <button key={t.key} onClick={() => setActiveTab(t.key)}
-                    className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                    className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap flex-shrink-0 ${
                       activeTab === t.key
                         ? "border-accent text-accent"
                         : "border-transparent text-muted hover:text-fg"
@@ -1120,6 +1125,8 @@ export default function AdminPage() {
 
         {/* ── MC 이벤트 ── */}
         {activeTab === "mc-event" && <McEventPanel guilds={guilds} />}
+
+        {activeTab === "singcup-rep" && <SingcupRepPanel />}
 
       </main>
     </div>

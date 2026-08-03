@@ -631,3 +631,255 @@ async def db_retention_report(user: dict = Depends(_require_owner)):
     """
     from singcup_retention import run_retention
     return await run_retention()
+
+
+# ── 싱드컵 대표 클립 수동 지정 (OWNER 전용) ──────────────────────────────────
+# 자동 선정 규칙은 **바꾸지 않는다.** 참가자가 제출본을 나중에 올려 하트가 앞선 옛
+# 클립이 대표로 잡히는 경우를 사람이 개별로 바로잡는 통로다. 규칙을 넓혀서 해결하면
+# 순위가 소급으로 통째 바뀐다(태그 판정 완화를 금지하는 것과 같은 이유).
+#
+# 이 영역이 지키는 것 세 가지:
+#   1) 입력은 clip_uid 하나로 축소된다 — 임의 URL을 그대로 요청하지 않는다(SSRF).
+#   2) 외부 API 호출은 DB 쓰기 트랜잭션 **밖**에서만 한다.
+#   3) 적용은 `representative_clip_uid` 직접 UPDATE가 아니라 override 표 + 정상
+#      재계산 경로를 탄다 — 그래야 다음 재계산에 지워지지 않는다.
+
+class RepOverrideApply(BaseModel):
+    channelId: str
+    clipInput: str          # 클립 URL 또는 UID
+    reason: Optional[str] = ""
+
+
+class RepOverrideClear(BaseModel):
+    channelId: str
+
+
+# preview는 외부(치지직) 호출을 유발한다. OWNER 전용이라도 실수로 반복 호출되면
+# 그대로 외부 요청이 되므로 엔드포인트 단위로 좁은 한도를 둔다(singcup_router와 같은 방식).
+_REP_PREVIEW_WINDOW = 60.0
+_REP_PREVIEW_LIMIT = int(os.getenv("SINGCUP_REP_PREVIEW_RATE_LIMIT", "20"))
+_rep_preview_hits: list[float] = []
+
+
+def _rep_preview_rate_limit():
+    now = _time.monotonic()
+    cutoff = now - _REP_PREVIEW_WINDOW
+    while _rep_preview_hits and _rep_preview_hits[0] < cutoff:
+        _rep_preview_hits.pop(0)
+    if len(_rep_preview_hits) >= _REP_PREVIEW_LIMIT:
+        raise HTTPException(status_code=429,
+                            detail="미리보기 요청이 너무 잦습니다. 잠시 후 다시 시도하세요.")
+    _rep_preview_hits.append(now)
+
+
+def _parse_clip_input(raw: str) -> str:
+    import singcup_overrides as so
+    try:
+        return so.parse_clip_uid(raw)
+    except so.InvalidClipInput as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+
+
+async def _rep_state(channel_id: str) -> dict:
+    """한 참가자의 자동 대표 / override / effective 대표를 한 번에 만든다.
+
+    **effective를 따로 계산하지 않는다** — 저장된 `representative_clip_uid`가 곧
+    effective다(override는 대표를 고르는 시점에 이미 반영된다). 화면에 셋을 나눠
+    보여주기 위해 '자동이었다면 무엇이었을지'만 별도로 계산한다.
+    """
+    import singcup_clips as sc
+    import singcup_overrides as so
+    db = await get_db()
+    s = await (await db.execute(
+        "SELECT channel_id, channel_name, channel_image_url, "
+        "       representative_clip_uid, tagged_clip_count "
+        "FROM singcup_streamers WHERE channel_id=? AND event_id=?",
+        (channel_id, sc.EVENT_ID))).fetchone()
+    if s is None:
+        raise HTTPException(status_code=404, detail="참가자를 찾을 수 없습니다.")
+
+    clips = [dict(r) for r in await (await db.execute(
+        "SELECT clip_uid, clip_title, heart_count, view_count, created_at, "
+        "       thumbnail_image_url, active, deletion_state, blind_type "
+        "FROM singcup_clips WHERE event_id=? AND owner_channel_id=? AND active=1 "
+        "  AND deletion_state<>'confirmed_deleted'",
+        (sc.EVENT_ID, channel_id))).fetchall()]
+    auto = sc.pick_representative(clips)          # override를 넘기지 않는다 = 순수 자동
+    ov = await so.get_override(channel_id, sc.EVENT_ID)
+
+    def _clip(c):
+        if not c:
+            return None
+        return {"clipUid": c["clip_uid"], "clipTitle": c.get("clip_title") or "",
+                "heartCount": int(c.get("heart_count") or 0),
+                "viewCount": int(c.get("view_count") or 0),
+                "createdAt": int(c.get("created_at") or 0),
+                "thumbnailImageUrl": c.get("thumbnail_image_url") or ""}
+
+    by_uid = {c["clip_uid"]: c for c in clips}
+    effective_uid = s["representative_clip_uid"]
+    return {
+        "channelId": s["channel_id"],
+        "channelName": s["channel_name"] or "",
+        "channelImageUrl": s["channel_image_url"] or "",
+        "taggedClipCount": int(s["tagged_clip_count"] or 0),
+        "autoRepresentative": _clip(auto),
+        "effectiveRepresentative": _clip(by_uid.get(effective_uid)),
+        "effectiveRepresentativeClipUid": effective_uid,
+        "override": ({"clipUid": ov["override_clip_uid"],
+                      "reason": ov["reason"] or "",
+                      "updatedAt": int(ov["updated_at"] or 0),
+                      # 지정한 클립이 그 사이 무효가 되면 행은 남되 효력을 잃는다.
+                      "active": ov["override_clip_uid"] in by_uid}
+                     if ov else None),
+        "clips": sorted((_clip(c) for c in clips),
+                        key=lambda c: (-c["heartCount"], -c["viewCount"],
+                                       c["createdAt"], c["clipUid"])),
+    }
+
+
+@router.get("/singcup/representative/search")
+async def singcup_rep_search(q: str = Query("", max_length=60),
+                             limit: int = Query(20, ge=1, le=50),
+                             user: dict = Depends(_require_owner)):
+    """참가자 검색(닉네임 부분 일치). override가 걸린 참가자를 함께 표시한다."""
+    import singcup_clips as sc
+    db = await get_db()
+    kw = q.strip()
+    # LIKE 와일드카드를 사용자 입력에서 제거한다 — '%'만 넣으면 전체 스캔이 된다.
+    safe = kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    rows = await (await db.execute(
+        "SELECT s.channel_id, s.channel_name, s.channel_image_url, "
+        "       s.representative_clip_uid, s.tagged_clip_count, "
+        "       (SELECT o.override_clip_uid FROM singcup_representative_overrides o "
+        "         WHERE o.event_id=s.event_id AND o.owner_channel_id=s.channel_id "
+        "           AND o.cleared_at IS NULL) AS override_clip_uid "
+        "FROM singcup_streamers s "
+        "WHERE s.event_id=? AND (?='' OR s.channel_name LIKE ? ESCAPE '\\') "
+        "ORDER BY s.channel_name COLLATE NOCASE LIMIT ?",
+        (sc.EVENT_ID, kw, f"%{safe}%", limit))).fetchall()
+    return {"eventId": sc.EVENT_ID, "query": kw, "items": [
+        {"channelId": r["channel_id"], "channelName": r["channel_name"] or "",
+         "channelImageUrl": r["channel_image_url"] or "",
+         "taggedClipCount": int(r["tagged_clip_count"] or 0),
+         "effectiveRepresentativeClipUid": r["representative_clip_uid"],
+         "hasOverride": bool(r["override_clip_uid"]),
+         "overrideClipUid": r["override_clip_uid"]}
+        for r in rows]}
+
+
+@router.get("/singcup/representative/{channel_id}")
+async def singcup_rep_state(channel_id: str, user: dict = Depends(_require_owner)):
+    """현재 자동 대표 / override / effective 대표를 구분해서 보여준다."""
+    return await _rep_state(channel_id)
+
+
+@router.post("/singcup/representative/preview")
+async def singcup_rep_preview(body: RepOverrideApply,
+                              user: dict = Depends(_require_owner)):
+    """지정 전 검증. **아무것도 쓰지 않는다.**
+
+    ① URL/UID에서 uid만 추출(임의 주소로 나가지 않는다)
+    ② DB에서 owner·이벤트 기간·active·삭제 상태 재검증
+    ③ 치지직 상세 API로 한 번 더 확인 — 고정 호스트·경로에 uid만 끼워 넣는다.
+       실패해도 400으로 막지 않고 `liveCheck`로 알린다(외부 장애가 지정을 막지
+       않도록). 단 DB 검증이 실패하면 그건 그대로 거부다.
+    """
+    import singcup_clips as sc
+    import singcup_overrides as so
+    _rep_preview_rate_limit()
+    uid = _parse_clip_input(body.clipInput)
+    state = await _rep_state(body.channelId)
+    reason, _row = await so.check_clip_eligible(body.channelId, uid, sc.EVENT_ID)
+
+    # 외부 확인은 **트랜잭션 밖**이다. 여기서는 DB를 쓰지 않으므로 트랜잭션 자체가 없다.
+    live = {"checked": False, "ok": None, "note": ""}
+    if reason == so.REASON_OK:
+        try:
+            meta = await sc.fetch_clip_meta(sc._get_client(), uid, full=True)
+            if meta is None:
+                live = {"checked": True, "ok": False, "note": "상세 조회에 실패했습니다."}
+            else:
+                owner_ok = (not meta.get("owner_channel_id")
+                            or meta["owner_channel_id"] == body.channelId)
+                live = {"checked": True, "ok": bool(owner_ok),
+                        "note": "" if owner_ok else "치지직 상세의 소유 채널이 다릅니다.",
+                        "clipTitle": meta.get("clip_title") or "",
+                        "blindType": meta.get("blind_type") or ""}
+        except Exception as e:                          # noqa: BLE001
+            live = {"checked": True, "ok": None,
+                    "note": f"외부 확인 실패: {str(e)[:80]}"}
+
+    cur_uid = state["effectiveRepresentativeClipUid"]
+    target = next((c for c in state["clips"] if c["clipUid"] == uid), None)
+    current = next((c for c in state["clips"] if c["clipUid"] == cur_uid), None)
+    # 지정하면 점수(조회 70% + 하트 30%)가 달라져 순위가 움직인다. 값이 내려가는
+    # 경우가 흔하므로(제출본이 나중에 올라와 하트가 적다) 미리 경고로 보여준다.
+    impact = None
+    if target and current and target["clipUid"] != current["clipUid"]:
+        impact = {
+            "heartDelta": target["heartCount"] - current["heartCount"],
+            "viewDelta": target["viewCount"] - current["viewCount"],
+            "rankLikelyDrops": (target["heartCount"] < current["heartCount"]
+                                or target["viewCount"] < current["viewCount"]),
+        }
+    return {
+        "clipUid": uid, "channelId": body.channelId,
+        "eligible": reason == so.REASON_OK, "reason": reason,
+        "reasonText": "" if reason == so.REASON_OK else so.reason_text(reason),
+        "noop": bool(cur_uid == uid and state["override"]),
+        "currentRepresentative": current, "targetClip": target,
+        "impact": impact, "liveCheck": live, "state": state,
+    }
+
+
+@router.post("/singcup/representative/apply")
+async def singcup_rep_apply(body: RepOverrideApply,
+                            user: dict = Depends(_require_owner)):
+    """수동 지정을 적용한다.
+
+    순서: 입력 축소 → DB 재검증 → override 기록(commit) → **정상 재계산 경로** →
+    `/main` 캐시 무효화. 재계산이 `representative_clip_uid`를 다시 쓰므로 이 값이
+    곧 effective가 되고, 그 컬럼을 읽는 모든 소비자가 같은 대표를 본다.
+    """
+    import singcup_clips as sc
+    import singcup_overrides as so
+    uid = _parse_clip_input(body.clipInput)
+    await _rep_state(body.channelId)                # 참가자 존재 확인(404)
+    reason, _row = await so.check_clip_eligible(body.channelId, uid, sc.EVENT_ID)
+    if reason != so.REASON_OK:
+        raise HTTPException(status_code=400, detail=so.reason_text(reason))
+
+    await so.set_override(body.channelId, uid, reason=(body.reason or "")[:200],
+                          event_id=sc.EVENT_ID)
+    # 재계산은 외부 채널 API를 부르지만 트랜잭션 밖이다(recompute_ranking 참고).
+    # 실패해도 override는 이미 영속화됐으므로 다음 정기 회차에 반영된다.
+    try:
+        await sc.recompute_ranking(int(_time.time()))
+    except Exception as e:                              # noqa: BLE001
+        sc.invalidate_main_cache()
+        return {"ok": True, "clipUid": uid, "recomputed": False,
+                "note": f"지정은 저장했으나 즉시 재계산에 실패했습니다: {str(e)[:120]}",
+                "state": await _rep_state(body.channelId)}
+    state = await _rep_state(body.channelId)
+    return {"ok": True, "clipUid": uid, "recomputed": True,
+            "effectiveRepresentativeClipUid": state["effectiveRepresentativeClipUid"],
+            "state": state}
+
+
+@router.post("/singcup/representative/clear")
+async def singcup_rep_clear(body: RepOverrideClear,
+                            user: dict = Depends(_require_owner)):
+    """수동 지정을 해제한다 → 자동 대표로 복귀한다."""
+    import singcup_clips as sc
+    import singcup_overrides as so
+    await _rep_state(body.channelId)
+    res = await so.clear_override(body.channelId, sc.EVENT_ID)
+    try:
+        await sc.recompute_ranking(int(_time.time()))
+        recomputed = True
+    except Exception:                                   # noqa: BLE001
+        sc.invalidate_main_cache()
+        recomputed = False
+    return {"ok": True, "cleared": res["cleared"], "recomputed": recomputed,
+            "state": await _rep_state(body.channelId)}

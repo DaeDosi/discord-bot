@@ -292,10 +292,24 @@ def is_candidate_clip(item: dict, *, start: datetime, end: datetime) -> bool:
     return d is not None and start <= d <= end
 
 
-def pick_representative(clips: list[dict]) -> dict | None:
-    """스트리머의 대표 클립 — 하트↓ → 조회수↓ → 생성 시각↑ → clipUID↑."""
+def pick_representative(clips: list[dict],
+                        override_uid: str | None = None) -> dict | None:
+    """스트리머의 대표 클립 — 하트↓ → 조회수↓ → 생성 시각↑ → clipUID↑.
+
+    `override_uid`가 주어지고 그 클립이 **후보 목록 안에 있으면** 그것을 대표로
+    쓴다(수동 지정, singcup_overrides 참고). 후보 목록은 이미 active·삭제 아님·
+    기간·블라인드로 걸러진 것이므로, 지정한 클립이 그 사이 무효가 됐다면 목록에
+    없고 자동 규칙이 그대로 적용된다 — **무효 override는 조용히 자동으로 복귀한다.**
+
+    자동 규칙 자체는 바뀌지 않는다. override는 정렬을 고치는 것이 아니라 정렬
+    결과보다 앞서는 '사람의 지정'을 하나 얹는 것이다.
+    """
     if not clips:
         return None
+    if override_uid:
+        for c in clips:
+            if str(c["clip_uid"]) == override_uid:
+                return c
     return sorted(clips, key=_clip_sort_key)[0]
 
 
@@ -1143,18 +1157,31 @@ def owner_lock_name(owner_channel_id: str) -> str:
 # 두 번 바뀐다(화면이 깜빡이고 증감 기준선도 두 번 끊긴다).
 #   하트↓ → 조회수↓ → 생성 시각↑ → clip_uid↑
 # (생성 시각은 **오름차순**이다. 같은 지표면 먼저 올린 클립을 대표로 본다.)
+#
+# 수동 지정(override)은 그 정렬 **앞에** 한 칸 얹는다 — `pick_representative`의
+# override 처리와 같은 의미다(자동 규칙 자체는 손대지 않는다). 이 LEFT JOIN이
+# 대표를 고르는 두 번째이자 마지막 지점이다.
+#
+# override 클립이 지금 삭제되는 그 클립이면 `clip_uid <> ?`에 걸려 후보에서 빠지고
+# 자동 규칙이 그대로 적용된다 — 무효 override는 여기서도 자동 복귀한다.
 _NEW_REP_SQL = """
-    SELECT clip_uid, heart_count, view_count
-    FROM singcup_clips
-    WHERE event_id = ?
-      AND owner_channel_id = ?
-      AND active = 1
-      AND deletion_state <> 'confirmed_deleted'
-      AND clip_uid <> ?
-      AND created_at >= ? AND created_at <= ?
-      AND (blind_type IS NULL OR blind_type = ''
-           OR UPPER(blind_type) NOT IN ('BLIND','DELETE','DELETED','PRIVATE'))
-    ORDER BY heart_count DESC, view_count DESC, created_at ASC, clip_uid ASC
+    SELECT c.clip_uid, c.heart_count, c.view_count
+    FROM singcup_clips c
+    LEFT JOIN singcup_representative_overrides o
+           ON o.event_id = c.event_id
+          AND o.owner_channel_id = c.owner_channel_id
+          AND o.override_clip_uid = c.clip_uid
+          AND o.cleared_at IS NULL
+    WHERE c.event_id = ?
+      AND c.owner_channel_id = ?
+      AND c.active = 1
+      AND c.deletion_state <> 'confirmed_deleted'
+      AND c.clip_uid <> ?
+      AND c.created_at >= ? AND c.created_at <= ?
+      AND (c.blind_type IS NULL OR c.blind_type = ''
+           OR UPPER(c.blind_type) NOT IN ('BLIND','DELETE','DELETED','PRIVATE'))
+    ORDER BY (o.id IS NOT NULL) DESC,
+             c.heart_count DESC, c.view_count DESC, c.created_at ASC, c.clip_uid ASC
     LIMIT 1
 """
 
@@ -1693,14 +1720,39 @@ async def _recheck_locked(r: dict, clip_uid: str, now: int) -> dict:
             "active": after["active"]}
 
 
-def _build_reps(tagged: list[dict]) -> list[dict]:
-    """스트리머(ownerChannelId)별 대표 클립 1개만 남긴다."""
+async def _representative_overrides() -> dict[str, str]:
+    """활성 수동 지정 전부. 실패해도 랭킹 계산을 멈추지 않는다.
+
+    여기서 예외를 올리면 그 회차의 랭킹 재계산이 통째로 건너뛰어지고, 화면은
+    **모든 참가자**의 순위가 낡은 채로 남는다. override가 한 회차 빠지는 것은
+    해당 스트리머 한 명이 자동 대표로 보이는 것뿐이고 다음 회차에 복구된다.
+    범위가 훨씬 좁은 쪽을 택한다(로그로는 드러난다).
+    """
+    try:
+        import singcup_overrides
+        return await singcup_overrides.active_override_map(EVENT_ID)
+    except Exception as e:                              # noqa: BLE001
+        _log({"event": "representative_overrides_load_failed", "level": "warning",
+              "detail": str(e)[:160]})
+        return {}
+
+
+def _build_reps(tagged: list[dict],
+                overrides: dict[str, str] | None = None) -> list[dict]:
+    """스트리머(ownerChannelId)별 대표 클립 1개만 남긴다.
+
+    `overrides`는 {owner_channel_id: clip_uid} 수동 지정이다. 여기서 반영해야
+    `recompute_ranking`이 저장하는 `representative_clip_uid`가 곧 effective
+    representative가 되고, 그 컬럼을 읽는 모든 소비자(`/main`·점수·movers·스냅샷·
+    스윕 `_TARGET_SQL`)가 구조적으로 같은 대표를 본다.
+    """
+    overrides = overrides or {}
     by_owner: dict[str, list[dict]] = {}
     for c in tagged:
         by_owner.setdefault(c["owner_channel_id"], []).append(c)
     reps = []
-    for clips in by_owner.values():
-        rep = dict(pick_representative(clips))
+    for owner, clips in by_owner.items():
+        rep = dict(pick_representative(clips, overrides.get(owner)))
         rep["tagged_clip_count"] = len(clips)
         reps.append(rep)
     return reps
@@ -1731,7 +1783,11 @@ async def recompute_ranking(now: int, *, client=None,
                   for r in await (await db.execute(
                       "SELECT channel_id, representative_clip_uid "
                       "FROM singcup_streamers WHERE event_id=?", (EVENT_ID,))).fetchall()}
-    ranked = compute_scores(_build_reps(rows))
+    # 수동 지정(override)을 대표를 **고르는 시점**에 반영한다. 읽는 쪽에 얹지 않는
+    # 이유는 singcup_overrides 모듈 주석 참고 — 소비자마다 JOIN을 복제하면 그
+    # 복제본들이 갈라진다(split-brain).
+    overrides = await _representative_overrides()
+    ranked = compute_scores(_build_reps(rows, overrides))
 
     client = client or _get_client()
 
