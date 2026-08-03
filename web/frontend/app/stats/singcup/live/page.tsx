@@ -332,10 +332,15 @@ export default function SingcupLivePage() {
             <div className="card py-16 text-center">
               <Radio size={30} className="mx-auto mb-3 opacity-25" style={{ color: GOLD }} />
               <p className="font-medium text-fg">지금 방송 중인 참가 스트리머가 없습니다.</p>
-              <p className="mt-1 text-sm text-muted">
+              {/* 이 화면은 '라이브 중인 참가자'만 보여 준다. 새벽처럼 아무도 켜지 않은
+                  시간대에는 0명이 정상이며, 오류가 아니라는 것을 문구로 구분해 준다. */}
+              <p className="mt-1 text-sm text-muted leading-relaxed">
                 {ev?.status === "UPCOMING"
                   ? `이벤트 시작 예정: ${fmtDateTime(ev.startAt)}`
-                  : "참가자가 방송을 켜면 여기에 표시됩니다."}
+                  : "이 화면은 지금 방송을 켠 참가자만 보여 줍니다. 오류가 아니라 현재 켜 둔 참가자가 없는 상태이며, 방송이 시작되면 자동으로 표시됩니다."}
+              </p>
+              <p className="mt-1.5 text-xs text-muted/70">
+                오프라인 참가자를 포함한 전체 순위는 싱드컵 랭킹에서 계속 확인하실 수 있습니다.
               </p>
               <Link href="/stats?tab=singcup" className="mt-4 inline-flex items-center gap-1.5 rounded-lg
                                              px-3 py-2 text-sm font-bold text-[#1a1400]"

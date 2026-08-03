@@ -8,7 +8,8 @@ export const metadata: Metadata = {
   description: "NexBot 서비스의 개인정보 수집·이용·보호에 관한 방침입니다.",
 };
 
-const EFFECTIVE_DATE = "2026년 7월 14일";
+// 이메일 문의 접수 구조를 반영해 개정. 이전 시행일 2026년 7월 14일.
+const EFFECTIVE_DATE = "2026년 8월 3일";
 
 const sections = [
   {
@@ -44,8 +45,27 @@ const sections = [
           </tbody>
         </table>
         <p className="text-muted text-sm">
-          * 이름, 이메일, 전화번호 등 민감한 개인정보는 수집하지 않습니다.
+          * 서비스 이용 과정에서 이름, 이메일, 전화번호를 회원 정보로 자동 수집하지 않습니다.
+          별도의 회원가입 절차가 없습니다.
         </p>
+        {/* 이메일 문의를 받는 이상 '이메일을 수집하지 않는다'는 절대 문구는 실제 처리와
+            모순된다. 자동 수집과 사용자가 직접 보내는 경우를 나눠 적는다. */}
+        <div className="bg-bg rounded-xl border border-border p-4 space-y-2">
+          <p className="text-fg font-medium text-sm">이메일로 문의하시는 경우</p>
+          <p className="text-sm text-muted leading-relaxed">
+            <Link href="/contact" className="text-accent hover:underline">문의</Link> 페이지의
+            주소로 메일을 보내시면 <span className="text-fg">발신 이메일 주소와 메일 본문·첨부
+            자료에 포함된 정보</span>를 제공받게 됩니다. 사용자가 직접 발송하는 방식으로만
+            수집되며 사이트가 자동으로 가져가는 정보가 아닙니다. 문의에 흔히 포함되는 정보는
+            페이지 주소, 채널명, 클립 주소, 확인 시각, 화면 캡처, 요청 내용입니다.
+          </p>
+          <p className="text-sm text-muted leading-relaxed">
+            이용 목적은 <span className="text-fg">문의 응답, 서비스 오류 확인, 통계 데이터 정정,
+            클립·이미지·저작권 관련 삭제 또는 정정 처리, 광고 및 운영 문의 처리</span>로
+            한정합니다. 문의 처리에 필요하지 않은 비밀번호·토큰·API 키·인증 쿠키·주민등록번호
+            등은 보내지 말아 주시기 바랍니다.
+          </p>
+        </div>
       </div>
     ),
   },
@@ -97,6 +117,15 @@ const sections = [
         <p>
           수집된 정보는 서비스 이용 중단 요청 시 즉시 삭제됩니다.
         </p>
+        <div className="bg-bg rounded-xl border border-border p-4 space-y-1.5">
+          <p className="text-fg font-medium text-sm">문의 이메일과 첨부 자료</p>
+          <p className="text-sm">
+            문의 처리가 끝난 후 6개월 보관 후 삭제하며, 법적 분쟁이나 권리 보호를 위해 필요한
+            경우에만 필요한 기간 동안 보관합니다. 보관 기간 이전이라도 발신자가 삭제를 요청하면
+            처리에 필요한 범위를 제외하고 삭제합니다. 삭제 요청 경로는 아래
+            &lsquo;개인정보 삭제 요청&rsquo;과 같습니다.
+          </p>
+        </div>
         <div className="bg-bg rounded-xl border border-border p-4 space-y-2">
           <p className="text-fg font-medium text-sm">자동 삭제 조건</p>
           <ul className="space-y-1.5 text-sm list-none">
@@ -215,8 +244,8 @@ const sections = [
               desc: "NexBot을 Discord 서버에서 추방하면 해당 서버와 관련된 모든 데이터(설정, XP, 경고 기록 등)가 자동으로 삭제됩니다.",
             },
             {
-              title: "수동 삭제 요청",
-              desc: "GitHub 이슈를 통해 특정 데이터의 삭제를 요청할 수 있습니다. 요청 시 Discord 사용자 ID 또는 서버 ID를 명시해주세요.",
+              title: "수동 삭제 요청 (이메일)",
+              desc: "특정 데이터의 삭제는 dnxodud5542@gmail.com 으로 요청해 주세요. 대상을 특정하기 위해 Discord 사용자 ID 또는 서버 ID가 필요할 수 있으며, 해당 식별자는 이메일로만 보내 주시기 바랍니다.",
             },
           ].map(({ title, desc }) => (
             <div key={title} className="bg-bg rounded-xl border border-border p-4">
@@ -225,6 +254,14 @@ const sections = [
             </div>
           ))}
         </div>
+        {/* 공개 이슈에 Discord ID를 적게 하던 기존 안내를 이메일로 옮겼다.
+            비밀번호는 아니지만 공개 게시를 권장할 이유가 없다. */}
+        <p className="text-sm">
+          <span className="text-fg">공개 GitHub 이슈에는 Discord 사용자 ID, 서버 ID, 이메일
+          주소, 토큰, 인증 정보 등 개인을 식별할 수 있는 정보를 적지 말아 주세요.</span>{" "}
+          GitHub는 공개해도 되는 기술적 버그 제보에만 사용하고, 개인정보·계정·서버 데이터
+          삭제 요청은 이메일로만 접수합니다.
+        </p>
       </div>
     ),
   },
@@ -234,20 +271,16 @@ const sections = [
     content: (
       <div className="space-y-3 text-muted leading-relaxed">
         <p>
-          개인정보 처리에 관한 문의, 불만 사항은 아래 채널을 이용해주세요.
+          개인정보 처리에 관한 문의, 불만 사항은 이메일로 접수합니다.
         </p>
         <div className="bg-bg rounded-xl border border-border p-4">
-          <p className="text-fg font-medium text-sm mb-2">GitHub Issues</p>
-          <a
-            href="https://github.com/DaeDosi/discord-bot/issues"
-            target="_blank"
-            rel="noreferrer"
-            className="text-accent text-sm hover:underline"
-          >
-            github.com/DaeDosi/discord-bot/issues ↗
+          <p className="text-fg font-medium text-sm mb-2">이메일</p>
+          <a href="mailto:dnxodud5542@gmail.com" className="text-accent text-sm hover:underline break-all">
+            dnxodud5542@gmail.com
           </a>
           <p className="text-xs mt-2">
-            이슈 제목에 <code className="bg-bg-hover px-1 py-0.5 rounded text-fg">[개인정보]</code> 를 포함해 작성해주세요.
+            메일 제목에 <code className="bg-bg-hover px-1 py-0.5 rounded text-fg">[개인정보]</code> 를 포함해 주시면 확인이 빠릅니다.
+            문의 목적별 안내는 <Link href="/contact" className="text-accent hover:underline">문의 페이지</Link>에 있습니다.
           </p>
         </div>
       </div>

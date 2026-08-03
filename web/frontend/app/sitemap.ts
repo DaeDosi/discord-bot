@@ -16,6 +16,10 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${SITE}/stats`,   lastModified: now, changeFrequency: "hourly",  priority: 0.9 },
     { url: `${SITE}/guide`,   lastModified: now, changeFrequency: "monthly", priority: 0.7 },
     { url: `${SITE}/faq`,     lastModified: now, changeFrequency: "monthly", priority: 0.6 },
+    // 게시자 신원과 문의 경로를 알리는 공개 페이지. 내용이 자주 바뀌지 않아
+    // 안내 문서(guide/faq)보다는 낮고 약관류보다는 높게 둔다.
+    { url: `${SITE}/about`,   lastModified: now, changeFrequency: "monthly", priority: 0.5 },
+    { url: `${SITE}/contact`, lastModified: now, changeFrequency: "yearly",  priority: 0.4 },
     { url: `${SITE}/terms`,   lastModified: now, changeFrequency: "yearly",  priority: 0.3 },
     { url: `${SITE}/privacy`, lastModified: now, changeFrequency: "yearly",  priority: 0.3 },
   ];

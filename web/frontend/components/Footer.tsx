@@ -16,9 +16,9 @@ const COLUMNS: {
   {
     heading: "제품",
     links: [
+      { label: "서비스 소개", href: "/about" },
       { label: "기능", href: "/#features" },
       { label: "치지직 통계", href: "/stats" },
-      { label: "통계", href: "/#stats" },
       { label: "사용 방법", href: "/guide" },
     ],
   },
@@ -35,9 +35,11 @@ const COLUMNS: {
   {
     heading: "지원",
     links: [
+      { label: "문의",       href: "/contact" },
       { label: "FAQ",       href: "/faq"    },
       { label: "서버 상태",  href: "/status" },
       { label: "서포트 서버", href: "https://discord.gg/DaZxywE4Ka", external: true },
+      { label: "GitHub",    href: "https://github.com/DaeDosi/discord-bot", external: true },
     ],
   },
 ];

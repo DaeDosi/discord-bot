@@ -649,6 +649,9 @@ export default function PeriodAnalysis() {
         {data && !s && !busy && !err && (
           <div className="rounded-2xl border border-gray-800/80 p-10 text-center text-sm text-muted" style={{ background: PANEL }}>
             선택한 조건에 해당하는 방송 이력이 없습니다. 기간을 늘리거나 필터를 줄여 보세요.
+            <span className="mt-1.5 block text-xs">
+              기간 분석은 수집을 시작한 이후 구간만 집계합니다. 그 이전 방송 이력은 남아 있지 않습니다.
+            </span>
           </div>
         )}
 

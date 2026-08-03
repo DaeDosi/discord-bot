@@ -492,9 +492,61 @@ function StatsAbout() {
           도구입니다. 방송을 오래 해도 &ldquo;오늘은 사람이 많았나, 적었나&rdquo;를 감으로만
           판단하게 되는 경우가 많습니다. 특히 이제 방송을 시작한 신입 스트리머나 소규모 채널은
           비교 기준이 될 데이터가 없어 성장하고 있는지조차 알기 어렵습니다. 이 서비스는 치지직이
-          공개하는 라이브 방송 목록을 약 10분 주기로 수집해 시간에 따른 변화를 기록하고, 개인의
+          공개하는 라이브 방송 목록을 주기적으로 수집해 시간에 따른 변화를 기록하고, 개인의
           체감이 아니라 누적된 수치로 방송 흐름을 되짚어볼 수 있게 합니다.
         </p>
+
+        <div>
+          <h3 className="text-fg font-bold mb-2">화면의 숫자가 뜻하는 것</h3>
+          <ul className="space-y-1.5 list-disc pl-5">
+            <li><b className="text-fg">현재 라이브 방송</b> — 가장 최근 수집 시점에 라이브로 확인된 채널 수입니다.</li>
+            <li><b className="text-fg">전체 동시 시청자</b> — 그 시점에 수집된 라이브 채널들의 시청자 수를 모두 더한 값입니다.</li>
+            <li><b className="text-fg">방송당 평균 시청자</b> — 전체 동시 시청자를 현재 라이브 방송 수로 나눈 값입니다. 큰 방송 하나가 평균을 끌어올릴 수 있으므로 순위와 함께 보는 편이 정확합니다.</li>
+            <li><b className="text-fg">뷰어십(누적 시청 시간)</b> — 각 수집 시점의 시청자 수에 수집 간격을 곱해 더한 값으로, 단위는 시청자-시간입니다. 100명이 1시간 본 방송과 50명이 2시간 본 방송이 같은 값이 됩니다. 시청자 수와 방송 길이를 하나로 합쳐 보는 지표입니다.</li>
+            <li><b className="text-fg">신규 스트리머</b> — 첫 방송 확인일로부터 60일 이내인 채널입니다. 시청자 규모와 무관합니다.</li>
+            <li><b className="text-fg">소형 스트리머</b> — 최근 평균 동시 시청자가 10명 이하인 채널입니다. 경력과 무관하므로 신규 그룹과 겹칠 수 있습니다.</li>
+          </ul>
+        </div>
+
+        <div>
+          <h3 className="text-fg font-bold mb-2">각 화면이 답하는 질문</h3>
+          <ul className="space-y-1.5 list-disc pl-5">
+            <li><b className="text-fg">랭킹</b> — &ldquo;지금 누가 많이 보고 있는가.&rdquo; 기본은 동시 시청자 기준이며 팔로워·방송 시간으로 정렬을 바꿀 수 있습니다.</li>
+            <li><b className="text-fg">카테고리 분석</b> — &ldquo;어디에 시청자가 모여 있고, 어디가 덜 붐비는가.&rdquo; 시청자 수와 방송 수를 함께 봐야 판단이 됩니다.</li>
+            <li><b className="text-fg">신규 &amp; 초기 분석</b> — &ldquo;막 시작한 채널 중 지금 반응이 오는 곳은 어디인가.&rdquo;</li>
+            <li><b className="text-fg">기간 분석</b> — &ldquo;이 기간 전체로 보면 어땠는가.&rdquo; 누적 시청 시간은 기간이 길수록 커지므로, 방송 하나의 성적은 평균 시청자로 함께 확인하시기 바랍니다.</li>
+          </ul>
+        </div>
+
+        <div>
+          <h3 className="text-fg font-bold mb-2">수집 주기와 화면 갱신</h3>
+          <p>
+            기능마다 수집 주기가 다릅니다. 라이브 방송 통계는 약 10분 간격으로 수집하고, 싱드컵
+            이벤트의 신규 클립 탐색은 약 4분 간격입니다. 싱드컵 클립의 하트·조회수는 정해진 시각이
+            아니라 계속 이어지는 방식으로 갱신하는데, 대상 클립 수와 외부 API 요청 제한에 따라
+            한 클립이 다시 갱신되기까지 대략 55분에서 115분까지 걸릴 수 있습니다. 화면 쪽은
+            싱드컵 페이지가 약 5분 간격으로 다시 받아 옵니다. 이 값들은 운영 설정에 따라 달라질
+            수 있어 고정된 보장이 아닙니다.
+          </p>
+          <p className="mt-2">
+            그래서 <b className="text-fg">&ldquo;실시간&rdquo;은 매초 완전히 동기화된다는 뜻이 아닙니다.</b>{" "}
+            화면의 값은 마지막 수집 시점의 값이며, 각 화면에 그 시각을 함께 적어 두었습니다.
+            방금 시작하거나 끝난 방송, 주기 사이에 잠깐 켜졌다 꺼진 방송은 아직 반영되지 않았을
+            수 있습니다.
+          </p>
+        </div>
+
+        <div>
+          <h3 className="text-fg font-bold mb-2">실제 치지직 화면과 다를 수 있는 이유</h3>
+          <p>
+            수집 시점 차이가 가장 큰 이유입니다. 그 밖에 원본 API가 일시적으로 응답하지 않거나
+            값을 나중에 수정하는 경우, 일부 항목만 내려 주는 경우에도 차이가 생깁니다. 과거 이력은
+            저희가 수집을 시작한 이후 구간만 존재하며 그 이전은 복원할 수 없습니다. 수치가 실제와
+            다르다고 판단되시면{" "}
+            <Link href="/contact" className="text-accent hover:underline">문의 페이지</Link>로
+            알려 주시기 바랍니다.
+          </p>
+        </div>
 
         <div>
           <h3 className="text-fg font-bold mb-2">수집하고 제공하는 데이터</h3>
@@ -911,7 +963,12 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
       </div>
 
       {filtered.length === 0 && (
-        <p className="text-sm text-muted text-center py-6">검색 결과가 없습니다.</p>
+        <p className="text-sm text-muted text-center py-6 leading-relaxed">
+          검색 결과가 없습니다.<br />
+          <span className="text-xs">
+            채널명 일부만 입력해 보시거나, 현재 방송 중이 아닌 채널일 수 있습니다.
+          </span>
+        </p>
       )}
       {filtered.length > limit && (
         <div className="text-center pt-4">
@@ -1288,7 +1345,10 @@ function SmallCategoryTop10({ cats }: { cats: NewcomerCategory[] }) {
         방송 수 기준 — 사람이 몰려 있는 만큼 경쟁도 센 구간입니다.
       </p>
       {top.length === 0 ? (
-        <p className="py-8 text-center text-sm text-muted">카테고리 데이터가 아직 없습니다.</p>
+        <p className="py-8 text-center text-sm text-muted leading-relaxed">
+          카테고리 데이터가 아직 없습니다.<br />
+          <span className="text-xs">다음 수집(약 10분 간격)이 끝나면 표시됩니다.</span>
+        </p>
       ) : (
         // flex-1 + justify-between: 옆 칼럼(성장률 리스트)이 더 길어 아래가 비던 것을
         // 행 간격을 늘려 채운다. 행 수가 같아도 리스트 쪽 행이 더 높기 때문.
@@ -1568,7 +1628,13 @@ function NewcomersRankingTab({ data }: { data: RisingNewcomers }) {
         </div>
 
         {sorted.length === 0
-          ? <p className="text-sm text-muted text-center py-8">조건에 맞는 신규/라이징 방송이 아직 없습니다.</p>
+          ? <p className="text-sm text-muted text-center py-8 leading-relaxed">
+              조건에 맞는 신규/라이징 방송이 아직 없습니다.<br />
+              <span className="text-xs">
+                첫 방송 60일 이내(신규) 또는 최근 평균 시청자 10명 이하(소형) 조건으로
+                지금 방송 중인 채널만 모읍니다. 시간대에 따라 비어 있을 수 있습니다.
+              </span>
+            </p>
           : <NewcomerTable items={sorted.slice(0, limit)} maxViewers={maxViewers} maxFollower={maxFollower} />}
         {sorted.length > limit && (
           <div className="text-center pt-4">
@@ -2225,15 +2291,36 @@ export default function StatsPage() {
 
         {loading ? (
           <div className="flex items-center justify-center gap-2 text-muted py-24">
-            <Loader2 size={18} className="animate-spin" /> 데이터를 불러오는 중...
+            <Loader2 size={18} className="animate-spin" /> 통계를 불러오는 중입니다. 잠시만 기다려 주세요.
           </div>
         ) : error ? (
-          <div className="card text-center py-16 text-muted">데이터를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.</div>
+          // 세 상태를 문구까지 나눈다 — '불러오지 못함'(오류)과 '아직 없음'(정상 0건)은
+          // 사용자가 해야 할 일이 서로 다르다.
+          <div className="card text-center py-14 px-5">
+            <p className="font-medium text-fg">통계를 불러오지 못했습니다.</p>
+            <p className="mt-1.5 text-sm text-muted leading-relaxed">
+              일시적인 네트워크 문제이거나 수집 서버가 재시작 중일 수 있습니다.
+              잠시 후 새로고침하면 대부분 복구됩니다.
+            </p>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              <button onClick={() => location.reload()} className="btn-secondary text-sm">새로고침</button>
+              <Link href="/status" className="btn-secondary text-sm">서버 상태 확인</Link>
+              <Link href="/contact" className="btn-secondary text-sm">문제 신고</Link>
+            </div>
+          </div>
         ) : empty ? (
-          <div className="card text-center py-16">
+          <div className="card text-center py-14 px-5">
             <Radio size={36} className="mx-auto mb-3 opacity-30" style={{ color: GREEN }} />
-            <p className="font-medium text-fg">데이터를 수집하고 있습니다.</p>
-            <p className="text-sm text-muted mt-1">첫 집계가 완료되면 곧 통계가 표시됩니다.</p>
+            <p className="font-medium text-fg">아직 집계된 데이터가 없습니다.</p>
+            <p className="mt-1.5 text-sm text-muted leading-relaxed">
+              통계는 약 10분 간격의 수집 결과가 쌓여야 표시됩니다. 서비스를 막 시작했거나
+              수집이 잠시 멈췄던 경우 첫 집계까지 시간이 걸릴 수 있습니다.
+            </p>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              <button onClick={() => location.reload()} className="btn-secondary text-sm">새로고침</button>
+              <Link href="/status" className="btn-secondary text-sm">서버 상태 확인</Link>
+              <Link href="/about" className="btn-secondary text-sm">서비스 소개</Link>
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-[210px_1fr] gap-5 md:gap-7">
