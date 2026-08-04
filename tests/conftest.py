@@ -74,7 +74,8 @@ def db(request):
                   "singcup_snapshot_hourly", "singcup_snapshot_daily",
                   "singcup_final_standings", "singcup_refresh_runs",
                   "singcup_sweep_runs", "singcup_top_movers",
-                  "singcup_representative_overrides"):
+                  "singcup_representative_overrides",
+                  "singcup_kr_poller_lease", "singcup_krp_nonce"):
             await conn.execute(f"DELETE FROM {t}")
         # 락은 지우지 말고 풀어 둔다(행 자체는 id=1 하나만 존재해야 한다)
         await conn.execute("UPDATE singcup_collect_lock SET locked_until=0, owner=''")

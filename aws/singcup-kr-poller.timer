@@ -1,0 +1,12 @@
+[Unit]
+Description=Run singcup KR view-count poller periodically
+
+[Timer]
+OnBootSec=2min
+# 회차가 끝난 뒤부터 재는 값이라 겹쳐 도는 일이 없다.
+OnUnitActiveSec=10min
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

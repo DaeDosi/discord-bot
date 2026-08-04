@@ -36,6 +36,7 @@ from routers.chzzk_auth_router import router as chzzk_auth_router
 from routers.chzzk_history_router import router as chzzk_history_router
 from routers.chzzk_router import router as chzzk_router
 from routers.guilds_router import router as guilds_router
+from routers.kr_poller_router import router as kr_poller_router  # noqa: E402
 from routers.mc_event_router import router as mc_event_router
 from routers.points_router import router as points_router
 from routers.rising_router import router as rising_router
@@ -158,6 +159,10 @@ app.include_router(points_router)
 app.include_router(mc_event_router)
 app.include_router(rising_router)
 app.include_router(singcup_router)
+# 한국(AWS 서울) outbound poller 전용. secret 미설정이거나 SINGCUP_KRP_ENABLED가
+# false면 두 endpoint가 503만 돌려주므로, 등록 자체는 조건 없이 해 둔다 —
+# 폐기된 relay_router처럼 import 시점 결합으로 기동을 죽이지 않기 위해서다.
+app.include_router(kr_poller_router)
 
 
 @app.get("/auth/callback")

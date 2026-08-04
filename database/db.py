@@ -1048,6 +1048,52 @@ async def init_db():
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_singcup_rep_override_active "
         "ON singcup_representative_overrides(event_id, owner_channel_id) "
         "WHERE cleared_at IS NULL",
+        # ── 싱드컵 한국(AWS 서울) outbound poller ─────────────────────────
+        # 하트는 카드 응답의 interaction.emotion.reactions에, 조회수는
+        # content.vod.count에 있다. krOnlyViewing=true 클립을 Railway 해외 IP에서
+        # 부르면 HTTP 200이면서도 **content.vod 블록 전체가 제거**된다. 하트 블록은
+        # 남으므로 하트만 갱신되고 조회수는 unknown으로 남는다. 조회수가 0으로
+        # 응답된 것이 아니라 **컨테이너가 누락된 것**이라 observed_zero가 아니다.
+        # 한국에서 같은 API를 불러야 복구되므로, 한국 호스트에 clip UID만 임대한다.
+        #
+        # lease가 테이블인 이유: 같은 클립을 두 번 임대하지 않는 것, 결과 제출의
+        # idempotency, 실패 후 재시도 쿨다운을 한 곳에서 정한다. 만료는 expires_at
+        # 조건으로 자연 회수되므로 **별도 reaper가 없다**.
+        """CREATE TABLE IF NOT EXISTS singcup_kr_poller_lease (
+               task_id     TEXT PRIMARY KEY,
+               event_id    TEXT    NOT NULL,
+               clip_uid    TEXT    NOT NULL,
+               lease_token TEXT    NOT NULL,
+               issued_at   INTEGER NOT NULL,
+               expires_at  INTEGER NOT NULL,
+               done_at     INTEGER NOT NULL DEFAULT 0,
+               last_result TEXT    NOT NULL DEFAULT '',
+               attempts    INTEGER NOT NULL DEFAULT 0
+           )""",
+        # 후보 쿼리가 "지금 유효한 lease가 있는가"를 매번 확인한다.
+        "CREATE INDEX IF NOT EXISTS idx_krp_lease_clip "
+        "ON singcup_kr_poller_lease(clip_uid, expires_at, done_at)",
+        # 열린 lease는 클립당 **하나**다. 애플리케이션 레벨 check-then-insert로
+        # 두지 않는 이유는 대표 override·도박 세션과 같다 — 두 요청이 겹치면
+        # SELECT-then-INSERT 경쟁이 실제로 난다(다중 replica에서도 성립해야 한다).
+        # 만료 재수령은 발급 트랜잭션이 만료 행을 먼저 닫고 새로 넣는 방식이라
+        # 이 유니크와 충돌하지 않는다.
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_krp_lease_one_open "
+        "ON singcup_kr_poller_lease(clip_uid) WHERE done_at=0",
+        "CREATE INDEX IF NOT EXISTS idx_krp_lease_cooldown "
+        "ON singcup_kr_poller_lease(clip_uid, done_at)",
+        # 닫힌 행만 보존 기간이 지나면 상한을 두고 지운다(best-effort prune).
+        # 이 인덱스가 없으면 그 DELETE가 매번 전체 scan이 된다.
+        "CREATE INDEX IF NOT EXISTS idx_krp_lease_prune "
+        "ON singcup_kr_poller_lease(done_at)",
+        # 서명이 유효해도 같은 요청을 그대로 다시 보내면 막는다(재전송 방지).
+        # PRIMARY KEY 충돌이 곧 '이미 본 nonce'다 — check-then-insert로 두지 않는다.
+        """CREATE TABLE IF NOT EXISTS singcup_krp_nonce (
+               nonce   TEXT PRIMARY KEY,
+               seen_at INTEGER NOT NULL
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_krp_nonce_seen "
+        "ON singcup_krp_nonce(seen_at)",
     ]:
         try:
             await db.execute(sql)
