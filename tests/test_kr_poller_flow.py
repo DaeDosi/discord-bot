@@ -319,7 +319,15 @@ def test_heart_is_not_overwritten(db):
 
 
 # ── 23·24·25 batch당 recompute/cache 횟수 ──────────────────────────────────
-def test_recompute_and_cache_run_exactly_once_per_batch(db, _no_recompute):
+def test_batch_invalidates_cache_once_and_never_recomputes(db, _no_recompute):
+    """**응답 경로에서 순위를 재계산하지 않는다.** 캐시 무효화만 batch당 1회다.
+
+    예전에는 여기서 `recompute_ranking()`을 불렀고, 그것이 참가자 전원(약
+    1,400명)의 채널 API를 `CARD_CONCURRENCY`로 훑어 응답이 169.692초까지
+    늘어났다(실측 2026-08-04). 한국 poller는 60초에 끊겨 결과가 불명확한
+    성공이 됐다 — 저장은 이미 1초 만에 끝난 뒤였는데도 그 회차가 헛돌았다.
+    캐시만 버리면 `_load_main_uncached()`가 조회 시점에 점수를 다시 만든다.
+    """
     for i in range(3):
         db(_seed(f"c-{i}"))
     tasks = db(krp.lease_tasks(NOW, 25))
@@ -327,8 +335,9 @@ def test_recompute_and_cache_run_exactly_once_per_batch(db, _no_recompute):
              for i, t in enumerate(tasks)]
     out = db(krp.apply_results(items, NOW))
     assert out["stored"] == 3
-    assert _no_recompute["rank"] == 1
+    assert _no_recompute["rank"] == 0          # 재계산은 주기 경로가 맡는다
     assert _no_recompute["cache"] == 1
+    assert out["recomputed"] is False          # 계약은 남기되 항상 False
 
 
 def test_no_store_means_no_recompute_and_no_cache_invalidation(db, _no_recompute):
@@ -416,12 +425,27 @@ def test_storage_goes_through_apply_metrics_only(db, monkeypatch):
     assert seen == {"uid": "c-1", "heart_ok": False, "view_ok": True, "view": 1927}
 
 
-def test_representative_column_is_never_written(db):
+def test_only_the_representative_column_is_written(db):
+    """대표 컬럼은 쓰되 **무관한 집계 컬럼은 건드리지 않는다.**
+
+    예전에는 poller가 `representative_clip_uid`를 아예 쓰지 않는 것이 계약이었고
+    대표 재선정을 전적으로 `recompute_ranking()`에 맡겼다. 그런데 그 전체 재계산은
+    주기 경로가 전부 조건부라(discover는 `if tagged`, hourly snapshot은 '5단계
+    전부 성공') 무조건 도는 것이 스윕 회차(80~100분)뿐이었다. 그동안 `/main`과
+    스윕 `is_rep`가 다른 대표를 볼 수 있어, 저장된 owner에 한해 대표만 즉시
+    다시 고른다. 팔로워·닉네임·태그 수는 이 경로가 최신본을 갖고 있지 않으므로
+    **절대 쓰지 않는다** — 그것들은 정기 경로 몫이다.
+    """
+    text = open(krp.__file__, encoding="utf-8").read()
+    sql = text[text.find("UPDATE singcup_streamers"):][:200]
+    assert "representative_clip_uid=?" in sql
+    for banned in ("follower_count", "channel_name", "channel_image_url",
+                   "tagged_clip_count", "verified_mark"):
+        assert banned not in sql, f"{banned}을 덮어쓰면 안 된다"
+    # 선정 규칙을 복제하지 않고 canonical 함수를 재사용한다
+    assert "sc._build_reps" in text and "sc._representative_overrides" in text
     db(_seed("c-1"))
     t = db(krp.lease_tasks(NOW, 25))[0]
-    src = (krp.__file__)
-    text = open(src, encoding="utf-8").read()
-    assert "representative_clip_uid" not in text
     db(krp.apply_results([_ok("c-1", task=t)], NOW))
 
 

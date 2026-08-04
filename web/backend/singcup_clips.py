@@ -51,7 +51,8 @@ from singcup_collector import (
 )
 
 from database import DB_PATH, get_db
-from utils.db_write import db_write, db_write_isolated
+from utils.db_write import _rollback as _db_rollback
+from utils.db_write import db_write, db_write_isolated, shared_write_lock
 
 CLIPS_API = "https://api.chzzk.naver.com/service/v1/categories/ETC/music/clips"
 CARD_API = "https://api-videohub.naver.com/shortformhub/feeds/v5/card"
@@ -2141,47 +2142,101 @@ async def recompute_ranking(now: int, *, client=None,
 
     await asyncio.gather(*[load_channel(r["owner_channel_id"]) for r in ranked])
 
-    payload = []
-    for r in ranked:
-        info = infos.get(r["owner_channel_id"]) or {}
-        # 닉네임·이미지는 목록 응답(ownerChannel)을 우선한다 — 채널 API가 실패해도
-        # 이름이 비지 않아야 한다. 비면 화면에 '-'로 뜨고 검색에도 걸리지 않는다.
-        name = r.get("owner_channel_name") or info.get("channel_name", "")
-        image = r.get("owner_channel_image_url") or info.get("channel_image_url", "")
-        r["follower_count"] = info.get("follower_count", 0)
-        payload.append({
-            "channel_id": r["owner_channel_id"],
-            "channel_name": name,
-            "channel_image_url": image,
-            "follower_count": info.get("follower_count", 0),
-            "verified_mark": r.get("owner_verified") or info.get("verified_mark", 0),
-            "representative_clip_uid": r["clip_uid"],
-            "tagged_clip_count": r["tagged_clip_count"],
-            "last_channel_updated_at": now if info else 0,
-        })
-    # 값이 바뀐 행만 한 번에 쓴다(트랜잭션은 여전히 하나 — 부분 랭킹이 보이지 않는다)
-    upsert_stat = await _upsert_streamers_bulk(payload, now)
-    for r in ranked:
-        prev_uid = before_rep.get(r["owner_channel_id"])
-        if prev_uid and prev_uid != r["clip_uid"]:
-            # 대표가 바뀌면 1시간·24시간 증감이 새 클립 기준으로 다시 시작한다
-            # (이전 클립의 하트를 빼면 서로 다른 영상을 비교하는 셈이다).
-            _log({"event": "representative_clip_changed",
-                  "owner_channel_id": r["owner_channel_id"],
-                  "from_clip_uid": prev_uid, "to_clip_uid": r["clip_uid"],
-                  "heart_count": r["heart_count"], "view_count": r["view_count"]})
-            # 밀려난 옛 대표를 권위 검사 앞줄에 세운다. 하트 역전으로 바뀐 것이
-            # 대부분이지만, 대표가 삭제돼 바뀐 경우도 여기로 온다 — 어느 쪽인지는
-            # 상세 API만 안다. **여기서 상태를 바꾸지 않는다.**
-            await _audit_hint(prev_uid, "rep_changed")
-    # 여러 단계가 공유하는 쓰기 경로다(discover·recheck·deletion·snapshot).
-    # 이름을 붙여 둬야 `loop_step_error`의 operation으로 드러난다.
-    # **이 경로는 db_write를 지나지 않고 공유 연결에 직접 커밋한다** — 잠금이 나면
-    # False가 아니라 예외로 올라와 그 회차의 뒤 단계가 통째로 건너뛰어진다.
-    with _operation("recompute_ranking_commit"):
-        if save_snapshot:
-            await _save_snapshots(ranked, now)
-        await db.commit()
+    # ── 대표 확정 임계구역 ────────────────────────────────────────────────
+    # 새 lock을 만들지 않는다. `shared_write_lock()`은 이미 **이 저장소의 모든 DB
+    # 쓰기가 지나는 canonical 게이트**이고(`utils/db_write.py`), 그 주석이 정한
+    # 계약이 정확히 우리가 필요한 것이다 — "외부 조회를 끝내는 것은 호출부의
+    # 책임이고, 락 안에서는 DB 작업만 한다".
+    #
+    # 이 안에서 **재조회 → canonical 대표 계산 → upsert → commit**을 한 번에 끝낸다.
+    # 재조회와 쓰기가 갈라져 있으면 그 사이에 poller가 저장·재선정을 끝내고,
+    # 이쪽이 곧바로 옛 대표로 덮어쓴다(TOCTOU). poller의 `repick_representatives`도
+    # `db_write()`를 통해 **같은 락**을 지나므로 두 경로가 서로 끼어들 수 없다.
+    #
+    # 외부 API·backoff·sleep은 이 안에 없다 — gather는 위에서 이미 끝났고, 여기
+    # 남은 것은 read 2회 + executemany + commit뿐이라 hold time이 밀리초다.
+    # `_audit_hint`와 변경 로그는 DB 작업이 아니거나 별도 쓰기라 **락 밖**으로 뺐다
+    # (`asyncio.Lock`은 재진입이 안 되므로 안에서 `db_write`를 부르면 멈춘다).
+    # 위의 `rows`는 gather 전에 읽은 것이고, 그 gather가 참가자 전원의 채널 API를
+    # 부르느라 수십 초에서 수백 초까지 걸린다(실측 2026-08-04: 169.692초).
+    # 그동안 한국 poller가 조회수를 저장하고 그 owner의 대표를 다시 골랐을 수
+    # 있는데, 옛 `rows`로 만든 대표를 그대로 쓰면 **그 결과가 조용히 덮어써진다**
+    # (last writer wins). 그러면 `/main`·스윕 `is_rep`·`singcup_streamers`가
+    # 서로 다른 대표를 보게 된다.
+    #
+    # 대표 선정에 필요한 것은 **DB 안의 현재 metrics와 override뿐**이다(팔로워·
+    # 닉네임은 정렬에 쓰이지 않는다). 그래서 여기서 그 둘만 다시 읽어 canonical
+    # 대표를 다시 고른다 — 외부 호출 0건이라 이 재조회는 밀리초 단위다.
+    # `infos`는 그대로 재사용한다(채널 API를 다시 부르지 않는다).
+    # **`shared_write_lock()`은 직렬화 장치이지 rollback 장치가 아니다.**
+    # 이 경로는 `db_write()`를 지나지 않고 공유 연결에 직접 커밋하므로, 예외나
+    # 취소가 나면 미커밋 DML이 연결에 그대로 남는다. 그러면 다음 `db_write()`의
+    # commit이 남의 부분 DML까지 함께 커밋하거나, 반대로 그쪽 rollback이 이쪽
+    # 작업을 되돌린다. 그래서 여기서 **직접** 트랜잭션 종료를 보장한다.
+    async with shared_write_lock():
+      try:
+          rows = [dict(r) for r in await (await db.execute(
+              "SELECT * FROM singcup_clips WHERE event_id=? AND active=1 "
+              "AND deletion_state<>?", (EVENT_ID, DEL_CONFIRMED)
+          )).fetchall()]
+          overrides = await _representative_overrides()
+          ranked = compute_scores(_build_reps(rows, overrides))
+          # 변경 로그도 재조회 시점 기준이어야 '무엇이 실제로 바뀌었나'가 맞는다.
+          before_rep = {r["channel_id"]: r["representative_clip_uid"]
+                        for r in await (await db.execute(
+                            "SELECT channel_id, representative_clip_uid "
+                            "FROM singcup_streamers WHERE event_id=?", (EVENT_ID,))).fetchall()}
+
+          payload = []
+          for r in ranked:
+              info = infos.get(r["owner_channel_id"]) or {}
+              # 닉네임·이미지는 목록 응답(ownerChannel)을 우선한다 — 채널 API가 실패해도
+              # 이름이 비지 않아야 한다. 비면 화면에 '-'로 뜨고 검색에도 걸리지 않는다.
+              name = r.get("owner_channel_name") or info.get("channel_name", "")
+              image = r.get("owner_channel_image_url") or info.get("channel_image_url", "")
+              r["follower_count"] = info.get("follower_count", 0)
+              payload.append({
+                  "channel_id": r["owner_channel_id"],
+                  "channel_name": name,
+                  "channel_image_url": image,
+                  "follower_count": info.get("follower_count", 0),
+                  "verified_mark": r.get("owner_verified") or info.get("verified_mark", 0),
+                  "representative_clip_uid": r["clip_uid"],
+                  "tagged_clip_count": r["tagged_clip_count"],
+                  "last_channel_updated_at": now if info else 0,
+              })
+          # 값이 바뀐 행만 한 번에 쓴다(트랜잭션은 여전히 하나 — 부분 랭킹이 보이지 않는다)
+          upsert_stat = await _upsert_streamers_bulk(payload, now)
+          _rep_changes = [(r, before_rep.get(r["owner_channel_id"]))
+                          for r in ranked
+                          if before_rep.get(r["owner_channel_id"])
+                          and before_rep.get(r["owner_channel_id"]) != r["clip_uid"]]
+          # 여러 단계가 공유하는 쓰기 경로다(discover·recheck·deletion·snapshot).
+          # 이름을 붙여 둬야 `loop_step_error`의 operation으로 드러난다.
+          # **이 경로는 db_write를 지나지 않고 공유 연결에 직접 커밋한다** — 잠금이 나면
+          # False가 아니라 예외로 올라와 그 회차의 뒤 단계가 통째로 건너뛰어진다.
+          with _operation("recompute_ranking_commit"):
+              if save_snapshot:
+                  await _save_snapshots(ranked, now)
+              await db.commit()
+      except BaseException:
+        # `except Exception`이면 **취소된 작업이 열린 트랜잭션을 남기고 사라진다.**
+        # 롤백 뒤 원래 예외/취소를 그대로 올린다 — 삼키지 않는다.
+        await _db_rollback(db)
+        raise
+
+    # 락 밖이다 — `_audit_hint`는 별도 쓰기 경로라 임계구역 안에서 부르면 재진입이 된다.
+    for r, prev_uid in _rep_changes:
+        # 대표가 바뀌면 1시간·24시간 증감이 새 클립 기준으로 다시 시작한다
+        # (이전 클립의 하트를 빼면 서로 다른 영상을 비교하는 셈이다).
+        _log({"event": "representative_clip_changed",
+              "owner_channel_id": r["owner_channel_id"],
+              "from_clip_uid": prev_uid, "to_clip_uid": r["clip_uid"],
+              "heart_count": r["heart_count"], "view_count": r["view_count"]})
+        # 밀려난 옛 대표를 권위 검사 앞줄에 세운다. 하트 역전으로 바뀐 것이
+        # 대부분이지만, 대표가 삭제돼 바뀐 경우도 여기로 온다 — 어느 쪽인지는
+        # 상세 API만 안다. **여기서 상태를 바꾸지 않는다.**
+        await _audit_hint(prev_uid, "rep_changed")
     if upsert_stat["written"]:
         _log({"event": "streamers_upserted", "considered": upsert_stat["considered"],
               "written": upsert_stat["written"]})

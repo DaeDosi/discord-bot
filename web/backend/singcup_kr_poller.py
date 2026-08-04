@@ -508,6 +508,81 @@ async def _bump_attempt(task_id: str):
     await db_write(get_db, _work, what="krp_lease_attempt", log=_log)
 
 
+async def repick_representatives(owners: set, now: int) -> int:
+    """저장된 클립의 **owner만** 대표를 다시 고른다. 바뀐 수를 돌려준다.
+
+    전체 `recompute_ranking()`을 부르지 않는 이유는 그 함수가 참가자 전원의 채널
+    API를 훑기 때문이다(실측 169.692초). 대표 선정에 필요한 것은 **DB 안의 현재
+    metrics와 override뿐**이므로 여기서는 외부 호출이 **0건**이고, 대상도 이번
+    batch가 실제로 전진시킨 owner(최대 batch 크기)로 한정된다.
+
+    선정 규칙은 새로 쓰지 않고 canonical 함수(`_build_reps` → `pick_representative`)
+    를 그대로 재사용한다 — 규칙을 복제하면 그 복제본이 갈라진다(split-brain).
+
+    팔로워·닉네임·`tagged_clip_count` 같은 무관한 집계는 건드리지 않는다. 그것들은
+    조회수 복구와 무관하고 정기 경로가 갱신한다.
+    """
+    if not owners:
+        return 0
+    marks = ",".join("?" * len(owners))
+    owner_list = list(owners)
+    # **재조회와 쓰기가 한 트랜잭션 안에 있어야 한다.** 밖에서 읽고 안에서 쓰면
+    # 그 사이에 전체 `recompute_ranking()`이 대표를 확정해 버리고, 이쪽이 곧바로
+    # 옛 값으로 덮어쓴다(TOCTOU). `db_write()`는 `shared_write_lock()` 안에서
+    # `fn(db)`와 `commit()`을 함께 돌리므로, 이 함수 본문 전체가 그 임계구역이 된다.
+    # 전체 recompute도 같은 락을 쓴다 — 두 경로가 서로 끼어들 수 없다.
+    # 외부 API 호출은 여기에 없다(대표 선정은 DB만 본다).
+    outcome: dict = {"changed": [], "prev": {}}
+
+    async def _work(conn):
+        rows = [dict(r) for r in await (await conn.execute(
+            "SELECT * FROM singcup_clips WHERE event_id=? AND active=1 "
+            f"AND deletion_state<>? AND owner_channel_id IN ({marks})",
+            (sc.EVENT_ID, sc.DEL_CONFIRMED, *owner_list))).fetchall()]
+        if not rows:
+            return
+        # 유효한 수동 지정은 언제나 최우선이다. 무효 override(삭제·비활성·owner
+        # 불일치)는 후보 목록에 없으므로 `pick_representative`가 자동 규칙으로
+        # 조용히 복귀시킨다 — 그 계약을 여기서 다시 구현하지 않는다.
+        overrides = await sc._representative_overrides()
+        reps = {r["owner_channel_id"]: r for r in sc._build_reps(rows, overrides)}
+        cur = {r["channel_id"]: r["representative_clip_uid"]
+               for r in await (await conn.execute(
+                   "SELECT channel_id, representative_clip_uid FROM singcup_streamers "
+                   f"WHERE event_id=? AND channel_id IN ({marks})",
+                   (sc.EVENT_ID, *owner_list))).fetchall()}
+        changed = []
+        for owner, rep in reps.items():
+            prev = cur.get(owner)
+            # 아직 스트리머 행이 없으면 정기 경로가 만든다 — 여기서 만들지 않는다
+            # (이름·팔로워를 모르는 채로 행을 만들면 화면에 '-'로 뜬다).
+            if prev is None or prev == rep["clip_uid"]:
+                continue
+            changed.append((rep["clip_uid"], now, sc.EVENT_ID, owner))
+        if not changed:
+            return                            # 바뀐 게 없으면 쓰지 않는다
+        # 대표에 필요한 컬럼만 쓴다. follower_count·channel_name·tagged_clip_count는
+        # 건드리지 않는다 — 이 경로는 그 값들의 최신본을 갖고 있지 않다.
+        await conn.executemany(
+            "UPDATE singcup_streamers SET representative_clip_uid=?, row_updated_at=? "
+            "WHERE event_id=? AND channel_id=?", changed)
+        outcome["changed"] = changed
+        outcome["prev"] = cur
+
+    if not await db_write(get_db, _work, what="krp_repick", log=_log):
+        # 쓰지 못했어도 **저장된 지표는 그대로다.** 대표는 다음 정기 회차가 맞춘다.
+        _log({"event": "krp_repick_db_busy", "level": "warning",
+              "owners": len(owner_list)})
+        return 0
+
+    for uid, _ts, _ev, owner in outcome["changed"]:
+        # 기존 관측 로그 계약을 그대로 쓴다 — 대표 변경은 한 이름으로만 보여야 한다.
+        _log({"event": "representative_clip_changed", "owner_channel_id": owner,
+              "from_clip_uid": outcome["prev"].get(owner), "to_clip_uid": uid,
+              "source": "kr_poller"})
+    return len(outcome["changed"])
+
+
 async def apply_results(items: list, now: int) -> dict:
     """제출된 관측을 검증하고 기존 저장 경로로 반영한다.
 
@@ -521,6 +596,9 @@ async def apply_results(items: list, now: int) -> dict:
     accepted = 0
     stored = 0
     rejected: list[dict] = []
+    # 실제로 **저장된** 클립의 owner만 모은다. accepted no-op(재전송)·rejected·
+    # stale·lock 충돌은 DB를 전진시키지 않았으므로 대표를 다시 고를 이유가 없다.
+    stored_owners: set[str] = set()
 
     for item in (items or []):
         if not isinstance(item, dict):
@@ -600,8 +678,8 @@ async def apply_results(items: list, now: int) -> dict:
             continue
         try:
             row = await (await db.execute(
-                "SELECT view_count, last_view_at FROM singcup_clips WHERE clip_uid=?",
-                (uid,))).fetchone()
+                "SELECT view_count, last_view_at, owner_channel_id "
+                "FROM singcup_clips WHERE clip_uid=?", (uid,))).fetchone()
             if row is None:
                 await _close_lease(task_id, now, "missing_clip")
                 rejected.append({"clipUid": uid, "reason": "missing_clip"})
@@ -635,21 +713,46 @@ async def apply_results(items: list, now: int) -> dict:
         await _close_lease(task_id, now, "ok")
         accepted += 1
         stored += 1
+        if row["owner_channel_id"]:
+            stored_owners.add(str(row["owner_channel_id"]))
         _log({"event": "krp_view_recovered", "clip_uid": uid,
               "view_from": cur_view, "view_to": view})
 
-    recomputed = False
     if stored:
-        # 트랜잭션 밖이다. 재계산이 실패해도 지표는 이미 저장됐고 다음 정기 회차가
-        # 순위를 맞춘다.
-        try:
-            await sc.recompute_ranking(now)
-            recomputed = True
-        except asyncio.CancelledError:
-            raise
-        except Exception:                                # noqa: BLE001
-            recomputed = False
+        # **여기서 `recompute_ranking()`을 부르지 않는다.** 실측(2026-08-04 운영):
+        # 25건 저장은 약 1초에 끝났는데 응답은 169.692초 걸렸고, 한국 poller가
+        # 60초에 끊겨 결과가 불명확한 성공(ambiguous success)이 됐다. 저장은 이미
+        # 끝난 뒤였으므로 데이터는 멀쩡했지만 그 회차는 통째로 헛돌았다.
+        #
+        # 병목은 `recompute_ranking()` 안의
+        # `asyncio.gather(*[load_channel(...) for r in ranked])`다 — 참가자
+        # **전원**(약 1,400명)의 채널 API를 `CARD_CONCURRENCY`(4)로 부른다.
+        # 조회수 25건을 반영하려고 참가자 전원의 팔로워를 다시 읽을 이유가 없다.
+        #
+        # 재계산을 건너뛰어도 화면은 맞는다: `_load_main_uncached()`가
+        # `singcup_clips.view_count`를 **직접 읽고** `compute_scores()`를 조회
+        # 시점에 돌린다. 즉 캐시만 버리면 다음 요청이 새 조회수로 점수·순위를
+        # 다시 만든다(실측: 김 재 우 view 0→1945, viewScore 0.0→2.86,
+        # rank 188→94, 대표 clipUid는 그대로).
+        #
+        # `recompute_ranking()`의 고유 산출물(대표 재선정·스트리머 upsert·
+        # 스냅샷·급상승)은 조회수 복구와 무관하며, 주기 경로가 확실히 수행한다 —
+        # `singcup_sweep.run_cycle()`이 회차 완료마다 `save_snapshot=True`로
+        # 부르고(연속 사이클), discover·recheck 등 코드 여러 곳이 더 있다.
+        #
+        # `asyncio.create_task`로 뒤로 미루지 않는 이유: 이 프로세스는 재배포로
+        # 언제든 죽고(실측: 스윕 회차가 두 번 고아가 됐다) 그러면 그 태스크는
+        # 흔적 없이 사라진다. 주기 경로에 맡기는 편이 유실 지점이 없다.
+        #
+        # 다만 **대표 재선정만은 미루지 않는다.** 주기 경로의 recompute는 전부
+        # 조건부라(discover는 `if tagged`, hourly snapshot은 '5단계 전부 성공'),
+        # 무조건 도는 것은 스윕 회차뿐이고 그건 80~100분이다. 그동안 `/main`과
+        # 스윕 `is_rep`가 다른 대표를 볼 수 있다. 아래는 이번에 저장된 owner만
+        # 보는 가벼운 경로로 외부 호출이 0건이다.
+        await repick_representatives(stored_owners, now)
         sc.invalidate_main_cache()
 
+    # `recomputed`는 계약 유지를 위해 남긴다. 이 경로는 재계산을 하지 않으므로
+    # 항상 False다 — 순위는 다음 정기 회차가 맞춘다.
     return {"accepted": accepted, "stored": stored, "rejected": rejected,
-            "recomputed": recomputed}
+            "recomputed": False}
