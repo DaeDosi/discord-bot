@@ -107,7 +107,60 @@ BATCH = _int_env("KRP_BATCH", 25, 1, 25)
 # 부하를 만들 수 없다.
 RATE = _float_env("KRP_RATE_PER_SECOND", 1.0, 0.01, 1.0)
 MAX_RETRIES = _int_env("KRP_MAX_RETRIES", 2, 0, 2)
-TIMEOUT = _float_env("KRP_TIMEOUT_SECONDS", 10.0, 1.0, 60.0)
+
+# ── 제한 시간은 **상대별로 다르다** ────────────────────────────────────────
+# 하나의 값으로 묶어 두었다가 첫 운영 회차가 죽었다. 치지직 조회 25건은 전부
+# 200으로 성공했는데 마지막 `POST /results` 응답을 기다리다 10초를 넘겨
+# `TimeoutError`가 났다. 결과 endpoint는 25건을 순차 검증하며 clip lock을 잡고
+# DB에 반영한 뒤 마지막에 `recompute_ranking()`까지 돌린다 — 조회 한 건과는
+# 애초에 시간 규모가 다르다.
+#
+# 그렇다고 **전부 늘리면 안 된다.** 치지직 쪽 제한을 키우면 응답 없는 상류
+# 하나가 회차를 잡아먹고 그 시간이 `_get_bounded`의 재시도와 곱해진다.
+# 늘려야 하는 것은 결과 제출 하나뿐이다.
+_LEGACY_TIMEOUT = _float_env("KRP_TIMEOUT_SECONDS", 10.0, 1.0, 60.0)
+# 치지직 detail/card 조회. 기존 값을 그대로 유지한다.
+CHZZK_TIMEOUT = _float_env("KRP_CHZZK_TIMEOUT_SECONDS", _LEGACY_TIMEOUT, 1.0, 60.0)
+# Railway `POST /tasks`. lease 발급만 하므로 짧아도 된다.
+CONTROL_TIMEOUT = _float_env("KRP_CONTROL_TIMEOUT_SECONDS", _LEGACY_TIMEOUT, 1.0, 60.0)
+# Railway `POST /results`. 25건 반영 + 순위 재계산을 포괄해야 한다.
+RESULTS_TIMEOUT = _float_env("KRP_RESULTS_TIMEOUT_SECONDS", 60.0, 5.0, 180.0)
+
+# ── 실행 상한과 파생 예산 ──────────────────────────────────────────────────
+# 아래 두 값은 **바깥 세계가 정한 상수**다. 코드가 이것을 모르면 개별 범위
+# 검사를 통과한 조합이 유닛 상한을 조용히 넘긴다(예: control 60 + results 180 +
+# budget 600 = 840초 > 300초). 그래서 관측 예산은 환경변수를 그대로 쓰지 않고
+# **남는 시간에서 역산해 잘라 낸다.**
+UNIT_START_LIMIT = 300.0        # systemd `TimeoutStartSec`과 같은 값
+LEASE_SECONDS_HINT = 600.0      # 서버 `SINGCUP_KRP_LEASE_SECONDS` 기본값
+# 인터프리터 기동·직렬화·종료 처리 여유.
+SAFETY_MARGIN = 20.0
+
+# 관측 단계 예산. 이것이 없으면 상류가 느릴 때 관측만으로 상한을 다 써 버리고
+# **결과를 제출하지 못한 채** 죽는다 — 그러면 그 회차 관측이 통째로 버려지고
+# lease만 소모된다. 예산이 끝나면 지금까지 모은 결과를 제출하고 정상 종료한다.
+# 남은 후보는 lease 만료 후 다음 회차가 가져간다.
+#
+# **하드 예산이다.** deadline은 `observe()` → `_get_bounded()` → `_get()`까지
+# 내려가고 각 요청 timeout과 backoff·rate sleep이 남은 시간으로 잘린다.
+# 시작 전에만 확인하는 소프트 제한이면 마지막 한 건이 detail 3회 + card 3회를
+# 통째로 더 돌아 상한을 넘긴다.
+_RAW_OBSERVE_BUDGET = _float_env("KRP_OBSERVE_BUDGET_SECONDS", 180.0, 30.0, 600.0)
+_MAX_OBSERVE = UNIT_START_LIMIT - CONTROL_TIMEOUT - RESULTS_TIMEOUT - SAFETY_MARGIN
+OBSERVE_BUDGET = max(5.0, min(_RAW_OBSERVE_BUDGET, _MAX_OBSERVE))
+if OBSERVE_BUDGET < _RAW_OBSERVE_BUDGET:
+    # 조용히 줄이지 않는다 — 왜 적게 처리했는지 로그로 설명돼야 한다.
+    log(event="krp_budget_clamped", requested=_RAW_OBSERVE_BUDGET,
+        using=OBSERVE_BUDGET, unit_limit=UNIT_START_LIMIT)
+
+
+class BudgetExhausted(Exception):
+    """관측 예산이 끝났다.
+
+    **외부 실패가 아니다.** 조회수 0으로도, `partial` 결과로도 기록하지 않는다 —
+    그렇게 하면 관측하지 못한 것이 관측 결과로 굳는다. 호출부는 이것을 받으면
+    그 클립을 결과에 넣지 않고 회차를 접는다.
+    """
 # Railway 수집기와 같은 값을 쓴다(응답이 출발지에 따라 달라지는지 보려면 요청은
 # 같아야 한다).
 UA = os.environ.get("SINGCUP_USER_AGENT", "NexBot-SingcupCollector/1.0")
@@ -198,7 +251,12 @@ def _sign(ts, method, path, raw):
     return hmac.new(SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
 
 
-def call_api(path, payload):
+def call_api(path, payload, timeout=None):
+    """Railway 내부 API 호출. `timeout`은 **호출부가 상대에 맞게 정한다**.
+
+    timestamp·nonce·signature는 매 호출마다 새로 만든다. 같은 payload를 다시
+    보내더라도 nonce가 달라 replay(401)로 막히지 않는다.
+    """
     raw = json.dumps(payload, separators=(",", ":")).encode()
     ts = str(int(time.time()))
     nonce = hashlib.sha256(os.urandom(32)).hexdigest()[:32]
@@ -208,8 +266,9 @@ def call_api(path, payload):
                  "X-KRP-Timestamp": ts,
                  "X-KRP-Nonce": nonce,
                  "X-KRP-Signature": _sign(ts, "POST", path, raw)})
-    with urllib.request.urlopen(req, timeout=TIMEOUT,
-                                context=ssl.create_default_context()) as r:
+    with urllib.request.urlopen(
+            req, timeout=CONTROL_TIMEOUT if timeout is None else timeout,
+            context=ssl.create_default_context()) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
@@ -220,12 +279,18 @@ class RateLimited(Exception):
         self.retry_after = retry_after
 
 
-def _get(url, referer):
+def _remaining(deadline):
+    """남은 예산(초). deadline이 None이면 제한 없음을 뜻하는 None."""
+    return None if deadline is None else deadline - time.monotonic()
+
+
+def _get(url, referer, timeout=None):
     req = urllib.request.Request(url, headers={
         "User-Agent": UA, "Accept": "application/json", "Referer": referer})
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT,
-                                    context=ssl.create_default_context()) as r:
+        with urllib.request.urlopen(
+                req, timeout=CHZZK_TIMEOUT if timeout is None else timeout,
+                context=ssl.create_default_context()) as r:
             return r.getcode(), json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         if e.code == 429:
@@ -233,12 +298,21 @@ def _get(url, referer):
         return e.code, None
 
 
-def _get_bounded(url, referer):
-    """5xx·timeout만 제한적으로 재시도한다. 429는 즉시 위로 올린다."""
+def _get_bounded(url, referer, deadline=None):
+    """5xx·timeout만 제한적으로 재시도한다. 429는 즉시 위로 올린다.
+
+    `deadline`을 주면 **그 시각을 넘기지 않는다** — 매 시도 전에 남은 시간을
+    확인하고, 요청 timeout과 backoff를 남은 시간으로 자른다. 남은 시간이 없으면
+    새 요청을 시작하지 않고 `BudgetExhausted`로 빠져나온다.
+    """
     last = (None, None)
     for attempt in range(MAX_RETRIES + 1):
+        left = _remaining(deadline)
+        if left is not None and left <= 0:
+            raise BudgetExhausted()
+        timeout = CHZZK_TIMEOUT if left is None else min(CHZZK_TIMEOUT, left)
         try:
-            status, body = _get(url, referer)
+            status, body = _get(url, referer, timeout)
             if status is not None and status < 500:
                 return status, body, attempt + 1
             last = (status, body)
@@ -247,12 +321,28 @@ def _get_bounded(url, referer):
         except Exception:                                # noqa: BLE001
             last = (None, None)
         if attempt < MAX_RETRIES and not _stop:
-            time.sleep(min(4.0, 1.0 * (2 ** attempt)))
+            backoff = min(4.0, 1.0 * (2 ** attempt))
+            left = _remaining(deadline)
+            if left is not None:
+                if left <= 0:
+                    raise BudgetExhausted()
+                # 남은 예산보다 길게 자면 그 자체가 초과다.
+                backoff = min(backoff, left)
+            time.sleep(backoff)
+    # 재시도를 다 쓰고 나왔는데 예산도 끝났다면 그것은 **상류 실패가 아니라
+    # 예산 종료**다. 여기서 (None, None)을 돌려주면 호출부가 그것을 partial
+    # 관측으로 기록해 버린다 — 관측하지 못한 것이 관측 결과로 굳는다.
+    if deadline is not None and _remaining(deadline) <= 0:
+        raise BudgetExhausted()
     return last[0], last[1], MAX_RETRIES + 1
 
 
-def observe(task):
-    """한 클립을 관측한다. 조회수를 못 읽으면 **0으로 만들지 않고** partial로 보고한다."""
+def observe(task, deadline=None):
+    """한 클립을 관측한다. 조회수를 못 읽으면 **0으로 만들지 않고** partial로 보고한다.
+
+    `deadline`을 넘기면 `BudgetExhausted`가 올라간다. 그 클립은 결과에 담지
+    않는다 — 관측하지 못한 것을 관측 결과로 만들지 않기 위해서다.
+    """
     uid = task["clipUid"]
     referer = "https://chzzk.naver.com/clips/" + urllib.parse.quote(uid, safe="")
     t0 = time.time()
@@ -273,7 +363,7 @@ def observe(task):
     attempts = 0
     if not video_id:
         status, body, n = _get_bounded(DETAIL_URL.format(
-            uid=urllib.parse.quote(uid, safe="")), referer)
+            uid=urllib.parse.quote(uid, safe="")), referer, deadline)
         attempts += n
         content = (body or {}).get("content") or {}
         video_id = content.get("videoId") or ""
@@ -288,7 +378,7 @@ def observe(task):
         "recType": "CHZZK", "recId": rec_id, "enableReverse": "false",
         "adAllowed": "Y", "clickNsc": "chzzk_category_clip",
         "clickArea": "clip_item", "deviceType": "html5_pc"})
-    status, body, n = _get_bounded(CARD_URL + "?" + params, referer)
+    status, body, n = _get_bounded(CARD_URL + "?" + params, referer, deadline)
     attempts += n
 
     card = (body or {}).get("card") if isinstance(body, dict) else None
@@ -309,7 +399,8 @@ def observe(task):
 
 # ── 한 회차 ────────────────────────────────────────────────────────────────
 def run_once():
-    tasks = call_api(TASKS_PATH, {"limit": BATCH}).get("tasks") or []
+    tasks = call_api(TASKS_PATH, {"limit": BATCH},
+                     timeout=CONTROL_TIMEOUT).get("tasks") or []
     if not tasks:
         log(event="krp_idle", count=0)
         return 0
@@ -317,14 +408,36 @@ def run_once():
 
     results = []
     interval = 1.0 / RATE if RATE > 0 else 0.0
+    # **wall clock이 아니라 단조 시계다.** NTP 보정이나 시각 변경이 예산을
+    # 늘리거나 줄이면 상한 계산이 그대로 거짓말이 된다.
+    deadline = time.monotonic() + OBSERVE_BUDGET
     for i, t in enumerate(tasks):
         if _stop:
             log(event="krp_stopped", done=len(results))
             break
+        # 예산을 넘었으면 **관측을 멈추고 지금까지의 결과를 제출한다.**
+        # 여기서 그냥 계속하면 상한에 걸려 제출 없이 죽고, 그 회차의 관측이
+        # 통째로 버려진다. 로그에는 개수만 남긴다 — clipUid·taskId·leaseToken은
+        # 남기지 않는다.
+        if _remaining(deadline) <= 0:
+            log(event="krp_budget_exhausted", done=len(results),
+                remaining=len(tasks) - i)
+            break
         if i and interval:
-            time.sleep(interval)                 # concurrency 1, 최소 간격 보장
+            # rate 간격도 남은 예산을 넘겨 자지 않는다.
+            time.sleep(min(interval, max(0.0, _remaining(deadline))))
+            if _remaining(deadline) <= 0:
+                log(event="krp_budget_exhausted", done=len(results),
+                    remaining=len(tasks) - i)
+                break
         try:
-            r = observe(t)
+            r = observe(t, deadline)
+        except BudgetExhausted:
+            # 진행 중이던 요청이 예산 경계에서 끊겼다. 이 클립은 결과에 넣지
+            # 않는다 — lease가 열린 채 만료돼 다음 회차가 가져간다.
+            log(event="krp_budget_exhausted", done=len(results),
+                remaining=len(tasks) - i)
+            break
         except RateLimited as e:
             # 다음 실행까지 지켜야 하므로 **먼저 저장**한다. 그 뒤에 제출하다가
             # 죽어도 제한 시각은 남는다.
@@ -342,7 +455,9 @@ def run_once():
 
     if not results:
         return 0
-    out = call_api(RESULTS_PATH, {"results": results})
+    # **결과 제출만 긴 제한을 쓴다.** 서버가 25건을 순차 반영하고 순위를 다시
+    # 계산하는 동안 기다려야 하기 때문이다.
+    out = call_api(RESULTS_PATH, {"results": results}, timeout=RESULTS_TIMEOUT)
     log(event="krp_submitted", sent=len(results),
         stored=out.get("stored"), accepted=out.get("accepted"),
         rejected=len(out.get("rejected") or []))

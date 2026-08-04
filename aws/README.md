@@ -51,6 +51,67 @@ systemctl list-timers singcup-kr-poller.timer
 journalctl -u singcup-kr-poller -n 50 --no-pager
 ```
 
+## 제한 시간 (상대별로 다르다)
+
+하나의 `KRP_TIMEOUT_SECONDS`로 묶여 있었고 그래서 첫 운영 회차가 죽었다.
+치지직 조회 25건은 전부 200으로 성공했는데 마지막 `POST /results` 응답을
+기다리다 10초를 넘겨 `TimeoutError`가 났다. 결과 endpoint는 25건을 순차 검증·
+반영한 뒤 `recompute_ranking()`까지 돌리므로 조회 한 건과 시간 규모가 다르다.
+
+**전부 늘리는 것은 오답이다** — 치지직 제한을 키우면 응답 없는 상류 하나가
+회차를 잡아먹고 그 시간이 `_get_bounded`의 재시도와 곱해진다.
+
+| 변수 | 기본값 | 범위 | 대상 |
+|---|---|---|---|
+| `KRP_CHZZK_TIMEOUT_SECONDS` | 10 | 1–60 | 치지직 detail/card 조회 |
+| `KRP_CONTROL_TIMEOUT_SECONDS` | 10 | 1–60 | Railway `POST /tasks` |
+| `KRP_RESULTS_TIMEOUT_SECONDS` | 60 | 5–180 | Railway `POST /results` |
+| `KRP_OBSERVE_BUDGET_SECONDS` | 180 | 30–600 | 관측 단계 전체 예산 |
+
+전부 **미설정이어도 위 기본값으로 동작한다.** 잘못된 값(문자·0·음수·NaN·
+Infinity·범위 밖)은 `krp_bad_env`로 **이름만** 남기고 기본값을 쓴다 — 원문은
+찍지 않는다(환경변수에 다른 비밀이 잘못 들어갔을 때 그것이 새는 통로가 된다).
+
+구 이름 `KRP_TIMEOUT_SECONDS`도 아직 읽는다. 설정돼 있으면 치지직·tasks의
+기본값으로만 쓰이고 **결과 제출에는 영향을 주지 않는다.**
+
+관측 예산이 있는 이유는 상류가 느릴 때 관측만으로 systemd 상한을 다 써
+**결과를 제출하지 못한 채 죽는 것**을 막기 위해서다. 예산이 끝나면 그때까지
+모은 결과를 제출하고 정상 종료하며, 남은 후보는 lease 만료 후 다음 회차가
+가져간다.
+
+**하드 예산이다.** deadline이 `observe()` → `_get_bounded()` → `_get()`까지
+내려가고, 각 요청 timeout은 `min(CHZZK_TIMEOUT, 남은 시간)`으로, backoff와 rate
+sleep도 남은 시간으로 잘린다. 남은 시간이 없으면 새 요청을 시작하지 않는다.
+시작 전에만 확인하는 **소프트 제한이면 상한이 아니다** — 마지막 한 건이
+detail 3회 + card 3회 + backoff를 통째로 더 돌아 예산을 넘긴다. `videoId`가
+없는 클립이 두 경로를 모두 거치므로 초과분이 가장 크다(기본값 기준 +66초).
+예산 계산에는 `time.monotonic()`을 쓴다 — NTP 보정이나 시각 변경이 상한을
+거짓말로 만들지 않기 위해서다.
+
+예산 종료는 **외부 실패도, 조회수 0도 아니다.** `BudgetExhausted`로 빠져나오고
+그 클립은 결과에 담지 않는다. 담아 버리면 관측하지 못한 것이 `partial` 관측으로
+굳는다.
+
+### 조합까지 안전해야 한다
+
+개별 범위만 검사하면 허용된 조합이 상한을 넘긴다(control 60 + results 180 +
+budget 600 = 840초 > 300초). 그래서 관측 예산은 환경변수를 그대로 쓰지 않고
+남는 시간에서 **역산해 잘라 낸다**. 잘릴 때는 `krp_budget_clamped`를 남긴다.
+
+```
+OBSERVE_BUDGET = max(5, min(요청값, 300 − CONTROL − RESULTS − 20))
+```
+
+불변식: `CONTROL + OBSERVE_BUDGET + RESULTS + 여유 20초 ≤ TimeoutStartSec 300초
+< 서버 lease 600초`. 모든 허용 조합에서 성립한다.
+
+| 조합 | CONTROL | OBSERVE | RESULTS | 합계(+20) |
+|---|---|---|---|---|
+| 기본값 | 10 | **180** | 60 | 270 ≤ 300 |
+| 최대치 요청 | 60 | **40** (600→clamp) | 180 | 300 ≤ 300 |
+| 최소치 | 1 | 30 | 5 | 56 ≤ 300 |
+
 ## 만들지 않는 AWS 리소스
 
 Elastic IP · NAT Gateway · Load Balancer · RDS · Secrets Manager ·

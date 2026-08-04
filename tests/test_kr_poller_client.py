@@ -48,7 +48,7 @@ def _card(views=1927, likes=146, vod=True):
 
 # ── 정상 관측 ──────────────────────────────────────────────────────────────
 def test_observes_view_count_when_vod_present(poller, monkeypatch):
-    monkeypatch.setattr(poller, "_get", lambda url, ref: (200, _card()))
+    monkeypatch.setattr(poller, "_get", lambda url, ref, timeout=None: (200, _card()))
     r = poller.observe(_task())
     assert r["viewState"] == "observed"
     assert r["viewCount"] == 1927
@@ -57,7 +57,7 @@ def test_observes_view_count_when_vod_present(poller, monkeypatch):
 
 def test_missing_vod_is_partial_not_zero(poller, monkeypatch):
     """해외 응답 모양 — `content.vod`가 없다. **0으로 만들지 않는다.**"""
-    monkeypatch.setattr(poller, "_get", lambda url, ref: (200, _card(vod=False)))
+    monkeypatch.setattr(poller, "_get", lambda url, ref, timeout=None: (200, _card(vod=False)))
     r = poller.observe(_task())
     assert r["viewState"] == "partial"
     assert r["viewCount"] is None
@@ -68,7 +68,7 @@ def test_task_video_id_avoids_the_detail_call(poller, monkeypatch):
     """videoId가 task에 실려 오면 상세 API를 부르지 않는다(호출 1회 절약)."""
     seen = []
 
-    def _get(url, ref):
+    def _get(url, ref, timeout=None):
         seen.append(url)
         return 200, _card()
 
@@ -82,7 +82,7 @@ def test_task_video_id_avoids_the_detail_call(poller, monkeypatch):
 def test_rate_limited_stops_the_batch(poller, monkeypatch):
     calls = {"n": 0}
 
-    def _get(url, ref):
+    def _get(url, ref, timeout=None):
         calls["n"] += 1
         if calls["n"] == 2:
             raise poller.RateLimited("30")
@@ -100,7 +100,7 @@ def test_rate_limited_is_not_retried(poller, monkeypatch):
     """429는 bounded retry 대상이 아니다 — 곧바로 위로 올린다."""
     calls = {"n": 0}
 
-    def _get(url, ref):
+    def _get(url, ref, timeout=None):
         calls["n"] += 1
         raise poller.RateLimited("5")
 
@@ -114,7 +114,7 @@ def test_rate_limited_is_not_retried(poller, monkeypatch):
 def test_5xx_is_retried_a_bounded_number_of_times(poller, monkeypatch):
     calls = {"n": 0}
 
-    def _get(url, ref):
+    def _get(url, ref, timeout=None):
         calls["n"] += 1
         return 503, None
 
@@ -128,7 +128,7 @@ def test_5xx_is_retried_a_bounded_number_of_times(poller, monkeypatch):
 def test_timeout_is_retried_a_bounded_number_of_times(poller, monkeypatch):
     calls = {"n": 0}
 
-    def _get(url, ref):
+    def _get(url, ref, timeout=None):
         calls["n"] += 1
         raise TimeoutError("slow")
 
@@ -140,7 +140,7 @@ def test_timeout_is_retried_a_bounded_number_of_times(poller, monkeypatch):
 def test_4xx_is_not_retried(poller, monkeypatch):
     calls = {"n": 0}
 
-    def _get(url, ref):
+    def _get(url, ref, timeout=None):
         calls["n"] += 1
         return 404, None
 
@@ -153,7 +153,7 @@ def test_4xx_is_not_retried(poller, monkeypatch):
 def test_requests_are_sequential_with_a_minimum_interval(poller, monkeypatch):
     waits = []
     monkeypatch.setattr(poller.time, "sleep", lambda s: waits.append(s))
-    monkeypatch.setattr(poller, "_get", lambda url, ref: (200, _card()))
+    monkeypatch.setattr(poller, "_get", lambda url, ref, timeout=None: (200, _card()))
     monkeypatch.setattr(poller, "call_api", _fake_api(
         [_task("a"), _task("b"), _task("c")]))
     poller.run_once()
@@ -162,7 +162,7 @@ def test_requests_are_sequential_with_a_minimum_interval(poller, monkeypatch):
 
 
 def test_stop_flag_halts_the_batch(poller, monkeypatch):
-    monkeypatch.setattr(poller, "_get", lambda url, ref: (200, _card()))
+    monkeypatch.setattr(poller, "_get", lambda url, ref, timeout=None: (200, _card()))
     monkeypatch.setattr(poller, "call_api", _fake_api([_task("a"), _task("b")]))
     poller._on_term(None, None)               # SIGTERM 흉내
     try:
@@ -174,7 +174,7 @@ def test_stop_flag_halts_the_batch(poller, monkeypatch):
 
 # ── 32. 로그 비노출 ────────────────────────────────────────────────────────
 def test_logs_carry_no_secret_url_or_body(poller, monkeypatch, capsys):
-    monkeypatch.setattr(poller, "_get", lambda url, ref: (200, _card()))
+    monkeypatch.setattr(poller, "_get", lambda url, ref, timeout=None: (200, _card()))
     monkeypatch.setattr(poller, "call_api", _fake_api([_task("a")]))
     poller.run_once()
     out = capsys.readouterr().out
@@ -205,9 +205,12 @@ def test_client_signing_string_matches_server(poller):
 # ── 도우미 ─────────────────────────────────────────────────────────────────
 def _fake_api(tasks):
     _fake_api.last_submit = None
+    _fake_api.timeouts = {}
 
-    def call(path, payload):
-        if path.endswith("/tasks"):
+    def call(path, payload, timeout=None):
+        key = "tasks" if path.endswith("/tasks") else "results"
+        _fake_api.timeouts[key] = timeout
+        if key == "tasks":
             return {"tasks": tasks}
         _fake_api.last_submit = payload
         return {"stored": len(payload["results"]), "accepted": 0, "rejected": []}
@@ -216,6 +219,7 @@ def _fake_api(tasks):
 
 
 _fake_api.last_submit = None
+_fake_api.timeouts = {}
 
 
 # ── B. Retry-After 파싱 ────────────────────────────────────────────────────
@@ -292,7 +296,7 @@ def test_expired_backoff_window_allows_the_run(poller, tmp_path, monkeypatch):
 def test_rate_limit_persists_next_allowed_at(poller, tmp_path, monkeypatch):
     monkeypatch.setattr(poller.os.environ, "get", os_environ_get(tmp_path))
 
-    def _get(url, ref):
+    def _get(url, ref, timeout=None):
         raise poller.RateLimited("120")
 
     monkeypatch.setattr(poller, "_get", _get)
@@ -353,7 +357,7 @@ def test_rate_is_never_above_one_per_second(monkeypatch, tmp_path):
 
     waits = []
     monkeypatch.setattr(mod.time, "sleep", lambda s: waits.append(s))
-    monkeypatch.setattr(mod, "_get", lambda url, ref: (200, _card()))
+    monkeypatch.setattr(mod, "_get", lambda url, ref, timeout=None: (200, _card()))
     monkeypatch.setattr(mod, "call_api", _fake_api([_task("a"), _task("b")]))
     mod.run_once()
     assert all(w >= 1.0 for w in waits)
@@ -370,19 +374,23 @@ def test_bad_env_never_prints_the_raw_value(poller, monkeypatch, capsys):
 def test_module_import_survives_garbage_env(monkeypatch):
     import importlib.util
     for name in ("KRP_BATCH", "KRP_RATE_PER_SECOND", "KRP_MAX_RETRIES",
-                 "KRP_TIMEOUT_SECONDS"):
+                 "KRP_TIMEOUT_SECONDS", "KRP_CHZZK_TIMEOUT_SECONDS",
+                 "KRP_CONTROL_TIMEOUT_SECONDS", "KRP_RESULTS_TIMEOUT_SECONDS",
+                 "KRP_OBSERVE_BUDGET_SECONDS"):
         monkeypatch.setenv(name, "abc")
     spec = importlib.util.spec_from_file_location(
         "aws_kr_poller_garbage", _ROOT / "aws" / "kr_poller.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["aws_kr_poller_garbage"] = mod
     spec.loader.exec_module(mod)                 # 예외 없이 뜬다
-    assert (mod.BATCH, mod.RATE, mod.MAX_RETRIES, mod.TIMEOUT) == (25, 1.0, 2, 10.0)
+    assert (mod.BATCH, mod.RATE, mod.MAX_RETRIES) == (25, 1.0, 2)
+    assert (mod.CHZZK_TIMEOUT, mod.CONTROL_TIMEOUT) == (10.0, 10.0)
+    assert (mod.RESULTS_TIMEOUT, mod.OBSERVE_BUDGET) == (60.0, 180.0)
 
 
 # ── A. 결과에 leaseToken이 실린다 ──────────────────────────────────────────
 def test_results_carry_the_lease_token(poller, monkeypatch):
-    monkeypatch.setattr(poller, "_get", lambda url, ref: (200, _card()))
+    monkeypatch.setattr(poller, "_get", lambda url, ref, timeout=None: (200, _card()))
     t = _task("a")
     t["leaseToken"] = "tok-123"
     monkeypatch.setattr(poller, "call_api", _fake_api([t]))
@@ -391,7 +399,7 @@ def test_results_carry_the_lease_token(poller, monkeypatch):
 
 
 def test_partial_result_also_carries_the_lease_token(poller, monkeypatch):
-    monkeypatch.setattr(poller, "_get", lambda url, ref: (200, _card(vod=False)))
+    monkeypatch.setattr(poller, "_get", lambda url, ref, timeout=None: (200, _card(vod=False)))
     t = _task("a")
     t["leaseToken"] = "tok-456"
     monkeypatch.setattr(poller, "call_api", _fake_api([t]))

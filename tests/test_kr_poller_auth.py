@@ -247,7 +247,10 @@ def test_logs_never_contain_secret_or_signature(client, db, capsys):
 # ── ⑧ systemd 계약 (34) ────────────────────────────────────────────────────
 def test_systemd_unit_enforces_runtime_and_single_flight():
     unit = (_ROOT / "aws" / "singcup-kr-poller.service").read_text(encoding="utf-8")
-    assert "RuntimeMaxSec=300" in unit
+    # `RuntimeMaxSec`은 Type=oneshot에서 **무시된다**(systemd가 경고를 내고 넘어간다).
+    # 그동안 실행 상한이 사실상 없었으므로 유효한 `TimeoutStartSec`으로 바꿨다.
+    assert "RuntimeMaxSec=" not in unit
+    assert "TimeoutStartSec=300" in unit
     assert "Type=oneshot" in unit          # 겹쳐 도는 long-running이 아니다
     assert "User=krpoller" in unit
     assert "NoNewPrivileges=yes" in unit
