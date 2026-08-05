@@ -385,7 +385,8 @@ def test_module_import_survives_garbage_env(monkeypatch):
     spec.loader.exec_module(mod)                 # 예외 없이 뜬다
     assert (mod.BATCH, mod.RATE, mod.MAX_RETRIES) == (25, 1.0, 2)
     assert (mod.CHZZK_TIMEOUT, mod.CONTROL_TIMEOUT) == (10.0, 10.0)
-    assert (mod.RESULTS_TIMEOUT, mod.OBSERVE_BUDGET) == (60.0, 180.0)
+    # 180은 요청값이고 실제 예산은 `/tasks` 재시도 몫을 뺀 100이다(조합 clamp).
+    assert (mod.RESULTS_TIMEOUT, mod.OBSERVE_BUDGET) == (60.0, 100.0)
 
 
 # ── A. 결과에 leaseToken이 실린다 ──────────────────────────────────────────

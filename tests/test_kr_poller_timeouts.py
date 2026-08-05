@@ -14,6 +14,7 @@ clip lock을 잡고 DB에 반영한 뒤 `recompute_ranking()`까지 돌린다 �
    예산이 끝나면 그때까지 모은 결과를 제출하고 정상 종료한다.
 """
 import importlib.util
+import io
 import sys
 from pathlib import Path
 
@@ -85,7 +86,10 @@ def test_defaults_are_split_and_safe(poller):
     assert poller.CHZZK_TIMEOUT == 10.0
     assert poller.CONTROL_TIMEOUT == 10.0
     assert poller.RESULTS_TIMEOUT == 60.0
-    assert poller.OBSERVE_BUDGET == 180.0
+    # `/tasks` 503 재시도 예산(최대 3회 × CONTROL 10초 + 대기 60초)을 확보하느라
+    # 관측 예산이 180 → 100으로 잘린다. 25건 관측에는 rate 간격 24초 + 응답이면
+    # 충분하고, 불변식(합계 ≤ TimeoutStartSec 300)이 유지된다.
+    assert poller.OBSERVE_BUDGET == 100.0
 
 
 def test_results_limit_is_longer_than_the_chzzk_limit(poller):
@@ -165,7 +169,7 @@ def test_bad_results_timeout_falls_back_to_the_default(monkeypatch, raw):
 def test_bad_observe_budget_falls_back_to_the_default(monkeypatch, raw):
     mod = _load(monkeypatch, name="aws_kr_poller_to_bud_%s" % abs(hash(raw)),
                 KRP_OBSERVE_BUDGET_SECONDS=raw)
-    assert mod.OBSERVE_BUDGET == 180.0
+    assert mod.OBSERVE_BUDGET == 100.0      # 기본값 180이 조합 clamp로 130이 된다
 
 
 @pytest.mark.parametrize("raw", ["abc", "0", "-1", "nan", "inf", "1e9", "61"])
@@ -577,8 +581,9 @@ def test_extreme_combination_clamps_the_observe_budget(monkeypatch):
 
 
 def test_default_combination_keeps_the_intended_budget(poller):
-    """기본값 조합에서는 180초가 그대로 살아 있어야 한다(과도한 clamp 금지)."""
-    assert poller.OBSERVE_BUDGET == 180.0
+    """기본값 조합에서 관측 예산이 100초로 확정된다(과도한 clamp 금지)."""
+    assert poller.OBSERVE_BUDGET == 100.0
+    assert poller.OBSERVE_BUDGET > 60.0     # 25건 관측에 충분하다
 
 
 def test_unit_limit_constant_matches_the_service_file(poller):
@@ -604,3 +609,314 @@ def test_budget_log_carries_no_identifiers(monkeypatch, capsys):
     for banned in ("qn-secret-uid", "t" * 32, "tok",
                    "dummy-secret-for-tests", "signature", "nonce"):
         assert banned not in line
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# `/tasks` 503 제한 재시도 — nonce write lock 경합 대응
+#
+# 실측(2026-08-05 UTC): 03:24:37 / 03:25:21 / 03:36:22 세 번 모두
+# `db_locked_giveup what=krp_nonce attempts=2 budgetSeconds=0.8
+# detail="database is locked"` → `krp_nonce_db_busy` → `/tasks` 503.
+# 같은 시각 일반 collector도 discover/recheck/deletion이 database_locked로
+# 실패했다(collector_cycle_done success 2 / failed 3 / skipped 1) — KRP만의
+# 문제가 아니라 **전역 SQLite 쓰기 경합**이다.
+#
+# nonce가 기록되지 않았으므로 lease도 발급되지 않았다 → 데이터 손상·중복 0건.
+# 그래서 여기서는 **일시적 503만** 짧게 다시 두드린다. 근본 원인(장기 write
+# lock 보유자)은 별도 감사 대상이고, busy timeout 상향이나 nonce 우회로 덮지
+# 않는다.
+# ══════════════════════════════════════════════════════════════════════════
+class _Resp503(Exception):
+    pass
+
+
+def _http_error(mod, code, retry_after=None):
+    hdrs = {} if retry_after is None else {"Retry-After": str(retry_after)}
+    return mod.urllib.error.HTTPError("u", code, "e", hdrs, None)
+
+
+def _tasks_seq(mod, monkeypatch, outcomes):
+    """`call_api`를 순서대로 흉내낸다. 각 호출의 nonce/서명을 기록한다."""
+    seen = {"nonces": [], "sigs": [], "n": 0}
+    real_sign = mod._sign
+
+    def _call(path, payload, timeout=None):
+        if not path.endswith("/tasks"):
+            return {"stored": 0, "accepted": 0, "rejected": []}
+        i = seen["n"]
+        seen["n"] += 1
+        ts = str(int(mod.time.time()))
+        nonce = mod.hashlib.sha256(mod.os.urandom(32)).hexdigest()[:32]
+        seen["nonces"].append(nonce)
+        seen["sigs"].append(real_sign(ts, "POST", path, b"{}"))
+        out = outcomes[min(i, len(outcomes) - 1)]
+        if isinstance(out, BaseException):
+            raise out
+        return out
+
+    monkeypatch.setattr(mod, "call_api", _call)
+    return seen
+
+
+def test_503_with_retry_after_is_retried_and_then_succeeds(monkeypatch):
+    mod = _load(monkeypatch, name="aws_kr_poller_r1")
+    clock = {"t": 0.0}
+    monkeypatch.setattr(mod.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    seen = _tasks_seq(mod, monkeypatch, [_http_error(mod, 503, 2), {"tasks": []}])
+    assert mod.run_once() == 0
+    assert seen["n"] == 2
+    assert clock["t"] >= 2
+
+
+def test_two_503s_then_success(monkeypatch):
+    mod = _load(monkeypatch, name="aws_kr_poller_r2")
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    seen = _tasks_seq(mod, monkeypatch,
+                      [_http_error(mod, 503, 1), _http_error(mod, 503, 1), {"tasks": []}])
+    mod.run_once()
+    assert seen["n"] == 3
+
+
+def test_every_attempt_uses_a_fresh_nonce_and_signature(monkeypatch):
+    mod = _load(monkeypatch, name="aws_kr_poller_r3")
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    seen = _tasks_seq(mod, monkeypatch,
+                      [_http_error(mod, 503, 1), _http_error(mod, 503, 1), {"tasks": []}])
+    mod.run_once()
+    assert len(seen["nonces"]) == 3
+    assert len(set(seen["nonces"])) == 3          # 같은 nonce 재전송 금지
+
+
+@pytest.mark.parametrize("ra", [None, "abc", "-5", "0", "99999"])
+def test_bad_retry_after_fails_closed(monkeypatch, ra):
+    """Retry-After가 없거나 비정상·음수·과도하면 재시도하지 않는다."""
+    mod = _load(monkeypatch, name="aws_kr_poller_r4_%s" % (ra or "none"))
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    seen = _tasks_seq(mod, monkeypatch, [_http_error(mod, 503, ra)])
+    assert mod.main() == 1
+    assert seen["n"] == 1
+
+
+@pytest.mark.parametrize("code", [400, 401, 403, 409, 429])
+def test_other_status_codes_are_never_retried(monkeypatch, code):
+    mod = _load(monkeypatch, name="aws_kr_poller_r5_%d" % code)
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    seen = _tasks_seq(mod, monkeypatch, [_http_error(mod, code, 1)])
+    assert mod.main() == 1
+    assert seen["n"] == 1
+
+
+def test_exhausted_retries_exit_one_and_never_fake_success(monkeypatch):
+    mod = _load(monkeypatch, name="aws_kr_poller_r6")
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    seen = _tasks_seq(mod, monkeypatch, [_http_error(mod, 503, 1)])
+    assert mod.main() == 1                        # 빈 작업/성공 위장 금지
+    assert seen["n"] == mod.TASKS_RETRY_MAX + 1
+
+
+def test_retry_budget_is_bounded_and_fits_the_unit_limit(monkeypatch):
+    mod = _load(monkeypatch, name="aws_kr_poller_r7")
+    worst = (mod.CONTROL_TIMEOUT * (mod.TASKS_RETRY_MAX + 1)
+             + mod.TASKS_RETRY_BUDGET + mod.OBSERVE_BUDGET
+             + mod.RESULTS_TIMEOUT + mod.SAFETY_MARGIN)
+    assert worst <= mod.UNIT_START_LIMIT
+    assert mod.UNIT_START_LIMIT < mod.LEASE_SECONDS_HINT
+
+
+def test_retry_log_carries_no_sensitive_fields(monkeypatch, capsys):
+    mod = _load(monkeypatch, name="aws_kr_poller_r8")
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    _tasks_seq(mod, monkeypatch, [_http_error(mod, 503, 1), {"tasks": []}])
+    mod.run_once()
+    out = capsys.readouterr().out
+    assert "krp_tasks_retry" in out
+    for banned in ("dummy-secret-for-tests", "signature", "X-KRP", "nonce",
+                   "Authorization"):
+        assert banned not in out
+
+
+def test_successful_retry_keeps_the_tasks_observe_submit_contract(monkeypatch):
+    mod = _load(monkeypatch, name="aws_kr_poller_r9")
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    submitted = {}
+
+    def _call(path, payload, timeout=None):
+        if path.endswith("/tasks"):
+            if not submitted.get("first"):
+                submitted["first"] = True
+                raise _http_error(mod, 503, 1)
+            return {"tasks": [_task("a")]}
+        submitted["payload"] = payload
+        return {"stored": 1, "accepted": 1, "rejected": []}
+
+    monkeypatch.setattr(mod, "call_api", _call)
+    monkeypatch.setattr(mod, "_get", lambda u, r, timeout=None: (200, _card()))
+    mod.run_once()
+    assert len(submitted["payload"]["results"]) == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 회차 하드 상한 — 전역 monotonic deadline
+#
+# 예전에는 각 단계 최악값의 **합**이 곧 상한이었고, 그 합이 systemd
+# `TimeoutStartSec=300`과 **정확히 같았다**. 여유가 0이면 프로세스 기동·인터프리터
+# 로드·JSON 직렬화·systemd 스케줄링 오차만으로 정상 실행도 강제 종료된다.
+# 이제 `RUN_BUDGET`(= 300 − SAFETY_MARGIN 50 = 250초) 하나가 상한이고, 모든
+# 단계가 거기서 남은 시간을 받아 쓴다.
+# ══════════════════════════════════════════════════════════════════════════
+def test_hard_ceiling_is_clearly_below_the_systemd_limit(poller):
+    """① 모든 단계가 최악이어도 하드 상한이 300초보다 **명확히** 작다."""
+    assert poller.RUN_BUDGET == 250.0
+    assert poller.RUN_BUDGET < poller.UNIT_START_LIMIT
+    assert poller.UNIT_START_LIMIT - poller.RUN_BUDGET >= 30.0
+
+
+def test_safety_margin_is_explicit_and_at_least_thirty_seconds(poller):
+    """② 안전 여유가 코드 상수로 명시돼 있다."""
+    assert poller.SAFETY_MARGIN == 50.0
+    assert poller.SAFETY_MARGIN >= 30.0
+
+
+def test_stage_worst_cases_fit_inside_the_run_budget(poller):
+    """단계 최악값의 합조차 RUN_BUDGET을 넘지 않는다."""
+    worst = (poller.CONTROL_TIMEOUT * (poller.TASKS_RETRY_MAX + 1)
+             + poller.TASKS_RETRY_BUDGET + poller.OBSERVE_BUDGET
+             + poller.RESULTS_TIMEOUT)
+    assert worst <= poller.RUN_BUDGET
+    assert worst + poller.SAFETY_MARGIN <= poller.UNIT_START_LIMIT
+
+
+def test_observe_budget_shrinks_after_retry_waits(monkeypatch):
+    """③ Retry-After로 시간을 쓰면 관측 예산이 그만큼 줄어든다."""
+    mod = _load(monkeypatch, name="aws_kr_poller_d1")
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(mod.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    seen = {}
+
+    def _call(path, payload, timeout=None):
+        if path.endswith("/tasks"):
+            if not seen.get("first"):
+                seen["first"] = True
+                raise _http_error(mod, 503, 20)
+            return {"tasks": [_task("a")]}
+        seen["submit_timeout"] = timeout
+        return {"stored": 1, "accepted": 1, "rejected": []}
+
+    monkeypatch.setattr(mod, "call_api", _call)
+    monkeypatch.setattr(mod, "_get", lambda u, r, timeout=None: (200, _card()))
+    start = clock["t"]
+    mod.run_once()
+    assert clock["t"] - start <= mod.RUN_BUDGET
+
+
+def test_no_request_starts_without_room_left(monkeypatch):
+    """④·⑥ 남은 시간이 없으면 새 요청을 시작하지 않고, 0·음수 timeout도 없다."""
+    mod = _load(monkeypatch, name="aws_kr_poller_d2")
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
+    calls = []
+
+    def _call(path, payload, timeout=None):
+        calls.append(timeout)
+        return {"tasks": []}
+
+    monkeypatch.setattr(mod, "call_api", _call)
+    mod._run_deadline[0] = clock["t"]          # 이미 소진
+    with pytest.raises(mod.BudgetExhausted):
+        mod.lease_tasks_with_retry()
+    assert calls == []
+
+
+def test_every_issued_timeout_is_positive(monkeypatch):
+    """⑥ 어떤 경계에서도 0초·음수 timeout으로 요청하지 않는다."""
+    mod = _load(monkeypatch, name="aws_kr_poller_d3")
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(mod.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    issued = []
+
+    def _call(path, payload, timeout=None):
+        issued.append(timeout)
+        if path.endswith("/tasks"):
+            return {"tasks": [_task("a")]}
+        return {"stored": 1, "accepted": 1, "rejected": []}
+
+    monkeypatch.setattr(mod, "call_api", _call)
+    monkeypatch.setattr(mod, "_get", lambda u, r, timeout=None: (200, _card()))
+    mod.run_once()
+    assert issued and all(t is None or t > 0 for t in issued)
+
+
+def test_uses_monotonic_not_wall_clock(poller, monkeypatch):
+    """⑤ 예산은 monotonic으로 잰다 — 시각 변경이 상한을 거짓말로 만들지 않는다."""
+    src = io.open(_ROOT / "aws" / "kr_poller.py", encoding="utf-8").read()
+    body = src[src.index("def run_once():"):src.index("def main():")]
+    assert "time.monotonic()" in body
+    assert "_run_deadline[0] = time.monotonic()" in src
+
+
+def test_a_normal_twenty_five_clip_cycle_still_fits(monkeypatch):
+    """⑦ 정상 canary 규모(25건, rate 1.0/s)를 여전히 처리한다."""
+    mod = _load(monkeypatch, name="aws_kr_poller_d4")
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(mod.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    sent = {}
+
+    def _call(path, payload, timeout=None):
+        if path.endswith("/tasks"):
+            return {"tasks": [_task("c-%d" % i) for i in range(25)]}
+        sent["n"] = len(payload["results"])
+        return {"stored": sent["n"], "accepted": sent["n"], "rejected": []}
+
+    def _get(u, r, timeout=None):
+        clock["t"] += 0.4                      # 실측 수준 응답
+        return 200, _card()
+
+    monkeypatch.setattr(mod, "call_api", _call)
+    monkeypatch.setattr(mod, "_get", _get)
+    start = clock["t"]
+    mod.run_once()
+    assert sent["n"] == 25                     # 25건 전부 제출
+    assert clock["t"] - start < mod.RUN_BUDGET
+
+
+def test_poller_exits_before_systemd_kills_it(monkeypatch):
+    """⑧ 상류가 전부 느려도 systemd 상한 전에 poller가 스스로 끝낸다."""
+    mod = _load(monkeypatch, name="aws_kr_poller_d5")
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(mod.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+
+    def _call(path, payload, timeout=None):
+        # 상류가 느려도 요청은 주어진 timeout에서 끊긴다 — 실제 소켓과 같은 계약.
+        clock["t"] += (timeout or mod.CONTROL_TIMEOUT)
+        if path.endswith("/tasks"):
+            return {"tasks": [_task("c-%d" % i) for i in range(25)]}
+        return {"stored": 0, "accepted": 0, "rejected": []}
+
+    def _get(u, r, timeout=None):
+        clock["t"] += (timeout or mod.CHZZK_TIMEOUT)
+        raise TimeoutError("slow")
+
+    monkeypatch.setattr(mod, "call_api", _call)
+    monkeypatch.setattr(mod, "_get", _get)
+    mod.main()
+    elapsed = clock["t"] - 1000.0
+    assert elapsed <= mod.RUN_BUDGET           # 상한 안에서 끝난다
+    assert elapsed < mod.UNIT_START_LIMIT       # systemd가 죽이기 전이다
+
+
+def test_long_contention_gives_up_instead_of_hammering_nonce(monkeypatch, capsys):
+    """긴 경합은 한 회차에서 버티지 않는다 — timer가 10분 뒤 다시 시도한다.
+
+    운영에서 약 44초 이상 이어진 DB 경합 구간이 있었다. nonce 쓰기를 반복하면
+    경합을 **더 악화시키므로**, 짧은 경합만 흡수하고 나머지는 exit 1로 넘긴다.
+    """
+    mod = _load(monkeypatch, name="aws_kr_poller_d6")
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    seen = _tasks_seq(mod, monkeypatch, [_http_error(mod, 503, 5)])
+    assert mod.main() == 1
+    assert seen["n"] == mod.TASKS_RETRY_MAX + 1        # 유한하고 작다
+    assert mod.TASKS_RETRY_MAX <= 3

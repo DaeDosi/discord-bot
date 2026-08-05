@@ -47,6 +47,8 @@ RETRY_AFTER_DEFAULT = 600
 RETRY_AFTER_MAX = 3600
 
 _stop = False
+# 회차 하드 상한(monotonic). run_once()가 채운다.
+_run_deadline = [None]
 
 
 def log(**kw):
@@ -133,8 +135,16 @@ RESULTS_TIMEOUT = _float_env("KRP_RESULTS_TIMEOUT_SECONDS", 60.0, 5.0, 180.0)
 # **남는 시간에서 역산해 잘라 낸다.**
 UNIT_START_LIMIT = 300.0        # systemd `TimeoutStartSec`과 같은 값
 LEASE_SECONDS_HINT = 600.0      # 서버 `SINGCUP_KRP_LEASE_SECONDS` 기본값
-# 인터프리터 기동·직렬화·종료 처리 여유.
-SAFETY_MARGIN = 20.0
+# systemd 여유. 프로세스 기동·인터프리터 로드·JSON 직렬화·systemd 스케줄링
+# 오차가 여기에 들어간다. 예전에는 20초였는데, 그러면 각 단계 최악값의 합이
+# `TimeoutStartSec`과 **정확히 같아져** 여유가 0이었다 — 정상 실행도 강제 종료될
+# 수 있다. 실측 canary가 약 35초로 끝나므로 50초를 남겨도 관측이 부족하지 않다.
+SAFETY_MARGIN = 50.0
+
+# **회차 전체의 하드 상한.** 개별 단계 timeout의 단순 합이 아니라 이 하나의
+# monotonic deadline이 상한을 정한다. 합산 방식은 각 단계가 최악에 못 미쳐도
+# 계산상으로만 커져 예산을 낭비하고, 반대로 단계가 늘어나면 조용히 상한을 넘는다.
+RUN_BUDGET = UNIT_START_LIMIT - SAFETY_MARGIN        # 250초
 
 # 관측 단계 예산. 이것이 없으면 상류가 느릴 때 관측만으로 상한을 다 써 버리고
 # **결과를 제출하지 못한 채** 죽는다 — 그러면 그 회차 관측이 통째로 버려지고
@@ -145,8 +155,30 @@ SAFETY_MARGIN = 20.0
 # 내려가고 각 요청 timeout과 backoff·rate sleep이 남은 시간으로 잘린다.
 # 시작 전에만 확인하는 소프트 제한이면 마지막 한 건이 detail 3회 + card 3회를
 # 통째로 더 돌아 상한을 넘긴다.
+# ── `/tasks` 전용 503 재시도 ────────────────────────────────────────────
+# 실측(2026-08-05 UTC 03:24:37 / 03:25:21 / 03:36:22): 세 번 모두
+# `db_locked_giveup what=krp_nonce attempts=2 budgetSeconds=0.8` →
+# `krp_nonce_db_busy` → `/tasks` 503. 같은 시각 일반 collector도
+# discover/recheck/deletion이 database_locked로 실패했다 — KRP만의 문제가
+# 아니라 **전역 SQLite 쓰기 경합**이고, 근본 원인(장기 write lock 보유자)은
+# 별도 감사 대상이다. 여기서는 그 짧은 경합 창만 넘긴다.
+#
+# nonce가 기록되지 않았으므로 lease도 발급되지 않았다 → 중복 처리·데이터 손상
+# 없음. 그래서 재시도가 안전하다. **busy timeout 상향이나 nonce 우회로 덮지
+# 않는다** — 그건 검증을 깎는 것이지 경합을 없애는 게 아니다.
+#
+# `KRP_MAX_RETRIES`를 재사용하지 않는 이유: 그것은 `_get_bounded`의 **치지직
+# 5xx/timeout** 재시도 횟수다. 상대도 실패 종류도 다른 값을 하나로 묶으면 한쪽을
+# 조정할 때 다른 쪽이 조용히 따라 움직인다.
+TASKS_RETRY_MAX = _int_env("KRP_TASKS_RETRY_MAX", 2, 0, 3)
+# 대기에 쓸 수 있는 총 시간. 개별 Retry-After가 아무리 커도 이 예산을 넘지 않는다.
+TASKS_RETRY_BUDGET = _float_env("KRP_TASKS_RETRY_BUDGET_SECONDS", 60.0, 5.0, 120.0)
+# 이보다 긴 Retry-After는 "지금 다시 두드릴 상황이 아니다"로 보고 fail-closed한다.
+TASKS_RETRY_AFTER_MAX = _float_env("KRP_TASKS_RETRY_AFTER_MAX_SECONDS", 30.0, 1.0, 60.0)
+
 _RAW_OBSERVE_BUDGET = _float_env("KRP_OBSERVE_BUDGET_SECONDS", 180.0, 30.0, 600.0)
-_MAX_OBSERVE = UNIT_START_LIMIT - CONTROL_TIMEOUT - RESULTS_TIMEOUT - SAFETY_MARGIN
+_MAX_OBSERVE = (RUN_BUDGET - CONTROL_TIMEOUT * (TASKS_RETRY_MAX + 1)
+                - TASKS_RETRY_BUDGET - RESULTS_TIMEOUT)
 OBSERVE_BUDGET = max(5.0, min(_RAW_OBSERVE_BUDGET, _MAX_OBSERVE))
 if OBSERVE_BUDGET < _RAW_OBSERVE_BUDGET:
     # 조용히 줄이지 않는다 — 왜 적게 처리했는지 로그로 설명돼야 한다.
@@ -161,6 +193,8 @@ class BudgetExhausted(Exception):
     그렇게 하면 관측하지 못한 것이 관측 결과로 굳는다. 호출부는 이것을 받으면
     그 클립을 결과에 넣지 않고 회차를 접는다.
     """
+
+
 # Railway 수집기와 같은 값을 쓴다(응답이 출발지에 따라 달라지는지 보려면 요청은
 # 같아야 한다).
 UA = os.environ.get("SINGCUP_USER_AGENT", "NexBot-SingcupCollector/1.0")
@@ -277,6 +311,11 @@ class RateLimited(Exception):
     def __init__(self, retry_after):
         super().__init__("429")
         self.retry_after = retry_after
+
+
+def run_deadline():
+    """이 회차가 끝나야 하는 monotonic 시각. `run_once()`가 시작할 때 정한다."""
+    return _run_deadline[0]
 
 
 def _remaining(deadline):
@@ -398,9 +437,75 @@ def observe(task, deadline=None):
 
 
 # ── 한 회차 ────────────────────────────────────────────────────────────────
+def _retry_after_seconds(err):
+    """503의 `Retry-After`가 **명시적이고 상식적일 때만** 대기 초를 돌려준다.
+
+    없거나 문자열·0·음수·과도하면 None — 상류가 준 값을 못 믿겠다고 곧바로 다시
+    두드리면 그게 더 나쁘다. HTTP-date는 여기서 받지 않는다(이 경로의 상류는
+    항상 delta-seconds를 준다).
+    """
+    raw = None
+    try:
+        raw = err.headers.get("Retry-After")
+    except Exception:                                # noqa: BLE001
+        return None
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text.isdigit():                           # "-5"·"abc"는 여기서 걸린다
+        return None
+    secs = int(text)
+    if secs <= 0 or secs > TASKS_RETRY_AFTER_MAX:
+        return None
+    return float(secs)
+
+
+def lease_tasks_with_retry():
+    """`/tasks`만 제한적으로 다시 두드린다. 실패는 실패로 남긴다.
+
+    매 시도는 `call_api()`를 새로 부르므로 **timestamp·nonce·signature가 전부 새로
+    만들어진다** — 같은 nonce를 재전송하면 replay(401)로 막히고, 그건 재시도가
+    아니라 사고다.
+    """
+    spent = 0.0
+    for attempt in range(TASKS_RETRY_MAX + 1):
+        left = _remaining(run_deadline())
+        # 남은 시간이 요청 하나도 못 담으면 **새 요청을 시작하지 않는다.**
+        # 0초·음수 timeout으로 소켓을 여는 일이 없어야 한다.
+        if left is not None and left <= 1.0:
+            log(event="krp_deadline_exhausted", stage="tasks",
+                remaining_seconds=round(max(0.0, left), 3))
+            raise BudgetExhausted()
+        try:
+            timeout = (CONTROL_TIMEOUT if left is None
+                       else min(CONTROL_TIMEOUT, left))
+            return call_api(TASKS_PATH, {"limit": BATCH}, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            # 503만, 그것도 유효한 Retry-After가 있을 때만 다시 시도한다.
+            # 400/401/403/409/429는 다시 보내도 결과가 같거나 더 나쁘다.
+            wait = _retry_after_seconds(e) if e.code == 503 else None
+            left = _remaining(run_deadline())
+            # 대기까지 하고 나면 관측·제출을 할 수 없는 상황이면 기다리지 않는다.
+            no_room = (left is not None
+                       and left - wait <= RESULTS_TIMEOUT + 5.0) if wait else True
+            if (wait is None or attempt >= TASKS_RETRY_MAX
+                    or spent + wait > TASKS_RETRY_BUDGET or no_room or _stop):
+                log(event="krp_tasks_retry", attempt=attempt + 1,
+                    max_attempts=TASKS_RETRY_MAX + 1, final_result="giveup")
+                raise
+            log(event="krp_tasks_retry", attempt=attempt + 1,
+                max_attempts=TASKS_RETRY_MAX + 1, wait_seconds=wait,
+                final_result="retry")
+            time.sleep(wait)
+            spent += wait
+    raise RuntimeError("unreachable")
+
+
 def run_once():
-    tasks = call_api(TASKS_PATH, {"limit": BATCH},
-                     timeout=CONTROL_TIMEOUT).get("tasks") or []
+    # **회차 시작점이 유일한 기준이다.** 이후 모든 단계가 이 하나의 monotonic
+    # deadline에서 남은 시간을 받아 쓰므로, 단계가 늘어도 상한이 흔들리지 않는다.
+    _run_deadline[0] = time.monotonic() + RUN_BUDGET
+    tasks = lease_tasks_with_retry().get("tasks") or []
     if not tasks:
         log(event="krp_idle", count=0)
         return 0
@@ -410,7 +515,18 @@ def run_once():
     interval = 1.0 / RATE if RATE > 0 else 0.0
     # **wall clock이 아니라 단조 시계다.** NTP 보정이나 시각 변경이 예산을
     # 늘리거나 줄이면 상한 계산이 그대로 거짓말이 된다.
-    deadline = time.monotonic() + OBSERVE_BUDGET
+    # 관측 예산은 **남은 시간에서 제출 몫을 뺀 것**과 설정값 중 작은 쪽이다.
+    # tasks 재시도로 시간을 썼다면 그만큼 관측이 줄어든다 — 합산 예산이었다면
+    # 여기서 이미 상한을 넘었을 상황이다.
+    left_now = _remaining(run_deadline())
+    observe_left = min(OBSERVE_BUDGET, left_now - RESULTS_TIMEOUT)
+    if observe_left <= 1.0:
+        # 관측할 시간이 없다. 조용히 0건으로 끝내면 **상한 초과가 정상 종료로
+        # 보인다** — 구조화된 명시적 실패로 끝낸다(lease는 만료 후 회수된다).
+        log(event="krp_deadline_exhausted", stage="observe",
+            remaining_seconds=round(max(0.0, left_now), 3))
+        raise BudgetExhausted()
+    deadline = time.monotonic() + observe_left
     for i, t in enumerate(tasks):
         if _stop:
             log(event="krp_stopped", done=len(results))
@@ -457,7 +573,15 @@ def run_once():
         return 0
     # **결과 제출만 긴 제한을 쓴다.** 서버가 25건을 순차 반영하고 순위를 다시
     # 계산하는 동안 기다려야 하기 때문이다.
-    out = call_api(RESULTS_PATH, {"results": results}, timeout=RESULTS_TIMEOUT)
+    left_submit = _remaining(run_deadline())
+    if left_submit <= 1.0:
+        # 제출할 시간이 없다. **부분 제출이나 성공 위장을 새로 만들지 않는다** —
+        # lease가 만료되면 다음 회차가 같은 후보를 가져간다.
+        log(event="krp_deadline_exhausted", stage="results",
+            remaining_seconds=round(max(0.0, left_submit), 3))
+        raise BudgetExhausted()
+    out = call_api(RESULTS_PATH, {"results": results},
+                   timeout=min(RESULTS_TIMEOUT, left_submit))
     log(event="krp_submitted", sent=len(results),
         stored=out.get("stored"), accepted=out.get("accepted"),
         rejected=len(out.get("rejected") or []))
@@ -483,6 +607,10 @@ def main():
         run_once()
     except urllib.error.HTTPError as e:
         log(event="krp_api_error", status=e.code)
+        return 1
+    except BudgetExhausted:
+        # 회차 상한에 걸렸다. systemd가 죽이기 전에 **스스로** 끝낸다.
+        log(event="krp_failed", kind="BudgetExhausted")
         return 1
     except Exception as e:                               # noqa: BLE001
         log(event="krp_failed", kind=type(e).__name__)
