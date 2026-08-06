@@ -332,10 +332,10 @@ async def init_db():
                created_at INTEGER NOT NULL
            )""",
         "CREATE INDEX IF NOT EXISTS idx_chzzk_chat_log_guild ON chzzk_chat_log(guild_id, id)",
-        # 마인크래프트 콜라보 이벤트 (10명 스트리머 합방) — nexadmin 전용 크로스길드 설정.
-        # 이벤트당 하나의 공유 마크 서버(RCON)에 연결하고, 참가 서버(guild)마다 인게임
-        # 플레이어 이름을 등록해둔다. is_active=1인 이벤트가 최대 1개일 때만 chzzk_chat.py가
-        # !디버프지급/!버프지급/!랜덤아이템 채팅 명령어를 처리한다.
+        # 마인크래프트 콜라보 이벤트 (10명 스트리머 합방) — **기능 제거됨(2026-08-06)**.
+        # 아래 5개 테이블은 dormant다: 봇·백엔드·프론트 어디에서도 읽거나 쓰지 않는다.
+        # 스키마가 append-only라 DROP 하지 않고 그대로 둔다(기존 데이터도 보존 —
+        # rollback이 git revert만으로 가능해야 한다). 새 코드에서 참조하지 말 것.
         """CREATE TABLE IF NOT EXISTS mc_events (
                id               INTEGER PRIMARY KEY AUTOINCREMENT,
                name             TEXT    NOT NULL,

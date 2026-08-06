@@ -37,7 +37,6 @@ from routers.chzzk_history_router import router as chzzk_history_router
 from routers.chzzk_router import router as chzzk_router
 from routers.guilds_router import router as guilds_router
 from routers.kr_poller_router import router as kr_poller_router  # noqa: E402
-from routers.mc_event_router import router as mc_event_router
 from routers.points_router import router as points_router
 from routers.rising_router import router as rising_router
 from routers.settings_router import router as settings_router
@@ -156,7 +155,6 @@ app.include_router(verify_router)
 app.include_router(chzzk_auth_router)
 app.include_router(admin_router)
 app.include_router(points_router)
-app.include_router(mc_event_router)
 app.include_router(rising_router)
 app.include_router(singcup_router)
 # 한국(AWS 서울) outbound poller 전용. secret 미설정이거나 SINGCUP_KRP_ENABLED가

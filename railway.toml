@@ -20,7 +20,7 @@ watchPatterns = [
   ".dockerignore",        # 빌드 컨텍스트 정의
   "cogs/**",              # 봇 기능 (database·utils 의존)
   "database/**",          # 스키마·연결 — 봇과 백엔드가 공유
-  "utils/**",             # db_write·ids·token_bucket·checks·gambling·mc_rcon
+  "utils/**",             # db_write·ids·token_bucket·checks·gambling
   "web/backend/**",       # FastAPI 백엔드 전체
 ]
 # 의도적으로 뺀 것:

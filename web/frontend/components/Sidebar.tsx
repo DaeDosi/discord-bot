@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import { clsx } from "clsx";
 import {
   Settings, Heart, Shield, Radio, UserCheck, HelpCircle, ChevronLeft, ChevronDown,
-  Terminal, Gem, Youtube, Tv, Twitter, Swords, Server,
+  Terminal, Gem, Youtube, Tv, Twitter, Server,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { api } from "@/lib/api";
@@ -16,7 +16,7 @@ interface NavItem { href: string; label: string; shortLabel: string; icon: Lucid
 interface NavGroup { label: string; items: NavItem[] }
 
 // 디스코드 서버 관리 / 방송 / SNS / 지원 네 그룹으로 분리 — 카테고리 라벨 + 구분선으로 시각적으로 나눔
-const BASE_GROUPS: NavGroup[] = [
+const GROUPS: NavGroup[] = [
   {
     label: "서버 관리",
     items: [
@@ -137,22 +137,6 @@ function GuildSwitcher({ guildId }: { guildId: string }) {
 export default function Sidebar({ guildId }: { guildId: string }) {
   const pathname = usePathname();
   const base     = `/dashboard/${guildId}`;
-
-  // MC 콜라보 이벤트에 초대된 서버에서만 사이드바에 "이벤트 서버(합방)" 탭이 보인다
-  const [mcEventInvited, setMcEventInvited] = useState(false);
-  useEffect(() => {
-    api.chzzk.mcEvent.status(guildId)
-      .then((d) => setMcEventInvited(!!d.invited))
-      .catch(() => setMcEventInvited(false));
-  }, [guildId]);
-
-  const GROUPS: NavGroup[] = BASE_GROUPS.map((group) => {
-    if (group.label !== "방송" || !mcEventInvited) return group;
-    return {
-      ...group,
-      items: [...group.items, { href: "/mc-event", label: "이벤트 서버 (합방)", shortLabel: "합방", icon: Swords }],
-    };
-  });
 
   return (
     <>

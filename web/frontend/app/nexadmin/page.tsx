@@ -6,7 +6,6 @@ import {
   Plus, X, RefreshCw, LogIn, ChevronDown, ChevronUp, LogOut,
   Megaphone, Save, CheckCircle,
 } from "lucide-react";
-import McEventPanel from "./McEventPanel";
 import SingcupRepPanel from "./SingcupRepPanel";
 import SingcupClipMetricsPanel from "./SingcupClipMetricsPanel";
 
@@ -702,7 +701,7 @@ export default function AdminPage() {
   const [verifUsers, setVerifUsers]   = useState<VerifUser[] | null>(null);
   const [loading, setLoading]         = useState(true);
   const [showAdd, setShowAdd]         = useState(false);
-  const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow" | "announcement" | "mc-event" | "singcup-rep">("guilds");
+  const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow" | "announcement" | "singcup-rep">("guilds");
   const [refreshing, setRefreshing]   = useState(false);
   const [selectedVerif, setSelectedVerif] = useState<VerifUser | null>(null);
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null);
@@ -848,7 +847,6 @@ export default function AdminPage() {
     { key: "verif",  label: verifUsers === null ? "인증 현황 (로딩 중...)" : `인증 현황 (${verifCount}명)` },
     { key: "follow", label: followStats === null ? "팔로우 관리 (로딩 중...)" : `팔로우 관리 (${followCount}명)` },
     { key: "announcement", label: "공지 관리" },
-    { key: "mc-event", label: "MC 이벤트" },
     { key: "singcup-rep", label: "싱드컵 대표 클립" },
   ] as const;
 
@@ -1123,9 +1121,6 @@ export default function AdminPage() {
             <AnnouncementPanel />
           </div>
         )}
-
-        {/* ── MC 이벤트 ── */}
-        {activeTab === "mc-event" && <McEventPanel guilds={guilds} />}
 
         {/* 대표 지정과 지표 갱신은 **다른 동작**이다. 같은 탭에 두되 카드를 나눠
             둔다 — 합치면 "대표를 바꾸려다 지표만 갱신했다"가 실제로 일어난다. */}
