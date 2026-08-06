@@ -16,7 +16,6 @@ import os
 import json
 import time
 import sqlite3
-import random
 import asyncio
 import logging
 import weakref
@@ -24,7 +23,6 @@ import discord
 from discord.ext import commands, tasks
 from datetime import datetime, timezone, timedelta
 from database import DB_PATH, get_db
-from utils.mc_rcon import rcon_command
 from utils.checks import member_is_mod_or_admin
 from utils.gambling import resolve_gambling_winner, calc_gambling_payout
 from utils import oauth_backoff as ob
@@ -359,12 +357,10 @@ class ChzzkChatCog(commands.Cog):
                 (row["guild_id"],)
             )).fetchall()
             commands_map = {c["trigger_text"]: dict(c) for c in cmd_rows}
-            mc_event = await self._load_mc_event(row["guild_id"])
 
             if chzzk_id in self._channels:
-                # 이미 구독 중 — 명령어/이벤트 설정만 최신화 (토큰은 만료 임박한 경우에만 갱신)
+                # 이미 구독 중 — 명령어 설정만 최신화 (토큰은 만료 임박한 경우에만 갱신)
                 self._channels[chzzk_id]["commands"] = commands_map
-                self._channels[chzzk_id]["mc_event"] = mc_event
                 self._channels[chzzk_id]["guild_id"] = row["guild_id"]
                 if (row["streamer_token_expires_at"] or 0) <= int(time.time()) + 300:
                     at, rt, _exp = await self._ensure_fresh_token(row)
@@ -417,7 +413,6 @@ class ChzzkChatCog(commands.Cog):
                 "guild_id":    row["guild_id"],
                 "user_client": user_client,
                 "commands":    commands_map,
-                "mc_event":    mc_event,
             }
             await self._mark_synced(row["guild_id"])
             log.info(f"치지직 채팅 구독 시작: guild={row['guild_id']} channel={chzzk_id}")
@@ -426,30 +421,6 @@ class ChzzkChatCog(commands.Cog):
         for stale_id in list(self._channels.keys()):
             if stale_id not in active_chzzk_ids:
                 self._channels.pop(stale_id, None)
-
-    async def _load_mc_event(self, guild_id: int) -> dict | None:
-        """이 guild가 참가 등록된 활성 MC 이벤트가 있으면 서버 접속 정보 + 인게임 이름 +
-        (트리거 문구 → kind) 명령어 매핑을 합쳐서 반환."""
-        db = await get_db()
-        row = await (await db.execute(
-            """SELECT eg.event_id, eg.mc_player_name,
-                      e.mc_host, e.mc_port, e.mc_rcon_password
-               FROM mc_event_guilds eg
-               JOIN mc_events e ON e.id = eg.event_id
-               WHERE eg.guild_id=? AND e.is_active=1
-               LIMIT 1""",
-            (guild_id,)
-        )).fetchone()
-        if not row:
-            return None
-        event = dict(row)
-
-        cmd_rows = await (await db.execute(
-            "SELECT kind, trigger_text FROM mc_event_commands WHERE event_id=? AND is_active=1",
-            (event["event_id"],)
-        )).fetchall()
-        event["triggers"] = {c["trigger_text"]: c["kind"] for c in cmd_rows}
-        return event
 
     async def _mark_synced(self, guild_id: int):
         # 봇과 백엔드가 같은 SQLite 파일을 쓴다. 백엔드가 큰 쓰기를 하는 동안
@@ -526,7 +497,7 @@ class ChzzkChatCog(commands.Cog):
         chzzk_channel_id = sub["chzzk_channel_id"]
 
         # 이미 실제로 구독 중인 채널이면 sync_loop가 이미 최신 상태로 유지해주는 entry(명령어
-        # 맵/mc_event/진짜 user_client)를 그대로 재사용한다 — 이러면 실제 채팅에도 응답이
+        # 맵/진짜 user_client)를 그대로 재사용한다 — 이러면 실제 채팅에도 응답이
         # 나가고, _sync_channels와 동일한 조회를 여기서 중복으로 다시 할 필요도 없다. 아직
         # 구독 전(치지직 방송 없이 로직만 검증하는 경우)에만 DB에서 직접 불러오고 가짜
         # 클라이언트를 쓴다.
@@ -543,7 +514,6 @@ class ChzzkChatCog(commands.Cog):
                 "guild_id":    guild_id,
                 "user_client": _NullChatClient(),
                 "commands":    {c["trigger_text"]: dict(c) for c in cmd_rows},
-                "mc_event":    await self._load_mc_event(guild_id),
             }
         message = Message(
             senderChannelId=chzzk_user_id,
@@ -583,11 +553,6 @@ class ChzzkChatCog(commands.Cog):
         cmd_name, _, arg = trigger.partition(" ")
         arg = arg.strip()
 
-        mc_event = entry.get("mc_event")
-        if mc_event and cmd_name in mc_event["triggers"]:
-            await self._handle_mc_event(entry, message, cmd_name, mc_event["triggers"][cmd_name])
-            return
-
         cmd = entry["commands"].get(cmd_name)
         if not cmd:
             if cmd_name == "포인트":
@@ -602,13 +567,9 @@ class ChzzkChatCog(commands.Cog):
             if cmd_name == "투표":
                 await self._handle_gambling_vote(entry, message, arg)
                 return
-            mc_event_desc = (
-                f"있음(등록된 트리거={list(mc_event['triggers'].keys())})" if mc_event
-                else "없음(참가 서버 미등록 또는 이벤트 비활성 상태)"
-            )
             log.info(
                 f"치지직 채팅 명령어 매칭 실패: guild={entry['guild_id']} "
-                f"입력=\"!{trigger}\" 등록된 명령어={list(entry['commands'].keys())} mc_event={mc_event_desc}"
+                f"입력=\"!{trigger}\" 등록된 명령어={list(entry['commands'].keys())}"
             )
             return
 
@@ -957,146 +918,6 @@ class ChzzkChatCog(commands.Cog):
         log.info(
             f"치지직 채팅 도박 정산: guild={guild_id} session={session['id']} "
             f"winner={winner_index} voters={total_voters} payout={payout}"
-        )
-
-    # ── 마크 콜라보 이벤트: !디버프지급 / !버프지급 / !랜덤아이템 ──────────────────
-    async def _pick_item(self, event_id: int, item_type: str | None) -> dict | None:
-        db = await get_db()
-        if item_type:
-            rows = await (await db.execute(
-                "SELECT * FROM mc_event_items WHERE event_id=? AND item_type=? AND is_active=1",
-                (event_id, item_type)
-            )).fetchall()
-        else:
-            rows = await (await db.execute(
-                "SELECT * FROM mc_event_items WHERE event_id=? AND is_active=1 AND in_random_pool=1",
-                (event_id,)
-            )).fetchall()
-        if not rows:
-            return None
-        return dict(random.choice(rows))
-
-    async def _pick_random_other_guild(self, event_id: int, exclude_guild_id: int) -> dict | None:
-        db = await get_db()
-        rows = await (await db.execute(
-            "SELECT guild_id, mc_player_name FROM mc_event_guilds WHERE event_id=? AND guild_id != ?",
-            (event_id, exclude_guild_id)
-        )).fetchall()
-        if not rows:
-            return None
-        return dict(random.choice(rows))
-
-    @staticmethod
-    def _render(template: str, *, user: str, item: str, player: str) -> str:
-        return (
-            template.replace("{user}", user)
-                    .replace("{item}", item)
-                    .replace("{player}", player)
-        )
-
-    async def _handle_mc_event(self, entry: dict, message: "Message", trigger_text: str, kind: str):
-        guild_id = entry["guild_id"]
-        mc_event = entry["mc_event"]
-        chzzk_user_id = message.user_id
-        nickname = message.profile.nickname if message.profile else "익명"
-
-        db = await get_db()
-
-        # 대시보드에서 치지직 계정을 연동(인증)한 유저만 대상 — 출석체크와 동일한 규칙
-        verif = await (await db.execute(
-            "SELECT user_id FROM chzzk_verifications WHERE guild_id=? AND chzzk_channel_id=?",
-            (guild_id, chzzk_user_id)
-        )).fetchone()
-        if not verif:
-            log.info(
-                f"MC 이벤트 무시(미인증 유저): guild={guild_id} trigger=!{trigger_text} chzzk_user={chzzk_user_id} "
-                f"— 대시보드 입장 인증에서 치지직 계정을 연동한 유저가 아님"
-            )
-            return
-        discord_user_id = verif["user_id"]
-
-        item_type = None if kind == "random" else kind
-        item = await self._pick_item(mc_event["event_id"], item_type)
-        if not item:
-            log.info(f"MC 이벤트 아이템 없음: guild={guild_id} kind={kind}")
-            return
-
-        bal_row = await (await db.execute(
-            "SELECT points FROM user_points WHERE guild_id=? AND user_id=?",
-            (guild_id, discord_user_id)
-        )).fetchone()
-        balance = bal_row["points"] if bal_row else 0
-        if balance < item["points_cost"]:
-            reply = f"{nickname}님, 포인트가 부족합니다. (필요 {item['points_cost']} / 보유 {balance})"
-            await self._send_chat(entry, reply)
-            return
-
-        # 타겟 결정: buff는 자기 자신, debuff(랜덤아이템으로 뽑힌 debuff 포함)는 참가자 중 무작위 1명.
-        # 단, 참가 서버가 아직 자기 자신뿐(테스트 단계 등)이면 대상이 없어 조용히 무시되던 것을,
-        # 자기 자신에게 적용하는 것으로 대체해 참가자 수와 무관하게 항상 파이프라인을 검증할 수 있게 한다.
-        target = None
-        if item["item_type"] != "buff":
-            target = await self._pick_random_other_guild(mc_event["event_id"], guild_id)
-
-        if target:
-            target_guild_id = target["guild_id"]
-            target_player   = target["mc_player_name"]
-        else:
-            target_guild_id = None
-            target_player   = mc_event["mc_player_name"]
-
-        await db.execute(
-            "UPDATE user_points SET points = points - ? WHERE guild_id=? AND user_id=?",
-            (item["points_cost"], guild_id, discord_user_id)
-        )
-        await db.commit()
-
-        command = self._render(item["command_template"], user=nickname, item=item["name"], player=target_player)
-        applied = False
-        rcon_response = ""
-        try:
-            rcon_response = await rcon_command(
-                mc_event["mc_host"], mc_event["mc_port"], mc_event["mc_rcon_password"], command
-            )
-            applied = True
-        except Exception as e:
-            rcon_response = str(e)[:200]
-            log.exception(f"MC 이벤트 RCON 실행 실패 guild={guild_id} item={item['id']} command={command!r}")
-
-        # 대상 플레이어에게 마크 내에서 별도로 알려주는 명령(예: 귓속말) — 효과가 실제로
-        # 적용됐을 때만, 그리고 문구가 설정돼 있을 때만 추가로 실행한다.
-        if applied and item["mc_notify_command"].strip():
-            notify_command = self._render(
-                item["mc_notify_command"], user=nickname, item=item["name"], player=target_player
-            )
-            try:
-                await rcon_command(
-                    mc_event["mc_host"], mc_event["mc_port"], mc_event["mc_rcon_password"], notify_command
-                )
-            except Exception:
-                log.exception(f"MC 이벤트 대상 알림 명령 실패 guild={guild_id} item={item['id']}")
-
-        await db.execute(
-            """INSERT INTO mc_event_purchases
-                   (event_id, guild_id, user_id, item_id, trigger_text, target_guild_id,
-                    points_spent, applied, rcon_response, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (mc_event["event_id"], guild_id, discord_user_id, item["id"], trigger_text, target_guild_id,
-             item["points_cost"], int(applied), rcon_response, int(time.time()))
-        )
-        await db.commit()
-
-        chat_template = item["chat_message_template"].strip() or "{user}님이 [{item}]을(를) 사용했습니다!"
-        reply = (
-            self._render(chat_template, user=nickname, item=item["name"], player=target_player)
-            if applied else
-            f"{nickname}님의 [{item['name']}] 적용에 실패했습니다. (마크 서버 연결 확인 필요)"
-        )
-        await self._send_chat(entry, reply)
-
-        log.info(
-            f"MC 이벤트 처리: guild={guild_id} trigger=!{trigger_text} item={item['name']} "
-            f"target_guild={target_guild_id or guild_id} applied={applied}"
         )
 
 
