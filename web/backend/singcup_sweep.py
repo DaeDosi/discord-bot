@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 
 import singcup_clips as sc
 from utils.token_bucket import TokenBucket
-from singcup_collector import EVENT_ID, ST_OK, event_status
+from singcup_collector import EVENT_ID, ST_OK, event_status, metrics_refresh_open
 
 from database import get_db
 
@@ -627,8 +627,11 @@ async def sweep_scheduler():
     while True:
         pause = CYCLE_GAP_SECONDS
         try:
-            if event_status() != "LIVE":
-                pause = 300.0                         # 이벤트 기간 밖에서는 쉰다
+            if not metrics_refresh_open():
+                # 이벤트 **종료 후에도 갱신은 계속**한다(확정 요구). 여기서 쉬는 건
+                # 시작 전(UPCOMING)이거나 비상 정지가 걸렸을 때뿐이다.
+                # `event_status() != "LIVE"`로 되돌리면 종료와 동시에 지표가 굳는다.
+                pause = 300.0
             elif HOURLY_MODE:
                 # 최종 상태 저장이 실패해 running으로 남은 행을 먼저 정리한다.
                 # 이게 없으면 그 행이 새 사이클을 영구 차단한다.
@@ -767,7 +770,10 @@ async def recent_runs(limit: int = 24) -> list[dict]:
 
 
 async def start_sweep_worker():
-    if event_status() == "ENDED":
+    # 예전에는 ENDED면 워커 자체를 띄우지 않았다. 이제 종료 후에도 지표를 갱신하므로
+    # 게이트가 닫혀 있을 때만 기동을 건너뛴다(그때도 스케줄러가 300초마다 재확인하도록
+    # 두는 대신, 완전히 꺼진 경우에만 반환한다).
+    if not metrics_refresh_open() and event_status() == "ENDED":
         return
     await sweep_scheduler()
 

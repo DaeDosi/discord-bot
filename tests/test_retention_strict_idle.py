@@ -8,8 +8,15 @@
 화면 어디에도 쓰이지 않는다. 그래서 **자동 워커만** 건너뛴다. 관리자가 명시적으로 부른
 진단 보고서는 그대로 전체 경로를 돈다.
 
-절대 잃으면 안 되는 것은 하나다 — **이벤트 종료 후 최종 성적 저장.**
+절대 잃으면 안 되는 것은 하나다 — **최종 성적 저장.**
 strict idle에서도 그 경로만은 살아 있다는 것을 여기서 고정한다.
+
+⚠️ **SINGCUP-1로 조건이 하나 늘었다.** 예전에는 "이벤트가 끝나면(ENDED)" 저장했지만,
+이제는 종료 후에도 순위를 계속 계산하므로(`ranking_refresh_open`) **순위 갱신이 아직
+열려 있는 동안에는 저장하지 않는다** — 매 회차 참가자 수만큼 UPSERT가 반복되고
+'최종'이라는 이름도 사실과 달라진다. 그래서 최종 성적 경로를 검사하는 테스트는
+아래 `ranking_closed` 픽스처로 **순위 갱신을 명시적으로 닫고** 확인한다.
+날짜(END_AT)를 조작하지 않는다 — END_AT은 참가 판정 창이기도 하다.
 """
 from __future__ import annotations
 
@@ -23,6 +30,16 @@ import singcup_retention as sr
 import database
 
 HOUR = 3600
+
+
+@pytest.fixture
+def ranking_closed(monkeypatch):
+    """순위 갱신을 닫아 '최종 성적을 확정할 수 있는 상태'를 만든다(SINGCUP-1).
+
+    이벤트 종료만으로는 부족하다 — 종료 후에도 순위가 계속 갱신되는 것이 확정 요구라,
+    그 갱신을 실제로 멈춘 뒤에야 최종 성적이 의미를 갖는다.
+    """
+    monkeypatch.setenv("SINGCUP_RANKING_REFRESH_ENABLED", "false")
 
 
 async def _add(owner, at, hearts=1, clip="c1", rank=1):
@@ -171,7 +188,7 @@ def test_running_event_does_not_touch_final_standings(db, monkeypatch):
     assert db(_count("singcup_final_standings")) == 0
 
 
-def test_ended_event_saves_final_standings_even_in_idle(db, monkeypatch):
+def test_ended_event_saves_final_standings_even_in_idle(db, monkeypatch, ranking_closed):
     _idle_config(monkeypatch)
     now = db(_seed_old(n=9, owners=3))
     monkeypatch.setattr(sr, "event_status", lambda: "ENDED")
@@ -182,7 +199,7 @@ def test_ended_event_saves_final_standings_even_in_idle(db, monkeypatch):
     assert db(_count("singcup_final_standings")) == 3
 
 
-def test_final_standings_is_idempotent_and_not_resaved(db, monkeypatch):
+def test_final_standings_is_idempotent_and_not_resaved(db, monkeypatch, ranking_closed):
     """성공 이후에는 같은 데이터로 매시간 다시 쓰지 않는다."""
     _idle_config(monkeypatch)
     now = db(_seed_old(n=9, owners=3))
@@ -194,7 +211,7 @@ def test_final_standings_is_idempotent_and_not_resaved(db, monkeypatch):
     assert db(_count("singcup_final_standings")) == 3, "중복 행이 생기면 안 된다"
 
 
-def test_new_snapshot_after_save_triggers_another_save(db, monkeypatch):
+def test_new_snapshot_after_save_triggers_another_save(db, monkeypatch, ranking_closed):
     """저장 뒤에 더 새로운 원본이 들어오면 다시 저장한다."""
     _idle_config(monkeypatch)
     now = db(_seed_old(n=9, owners=3))
@@ -213,7 +230,7 @@ def test_new_snapshot_after_save_triggers_another_save(db, monkeypatch):
     assert db(hearts()) == 777
 
 
-def test_failed_save_is_not_marked_partial_and_retries_next_cycle(db, monkeypatch):
+def test_failed_save_is_not_marked_partial_and_retries_next_cycle(db, monkeypatch, ranking_closed):
     _idle_config(monkeypatch)
     now = db(_seed_old(n=9, owners=3))
     monkeypatch.setattr(sr, "event_status", lambda: "ENDED")
@@ -231,11 +248,15 @@ def test_failed_save_is_not_marked_partial_and_retries_next_cycle(db, monkeypatc
     monkeypatch.undo()                       # 다음 회차에는 정상으로 돌아온다
     _idle_config(monkeypatch)
     monkeypatch.setattr(sr, "event_status", lambda: "ENDED")
+    # `undo()`는 `ranking_closed` 픽스처가 건 env까지 함께 되돌린다. 최종 성적 저장은
+    # 순위 갱신이 닫혀 있을 때만 일어나므로(SINGCUP-1) 여기서 다시 닫아 준다 —
+    # 바로 위의 `_idle_config`·`event_status` 재적용과 같은 이유다.
+    monkeypatch.setenv("SINGCUP_RANKING_REFRESH_ENABLED", "false")
     again = db(sr.run_retention(now + 3600, automatic=True))
     assert again["final_standings"]["saved"] == 3, "다음 회차에서 재시도해야 한다"
 
 
-def test_worker_restart_still_saves_final_standings(db, monkeypatch):
+def test_worker_restart_still_saves_final_standings(db, monkeypatch, ranking_closed):
     """워커가 재시작해도(모듈 상태에 의존하지 않으므로) 판단이 같아야 한다."""
     _idle_config(monkeypatch)
     now = db(_seed_old(n=9, owners=3))

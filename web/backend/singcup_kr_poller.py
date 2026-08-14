@@ -407,7 +407,17 @@ _last_prune_at = 0.0
 
 
 async def lease_tasks(now: int, limit: int) -> list[dict]:
-    """후보를 골라 lease를 발급한다. 반환값에는 외부 호출 최소값만 담는다."""
+    """후보를 골라 lease를 발급한다. 반환값에는 외부 호출 최소값만 담는다.
+
+    **이벤트 종료 후에도 계속 발급한다** — 이 경로는 이미 등록된 클립의 조회수를
+    복구하는 일이라 '신규 등록'이 아니다(후보 SQL도 `singcup_clips`에 이미 있는
+    행만 고른다). 예전에는 게이트가 아예 없어서 우연히 그렇게 동작했는데, 이제
+    `metrics_refresh_open()`으로 **의도를 명시**한다.
+    """
+    from singcup_collector import metrics_refresh_open
+    if not metrics_refresh_open():
+        _log({"event": "krp_gate_closed"})
+        return []
     global _last_prune_at
     n = max(1, min(BATCH_MAX, int(limit or BATCH_MAX)))
     out: list[dict] = []

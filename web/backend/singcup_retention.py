@@ -22,7 +22,7 @@ import os
 import time
 from datetime import timedelta, timezone
 
-from singcup_collector import EVENT_ID, event_status
+from singcup_collector import EVENT_ID, event_status, ranking_refresh_open
 
 from database import get_db
 
@@ -233,6 +233,10 @@ async def save_final_standings(now: int) -> dict:
     """
     if event_status() != "ENDED":
         return {"saved": 0, "note": "이벤트 진행 중"}
+    if ranking_refresh_open():
+        # 순위가 계속 갱신되는 동안 '최종' 성적을 박아 두면 그 값이 곧 낡는다.
+        # 수동 호출도 같은 규칙을 따른다(자동 경로만 막으면 우회가 생긴다).
+        return {"saved": 0, "note": "순위 갱신이 아직 열려 있습니다"}
     db = await get_db()
     cur = await db.execute(
         """INSERT INTO singcup_final_standings
@@ -406,7 +410,11 @@ async def _run_idle(now: int) -> dict:
     t0 = time.perf_counter()
     status = event_status()
     fs: dict = {"attempted": False, "saved": 0}
-    if status == "ENDED":
+    # **순위가 아직 움직이는 동안에는 최종 성적을 굳히지 않는다.**
+    # 확정 요구가 "종료 후에도 순위를 계속 계산"이므로, 여기서 매 회차 UPSERT하면
+    # 참가자 수만큼(약 1,157행) 무의미한 쓰기가 반복되고 '최종'이라는 이름도
+    # 사실과 달라진다. 순위 갱신을 실제로 닫은 뒤에 저장한다.
+    if status == "ENDED" and not ranking_refresh_open():
         needed, why = await _final_standings_needed()
         fs["reason"] = why
         if needed:

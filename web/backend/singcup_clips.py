@@ -48,6 +48,9 @@ from singcup_collector import (
     START_AT,
     SchemaError,
     event_status,
+    metrics_refresh_open,
+    registration_open,
+    snapshot_refresh_open,
 )
 
 from database import DB_PATH, get_db
@@ -3493,7 +3496,9 @@ RETAG_PER_CYCLE = int(os.getenv("SINGCUP_RETAG_PER_CYCLE", "40"))
 RETAG_CONCURRENCY = int(os.getenv("SINGCUP_RETAG_CONCURRENCY", "2"))
 RETAG_RATE = float(os.getenv("SINGCUP_RETAG_RATE", "1.0"))   # 초당 요청
 # 이벤트가 끝난 뒤에도 이 시간까지는 늦게 붙은 태그를 받아 준다.
-RETAG_GRACE_HOURS = float(os.getenv("SINGCUP_RETAG_GRACE_HOURS", "24"))
+# `SINGCUP_RETAG_GRACE_HOURS`는 SINGCUP-1에서 쓰이지 않게 됐다. 재확인은 이제 '등록'
+# 게이트에 묶여 END_AT에서 정확히 닫힌다 — 유예를 두면 종료 뒤에 태그를 붙인 클립이
+# 참가로 편입돼 순위가 소급 변경된다. 환경변수를 지우지는 않는다(설정돼 있어도 무해).
 
 
 def _next_check_at(status: str, recheck_count: int, now: int) -> int | None:
@@ -3569,8 +3574,17 @@ def _retag_window() -> tuple[int, int]:
 
 
 def retag_enabled() -> bool:
-    """이벤트가 끝나고 유예까지 지나면 재확인을 멈춘다(무의미한 호출 방지)."""
-    return time.time() <= END_AT.timestamp() + RETAG_GRACE_HOURS * 3600
+    """무태그 재확인을 계속하는가.
+
+    재확인이 하는 일은 **아직 등록되지 않은 클립을 등록하는 것**이므로 '등록' 축이다.
+    그래서 판정은 `registration_open()` 하나로 끝난다 — 종료와 동시에 닫힌다.
+
+    예전에는 `END_AT + RETAG_GRACE_HOURS`까지 열어 뒀다. 그 유예는 **종료 뒤에 태그를
+    붙인 클립까지 참가로 편입**시켜 순위를 소급 변경할 수 있어, "종료 후 신규 등록
+    중단"이라는 확정 요구와 맞지 않는다. 그래서 유예를 걷어내고 경계를 END_AT에
+    정확히 맞췄다(더 엄격해진 방향이다).
+    """
+    return registration_open()
 
 
 _DUE_SCAN_SQL = """
@@ -5309,25 +5323,34 @@ async def start_clip_collector():
         results: dict[str, str] = {}
         try:
             st = event_status()
-            if st == "LIVE":
-                # 지표 갱신은 여기서 하지 않는다 — singcup_sweep이 KST 매시 정각에
-                # 대표·일반을 가리지 않고 전체를 한 번씩 훑는다. 이 루프는 새 클립을
-                # 빨리 찾는 역할만 남긴다(정각까지 기다리면 신규 등장이 늦어진다).
-                # 다섯 단계는 서로 독립이다 — 한 단계가 잠금으로 실패해도 나머지는
-                # 돌린다. 예전에는 첫 실패에서 회차 전체가 끝났다.
-                for name, fn in (
+            # ── 축이 셋이다. 하나의 `event_status()`로 묶지 말 것 (SINGCUP-1) ──
+            #   등록  : 신규 참가자·클립을 새로 들이는 일 → 종료와 함께 닫힌다
+            #   지표  : 이미 등록된 클립의 상태를 바로잡는 일 → 종료 후에도 연다
+            #   스냅샷: 급상승의 기준선 → 종료 후에도 연다(멈추면 급상승이 0으로 굳는다)
+            reg, met, snap = registration_open(), metrics_refresh_open(), snapshot_refresh_open()
+
+            # 지표 갱신(조회수·하트) 자체는 여기서 하지 않는다 — singcup_sweep이
+            # 연속 사이클로 전체를 훑는다. 이 루프는 탐색과 상태 정정만 맡는다.
+            # 각 단계는 서로 독립이다 — 한 단계가 잠금으로 실패해도 나머지는 돌린다.
+            steps: list[tuple[str, object]] = []
+            if reg:
+                steps += [
                     ("discover",  discover_new_clips),
                     ("retry",     retry_failed_clips),
                     # 설명이 나중에 바뀐 클립을 데려온다(스캔 기록 기준)
                     ("recheck",   recheck_untagged_clips),
                     # 양쪽 표에 다 없는 '고아'를 되찾는다(주기적 전체 대조)
                     ("reconcile", maybe_reconcile),
-                    # 삭제 의심/확정 클립만 소량 재확인한다. 대상이 없으면 요청 0건이라
-                    # 별도 워커를 만들지 않고 이 루프에 얹는다.
-                    ("deletion",  run_deletion_checks),
-                ):
-                    results[name] = await _run_step(name, fn)
+                ]
+            if met:
+                # 삭제 확정은 대표 재선정·순위에 직접 영향을 준다 → 지표 축이다.
+                # 종료 후에도 열어 둬야 지워진 클립이 순위에 계속 남지 않는다.
+                # 대상이 없으면 요청 0건이라 별도 워커를 만들지 않고 이 루프에 얹는다.
+                steps.append(("deletion", run_deletion_checks))
+            for name, fn in steps:
+                results[name] = await _run_step(name, fn)
 
+            if snap:
                 # 스냅샷은 다르다. `UNIQUE(bucket)` + `INSERT OR IGNORE`라 한 번
                 # 쓰면 그 시간 안에는 **교체할 수 없다.** 불완전한 회차의 값을
                 # 정상 기준선으로 굳히면 정상 회차가 와도 못 고친다.
@@ -5341,10 +5364,11 @@ async def start_clip_collector():
                           "partial_steps": [k for k, v in results.items() if v == "partial"]})
                 else:
                     results["snapshot"] = await _run_step("snapshot", ensure_hourly_snapshot)
-            elif st == "UPCOMING":
+
+            if st == "UPCOMING":
                 wait = 30.0
-            else:
-                wait = 360.0          # 종료 후에는 사실상 멈춘다
+            elif not (reg or met or snap):
+                wait = 360.0          # 전부 닫혔을 때만 사실상 멈춘다
         except Exception as e:
             _log({"event": "loop_error", "level": "warning", "detail": str(e)[:200]})
         finally:

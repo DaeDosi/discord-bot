@@ -300,6 +300,76 @@ def event_status(now: datetime | None = None) -> str:
     return "LIVE"
 
 
+# ── 동작 게이트 (SINGCUP-1) ─────────────────────────────────────────────────
+#
+# **`event_status()` 하나로 모든 동작을 켜고 끄지 말 것.** 이벤트가 끝나 `ENDED`가
+# 되면 등록·갱신·순위·스냅샷이 **함께** 멈췄다. 그런데 확정된 제품 요구는 둘을 나눈다:
+#
+#   · 신규 참가자·클립 **등록**은 종료와 함께 멈춘다 (순위가 소급 변경되면 안 된다)
+#   · 기존 클립의 **조회수·하트·순위·급상승·시간별 스냅샷**은 계속 간다
+#
+# 그래서 축을 넷으로 쪼갠다. 호출부는 `event_status()`를 직접 보지 말고 아래 함수를
+# 쓴다 — **네 개를 다시 하나로 합치면 이 요구가 그대로 깨진다.**
+#
+# `SINGCUP_END_AT`을 늘려서 해결하지 않는 이유: `END_AT`은 참가 판정 창
+# (`is_event_entry`)의 정의이기도 해서, 늘리는 순간 **종료 후 업로드된 클립이 참가로
+# 편입**된다. 그건 "등록만 종료"의 정반대다.
+#
+# 각 게이트에 비상 정지용 환경변수를 두되 **기본값이 곧 확정 요구**다 — 운영에서
+# 변수를 새로 설정하지 않아도 요구대로 동작한다.
+
+_GATE_TRUE = ("1", "true", "yes", "on")
+
+
+def _gate_flag(name: str, default: bool = True) -> bool:
+    v = os.getenv(name)
+    return default if v is None else v.strip().lower() in _GATE_TRUE
+
+
+def registration_open(now: datetime | None = None) -> bool:
+    """신규 참가자·클립을 **새로 들이는가**.
+
+    이벤트 기간에만 열린다. 탐색·재시도·무태그 재확인·전체 대조(reconcile)·
+    라운지 수집이 여기에 묶인다.
+    """
+    if not _gate_flag("SINGCUP_REGISTRATION_ENABLED"):
+        return False
+    return event_status(now) == "LIVE"
+
+
+def metrics_refresh_open(now: datetime | None = None) -> bool:
+    """**이미 등록된** 클립의 조회수·하트를 계속 갱신하는가.
+
+    종료 후에도 True다. 시작 전(UPCOMING)에는 갱신할 대상 자체가 없다.
+    """
+    if not _gate_flag("SINGCUP_METRICS_REFRESH_ENABLED"):
+        return False
+    return event_status(now) in ("LIVE", "ENDED")
+
+
+def ranking_refresh_open(now: datetime | None = None) -> bool:
+    """대표 클립 재선정·점수·순위·하트 급상승을 계속 계산하는가.
+
+    갱신된 지표가 순위에 반영되지 않으면 갱신 자체가 무의미하므로 metrics와 같은
+    창을 쓴다. **`singcup_final_standings`로 순위를 얼리지 않는다** — 이 게이트가
+    열려 있는 동안 최종 성적 자동 저장은 하지 않는다.
+    """
+    if not _gate_flag("SINGCUP_RANKING_REFRESH_ENABLED"):
+        return False
+    return event_status(now) in ("LIVE", "ENDED")
+
+
+def snapshot_refresh_open(now: datetime | None = None) -> bool:
+    """시간별 스냅샷을 계속 만드는가.
+
+    **급상승의 기준선이 이 스냅샷이다.** 갱신만 되살리고 스냅샷을 멈추면 비교
+    대상이 종료 시점에 굳어 급상승이 영원히 0이 된다 — 반드시 세트로 연다.
+    """
+    if not _gate_flag("SINGCUP_SNAPSHOT_REFRESH_ENABLED"):
+        return False
+    return event_status(now) in ("LIVE", "ENDED")
+
+
 # ── HTTP ────────────────────────────────────────────────────────────────────
 _client: httpx.AsyncClient | None = None
 

@@ -808,7 +808,10 @@ async def start_audit_worker():
     await asyncio.sleep(float(os.getenv("SINGCUP_AUDIT_START_DELAY_SECONDS", "70")))
     while True:
         try:
-            if enabled() and sc.event_status() == "LIVE":
+            # 삭제 확정은 대표 재선정·순위에 직접 영향을 주므로 '지표' 축이다.
+            # 종료 후에도 순위를 계속 계산하는 이상 여기도 함께 열려 있어야
+            # 지워진 클립이 순위에 남지 않는다(master 스위치는 기본 OFF 그대로).
+            if enabled() and sc.metrics_refresh_open():
                 token = await sc.acquire_named_lock(AUDIT_LOCK_NAME, AUDIT_LOCK_TTL)
                 if token:
                     try:

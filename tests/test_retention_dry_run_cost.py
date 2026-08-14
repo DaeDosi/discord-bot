@@ -209,13 +209,30 @@ def test_enabled_true_but_verification_failed_deletes_nothing(db, monkeypatch):
 
 
 def test_final_standings_path_survives(db, monkeypatch):
-    """이벤트 종료 후 최종 성적 저장은 그대로 동작해야 한다."""
+    """최종 성적 저장 경로는 그대로 동작해야 한다.
+
+    SINGCUP-1로 조건이 하나 늘었다 — 이벤트가 끝난 것만으로는 부족하고 **순위 갱신도
+    닫혀 있어야** 한다. 종료 후에도 순위를 계속 계산하는 것이 확정 요구라, 그 동안
+    '최종' 성적을 박아 두면 매 회차 UPSERT가 반복되고 이름도 사실과 달라진다.
+    날짜(END_AT)를 조작하지 않고 계약 함수를 닫아 확인한다.
+    """
     now = db(_seed_old(n=9, owners=3))
     monkeypatch.setattr(sr, "event_status", lambda: "ENDED")
+    monkeypatch.setenv("SINGCUP_RANKING_REFRESH_ENABLED", "false")
     rep = db(sr.run_retention(now))
     assert rep["final_standings"]["saved"] == 3
     assert db(_count("singcup_final_standings")) == 3
     assert rep["phase_ms"]["final_standings"] >= 0
+
+
+def test_final_standings_waits_while_ranking_still_refreshes(db, monkeypatch):
+    """반대로 순위가 아직 갱신 중이면 저장하지 않는다(SINGCUP-1)."""
+    now = db(_seed_old(n=9, owners=3))
+    monkeypatch.setattr(sr, "event_status", lambda: "ENDED")
+    rep = db(sr.run_retention(now))
+    assert rep["final_standings"]["saved"] == 0
+    assert "순위" in rep["final_standings"].get("note", "")
+    assert db(_count("singcup_final_standings")) == 0, "얼리지 말아야 할 값이 저장됐다"
 
 
 # ── 5. 규모 — 제거된 쿼리가 얼마나 비쌌는지 같은 DB에서 대조한다 ───────────

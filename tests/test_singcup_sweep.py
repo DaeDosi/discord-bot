@@ -18,6 +18,21 @@ import database
 KST_HOUR = 3600
 
 
+@pytest.fixture
+def registration_window(monkeypatch):
+    """이 파일의 재확인(retag) 테스트는 **등록이 열려 있는 상태**를 전제한다.
+
+    SINGCUP-1에서 '등록'과 '지표 갱신'의 게이트가 분리되면서, 이벤트가 끝나면
+    무태그 재확인은 **닫히는 것이 정상 동작**이 됐다(열어 두면 종료 뒤에 태그를 붙인
+    클립이 참가로 편입돼 순위가 소급 변경된다).
+
+    그래서 오늘 날짜가 이벤트 기간 밖이라는 이유로 테스트가 깨지지 않도록,
+    **`SINGCUP_END_AT`을 조작하지 않고** 계약 함수를 직접 연다. END_AT을 미래로
+    미는 방식은 참가 판정 창까지 함께 넓혀 다른 것을 검사하게 만든다.
+    """
+    monkeypatch.setattr(sc, "registration_open", lambda now=None: True)
+
+
 def _cards(likes=7, views=11, **kw):
     def h(request):
         url = str(request.url)
@@ -645,7 +660,7 @@ async def _clip_rows():
     return {r["clip_uid"]: dict(r) for r in rows}
 
 
-def test_late_tag_is_picked_up_on_recheck(db):
+def test_late_tag_is_picked_up_on_recheck(db, registration_window):
     """설명에 나중에 #싱드컵이 붙은 클립이 재확인으로 등록된다."""
     from datetime import datetime
     created = int(datetime.strptime(IN_WINDOW, "%Y-%m-%d %H:%M:%S")
@@ -665,7 +680,7 @@ def test_late_tag_is_picked_up_on_recheck(db):
     assert any(s["clipUid"] == "late1" for s in db(sc.load_main())["streamers"])
 
 
-def test_still_untagged_clip_is_not_registered(db):
+def test_still_untagged_clip_is_not_registered(db, registration_window):
     """여전히 태그가 없으면 등록하지 않고 확인 시각만 민다."""
     db(_mark_scanned())
     _install(_retag_handler(desc="#노래 #커버"))
@@ -682,7 +697,7 @@ def test_still_untagged_clip_is_not_registered(db):
     assert r["recheck_count"] == 1
 
 
-def test_recently_checked_clips_are_not_rechecked(db):
+def test_recently_checked_clips_are_not_rechecked(db, registration_window):
     """방금 확인한 클립은 재확인 대상이 아니다(불필요한 호출 방지)."""
     db(_mark_scanned(age_hours=0.1, next_check_at=int(time.time()) + 3600))
     calls = []
@@ -691,7 +706,7 @@ def test_recently_checked_clips_are_not_rechecked(db):
     assert res["examined"] == 0 and calls == []
 
 
-def test_already_tagged_clips_are_not_rechecked(db):
+def test_already_tagged_clips_are_not_rechecked(db, registration_window):
     """이미 참가작인 클립은 재확인하지 않는다."""
     db(_mark_scanned(tagged=1))
     calls = []
@@ -700,7 +715,7 @@ def test_already_tagged_clips_are_not_rechecked(db):
     assert calls == []
 
 
-def test_out_of_window_clip_is_skipped(db):
+def test_out_of_window_clip_is_skipped(db, registration_window):
     """이벤트 기간 밖 클립은 재확인해도 등록하지 않는다."""
     from datetime import datetime
     old = int(datetime.strptime("2026-07-01 10:00:00", "%Y-%m-%d %H:%M:%S")
@@ -712,7 +727,7 @@ def test_out_of_window_clip_is_skipped(db):
     assert db(_clip_rows()) == {}
 
 
-def test_legacy_row_without_video_id_uses_detail(db):
+def test_legacy_row_without_video_id_uses_detail(db, registration_window):
     """videoId가 없던 예전 스캔 행은 상세 API로 재료를 채워 확인한다."""
     db(_mark_scanned(video_id="", created=None))
     details, cards = [], []
@@ -724,7 +739,7 @@ def test_legacy_row_without_video_id_uses_detail(db):
     assert "late1" in db(_clip_rows())
 
 
-def test_recheck_lock_blocks_concurrent_runs(db):
+def test_recheck_lock_blocks_concurrent_runs(db, registration_window):
     import asyncio
     db(_mark_scanned())
     _install(_retag_handler())
@@ -747,7 +762,7 @@ def test_card_owner_channel_id_is_extracted():
 
 # ── 실패와 무태그를 구분한다 ────────────────────────────────────────────────
 # 이번 사고의 뿌리는 tagged=0 하나로 '태그 없음'과 '확인 실패'를 같게 취급한 것이다.
-def test_fetch_failure_uses_short_backoff_not_six_hours(db):
+def test_fetch_failure_uses_short_backoff_not_six_hours(db, registration_window):
     """HTTP 실패는 6시간이 아니라 분 단위로 다시 본다."""
     db(_mark_scanned())
 
@@ -795,7 +810,7 @@ def test_terminal_states_are_never_rechecked(db):
         assert sc._next_check_at(st, 1, now) is None
 
 
-def test_failure_does_not_become_permanent_exclusion(db):
+def test_failure_does_not_become_permanent_exclusion(db, registration_window):
     """실패한 클립도 백오프가 지나면 다시 대상에 들어온다(영구 제외 금지)."""
     db(_mark_scanned(status=sc.SCAN_FETCH_FAILED,
                      next_check_at=int(time.time()) - 10))
@@ -805,7 +820,7 @@ def test_failure_does_not_become_permanent_exclusion(db):
 
 
 # ── 소유 채널 안전장치 ──────────────────────────────────────────────────────
-def test_missing_owner_is_not_attributed_to_a_wrong_channel(db):
+def test_missing_owner_is_not_attributed_to_a_wrong_channel(db, registration_window):
     """소유 채널을 확정 못 하면 아무 스트리머에도 귀속시키지 않는다."""
     db(_mark_scanned())
 
@@ -833,7 +848,7 @@ def test_missing_owner_is_not_attributed_to_a_wrong_channel(db):
     assert 0 < r["next_check_at"] - int(time.time()) <= 3600
 
 
-def test_owner_priority_prefers_official_field(db):
+def test_owner_priority_prefers_official_field(db, registration_window):
     """공식 ownerChannelId가 있으면 그걸 쓰고, 없을 때만 카드 fallback."""
     db(_mark_scanned())
 
@@ -856,7 +871,7 @@ def test_owner_priority_prefers_official_field(db):
     assert db(_clip_rows())["late1"]["owner_channel_id"] == "official-owner"
 
 
-def test_blinded_clip_becomes_terminal(db):
+def test_blinded_clip_becomes_terminal(db, registration_window):
     """삭제·블라인드 클립은 등록하지 않고 최종 상태로 닫는다."""
     db(_mark_scanned())
 
@@ -881,7 +896,7 @@ def test_blinded_clip_becomes_terminal(db):
 
 
 # ── 큐 진행·중복 방지 ───────────────────────────────────────────────────────
-def test_repeated_calls_walk_the_whole_backlog(db):
+def test_repeated_calls_walk_the_whole_backlog(db, registration_window):
     """limit보다 대상이 많아도 반복 호출하면 전부 검사된다(앞 N건 반복 아님)."""
     from datetime import datetime
     created = int(datetime.strptime(IN_WINDOW, "%Y-%m-%d %H:%M:%S")
@@ -921,7 +936,7 @@ def test_discovery_skips_clips_not_yet_due(db):
          "next_check_at": now - 1}, now) is False
 
 
-def test_registered_clip_is_not_reregistered(db):
+def test_registered_clip_is_not_reregistered(db, registration_window):
     """이미 등록된 클립은 재확인 대상에서 빠진다(중복 행 방지)."""
     from datetime import datetime
     created = int(datetime.strptime(IN_WINDOW, "%Y-%m-%d %H:%M:%S")
@@ -990,14 +1005,26 @@ def test_newly_tagged_clip_can_overtake_the_representative(db):
     assert me["taggedClipCount"] == 2             # KPI에도 반영
 
 
-def test_retag_stops_after_event_grace(db, monkeypatch):
-    """이벤트가 끝나고 유예까지 지나면 재확인을 멈춘다."""
-    monkeypatch.setattr(sc, "RETAG_GRACE_HOURS", -99999)
+def test_retag_stops_when_registration_closes(db, monkeypatch):
+    """등록이 닫히면 재확인도 멈춘다 (SINGCUP-1).
+
+    예전 이름은 `test_retag_stops_after_event_grace`였고 `RETAG_GRACE_HOURS`를
+    음수로 밀어 확인했다. 이제 재확인은 '등록' 축에 묶여 END_AT에서 정확히 닫히므로
+    (유예 없음), 판정 기준도 게이트 하나다.
+    """
+    monkeypatch.setattr(sc, "registration_open", lambda now=None: False)
     assert sc.retag_enabled() is False
     assert db(sc.recheck_untagged_clips())["status"] == sc.ST_SKIPPED
 
 
-def test_retag_stats_reports_queue_health(db):
+def test_retag_runs_while_registration_is_open(db, monkeypatch):
+    """반대로 등록이 열려 있으면 재확인은 건너뛰지 않는다."""
+    monkeypatch.setattr(sc, "registration_open", lambda now=None: True)
+    assert sc.retag_enabled() is True
+    assert db(sc.recheck_untagged_clips())["status"] != sc.ST_SKIPPED
+
+
+def test_retag_stats_reports_queue_health(db, registration_window):
     from datetime import datetime
     created = int(datetime.strptime(IN_WINDOW, "%Y-%m-%d %H:%M:%S")
                   .replace(tzinfo=sw.KST).timestamp())
@@ -1028,7 +1055,7 @@ def test_tag_variants_rejected(text):
     assert not sc.has_singcup_tag(text)
 
 
-def test_tag_is_judged_on_description_only(db):
+def test_tag_is_judged_on_description_only(db, registration_window):
     """제목의 `[싱드컵]` 표기만으로는 참가 처리되지 않는다."""
     db(_mark_scanned())
     _install(_retag_handler(desc="#노래 #커버"))   # 제목엔 [싱드컵]이 들어 있다
