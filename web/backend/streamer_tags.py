@@ -421,6 +421,34 @@ async def reorder(channel_id: str, tag_ids: list) -> dict:
     return {"channelId": cid, "count": len(set(ids))}
 
 
+async def reorder_members(tag_id: int, channel_ids: list) -> dict:
+    """한 그룹 **안에서** 멤버 순서를 다시 매긴다(관리 화면의 ↑↓).
+
+    ⚠️ **`display_order`는 원래 "그 스트리머의 배지 노출 순서"다.** 같은 컬럼을
+    여기서 "그룹 안의 멤버 순서"로도 쓰는데, 한 스트리머가 그룹 하나에만 속하면
+    두 의미가 일치해 아무 문제가 없다. **여러 그룹에 속한 스트리머**의 값을 여기서
+    바꾸면 그 사람의 공개 배지 순서도 함께 바뀐다 — 화면에서 그 사실을 안내한다.
+
+    별도 컬럼을 만들지 않은 이유: 그룹 내 순서는 관리 화면에서만 쓰이고 공개 화면
+    어디에도 나오지 않는다. 그 하나를 위해 마이그레이션을 더하면 운영 데이터에
+    되돌리기 어려운 변경이 늘어난다.
+    """
+    tag = await get_tag(tag_id)
+    if tag is None:
+        raise TagError("존재하지 않는 소속 그룹입니다.")
+    ids = [norm_channel_id(c) for c in (channel_ids or [])]
+    if not ids:
+        raise TagError("순서를 매길 멤버가 없습니다.")
+    db = await get_db()
+    for order, cid in enumerate(dict.fromkeys(ids)):
+        await db.execute(
+            "UPDATE streamer_tag_assignments SET display_order=? "
+            "WHERE tag_id=? AND streamer_channel_id=?", (order, int(tag_id), cid))
+    await db.commit()
+    _bump()
+    return {"tagId": int(tag_id), "count": len(set(ids))}
+
+
 async def search_streamers(keyword: str, limit: int = 20) -> list[dict]:
     """관리 화면의 스트리머 검색 — 이름 부분일치 또는 채널 ID 완전일치.
 
@@ -444,7 +472,8 @@ async def search_streamers(keyword: str, limit: int = 20) -> list[dict]:
             "ORDER BY last_seen DESC LIMIT ?",
             (f"%{_like_escape(kw)}%", n))).fetchall()
     out = [{"channelId": r["chzzk_channel_id"], "channelName": r["channel_name"],
-            "lastSeen": int(r["last_seen"] or 0)} for r in rows]
+            "lastSeen": int(r["last_seen"] or 0),
+            "channelImageUrl": _channel_image(r["chzzk_channel_id"])} for r in rows]
     mapping = await tags_for_channels([o["channelId"] for o in out])
     for o in out:
         o["tags"] = mapping.get(o["channelId"], [])
@@ -456,21 +485,81 @@ def _like_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-async def assignments_of_tag(tag_id: int, limit: int = 200) -> list[dict]:
-    """이 태그가 붙은 스트리머 목록(관리 화면). 상한을 반드시 건다."""
-    n = max(1, min(500, int(limit or 200)))
+#: 멤버 목록 한 페이지 상한. 그룹 하나에 수백 명이 붙어도 화면이 한 번에 다 그리지
+#: 않도록 서버가 먼저 자른다 — 500개를 통째로 렌더하면 모바일에서 그대로 멈춘다.
+MEMBER_PAGE_MAX = 100
+MEMBER_PAGE_DEFAULT = 30
+
+
+async def assignments_of_tag(tag_id: int, *, limit: int = MEMBER_PAGE_DEFAULT,
+                             offset: int = 0, search: str | None = None) -> dict:
+    """이 그룹에 속한 스트리머 목록(관리 화면).
+
+    한 그룹의 멤버가 수백 명이 될 수 있어 **페이지로 끊어 준다.** 정렬은 화면에
+    보이는 순서 그대로(`display_order`)이고, 그 뒤 채널 id로 안정 정렬한다 —
+    같은 순서 값이 여러 개면 페이지마다 순서가 흔들려 같은 사람이 두 번 보인다.
+
+    `search`는 이름 부분일치 또는 32자 채널 ID 완전일치다. `%`·`_`는 이스케이프해
+    와일드카드로 동작하지 못하게 한다.
+
+    반환에 `total`을 함께 담는 이유는 화면이 "멤버 N명"을 페이지 크기가 아니라
+    **실제 지정 수**로 보여야 하기 때문이다(누적 카운터를 따로 두지 않는다).
+    """
+    n = max(1, min(MEMBER_PAGE_MAX, int(limit or MEMBER_PAGE_DEFAULT)))
+    off = max(0, int(offset or 0))
+    kw = (search or "").strip()
     db = await get_db()
+
+    where = ["a.tag_id = ?"]
+    params: list = [int(tag_id)]
+    if kw:
+        if len(kw) < 2:
+            raise TagError("검색어는 2자 이상이어야 합니다.")
+        if valid_channel_id(kw):
+            where.append("a.streamer_channel_id = ?")
+            params.append(kw.lower())
+        else:
+            # ESCAPE 문자는 **한 글자**여야 한다. 파이썬 소스에서 백슬래시 하나를
+            # 담으려면 `'\\'`로 쓴다 — `'\''`처럼 되면 빈 문자열이 돼 SQLite가 거부한다.
+            where.append("c.channel_name LIKE ? ESCAPE '\\'")
+            params.append(f"%{_like_escape(kw)}%")
+    cond = " AND ".join(where)
+
+    # 총 개수는 같은 조건으로 한 번만 센다(행마다 세면 그게 N+1이다).
+    total = int((await (await db.execute(
+        f"""SELECT COUNT(*) n
+              FROM streamer_tag_assignments a
+              LEFT JOIN rising_channel_stats c
+                     ON c.chzzk_channel_id = a.streamer_channel_id
+             WHERE {cond}""", tuple(params))).fetchone())["n"])
+
     rows = await (await db.execute(
-        """SELECT a.streamer_channel_id AS cid, a.display_order,
-                  c.channel_name
-             FROM streamer_tag_assignments a
-             LEFT JOIN rising_channel_stats c
-                    ON c.chzzk_channel_id = a.streamer_channel_id
-            WHERE a.tag_id=?
-            ORDER BY a.display_order, a.streamer_channel_id
-            LIMIT ?""", (int(tag_id), n))).fetchall()
-    return [{"channelId": r["cid"], "channelName": r["channel_name"],
-             "displayOrder": int(r["display_order"])} for r in rows]
+        f"""SELECT a.streamer_channel_id AS cid, a.display_order, c.channel_name
+              FROM streamer_tag_assignments a
+              LEFT JOIN rising_channel_stats c
+                     ON c.chzzk_channel_id = a.streamer_channel_id
+             WHERE {cond}
+             ORDER BY a.display_order, a.streamer_channel_id
+             LIMIT ? OFFSET ?""", (*params, n, off))).fetchall()
+
+    items = [{"channelId": r["cid"], "channelName": r["channel_name"],
+              "displayOrder": int(r["display_order"]),
+              "channelImageUrl": _channel_image(r["cid"])} for r in rows]
+    return {"items": items, "total": total, "limit": n, "offset": off,
+            "hasMore": off + len(items) < total}
+
+
+def _channel_image(channel_id: str) -> str:
+    """프로필 이미지 — 수집기가 메모리에 들고 있는 맵에서 읽는다(DB 조회 0회).
+
+    없으면 빈 문자열이다. 이걸 위해 외부를 호출하지 않는다 — 멤버 30명을 그리려고
+    30번 나가면 그게 곧 N+1이고, 관리 화면 한 번 여는 데 몇 초가 걸린다.
+    """
+    try:
+        from rising_collector import latest_image
+        return latest_image(channel_id) or ""
+    except Exception:                                   # noqa: BLE001
+        return ""
 
 
 __all__ = [
@@ -482,4 +571,5 @@ __all__ = [
     "tags_for_channels", "tags_for_channel", "attach_tags",
     "list_tags", "get_tag", "create_tag", "update_tag",
     "assign", "unassign", "reorder", "search_streamers", "assignments_of_tag",
+    "MEMBER_PAGE_MAX", "MEMBER_PAGE_DEFAULT", "reorder_members",
 ]

@@ -924,7 +924,10 @@ export interface StreamerTagSearchItem {
   channelId: string;
   channelName: string | null;
   lastSeen: number;
+  /** 이 스트리머가 이미 속한 소속 그룹들 — 검색 결과에서 "추가됨" 판정에 쓴다. */
   tags: StreamerTag[];
+  /** 수집기 메모리 맵에서 온 프로필 이미지. 없으면 빈 문자열(외부 호출 0회). */
+  channelImageUrl?: string;
 }
 
 export interface StreamerTagMutation {
@@ -934,4 +937,28 @@ export interface StreamerTagMutation {
   tags: StreamerTag[];
   created?: boolean;
   removed?: boolean;
+}
+
+// ── TAG-2: 소속 그룹 멤버 관리 ───────────────────────────────────────────────
+// **DB 테이블명과 공개 API 필드(`team_tags`)는 그대로다.** 사용자에게 보이는
+// 한국어만 "소속 그룹"으로 바뀌었고, 내부 식별자는 tag/team 계열을 유지한다 —
+// 억지로 group으로 개명하면 운영 데이터와 API 계약까지 끌고 가야 한다.
+
+export interface GroupMember {
+  channelId: string;
+  channelName: string | null;
+  displayOrder: number;
+  channelImageUrl: string;
+}
+
+export interface GroupMemberPage {
+  tagId: number;
+  tag: StreamerTagAdmin | StreamerTag & { active?: boolean };
+  items: GroupMember[];
+  /** 하위 호환 별칭 — 서버가 `items`와 같은 배열을 함께 준다. */
+  streamers: GroupMember[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
 }

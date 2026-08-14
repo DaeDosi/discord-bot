@@ -1164,6 +1164,11 @@ class TagReorder(BaseModel):
     tagIds: list[int]
 
 
+class GroupMemberReorder(BaseModel):
+    """그룹 안에서 멤버 순서를 다시 매긴다(스트리머 기준 reorder와 축이 다르다)."""
+    channelIds: list[str]
+
+
 def _tag_400(exc: Exception) -> HTTPException:
     """검증 실패를 400으로 바꾼다.
 
@@ -1216,12 +1221,38 @@ async def streamer_tags_update(tag_id: int, body: TagUpdate,
 
 
 @router.get("/streamer-tags/{tag_id}/assignments")
-async def streamer_tags_assignments(tag_id: int, limit: int = 200,
+async def streamer_tags_assignments(tag_id: int,
+                                    q: str | None = None,
+                                    limit: int | None = None,
+                                    offset: int = 0,
                                     user: dict = Depends(_require_owner)):
+    """이 소속 그룹의 멤버 목록(관리 화면 전용).
+
+    **새 엔드포인트를 만들지 않고** 기존 경로에 검색·페이지 파라미터만 더했다 —
+    같은 자원을 두 경로가 서빙하면 캐시·권한·직렬화가 곧 갈라진다.
+
+    비활성 그룹도 그대로 조회된다. 공개 화면에서는 숨기지만 **관리자는 계속
+    멤버를 확인하고 고칠 수 있어야** 하기 때문이다(비활성 = 숨김이지 삭제가 아니다).
+    """
     import streamer_tags as st
-    if await st.get_tag(tag_id) is None:
-        raise HTTPException(status_code=404, detail="존재하지 않는 태그입니다.")
-    return {"tagId": tag_id, "streamers": await st.assignments_of_tag(tag_id, limit)}
+    tag = await st.get_tag(tag_id)
+    if tag is None:
+        raise HTTPException(status_code=404, detail="존재하지 않는 소속 그룹입니다.")
+    try:
+        page = await st.assignments_of_tag(
+            tag_id, limit=limit or st.MEMBER_PAGE_DEFAULT, offset=offset, search=q)
+    except st.TagError as e:
+        raise _tag_400(e) from e
+    return {"tagId": tag_id,
+            "tag": {"id": int(tag["id"]), "name": tag["name"],
+                    "active": bool(tag["active"]),
+                    "colorMode": tag["color_mode"], "colorStart": tag["color_start"],
+                    "colorEnd": tag["color_end"],
+                    "gradientDirection": tag["gradient_direction"],
+                    "slug": tag["slug"], "kind": tag["kind"]},
+            # 하위 호환 — 기존 키를 유지한다(이미 쓰는 코드가 있으면 깨지지 않게)
+            "streamers": page["items"],
+            **page}
 
 
 @router.get("/streamer-tags/search")
@@ -1269,3 +1300,17 @@ async def streamer_tags_reorder(body: TagReorder,
         raise _tag_400(e) from e
     return {"ok": True, **res,
             "tags": await st.tags_for_channel(body.channelId)}
+
+
+@router.post("/streamer-tags/{tag_id}/members/reorder")
+async def streamer_tags_member_reorder(tag_id: int, body: GroupMemberReorder,
+                                       user: dict = Depends(_require_owner)):
+    """그룹 안 멤버 순서 변경. 스트리머 기준 `/reorder`와 **축이 다르다** —
+    그쪽은 "한 스트리머의 그룹 순서", 이쪽은 "한 그룹의 멤버 순서"다."""
+    import streamer_tags as st
+    if await st.get_tag(tag_id) is None:
+        raise HTTPException(status_code=404, detail="존재하지 않는 소속 그룹입니다.")
+    try:
+        return {"ok": True, **await st.reorder_members(tag_id, body.channelIds)}
+    except st.TagError as e:
+        raise _tag_400(e) from e

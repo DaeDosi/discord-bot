@@ -332,6 +332,22 @@ export const api = {
       request<import("./types").StreamerTagMutation>(
         "/api/admin/streamer-tags/unassign",
         { method: "POST", body: JSON.stringify({ channelId, tagId }) }),
+    /** 소속 그룹의 멤버 목록 — 기존 assignments 경로에 검색·페이지만 더했다.
+     *  (새 엔드포인트를 만들지 않는다: 같은 자원을 두 경로가 서빙하면 갈라진다) */
+    streamerTagMembers: (tagId: number, opts: { q?: string; limit?: number; offset?: number } = {}) => {
+      const qs = new URLSearchParams();
+      if (opts.q) qs.set("q", opts.q);
+      if (opts.limit) qs.set("limit", String(opts.limit));
+      if (opts.offset) qs.set("offset", String(opts.offset));
+      const tail = qs.toString() ? `?${qs}` : "";
+      return request<import("./types").GroupMemberPage>(
+        `/api/admin/streamer-tags/${tagId}/assignments${tail}`);
+    },
+    /** 그룹 **안에서** 멤버 순서 변경 — 스트리머 기준 reorder와 축이 다르다. */
+    streamerTagMemberReorder: (tagId: number, channelIds: string[]) =>
+      request<{ ok: boolean; tagId: number; count: number }>(
+        `/api/admin/streamer-tags/${tagId}/members/reorder`,
+        { method: "POST", body: JSON.stringify({ channelIds }) }),
     streamerTagReorder: (channelId: string, tagIds: number[]) =>
       request<import("./types").StreamerTagMutation>(
         "/api/admin/streamer-tags/reorder",

@@ -850,7 +850,7 @@ export default function AdminPage() {
     { key: "follow", label: followStats === null ? "팔로우 관리 (로딩 중...)" : `팔로우 관리 (${followCount}명)` },
     { key: "announcement", label: "공지 관리" },
     { key: "singcup-rep", label: "싱드컵 대표 클립" },
-    { key: "streamer-tags", label: "스트리머 태그" },
+    { key: "streamer-tags", label: "스트리머 소속 그룹" },
   ] as const;
 
   return (
@@ -1134,7 +1134,8 @@ export default function AdminPage() {
           </div>
         )}
 
-        {/* 스트리머 팀/소속 태그 — 치지직 방송 태그와 다른 개념이다(운영자가 만든다) */}
+        {/* 스트리머 소속 그룹 — 치지직 **방송 태그**와 다른 개념이다(운영자가 만든다).
+            내부 식별자(streamer-tags·team_tags)는 그대로 두고 화면 문구만 '소속 그룹'이다. */}
         {activeTab === "streamer-tags" && <StreamerTagsPanel />}
 
       </main>

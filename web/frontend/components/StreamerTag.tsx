@@ -1,7 +1,7 @@
 "use client";
 import type { StreamerTag } from "@/lib/types";
 
-/** 목록 행에서 한 번에 보여 줄 태그 수. 나머지는 `+N`으로 접는다.
+/** 목록 행에서 한 번에 보여 줄 소속 그룹 수. 나머지는 `+N`으로 접는다.
  *  백엔드 `streamer_tags.LIST_VISIBLE_TAGS`와 같은 값을 유지할 것. */
 export const LIST_VISIBLE_TAGS = 2;
 
@@ -99,7 +99,10 @@ const forDark = (hex: string) => targetLuminance(hex, DARK_MIN_LUM, "up");
 const forLight = (hex: string) => targetLuminance(hex, LIGHT_MAX_LUM, "down");
 
 /**
- * 스트리머 팀/소속 태그 하나.
+ * 스트리머 소속 그룹 배지 하나.
+ *
+ * 사용자에게는 "소속 그룹"이라 부르지만 내부 식별자(`StreamerTag`·`team_tags`·
+ * `streamer_tags`)는 그대로 둔다 — 운영 데이터와 API 계약을 끌고 가지 않기 위해서다.
  *
  * 모양은 **가로로 긴 둥근 직사각형**이다 — 완전한 캡슐(`rounded-full`)은 사이트의
  * 다른 pill(카테고리·상태)과 구별되지 않아 일부러 피했다.
@@ -141,8 +144,10 @@ export function StreamerTagBadge({ tag, className = "" }: {
                   px-1.5 py-0.5 text-[11px] font-bold leading-tight ${className}`}
       style={style}
       title={tag.name}
-      /* 색만으로 뜻을 전하지 않도록 소속임을 읽어 주는 라벨을 붙인다 */
-      aria-label={`소속 ${tag.name}`}
+      /* 색만으로 뜻을 전하지 않도록 무엇인지 읽어 주는 라벨을 붙인다.
+         배지에는 그룹명만 보이고, 스크린리더에만 "소속 그룹:"이 붙는다 —
+         치지직 **방송 태그**와 헷갈리지 않게 하는 게 목적이다. */
+      aria-label={`소속 그룹: ${tag.name}`}
     >
       {isGradient ? (
         // `nb-tag-grad`가 background-clip:text를 건다. 지원하지 않는 환경에서는
@@ -157,7 +162,7 @@ export function StreamerTagBadge({ tag, className = "" }: {
 }
 
 /**
- * 태그 목록 — 정해진 개수만 보여 주고 나머지는 `+N`.
+ * 소속 그룹 목록 — 정해진 개수만 보여 주고 나머지는 `+N`.
  *
  * 레이아웃 계약:
  * · `shrink-0`인 태그가 이름을 밀어내지 않도록 **이 컨테이너가 줄어든다**

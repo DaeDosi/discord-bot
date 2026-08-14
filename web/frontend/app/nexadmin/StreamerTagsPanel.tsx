@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus, Search, Tag as TagIcon, X, ArrowUp, ArrowDown, Check } from "lucide-react";
+import { Plus, Search, Tag as TagIcon, Users, X, ArrowUp, ArrowDown, Check } from "lucide-react";
+import GroupMembersDrawer from "./GroupMembersDrawer";
 import { api } from "@/lib/api";
 import { StreamerTagBadge } from "@/components/StreamerTag";
 import type {
@@ -18,13 +19,13 @@ const DIRECTIONS: { value: TagGradientDirection; label: string }[] = [
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
 
-/** 미리보기용 임시 태그. 저장 전이라 id가 없으므로 0을 쓴다. */
+/** 미리보기용 임시 그룹. 저장 전이라 id가 없으므로 0을 쓴다. */
 function draftTag(d: {
   name: string; colorMode: "solid" | "gradient";
   colorStart: string; colorEnd: string; gradientDirection: TagGradientDirection;
 }): StreamerTag {
   return {
-    id: 0, name: d.name || "태그 이름", slug: "", kind: "team",
+    id: 0, name: d.name || "그룹 이름", slug: "", kind: "team",
     colorMode: d.colorMode, colorStart: d.colorStart,
     colorEnd: d.colorMode === "gradient" ? d.colorEnd : null,
     gradientDirection: d.gradientDirection,
@@ -56,7 +57,7 @@ function ColorField({ label, value, onChange }: {
   );
 }
 
-/** 태그 만들기 / 고치기 폼. `editing`이 있으면 수정 모드다. */
+/** 그룹 만들기 / 고치기 폼. `editing`이 있으면 수정 모드다. */
 function TagForm({ editing, onDone, onCancel }: {
   editing?: StreamerTagAdmin | null;
   onDone: () => void;
@@ -102,7 +103,7 @@ function TagForm({ editing, onDone, onCancel }: {
     <div className="space-y-3 rounded-xl border border-border bg-bg-card/60 p-4">
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex min-w-0 flex-1 flex-col gap-1" style={{ minWidth: 180 }}>
-          <span className="text-xs font-semibold text-muted">태그 이름</span>
+          <span className="text-xs font-semibold text-muted">그룹 이름</span>
           <input value={name} onChange={(e) => setName(e.target.value)}
                  maxLength={20} placeholder="예: 이세돌"
                  className="rounded-lg border border-border bg-bg px-2.5 py-1.5 text-sm" />
@@ -149,7 +150,7 @@ function TagForm({ editing, onDone, onCancel }: {
         <button onClick={submit} disabled={!valid || busy}
                 className="btn-primary inline-flex items-center gap-1.5 text-sm disabled:opacity-50">
           {editing ? <Check size={14} /> : <Plus size={14} />}
-          {busy ? "저장 중…" : editing ? "수정 저장" : "태그 만들기"}
+          {busy ? "저장 중…" : editing ? "수정 저장" : "그룹 만들기"}
         </button>
         {onCancel && (
           <button onClick={onCancel} className="btn-secondary text-sm">취소</button>
@@ -165,7 +166,7 @@ function TagForm({ editing, onDone, onCancel }: {
   );
 }
 
-/** 한 스트리머의 태그 지정 카드 — 지정/해제/순서 변경. */
+/** 한 스트리머의 소속 그룹 지정 카드 — 지정/해제/순서 변경. */
 function StreamerRow({ item, tags, maxPerStreamer, onChanged }: {
   item: StreamerTagSearchItem;
   tags: StreamerTagAdmin[];
@@ -212,7 +213,7 @@ function StreamerRow({ item, tags, maxPerStreamer, onChanged }: {
 
       {/* 현재 지정 — 순서가 곧 화면 노출 순서다 */}
       {item.tags.length === 0 ? (
-        <p className="text-xs text-muted">지정된 태그가 없습니다.</p>
+        <p className="text-xs text-muted">지정된 소속 그룹이 없습니다.</p>
       ) : (
         <ul className="flex flex-col gap-1.5">
           {item.tags.map((t, i) => (
@@ -248,14 +249,14 @@ function StreamerRow({ item, tags, maxPerStreamer, onChanged }: {
         </ul>
       )}
 
-      {/* 지정 — 이미 붙은 태그는 목록에서 빠진다(중복 지정 자체가 불가능하다) */}
+      {/* 지정 — 이미 붙은 그룹은 목록에서 빠진다(중복 지정 자체가 불가능하다) */}
       <div className="flex flex-wrap items-center gap-1.5">
         {full ? (
           <span className="text-xs text-muted">
-            태그는 최대 {maxPerStreamer}개까지 지정할 수 있습니다.
+            소속 그룹은 최대 {maxPerStreamer}개까지 지정할 수 있습니다.
           </span>
         ) : assignable.length === 0 ? (
-          <span className="text-xs text-muted">붙일 수 있는 태그가 없습니다.</span>
+          <span className="text-xs text-muted">붙일 수 있는 소속 그룹이 없습니다.</span>
         ) : (
           assignable.map((t) => (
             <button key={t.id} disabled={busy}
@@ -282,6 +283,8 @@ export default function StreamerTagsPanel() {
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [editing, setEditing] = useState<StreamerTagAdmin | null>(null);
   const [showInactive, setShowInactive] = useState(false);
+  /** 멤버 관리 drawer를 연 그룹. null이면 닫혀 있다. */
+  const [membersOf, setMembersOf] = useState<StreamerTagAdmin | null>(null);
 
   const [keyword, setKeyword] = useState("");
   const [results, setResults] = useState<StreamerTagSearchItem[]>([]);
@@ -295,7 +298,7 @@ export default function StreamerTagsPanel() {
       setTags(res.tags);
       setMax(res.maxPerStreamer);
     } catch (e) {
-      setLoadErr(e instanceof Error ? e.message : "태그 목록을 불러오지 못했습니다.");
+      setLoadErr(e instanceof Error ? e.message : "소속 그룹 목록을 불러오지 못했습니다.");
     } finally {
       setLoading(false);
     }
@@ -319,12 +322,12 @@ export default function StreamerTagsPanel() {
     }
   };
 
-  /** 지정/해제/순서 변경 후 서버가 준 최종 태그 목록으로 그 행만 갈아 끼운다.
+  /** 지정/해제/순서 변경 후 서버가 준 최종 소속 그룹 목록으로 그 행만 갈아 끼운다.
    *  전체를 다시 검색하지 않는다 — 목록이 흔들려 방금 만진 행을 놓친다. */
   const onRowChanged = (channelId: string, next: StreamerTag[]) => {
     setResults((prev) => prev.map((r) =>
       r.channelId === channelId ? { ...r, tags: next } : r));
-    void load();          // 태그별 지정 수를 다시 센다
+    void load();          // 그룹별 멤버 수를 다시 센다
   };
 
   const visibleTags = showInactive ? tags : tags.filter((t) => t.active);
@@ -333,25 +336,25 @@ export default function StreamerTagsPanel() {
     <div className="space-y-5">
       <p className="flex items-center gap-2 text-sm text-muted">
         <TagIcon size={15} className="text-accent" />
-        스트리머에게 팀·소속 태그를 지정합니다. 지정한 태그는 랭킹 목록과 스트리머
+        스트리머에게 소속 그룹을 지정합니다. 지정한 그룹은 랭킹 목록과 스트리머
         상세 페이지의 이름 옆에 표시됩니다.
       </p>
 
-      {/* ── 태그 만들기 / 수정 ── */}
+      {/* ── 그룹 만들기 / 수정 ── */}
       <section className="space-y-2">
         <h3 className="text-sm font-bold text-fg">
-          {editing ? `태그 수정 — ${editing.name}` : "태그 만들기"}
+          {editing ? `그룹 수정 — ${editing.name}` : "그룹 만들기"}
         </h3>
         <TagForm key={editing?.id ?? "new"} editing={editing}
                  onDone={() => { void load(); setEditing(null); }}
                  onCancel={editing ? () => setEditing(null) : undefined} />
       </section>
 
-      {/* ── 태그 목록 ── */}
+      {/* ── 소속 그룹 목록 ── */}
       <section className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-bold text-fg">
-            태그 목록 <span className="font-normal text-muted">{visibleTags.length}</span>
+            소속 그룹 목록 <span className="font-normal text-muted">{visibleTags.length}</span>
           </h3>
           <label className="flex items-center gap-1.5 text-xs text-muted">
             <input type="checkbox" checked={showInactive}
@@ -365,7 +368,7 @@ export default function StreamerTagsPanel() {
         ) : loadErr ? (
           <p role="alert" className="text-sm text-red-400">{loadErr}</p>
         ) : visibleTags.length === 0 ? (
-          <p className="text-sm text-muted">아직 만든 태그가 없습니다.</p>
+          <p className="text-sm text-muted">아직 만든 소속 그룹이 없습니다.</p>
         ) : (
           <ul className="flex flex-col gap-2">
             {visibleTags.map((t) => (
@@ -378,8 +381,14 @@ export default function StreamerTagsPanel() {
                   <span className="rounded border border-border px-1.5 py-0.5 text-[11px]
                                    font-bold text-muted">비활성</span>
                 )}
-                <span className="text-xs text-muted">지정 {t.assignedCount}명</span>
+                <span className="text-xs text-muted">멤버 {t.assignedCount}명</span>
                 <span className="ml-auto flex items-center gap-1.5">
+                  {/* 이 그룹에 누가 들어 있는지 보고 고치는 유일한 경로다.
+                      TAG-1에는 '스트리머 → 그룹' 방향만 있어 확인할 방법이 없었다. */}
+                  <button onClick={() => setMembersOf(t)}
+                          className="btn-secondary inline-flex items-center gap-1 text-xs">
+                    <Users size={12} /> 멤버 관리
+                  </button>
                   <button onClick={() => setEditing(t)} className="btn-secondary text-xs">
                     수정
                   </button>
@@ -399,14 +408,20 @@ export default function StreamerTagsPanel() {
           </ul>
         )}
         <p className="text-[11px] leading-relaxed text-muted/80">
-          태그는 삭제하지 않고 <b>비활성화</b>합니다. 지정 이력이 남아 있어 되돌릴 때
+          그룹은 삭제하지 않고 <b>비활성화</b>합니다. 지정 이력이 남아 있어 되돌릴 때
           아무것도 다시 입력할 필요가 없습니다.
         </p>
       </section>
 
+      {membersOf && (
+        <GroupMembersDrawer group={membersOf}
+                            onClose={() => setMembersOf(null)}
+                            onChanged={() => void load()} />
+      )}
+
       {/* ── 스트리머 검색 · 지정 ── */}
       <section className="space-y-2">
-        <h3 className="text-sm font-bold text-fg">스트리머에게 지정</h3>
+        <h3 className="text-sm font-bold text-fg">스트리머에게 그룹 지정</h3>
         <div className="flex flex-wrap items-center gap-2">
           <input value={keyword} onChange={(e) => setKeyword(e.target.value)}
                  onKeyDown={(e) => { if (e.key === "Enter") void search(); }}
