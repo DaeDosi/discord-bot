@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import SingcupRepPanel from "./SingcupRepPanel";
 import SingcupClipMetricsPanel from "./SingcupClipMetricsPanel";
+import StreamerTagsPanel from "./StreamerTagsPanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -701,7 +702,8 @@ export default function AdminPage() {
   const [verifUsers, setVerifUsers]   = useState<VerifUser[] | null>(null);
   const [loading, setLoading]         = useState(true);
   const [showAdd, setShowAdd]         = useState(false);
-  const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow" | "announcement" | "singcup-rep">("guilds");
+  const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow" | "announcement" | "singcup-rep"
+                                      | "streamer-tags">("guilds");
   const [refreshing, setRefreshing]   = useState(false);
   const [selectedVerif, setSelectedVerif] = useState<VerifUser | null>(null);
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null);
@@ -848,6 +850,7 @@ export default function AdminPage() {
     { key: "follow", label: followStats === null ? "팔로우 관리 (로딩 중...)" : `팔로우 관리 (${followCount}명)` },
     { key: "announcement", label: "공지 관리" },
     { key: "singcup-rep", label: "싱드컵 대표 클립" },
+    { key: "streamer-tags", label: "스트리머 태그" },
   ] as const;
 
   return (
@@ -1130,6 +1133,9 @@ export default function AdminPage() {
             <SingcupClipMetricsPanel />
           </div>
         )}
+
+        {/* 스트리머 팀/소속 태그 — 치지직 방송 태그와 다른 개념이다(운영자가 만든다) */}
+        {activeTab === "streamer-tags" && <StreamerTagsPanel />}
 
       </main>
     </div>

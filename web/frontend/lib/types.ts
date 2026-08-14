@@ -295,6 +295,8 @@ export interface RisingStreamer {
   follower_prev24h:   number | null;
   live_title:         string;
   adult:              boolean;
+  /** 팀/소속 태그. `tags`(치지직 방송 태그)와 **다른 필드**다. 없으면 빈 배열. */
+  team_tags?:         import("./types").StreamerTag[];
 }
 export interface RisingLiveRanking {
   collected_at: number | null;
@@ -335,6 +337,8 @@ export interface StreamerDashboard {
   found:             boolean;
   channel_id:        string;
   channel_name?:     string;
+  /** 팀/소속 태그 — 상세 페이지 이름 옆. `tags`(방송 태그)와 다른 필드다. */
+  team_tags?:        import("./types").StreamerTag[];
   channel_image_url: string;
   live_title?:       string;
   follower_count?:   number;
@@ -378,7 +382,10 @@ export interface RisingNewcomer {
   first_stream_source: "CHZZK" | "TRACKED";
   is_new:             boolean;
   tag_new:            boolean;
+  /** 치지직 **방송 태그** 문자열. 아래 team_tags와 다른 개념이다. */
   tags:               string[];
+  /** 운영자가 붙인 팀/소속 태그. 없으면 빈 배열. */
+  team_tags?:         import("./types").StreamerTag[];
 }
 /** 신규 & 초기 분석의 두 그룹 — new: 첫 방송 60일 이내 / small: 평균 시청자 10명 이하 */
 export type NewcomerGroup = "new" | "small";
@@ -441,6 +448,8 @@ export interface PeriodStreamer {
   follower_count:    number;
   snapshots:         number;
   last_at:           number;
+  /** 팀/소속 태그. `tags`(치지직 방송 태그)와 **다른 필드**다. 없으면 빈 배열. */
+  team_tags?:        import("./types").StreamerTag[];
 }
 export interface RisingPeriodRanking {
   collected_at:   number | null;
@@ -870,4 +879,59 @@ export interface SingcupClipMetricsApplyResult {
   hasOverride: boolean;
   /** 하위 호환 — `!autoRepresentativeChanged`와 같다. */
   representativeUnchanged: boolean;
+}
+
+// ── 스트리머 팀/소속 태그 (TAG-1) ────────────────────────────────────────────
+//
+// **치지직 방송 태그(`RisingTag` 계열)와 다른 개념이다.** 그쪽은 방송마다 바뀌는
+// 수집값이고, 이건 운영자가 채널에 붙이는 소속 라벨이다. 합치지 말 것.
+//
+// 이 블록은 **파일 맨 끝에 붙인다** — 다른 대기 중인 작업이 같은 자리(EOF)를 쓰면
+// 충돌하지만, 중간에 끼워 넣는 것보다는 재배치가 쉽다.
+
+export type TagColorMode = "solid" | "gradient";
+export type TagGradientDirection =
+  | "to-right" | "to-bottom-right" | "to-bottom" | "to-top-right";
+
+/** 공개 화면이 받는 최소 필드. 운영 메타(active·시각)는 오지 않는다. */
+export interface StreamerTag {
+  id: number;
+  name: string;
+  slug: string;
+  kind: string;
+  colorMode: TagColorMode;
+  colorStart: string;              // #RRGGBB
+  colorEnd: string | null;         // gradient일 때만
+  gradientDirection: TagGradientDirection;
+}
+
+/** 관리 화면(OWNER)에서만 오는 확장 필드. */
+export interface StreamerTagAdmin extends StreamerTag {
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+  assignedCount: number;
+}
+
+export interface StreamerTagListResponse {
+  tags: StreamerTagAdmin[];
+  maxPerStreamer: number;
+  gradientDirections: TagGradientDirection[];
+  version: number;
+}
+
+export interface StreamerTagSearchItem {
+  channelId: string;
+  channelName: string | null;
+  lastSeen: number;
+  tags: StreamerTag[];
+}
+
+export interface StreamerTagMutation {
+  ok: boolean;
+  channelId: string;
+  tagId: number;
+  tags: StreamerTag[];
+  created?: boolean;
+  removed?: boolean;
 }

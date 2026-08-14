@@ -24,6 +24,7 @@ import Singcup from "./Singcup";
 import { ViewerDistribution, TrafficHeatmap, TitleKeywordRank } from "./OverviewViz";
 import { GoldenHourHeatmap, BlueOceanCards, TierDistribution, TitleKeywordCard, VacancyHours } from "./NewcomerInsightViz";
 import StatsNav, { isTab, type Tab } from "./StatsNav";
+import { StreamerTagList } from "@/components/StreamerTag";
 import { CARD_BORDER, CARD_DARK } from "./cardStyle";
 
 import LineChart, { type LinePoint, type LineSeries } from "./LineChart";
@@ -913,6 +914,9 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                       <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[150px] md:max-w-none">
                         {s.channel_name}
                       </span>
+                      {/* 팀/소속 태그. 목록에서는 2개까지만 보이고 나머지는 +N으로 접힌다.
+                          태그가 없으면 아무것도 렌더하지 않으므로 행 높이가 지금과 같다. */}
+                      <StreamerTagList tags={s.team_tags} />
                       <BarChart3 size={12} className="text-muted opacity-0 group-hover:opacity-100 shrink-0" />
                     </Link>
                   </td>
@@ -1227,6 +1231,8 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
                     </span>
                     <ChzzkMark />
                     <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[130px] md:max-w-none">{s.channel_name}</span>
+                    {/* 팀/소속 태그 — 랭킹 목록과 같은 규칙(2개 + +N) */}
+                    <StreamerTagList tags={s.team_tags} />
                   </Link>
                 </td>
                 <td className="py-3.5 px-6 hidden sm:table-cell align-top">
@@ -2075,6 +2081,8 @@ function PeriodRankingTab() {
                           <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[150px] md:max-w-none">
                             {s.channel_name || "(이름 없음)"}
                           </span>
+                          {/* 팀/소속 태그 — 랭킹 목록과 같은 규칙(2개 + +N) */}
+                          <StreamerTagList tags={s.team_tags} />
                         </Link>
                       </td>
                       <td className="py-3.5 px-6 hidden sm:table-cell align-top">

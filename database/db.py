@@ -1094,6 +1094,56 @@ async def init_db():
            )""",
         "CREATE INDEX IF NOT EXISTS idx_krp_nonce_seen "
         "ON singcup_krp_nonce(seen_at)",
+        # ── 스트리머 팀/소속 태그 (TAG-1) ─────────────────────────────────
+        # 운영자가 손으로 만드는 소속 라벨이다(이세돌·스텔라이브 등). 수집물이 아니다.
+        #
+        # **`rising_live_snapshots.tags`와 다른 개념이다.** 그쪽은 치지직 방송에 달린
+        # 방송 태그 문자열이고 `/stats`의 '태그 검색' 탭이 쓴다. 이름이 비슷하다고
+        # 합치지 말 것 — 축이 다르다(방송마다 바뀌는 값 ↔ 채널에 붙는 소속).
+        #
+        # 스트리머 식별자는 `rising_channel_stats.chzzk_channel_id`(32자 소문자 16진수)를
+        # 그대로 쓴다. **FK를 걸지 않는다** — 이 저장소의 기존 테이블이 전부 그렇고,
+        # 수집 전에 태그를 붙여 두는 것도 허용해야 한다(FK면 그 INSERT가 실패한다).
+        #
+        # 색상은 `#RRGGBB`만 저장한다. 임의 CSS 문자열을 넣지 말 것 —
+        # 화면에서 그대로 스타일에 꽂히면 그게 곧 주입 경로가 된다.
+        # 검증은 `web/backend/streamer_tags.py`가 단일 지점에서 한다.
+        """CREATE TABLE IF NOT EXISTS streamer_tags (
+               id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+               name               TEXT    NOT NULL,
+               slug               TEXT    NOT NULL,
+               kind               TEXT    NOT NULL DEFAULT 'team',
+               color_mode         TEXT    NOT NULL DEFAULT 'solid',   -- solid|gradient
+               color_start        TEXT    NOT NULL DEFAULT '#38BDF8', -- #RRGGBB
+               color_end          TEXT,                              -- gradient일 때만
+               gradient_direction TEXT    NOT NULL DEFAULT 'to-right',
+               active             INTEGER NOT NULL DEFAULT 1,
+               created_at         INTEGER NOT NULL,
+               updated_at         INTEGER NOT NULL
+           )""",
+        # 이름/슬러그 중복 차단은 **DB가** 한다. 애플리케이션의 select-then-insert만
+        # 믿으면 동시 요청 두 개가 같은 이름을 통과시킨다.
+        # NOCASE라 '이세돌'과 'ISEDOL'은 다르지만 'isedol'과 'ISEDOL'은 같다.
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_streamer_tags_slug "
+        "ON streamer_tags(slug COLLATE NOCASE)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_streamer_tags_name "
+        "ON streamer_tags(name COLLATE NOCASE)",
+        "CREATE INDEX IF NOT EXISTS idx_streamer_tags_active "
+        "ON streamer_tags(active, kind)",
+        # 지정. PK가 곧 중복 지정 차단이다(같은 스트리머에 같은 태그 2번 불가).
+        """CREATE TABLE IF NOT EXISTS streamer_tag_assignments (
+               streamer_channel_id TEXT    NOT NULL,
+               tag_id              INTEGER NOT NULL,
+               display_order       INTEGER NOT NULL DEFAULT 0,
+               created_at          INTEGER NOT NULL,
+               PRIMARY KEY (streamer_channel_id, tag_id)
+           )""",
+        # 목록 화면은 "이 채널들의 태그를 순서대로" 읽는다 — 그 형태 그대로 인덱스를 준다.
+        "CREATE INDEX IF NOT EXISTS idx_streamer_tag_assign_channel "
+        "ON streamer_tag_assignments(streamer_channel_id, display_order)",
+        # 관리 화면은 반대로 "이 태그가 붙은 채널"을 읽는다.
+        "CREATE INDEX IF NOT EXISTS idx_streamer_tag_assign_tag "
+        "ON streamer_tag_assignments(tag_id, display_order)",
     ]:
         try:
             await db.execute(sql)

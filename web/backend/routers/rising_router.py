@@ -13,6 +13,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import httpx
+import streamer_tags as st
 from chzzk_channel_history import get_channel_history
 from fastapi import APIRouter, Query, Request, Response
 from rising_collector import _fetch_channel_meta, latest_image
@@ -383,6 +384,11 @@ async def live_ranking(limit: int = 200):
         }
         for i, r in enumerate(rows)
     ]
+    # 팀/소속 태그 — 쿼리 **한 번**으로 전체 행에 붙인다(행마다 조회하면 N+1이다).
+    # 이 응답은 TTL 캐시가 없으므로 태그 변경이 바로 다음 요청에 반영된다.
+    # 필드명이 `team_tags`인 이유는 `streamer_tags.attach_tags` 주석 참고
+    # (`tags`는 이미 치지직 방송 태그가 쓰고 있다).
+    await st.attach_tags(streamers)
     return {"collected_at": ts, "streamers": streamers}
 
 
@@ -515,7 +521,10 @@ async def newcomers(limit: int = 100, group: str = "new"):
     hour_avg_max = _SMALL_AVG_MAX if is_small else _NEWCOMER_AVG_MAX
 
     now = int(time.time())
-    hit = _newcomers_cache.get(group)
+    # 캐시 키에 태그 세대(version)를 섞는다. 안 섞으면 태그를 바꿔도 최대 60초 동안
+    # 낡은 응답이 나가 "저장했는데 화면이 그대로"가 된다.
+    ck = (group, st.version())
+    hit = _newcomers_cache.get(ck)
     if hit and now - hit[0] < 60:
         return hit[1]
 
@@ -854,7 +863,12 @@ async def newcomers(limit: int = 100, group: str = "new"):
               "summary": summary, "insights": insights, "categories": categories,
               "criteria": {"debut_max_days": _NEW_DEBUT_MAX_DAYS,
                            "small_avg_max": _SMALL_AVG_MAX}}
-    _newcomers_cache[group] = (now, result)
+    await st.attach_tags(result["streamers"])
+    # 세대가 바뀌면 옛 키는 다시 읽히지 않는다 — 그대로 두면 그룹 수 × 세대만큼
+    # 쌓이므로 여기서 버린다(그룹은 2개뿐이라 상한이 아주 작다).
+    if len(_newcomers_cache) > 8:
+        _newcomers_cache.clear()
+    _newcomers_cache[ck] = (now, result)
     return result
 
 
@@ -1000,10 +1014,15 @@ async def streamer_meta(channel_id: str, request: Request, response: Response):
     )).fetchone()
 
     snaps = int(row["snaps"] or 0) if row else 0
+    # 팀/소속 태그를 payload에 넣는 것 자체가 ETag 대책이다 —
+    # `_meta_etag`는 **본문 전체**를 해시하므로, 태그만 바뀌어도 ETag가 달라져
+    # 조건부 요청이 304로 끝나지 않는다. 별도의 무효화 코드를 두지 않는 이유다.
+    # `found=False`에도 같은 키를 넣어 두 분기의 응답 모양을 맞춘다.
+    tags = await st.tags_for_channel(channel_id)
     if not snaps:
         payload = {"found": False, "channel_id": channel_id, "channel_name": None,
                    "channel_image_url": latest_image(channel_id) or None,
-                   "summary": None, "updated_at": None}
+                   "team_tags": tags, "summary": None, "updated_at": None}
     else:
         # 채널명은 최신 원본 스냅샷이 가장 정확하다(롤업에도 있지만 갱신이 늦다).
         # idx_rising_snap_channel(chzzk_channel_id, collected_at) 사용, 1행만 읽는다.
@@ -1025,6 +1044,7 @@ async def streamer_meta(channel_id: str, request: Request, response: Response):
             "channel_name": ((live["channel_name"] if live else None)
                              or (name_row["channel_name"] if name_row else None)),
             "channel_image_url": latest_image(channel_id) or None,
+            "team_tags": tags,
             "summary": {
                 "avg_viewers": round(sv / snaps) if snaps else 0,
                 "peak_viewers": int(row["peak"] or 0),
@@ -1068,7 +1088,12 @@ async def streamer(channel_id: str, days: int = 30):
 
     latest_ts = await _latest_run_ts()
     if not rows:
-        return {"found": False, "channel_id": channel_id, "channel_image_url": latest_image(channel_id)}
+        # 태그는 여기서도 실어 보낸다. 롤업이 없다고 소속이 없는 것은 아니고,
+        # 두 분기의 응답 모양이 달라지면 프론트가 `tags`의 부재와 빈 배열을
+        # 따로 다뤄야 한다(`/streamer/{id}/meta`도 같은 이유로 양쪽에 넣었다).
+        return {"found": False, "channel_id": channel_id,
+                "team_tags": await st.tags_for_channel(channel_id),
+                "channel_image_url": latest_image(channel_id)}
 
     # live_title / is_live 는 시각 단위 롤업으로 알 수 없어 최신 원본 스냅샷에서 가져온다
     # (보관창 안이면 존재. 방송을 안 켠 지 오래됐으면 None → is_live=False).
@@ -1147,6 +1172,8 @@ async def streamer(channel_id: str, days: int = 30):
         "found": True,
         "channel_id": channel_id,
         "channel_name": channel_name,
+        # 팀/소속 태그 — 상세 페이지 이름 옆에 붙는다. 이 응답에는 TTL 캐시가 없다.
+        "team_tags": await st.tags_for_channel(channel_id),
         "channel_image_url": latest_image(channel_id),
         "live_title": (live_row["live_title"] if live_row else "") or "",
         "follower_count": follower_now,
@@ -1258,7 +1285,8 @@ async def ranking_period(range: str = "24h", sort: str = "viewership", limit: in
     sort_key = _PERIOD_SORTS.get(sort, "viewership")
     limit = max(1, min(300, limit))
     # 캐시 키는 정규화된 값만 쓴다 — 사용자 입력을 그대로 키에 넣으면 캐시가 무한히 늘어난다
-    ck = (range if range in _PERIOD_RANGES else "24h", sort_key, limit)
+    # 태그 세대를 키에 섞는다 — 이유는 newcomers 쪽 주석과 같다.
+    ck = (range if range in _PERIOD_RANGES else "24h", sort_key, limit, st.version())
     hit = _period_cache.get(ck)
     now_s = time.time()
     if hit and now_s - hit[0] < _PERIOD_TTL:
@@ -1325,6 +1353,7 @@ async def ranking_period(range: str = "24h", sort: str = "viewership", limit: in
         "history_hours": history_hours,
         "streamers": out[:limit],
     }
+    await st.attach_tags(result["streamers"])
     # range x sort x limit 조합은 유한하지만(limit이 1~300) 상한을 둬 메모리 폭주를 막는다
     if len(_period_cache) > 100:
         _period_cache.clear()

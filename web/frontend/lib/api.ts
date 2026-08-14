@@ -300,6 +300,42 @@ export const api = {
           method: "POST",
           body: JSON.stringify({ clipInput }),
         }),
+
+    // ── 스트리머 팀/소속 태그 (TAG-1) — 전부 OWNER 전용 ──────────────────
+    // `sharedGet` 캐시를 쓰지 않는다: 저장 직후의 상태를 봐야 하는 화면이라
+    // 몇 초라도 옛 값을 보여주면 "적용했는데 안 바뀐다"로 읽힌다
+    // (싱드컵 대표 지정에서 같은 결론이 났다).
+    streamerTagsList: (includeInactive = false) =>
+      request<import("./types").StreamerTagListResponse>(
+        `/api/admin/streamer-tags?includeInactive=${includeInactive ? "true" : "false"}`),
+    streamerTagCreate: (body: {
+      name: string; colorMode: string; colorStart: string;
+      colorEnd?: string | null; gradientDirection: string;
+    }) =>
+      request<{ ok: boolean; tag: import("./types").StreamerTagAdmin }>(
+        "/api/admin/streamer-tags", { method: "POST", body: JSON.stringify(body) }),
+    streamerTagUpdate: (tagId: number, body: {
+      name?: string; colorMode?: string; colorStart?: string;
+      colorEnd?: string | null; gradientDirection?: string; active?: boolean;
+    }) =>
+      request<{ ok: boolean; tag: import("./types").StreamerTagAdmin }>(
+        `/api/admin/streamer-tags/${tagId}`,
+        { method: "PATCH", body: JSON.stringify(body) }),
+    streamerTagSearch: (keyword: string) =>
+      request<{ streamers: import("./types").StreamerTagSearchItem[] }>(
+        `/api/admin/streamer-tags/search?keyword=${encodeURIComponent(keyword)}`),
+    streamerTagAssign: (channelId: string, tagId: number) =>
+      request<import("./types").StreamerTagMutation>(
+        "/api/admin/streamer-tags/assign",
+        { method: "POST", body: JSON.stringify({ channelId, tagId }) }),
+    streamerTagUnassign: (channelId: string, tagId: number) =>
+      request<import("./types").StreamerTagMutation>(
+        "/api/admin/streamer-tags/unassign",
+        { method: "POST", body: JSON.stringify({ channelId, tagId }) }),
+    streamerTagReorder: (channelId: string, tagIds: number[]) =>
+      request<import("./types").StreamerTagMutation>(
+        "/api/admin/streamer-tags/reorder",
+        { method: "POST", body: JSON.stringify({ channelId, tagIds }) }),
   },
 
   moderation: {

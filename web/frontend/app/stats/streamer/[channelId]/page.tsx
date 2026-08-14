@@ -6,6 +6,7 @@ import {
   Bot, BarChart3, ArrowLeft, ExternalLink, Loader2, Radio, Heart, Clock, Users, TrendingUp,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { StreamerTagList } from "@/components/StreamerTag";
 import type {
   StreamerDashboard, StreamerDetail, StreamerSessionSeries, StreamerDaily, StreamerHourly,
 } from "@/lib/types";
@@ -341,6 +342,9 @@ export default function StreamerPage() {
                     {data.is_live
                       ? <span className="rounded px-1.5 py-0.5 text-[10px] font-bold" style={{ color: "#03C75A", background: "rgba(3,199,90,0.15)" }}>LIVE</span>
                       : <span className="rounded px-1.5 py-0.5 text-[10px] font-bold text-muted" style={{ background: "rgb(var(--color-bg-hover-rgb))" }}>OFF</span>}
+                    {/* 팀/소속 태그 — 상세 페이지에서는 접지 않고 전부 보여 준다.
+                        부모가 flex-wrap이라 좁은 화면에서는 아래 줄로 넘어간다. */}
+                    <StreamerTagList tags={data.team_tags} max={99} />
                   </div>
                   {data.live_title && <p className="mt-1 truncate text-sm text-muted">{data.live_title}</p>}
                   <Sub>

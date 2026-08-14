@@ -1124,3 +1124,148 @@ async def singcup_rep_clear(body: RepOverrideClear,
         recomputed = False
     return {"ok": True, "cleared": res["cleared"], "recomputed": recomputed,
             "state": await _rep_state(body.channelId)}
+
+
+# ── 스트리머 팀/소속 태그 (TAG-1) ────────────────────────────────────────────
+#
+# 이 블록은 **파일 끝에 붙인다.** 다른 대기 중인 작업(V2 시간별 방문자)이
+# `overview()` 바로 뒤를 삽입 지점으로 쓰고 있어, 같은 자리를 노리면 두 변경이
+# 서로를 밀어낸다. 꼬리는 비어 있다.
+#
+# 전부 OWNER 전용이다 — `_require_owner`가 미인증은 401(`get_current_user`),
+# 비OWNER는 403을 낸다. 공개 화면이 쓰는 조회 경로는 여기가 아니라
+# `rising_router`의 기존 응답에 필드로 실린다(요청 수를 늘리지 않는다).
+
+class TagCreate(BaseModel):
+    name: str
+    colorMode: str = "solid"
+    colorStart: str = "#38BDF8"
+    colorEnd: Optional[str] = None
+    gradientDirection: str = "to-right"
+    kind: str = "team"
+
+
+class TagUpdate(BaseModel):
+    name: Optional[str] = None
+    colorMode: Optional[str] = None
+    colorStart: Optional[str] = None
+    colorEnd: Optional[str] = None
+    gradientDirection: Optional[str] = None
+    active: Optional[bool] = None
+
+
+class TagAssign(BaseModel):
+    channelId: str
+    tagId: int
+
+
+class TagReorder(BaseModel):
+    channelId: str
+    tagIds: list[int]
+
+
+def _tag_400(exc: Exception) -> HTTPException:
+    """검증 실패를 400으로 바꾼다.
+
+    메시지는 `streamer_tags`가 만든 한국어 문구를 그대로 쓴다 — 라우터가 다시
+    쓰면 같은 규칙에 두 가지 설명이 생긴다.
+    """
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/streamer-tags")
+async def streamer_tags_list(includeInactive: bool = False,
+                             user: dict = Depends(_require_owner)):
+    """태그 목록 + 각 태그의 지정 수."""
+    import streamer_tags as st
+    return {"tags": await st.list_tags(include_inactive=includeInactive),
+            "maxPerStreamer": st.MAX_TAGS_PER_STREAMER,
+            "gradientDirections": list(st.GRADIENT_DIRECTIONS),
+            "version": st.version()}
+
+
+@router.post("/streamer-tags")
+async def streamer_tags_create(body: TagCreate,
+                               user: dict = Depends(_require_owner)):
+    import streamer_tags as st
+    try:
+        return {"ok": True, "tag": await st.create_tag(
+            name=body.name, color_mode=body.colorMode,
+            color_start=body.colorStart, color_end=body.colorEnd,
+            gradient_direction=body.gradientDirection, kind=body.kind)}
+    except st.TagError as e:
+        raise _tag_400(e) from e
+
+
+@router.patch("/streamer-tags/{tag_id}")
+async def streamer_tags_update(tag_id: int, body: TagUpdate,
+                               user: dict = Depends(_require_owner)):
+    """이름·색상·활성 여부를 고친다.
+
+    **삭제 경로는 두지 않는다.** `active=false`로 내리면 공개 화면에서 즉시 사라지고
+    지정 이력은 남아, 잘못 내렸을 때 되돌리는 데 아무 데이터도 필요하지 않다.
+    """
+    import streamer_tags as st
+    try:
+        return {"ok": True, "tag": await st.update_tag(
+            tag_id, name=body.name, color_mode=body.colorMode,
+            color_start=body.colorStart, color_end=body.colorEnd,
+            gradient_direction=body.gradientDirection, active=body.active)}
+    except st.TagError as e:
+        raise _tag_400(e) from e
+
+
+@router.get("/streamer-tags/{tag_id}/assignments")
+async def streamer_tags_assignments(tag_id: int, limit: int = 200,
+                                    user: dict = Depends(_require_owner)):
+    import streamer_tags as st
+    if await st.get_tag(tag_id) is None:
+        raise HTTPException(status_code=404, detail="존재하지 않는 태그입니다.")
+    return {"tagId": tag_id, "streamers": await st.assignments_of_tag(tag_id, limit)}
+
+
+@router.get("/streamer-tags/search")
+async def streamer_tags_search(keyword: str, limit: int = 20,
+                               user: dict = Depends(_require_owner)):
+    """스트리머 검색(이름 부분일치 또는 채널 ID 완전일치) + 현재 지정 태그."""
+    import streamer_tags as st
+    try:
+        return {"streamers": await st.search_streamers(keyword, limit)}
+    except st.TagError as e:
+        raise _tag_400(e) from e
+
+
+@router.post("/streamer-tags/assign")
+async def streamer_tags_assign(body: TagAssign,
+                               user: dict = Depends(_require_owner)):
+    import streamer_tags as st
+    try:
+        res = await st.assign(body.channelId, body.tagId)
+    except st.TagError as e:
+        raise _tag_400(e) from e
+    return {"ok": True, **res,
+            "tags": await st.tags_for_channel(body.channelId)}
+
+
+@router.post("/streamer-tags/unassign")
+async def streamer_tags_unassign(body: TagAssign,
+                                 user: dict = Depends(_require_owner)):
+    import streamer_tags as st
+    try:
+        res = await st.unassign(body.channelId, body.tagId)
+    except st.TagError as e:
+        raise _tag_400(e) from e
+    return {"ok": True, **res,
+            "tags": await st.tags_for_channel(body.channelId)}
+
+
+@router.post("/streamer-tags/reorder")
+async def streamer_tags_reorder(body: TagReorder,
+                                user: dict = Depends(_require_owner)):
+    import streamer_tags as st
+    try:
+        res = await st.reorder(body.channelId, body.tagIds)
+    except st.TagError as e:
+        raise _tag_400(e) from e
+    return {"ok": True, **res,
+            "tags": await st.tags_for_channel(body.channelId)}

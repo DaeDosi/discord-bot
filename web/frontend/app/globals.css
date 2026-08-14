@@ -270,3 +270,26 @@ html.light {
 @media (prefers-reduced-motion: reduce) {
   .nb-live-dot { animation: none; }
 }
+
+/* ── 스트리머 팀/소속 태그 (TAG-1) ────────────────────────────────────────
+   글자색을 테마별로 나눈다. 배지 배경은 태그 색을 12%만 깐 것이라 글자 뒤에
+   실제로 오는 것은 **카드 배경**이고, 그건 다크 #1a1d27 · 라이트 #ffffff로 정반대다.
+   한 색으로는 둘 다 만족할 수 없다 — 아주 어두운 태그색은 다크에서, 아주 밝은
+   태그색은 라이트에서 묻힌다.
+   값 자체는 `components/StreamerTag.tsx`가 색상(hue)을 유지한 채 명도만 안전
+   구간으로 끌어와 CSS 변수로 넘긴다. 여기서는 **어느 쪽을 쓸지만** 고른다.
+   (테마를 JS로 읽어 분기하면 하이드레이션 때 색이 한 번 튄다.)
+   이 파일에 두는 이유는 `html.light` 선택자가 필요해서다 — Tailwind의 동적
+   임의값 클래스는 빌드 시점에 생성되지 않아 쓸 수 없다. */
+.nb-tag { color: var(--nb-tag-fg); }
+html.light .nb-tag { color: var(--nb-tag-fg-l); }
+
+/* 그라데이션 글자. background-clip:text를 지원하지 않는 환경에서는 이 규칙이
+   무시되고 부모 `.nb-tag`의 color가 그대로 보인다 — 그게 폴백이다. */
+.nb-tag-grad {
+  background-image: var(--nb-tag-grad);
+  -webkit-background-clip: text;
+          background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+html.light .nb-tag-grad { background-image: var(--nb-tag-grad-l); }
