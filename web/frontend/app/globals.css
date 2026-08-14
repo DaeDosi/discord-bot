@@ -97,18 +97,14 @@ html.light {
   }
 }
 
-/* ── Hero grid (dark/light adaptive) ─────────────────────────────────── */
-.hero-grid {
-  background-image:
-    linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
-  background-size: 60px 60px;
-}
-html.light .hero-grid {
-  background-image:
-    linear-gradient(rgba(0,0,0,0.06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0,0,0,0.06) 1px, transparent 1px);
-}
+/* ── Hero grid — 제거됨 (2026-08-14) ──────────────────────────────────────
+   `.hero-grid`는 Hero 배경에 60px 간격 격자선을 그렸다(다크 rgba(255,255,255,.04),
+   라이트 rgba(0,0,0,.06)). 화면에 격자가 그대로 드러나 보여 걷어냈다.
+   Hero의 배경색(`bg-bg`)과 중앙 radial glow는 그대로 두었으므로 은은한 그라데이션은
+   유지된다 — `app/page.tsx`의 glow div를 지우지 말 것.
+   차트의 눈금선은 이것과 무관하다 — 이 저장소는 차트 라이브러리를 쓰지 않고
+   `app/stats/LineChart.tsx`가 SVG `<line>`으로 직접 그린다(이 클래스를 참조하지 않는다).
+   되살릴 일이 있으면 이 주석 자리에 규칙을 복원하고 `app/page.tsx`에 div를 다시 넣는다. */
 
 /* ── Scroll animation ─────────────────────────────────────────────────── */
 .reveal {

@@ -300,8 +300,9 @@ export default function HomePage() {
         className="relative flex flex-col items-center justify-center
                    min-h-[calc(100vh-60px)] px-5 text-center overflow-hidden bg-bg"
       >
-        {/* Subtle grid — adaptive opacity for dark/light */}
-        <div className="absolute inset-0 pointer-events-none select-none hero-grid" />
+        {/* 격자 배경은 걷어냈다(2026-08-14) — 화면에 선이 그대로 드러나 보였다.
+            배경은 section의 `bg-bg` + 아래 radial glow만으로 만든다.
+            자세한 경위는 `app/globals.css`의 'Hero grid — 제거됨' 주석. */}
 
         {/* Faint glow — centered, very low opacity */}
         <div

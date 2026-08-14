@@ -2323,7 +2323,13 @@ export default function StatsPage() {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-[210px_1fr] gap-5 md:gap-7">
+          /* 좌측 메뉴 폭 210px → 240px. 210px에서는 가장 긴 한글 라벨(`전체 스트리머 분석`
+             ≈115px)과 LIVE 배지가 동시에 들어가지 못했다 —
+             210 − pl-2.5(10) − border(2) − px-3(24) − gap-2.5 ×2(20) = 154px 안에
+             아이콘 16 + 배지 ≈38이 먼저 자리를 잡아 라벨에 약 100px만 남았다.
+             240px면 같은 계산에서 라벨에 약 130px이 남아 가장 긴 라벨도 여유가 생긴다.
+             글꼴이 더 넓은 PC를 위한 최종 안전망은 StatsNav의 라벨 truncate다. */
+          <div className="grid grid-cols-1 md:grid-cols-[240px_1fr] gap-5 md:gap-7">
             {/* 좌측 메뉴 */}
             <StatsNav active={tab} onSelect={selectTab}>
               <StreamerSearch />

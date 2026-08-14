@@ -91,8 +91,21 @@ export default function StatsNav({
           <span className="absolute left-0 top-0 bottom-0 w-1 rounded-r"
                 style={{ background: t.event ? GOLD : GRAD }} />
         )}
-        <span style={{ color: isActive ? point : "rgb(var(--color-muted-rgb))" }}>{t.icon}</span>
-        <span className="block text-sm font-semibold whitespace-nowrap"
+        {/* ── 레이아웃 계약 — 세 칸의 역할이 서로 다르다. 하나라도 빠지면 배지가 잘린다 ──
+            · 아이콘: 고정 폭 · shrink 금지
+            · 라벨:   min-width:0 + truncate — **여기가 유일하게 줄어드는 칸**이다
+            · 배지:   shrink-0 (아래 t.live / t.event 분기)
+            예전에는 라벨이 `whitespace-nowrap`이고 min-width가 auto(플렉스 기본값)라
+            **절대 줄어들지 않았다.** 그래서 아이콘+라벨+배지 합이 210px 컬럼을 넘기는
+            순간 `ml-auto` 배지가 오른쪽 밖으로 밀려났고, 버튼의 `overflow-hidden`이
+            그걸 잘라냈다. 한글 라벨의 실제 폭은 그 PC가 고른 글꼴에 좌우되므로
+            같은 화면 크기라도 PC마다 결과가 달랐다(그래서 재현이 어려웠다).
+            `overflow-hidden`은 활성 표시 막대(`w-1`)의 둥근 모서리에 필요하므로 남긴다 —
+            대신 라벨이 줄어들어 넘칠 일 자체를 없앤다. */}
+        <span className="flex shrink-0 items-center"
+              style={{ color: isActive ? point : "rgb(var(--color-muted-rgb))" }}>{t.icon}</span>
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold"
+              title={t.label}
               style={{ color: isActive ? point : undefined }}>{t.label}</span>
         {t.live && (
           <span className="ml-auto flex shrink-0 items-center gap-1" title="실시간 기준">
