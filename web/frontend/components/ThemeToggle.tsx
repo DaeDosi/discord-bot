@@ -23,8 +23,11 @@ export default function ThemeToggle() {
   return (
     <button
       onClick={toggle}
-      className="p-2 rounded-lg hover:bg-bg-hover transition-colors text-muted hover:text-fg"
+      /* nb-tap-icon: 터치 입력에서만 44×44px. 31×31px 정사각 아이콘은 손가락으로
+         가장 놓치기 쉬운 형태다(데스크톱은 현행 유지). */
+      className="nb-tap-icon inline-flex items-center justify-center p-2 rounded-lg hover:bg-bg-hover transition-colors text-muted hover:text-fg"
       title={isLight ? "다크 모드로 전환" : "라이트 모드로 전환"}
+      aria-label={isLight ? "다크 모드로 전환" : "라이트 모드로 전환"}
     >
       {isLight ? <Moon size={16} /> : <Sun size={16} />}
     </button>

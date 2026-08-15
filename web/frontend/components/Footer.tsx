@@ -62,13 +62,14 @@ export default function Footer() {
             <p className="text-sm text-muted leading-relaxed mb-5">
               치지직 알림, 레벨링, 서버 관리를<br />하나의 봇으로.
             </p>
-            <div className="flex items-center gap-2">
+            {/* nb-tap-gap: 터치 입력에서만 두 아이콘 사이를 벌린다(현재 간격 8px) */}
+            <div className="nb-tap-gap flex items-center gap-2">
               <a
                 href="https://github.com/DaeDosi/discord-bot"
                 target="_blank"
                 rel="noreferrer"
                 aria-label="GitHub"
-                className="w-8 h-8 rounded-lg border border-border flex items-center justify-center
+                className="nb-tap-icon w-8 h-8 rounded-lg border border-border flex items-center justify-center
                            text-muted hover:text-fg hover:border-accent/40 transition-colors"
               >
                 <Github size={14} />
@@ -78,7 +79,7 @@ export default function Footer() {
                 target="_blank"
                 rel="noreferrer"
                 aria-label="Discord 서포트 서버"
-                className="w-8 h-8 rounded-lg border border-border flex items-center justify-center
+                className="nb-tap-icon w-8 h-8 rounded-lg border border-border flex items-center justify-center
                            text-muted hover:text-fg hover:border-accent/40 transition-colors"
               >
                 <DiscordIcon size={14} />

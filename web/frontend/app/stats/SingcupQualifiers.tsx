@@ -55,9 +55,11 @@ const norm = (s: string) => s.replace(/\s+/g, "").toLowerCase();
 type Stat = SingcupStreamer | null;
 
 function LiveDot() {
+  // 색은 globals.css의 `.nb-live-badge`가 테마별로 정한다 — 라이트에서 네온 초록 글자가
+  // 같은 색 12% 배경 위에 얹혀 사실상 보이지 않았다(실측 1.0:1). 아이콘과 'LIVE' 글자를
+  // 함께 두는 것은 색만으로 상태를 전달하지 않기 위해서다.
   return (
-    <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-bold"
-          style={{ color: GREEN, background: "rgba(0,255,163,0.12)" }}>
+    <span className="nb-live-badge inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-bold">
       <Radio size={10} /> LIVE
     </span>
   );
@@ -67,8 +69,10 @@ function LiveDot() {
 function StatLine({ s }: { s: SingcupStreamer }) {
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted">
+      {/* 하트 아이콘 색은 `.nb-heart-icon`이 테마별로 정한다 — 골드 #FACC15는 흰 카드
+          위에서 1.37:1까지 떨어져 흐릿했다(실측). 숫자는 text-muted 그대로 둔다(5.3:1↑). */}
       <span className="inline-flex items-center gap-1" title="대표 클립의 하트 수">
-        <Heart size={12} style={{ color: GOLD }} /> <span className="tabular-nums">{nf(s.heartCount)}</span>
+        <Heart size={12} className="nb-heart-icon" /> <span className="tabular-nums">{nf(s.heartCount)}</span>
       </span>
       <span className="inline-flex items-center gap-1" title="대표 클립의 조회수">
         <Eye size={12} /> <span className="tabular-nums">{nf(s.viewCount)}</span>
@@ -137,7 +141,8 @@ function GroupCard({ g, statOf, loading }: {
   g: QualifierGroup; statOf: (id: string) => Stat; loading: boolean;
 }) {
   return (
-    <div className="rounded-xl border border-border p-3.5">
+    <div className="rounded-xl border border-border bg-bg-card p-3.5 transition-colors
+                    hover:border-muted/40 focus-within:border-muted/40">
       <div className="mb-2.5 flex items-center gap-2">
         <span className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-extrabold"
               style={{ background: GOLD, color: ON_GOLD }}>
@@ -239,7 +244,7 @@ export default function SingcupQualifiers({ onRanking }: { onRanking: () => void
           { label: "남성 솔로", value: counts.maleSolo, unit: "명" },
           { label: "그룹", value: counts.groups, unit: "팀" },
         ].map((t) => (
-          <div key={t.label} className="rounded-xl border border-border p-3 text-center">
+          <div key={t.label} className="rounded-xl border border-border bg-bg-card p-3 text-center">
             <p className="text-[12px] text-muted">{t.label}</p>
             <p className="mt-0.5 text-xl font-extrabold tabular-nums md:text-2xl">
               {t.value}<span className="ml-0.5 text-sm font-bold text-muted">{t.unit}</span>
@@ -250,13 +255,14 @@ export default function SingcupQualifiers({ onRanking }: { onRanking: () => void
 
       {/* 필터 + 검색 */}
       <div className="flex flex-wrap items-center gap-2">
-        <div role="tablist" aria-label="참가 부문" className="flex flex-wrap gap-1.5">
+        {/* nb-tap-gap: 터치 입력에서만 탭 사이를 벌린다(gap 1.5 = 7px는 손가락에 너무 좁다) */}
+        <div role="tablist" aria-label="참가 부문" className="nb-tap-gap flex flex-wrap gap-1.5">
           {FILTERS.map((f) => {
             const on = filter === f.k;
             return (
               <button key={f.k} role="tab" aria-selected={on} type="button"
                       onClick={() => setFilter(f.k)}
-                      className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+                      className={`nb-tap inline-flex items-center rounded-lg border px-3 py-1.5 text-sm transition-colors ${
                         on ? "border-transparent font-extrabold" : "border-border text-muted hover:text-fg"}`}
                       style={on ? { background: GOLD, color: ON_GOLD } : undefined}>
                 {/* 선택 상태를 색상만으로 나타내지 않는다 — 체크 표시와 굵기로도 구분된다 */}
@@ -312,7 +318,9 @@ export default function SingcupQualifiers({ onRanking }: { onRanking: () => void
           {shownSolos.length > 0 && (
             <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
               {shownSolos.map((s) => (
-                <div key={s.channelId} className="rounded-xl border border-border p-3.5">
+                <div key={s.channelId}
+                     className="rounded-xl border border-border bg-bg-card p-3.5 transition-colors
+                                hover:border-muted/40 focus-within:border-muted/40">
                   <Person announcedName={s.announcedName} channelId={s.channelId}
                           stat={statOf(s.channelId)} loading={loading} />
                 </div>

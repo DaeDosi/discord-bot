@@ -134,8 +134,10 @@ export default function StatsNav({
           const open = openGroups.has(g.header);
           return (
             <div key={gi} className={gi > 0 ? "mt-1" : ""}>
+              {/* nb-tap: 터치 입력에서만 44px로. 이 그룹 헤더들은 세로로 4px 간격이라
+                  손가락으로는 옆 그룹을 누르기 쉬웠다(데스크톱은 현행 유지). */}
               <button onClick={() => toggleGroup(g.header!)}
-                className="w-full flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-sm font-bold text-fg hover:bg-bg-hover transition-colors">
+                className="nb-tap w-full flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-sm font-bold text-fg hover:bg-bg-hover transition-colors">
                 <ChevronDown size={15} className="transition-transform text-muted"
                              style={{ transform: open ? "none" : "rotate(-90deg)" }} />
                 {g.header}
