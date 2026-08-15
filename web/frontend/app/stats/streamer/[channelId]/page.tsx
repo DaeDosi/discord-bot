@@ -130,12 +130,16 @@ function DailyChart({ rows }: { rows: StreamerDaily[] }) {
              onMouseLeave={() => setHover(null)}>
           {rows.map((r, i) => {
             const on = idx === i;
+            // outline-none을 걸지 않는다. 이 막대는 tabIndex={0}이라 키보드로 들어오는데,
+            // onFocus가 켜는 배경(bg-hover)은 마우스 hover와 **똑같은 표시**라 키보드
+            // 사용자는 자기가 어디 있는지 구분할 수 없었다. 전역 focus-visible 링이
+            // hover와 구별되는 유일한 신호다.
             return (
               <div key={r.date} tabIndex={0}
                    onMouseEnter={() => setHover(i)} onFocus={() => setHover(i)}
                    aria-label={`${r.date} 최고 ${r.peak}명 평균 ${r.avg_viewers}명`}
                    className="flex w-7 shrink-0 cursor-pointer flex-col items-center justify-end gap-1
-                              rounded-md outline-none transition-colors"
+                              rounded-md transition-colors"
                    style={{ height: 240, background: on ? "rgb(var(--color-bg-hover-rgb))" : undefined }}>
                 <div className="flex h-full w-full items-end justify-center gap-[3px] px-1"
                      style={{ opacity: hover !== null && !on ? 0.4 : 1 }}>
@@ -195,11 +199,12 @@ function HourlyChart({ rows }: { rows: StreamerHourly[] }) {
         {Array.from({ length: 24 }, (_, h) => {
           const r = byHour.get(h);
           const on = shownHour === h;
+          // 위 일별 막대와 같은 이유로 outline-none을 걸지 않는다(hover와 구분 불가).
           return (
             <div key={h} tabIndex={0}
                  onMouseEnter={() => setHover(r ? h : null)} onFocus={() => setHover(r ? h : null)}
                  aria-label={r ? `${p2(h)}시 평균 ${r.avg_viewers}명` : `${p2(h)}시 방송 없음`}
-                 className="flex flex-col justify-end rounded-md outline-none transition-colors"
+                 className="flex flex-col justify-end rounded-md transition-colors"
                  style={{ cursor: r ? "pointer" : "default",
                           background: on ? "rgb(var(--color-bg-hover-rgb))" : undefined }}>
               <div className="flex h-40 items-end justify-center px-0.5">

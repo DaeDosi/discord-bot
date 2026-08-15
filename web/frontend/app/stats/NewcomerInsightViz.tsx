@@ -229,13 +229,16 @@ export function VacancyHours({ hourly, best }: {
               const smallPct = h.small_avg_viewers > 0
                 ? Math.max(BAR_MIN_PCT, (h.small_avg_viewers / maxSmall) * BAR_MAX_PCT) : 0;
               const on = shownHour === h.hour;
+              // `outline-none + focus-visible:ring-1`을 걷어낸다. 이 저장소의
+              // tailwind.config에는 ringColor가 없어 Tailwind 기본 파랑(#3b82f6)이
+              // 나왔는데, 사이트 accent(#5865F2)도 아니고 다른 어떤 포커스 표시와도
+              // 달랐다. 전역 focus-visible 계약 하나로 통일한다.
               return (
                 <div key={h.hour} tabIndex={0}
                      onMouseEnter={() => setHoverHour(h.hour)}
                      onFocus={() => setHoverHour(h.hour)}
                      aria-label={`${p2(h.hour)}시 대형 ${h.big_lives}개 소형 평균 ${h.small_avg_viewers}명`}
-                     className="flex cursor-pointer flex-col justify-end rounded-sm outline-none
-                                transition-colors focus-visible:ring-1"
+                     className="flex cursor-pointer flex-col justify-end rounded-sm transition-colors"
                      style={{ background: on ? "rgba(255,255,255,0.05)" : undefined }}>
                   {/* 위: 대형 채널 동시 라이브 수(회색) / 아래: 소형 평균 시청자(네온) */}
                   <div className="flex h-28 items-end justify-center">

@@ -40,6 +40,26 @@ html.light {
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: rgb(var(--color-bg-rgb)); }
   ::-webkit-scrollbar-thumb { background: rgb(var(--color-border-rgb)); border-radius: 3px; }
+
+  /* ── 키보드 포커스 계약 ────────────────────────────────────────────────
+     여태 이 저장소에는 버튼·링크용 focus 규칙이 없었고 브라우저 기본
+     `outline: auto`에 기대고 있었다. 실측해 보면 그 기본은 다크·라이트 양쪽에서
+     잘 보인다 — 그래서 이 규칙은 "고장을 고치는 것"이 아니라 **같은 결과를 우리
+     계약으로 고정**하는 것이다. 브라우저·버전마다 굵기와 색이 다르고, 어딘가에서
+     `outline-none`을 쓰는 순간 아무 대체 없이 사라지는 것이 실제 위험이었다.
+
+     `:focus-visible`이라 마우스 클릭에는 링이 남지 않는다(브라우저가 입력 방식을
+     보고 판단한다). `:where()`로 감싸 명시도를 0으로 만들었으므로, 개별 컴포넌트가
+     자기 focus 스타일을 쓰면 그쪽이 그대로 이긴다.
+
+     색은 `--color-fg-rgb`(다크 near-white / 라이트 near-black)라 테마가 바뀌면
+     같이 뒤집힌다. outline은 레이아웃을 차지하지 않으므로 포커스가 옮겨 다녀도
+     내용이 밀리지 않는다(그래서 border나 box-shadow가 아니라 outline이다). */
+  :where(a[href], button, [role="tab"], [role="button"], summary,
+         input, select, textarea, [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline: 2px solid rgb(var(--color-fg-rgb));
+    outline-offset: 2px;
+  }
 }
 
 /* ── Component classes ────────────────────────────────────────────────── */

@@ -160,9 +160,11 @@ function FilterPanel({
                  style={{ background: "#12141A" }}>
               <div className="flex items-center gap-1.5 border-b border-gray-800 px-2.5 py-2">
                 <Search size={12} className="text-gray-500" />
+                {/* outline-none을 걸지 않는다 — 대체 표시 없이 지우면 키보드로 여기 왔을 때
+                    어디에 있는지 알 수 없다. globals.css의 전역 focus-visible 계약이 링을 그린다. */}
                 <input autoFocus value={catQuery} onChange={(e) => setCatQuery(e.target.value)}
                        placeholder="카테고리 검색"
-                       className="w-full bg-transparent text-xs text-fg outline-none placeholder:text-gray-600" />
+                       className="w-full bg-transparent text-xs text-fg placeholder:text-gray-600" />
               </div>
               <div className="max-h-[240px] overflow-y-auto py-1">
                 <button onClick={() => { setDraft({ ...draft, category: "" }); setCatOpen(false); }}
