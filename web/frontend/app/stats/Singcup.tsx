@@ -10,6 +10,10 @@ import type {
   SingcupHeartMover, SingcupMain, SingcupStreamer,
 } from "@/lib/types";
 import {
+  applySingcupView, readSingcupView, type SingcupView,
+} from "@/lib/singcupView";
+import SingcupQualifiers from "./SingcupQualifiers";
+import {
   Delta, Disclaimer, EventBadge, GOLD, GREEN, MEDAL, RankDelta, SCORE_GRAD, ScoreFormula,
   ScoreText, StaleBadge, StatusChip, VERMILION, fmtDateTime, fmtRange, hideBrokenImage, nf,
 } from "./singcupShared";
@@ -474,7 +478,7 @@ function Pager({ page, total, onChange, rangeFrom, rangeTo, totalRows }:
   );
 }
 
-export default function Singcup() {
+function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
   // 데이터 구독·폴링 정책은 라이브 페이지와 공유한다(lib/useSingcupMain).
   const { data, loading, refreshing, updatedAt, refresh } = useSingcupMain();
   const [sort, setSort] = useState<SortKey>("score");
@@ -482,25 +486,19 @@ export default function Singcup() {
   const [query, setQuery] = useState("");
 
   // ?sort= 로 상태를 유지한다(새로고침·뒤로가기·공유에도 그대로).
-  // 폐지된 `?view=board`(자유게시판 홍보글 드로어)가 담긴 링크가 남아 있으므로,
-  // 읽지는 않되 주소창에서는 한 번 지운다 — 열리지도 않는 상태가 URL에 남아 있으면
-  // 공유했을 때 무엇이 열릴지 오해하게 된다. 정리는 이 effect에서 **1회**만 하고
-  // replaceState라 뒤로가기 이력을 늘리지 않는다.
+  // `?view=`의 해석·정규화는 이제 바깥 Singcup()이 맡는다(공식/랭킹 전환 키가 됐다).
+  // 여기서는 정렬만 읽는다.
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
     const s = p.get("sort");
-    const stale = p.has("view") || (!!s && !isSort(s));
     if (isSort(s)) setSort(s);
-    if (stale) {
+    if (s && !isSort(s)) {
+      // 폐지된 정렬이든 오타든 기본 정렬로 정규화한다(sort/dir 함께 제거).
       const url = new URL(window.location.href);
-      url.searchParams.delete("view");
-      if (s && !isSort(s)) {
-        // 폐지된 정렬이든 오타든 기본 정렬로 정규화한다(sort/dir 함께 제거).
-        url.searchParams.delete("sort");
-        url.searchParams.delete("dir");
-      }
+      url.searchParams.delete("sort");
+      url.searchParams.delete("dir");
       window.history.replaceState(null, "", url.toString());
-      if (s && !isSort(s)) return;   // 기본 정렬로 되돌렸으니 dir도 읽지 않는다
+      return;   // 기본 정렬로 되돌렸으니 dir도 읽지 않는다
     }
     if (p.get("dir") === "asc") setDir("asc");
   }, []);
@@ -572,7 +570,7 @@ export default function Singcup() {
         <div className="min-w-0 max-w-2xl">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="flex items-center gap-2 text-xl font-extrabold tracking-tight md:text-2xl">
-              <Trophy size={20} style={{ color: GOLD }} /> 치지직 싱드컵 랭킹
+              <Trophy size={20} style={{ color: GOLD }} /> NexBot 비공식 인기점수 랭킹
             </h2>
             <EventBadge />
             {ev && <StatusChip status={ev.status} />}
@@ -582,6 +580,20 @@ export default function Singcup() {
             치지직 음악/노래 카테고리에서 <b className="text-fg">#싱드컵</b> 태그가 확인된 클립을
             공개 조회수와 하트 수로 계산한 <ScoreText>비공식 예상 인기점수</ScoreText> 순위입니다.
             스트리머마다 가장 높은 하트를 받은 클립 하나만 집계합니다.
+          </p>
+          {/* 이 화면은 NexBot이 자체 계산한 결과이고 공식 발표와 무관하다. 그 사실을
+              점수 설명과 같은 자리에서 한 번 더 못박고, 공식 명단으로 돌아가는 길을
+              같이 둔다 — 이 두 화면이 섞여 읽히는 것이 가장 위험한 오해다. */}
+          <p className="mt-1.5 text-sm leading-relaxed text-muted">
+            <b className="text-fg">공식 심사 결과와 다를 수 있습니다.</b> 치지직이 발표한 예선 참가자
+            명단은{" "}
+            {/* 골드를 글자 색으로 쓰지 않는다 — 라이트 테마 흰 배경에서 대비가
+                1.4:1까지 떨어져 읽히지 않는다(SingcupQualifiers의 ON_GOLD 주석). */}
+            <button type="button" onClick={onOfficial}
+                    className="font-bold text-fg underline underline-offset-2 hover:opacity-80">
+              공식 예선 참가자
+            </button>{" "}
+            화면에 있습니다.
           </p>
           <div className="mt-1"><ScoreFormula /></div>
         </div>
@@ -786,4 +798,40 @@ export default function Singcup() {
 
     </div>
   );
+}
+
+// ── 싱드컵 탭의 화면 전환 ─────────────────────────────────────────────────────
+//
+// 기본은 **공식 예선 참가자**(치지직 발표), 보조가 **NexBot 비공식 랭킹**이다.
+// 둘을 `?view=`로 나눠 두면 어느 쪽을 보고 있었는지가 공유 링크와 새로고침에
+// 그대로 남는다. 해석 규칙(특히 예전 `?sort=` 링크 호환)은 렌더링 없이 검증할 수
+// 있도록 `lib/singcupView`에 순수 함수로 빼 뒀다.
+export default function Singcup() {
+  const [view, setView] = useState<SingcupView>("official");
+
+  // 서버 렌더 결과와 어긋나지 않도록 주소는 effect에서만 읽는다.
+  useEffect(() => {
+    const { view: v, normalize } = readSingcupView(window.location.search);
+    setView(v);
+    if (normalize) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("view");
+      // replaceState라 뒤로가기 이력을 늘리지 않는다.
+      window.history.replaceState(null, "", url.toString());
+    }
+  }, []);
+
+  const selectView = useCallback((v: SingcupView) => {
+    setView(v);
+    const url = new URL(window.location.href);
+    applySingcupView(url, v);
+    window.history.replaceState(null, "", url.toString());
+  }, []);
+
+  // `movers`(하트 급상승)는 랭킹 화면 위쪽 카드라 별도 화면이 아니다. 링크를 살려
+  // 두되 렌더는 랭킹 하나로 모은다 — 같은 것을 두 벌로 만들면 반드시 갈라진다.
+  if (view === "official") {
+    return <SingcupQualifiers onRanking={() => selectView("ranking")} />;
+  }
+  return <SingcupRanking onOfficial={() => selectView("official")} />;
 }

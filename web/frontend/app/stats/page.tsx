@@ -2227,8 +2227,9 @@ export default function StatsPage() {
     const url = new URL(window.location.href);
     if (k === "overview") url.searchParams.delete("tab");
     else url.searchParams.set("tab", k);
-    // ?view=board(제거된 자유게시판 드로어)는 이제 어느 탭에서도 의미가 없다.
-    // 예전에는 싱드컵 탭에서만 남겨 뒀지만 지금은 조건 없이 지운다.
+    // ?view=는 싱드컵 탭 안에서만 뜻이 있다(공식 예선 참가자 ↔ 비공식 랭킹).
+    // 탭을 옮기면 그 상태는 더 이상 가리킬 화면이 없으므로 지운다. 싱드컵 탭으로
+    // 들어올 때도 지워져 기본 화면(공식 명단)에서 시작한다.
     url.searchParams.delete("view");
     window.history.replaceState(null, "", url.toString());
   };
