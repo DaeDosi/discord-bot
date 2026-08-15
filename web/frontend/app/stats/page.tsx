@@ -2276,7 +2276,21 @@ export default function StatsPage() {
         <div className="mb-6">
           <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight leading-tight flex items-center gap-2 flex-wrap">
             <span>치지직 <GradText>방송</GradText> 통계</span>
-            <span className="rounded-md border px-1.5 py-0.5 text-[11px] font-bold tracking-wide align-middle"
+            {/* Beta 배지가 정사각형에 가깝게 보이던 원인은 **세로 padding이 아니라
+                상속된 line-height**였다. 실측(운영, 1920px): 40.9×49.5px, 비율 0.83.
+                이 span은 h1의 플렉스 아이템이라 block으로 승격되고, h1의
+                `leading-tight`(text-3xl 35.6px × 1.2 = 42.75px)를 그대로 물려받아
+                높이가 42.75 + padding 4.75 + border 2 ≈ 49.5px가 됐다.
+                padding은 2.4px에 불과했으므로 그걸 더 줄여도 해결되지 않는다.
+
+                그래서 `leading-none`으로 상속을 끊고, 대신 눌려 보이지 않게 세로
+                padding을 조금 준다. 높이 = 12(글자) + 6×2(py-1.5) + 2(border) ≈ 26px.
+                `inline-flex items-center`로 글자를 배지 안에서 세로 중앙에 두고,
+                `shrink-0`으로 좁은 화면에서 찌그러지지 않게 한다.
+                색·테두리는 그대로다. 캡슐(rounded-full)로 만들지 않는다 —
+                사이트의 다른 pill과 구별되지 않는다. */}
+            <span className="inline-flex shrink-0 items-center rounded-md border
+                             px-2 py-1.5 text-xs font-bold leading-none tracking-wide"
                   style={{ color: GREEN, borderColor: "rgba(0,255,163,0.45)", background: "rgba(0,255,163,0.10)" }}>
               Beta
             </span>
