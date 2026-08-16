@@ -37,7 +37,9 @@ export default function Navbar({ user }: Props) {
               </div>
               <button
                 onClick={logout}
-                className="p-2 rounded-lg hover:bg-bg-hover text-muted hover:text-fg transition-colors"
+                className="min-w-[44px] min-h-[44px] flex items-center justify-center
+                           rounded-lg hover:bg-bg-hover text-muted hover:text-fg transition-colors"
+                aria-label="로그아웃"
                 title="로그아웃"
               >
                 <LogOut size={16} />

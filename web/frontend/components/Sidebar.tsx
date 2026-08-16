@@ -55,19 +55,38 @@ const GROUPS: NavGroup[] = [
 // ── 서버 스위처: 현재 관리 중인 서버 이름/아이콘을 보여주고, 클릭하면 다른 등록 서버로 바로 이동 ──
 function GuildSwitcher({ guildId }: { guildId: string }) {
   const [guilds, setGuilds] = useState<Guild[]>([]);
+  // 목록이 비어 있는 이유가 셋(로딩 중·실패·정말 0개)인데 하나로 표시하면
+  // 실패했을 때 영원히 "불러오는 중..."이 남는다(실측: 기준본에서 그랬다).
+  const [guildsState, setGuildsState] = useState<"loading" | "ready" | "error">("loading");
   const [open, setOpen]     = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    api.guilds.list().then(setGuilds).catch(() => {});
+    api.guilds.list()
+      .then((g) => { setGuilds(g); setGuildsState("ready"); })
+      .catch(() => setGuildsState("error"));
   }, []);
 
   useEffect(() => {
     const onClickOutside = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
+    // ESC로 닫고 포커스를 트리거로 돌려준다 — 키보드만 쓰는 사용자는 열린 메뉴에서
+    // 빠져나올 방법이 없었다.
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen((wasOpen) => {
+        if (wasOpen) triggerRef.current?.focus();
+        return false;
+      });
+    };
     document.addEventListener("mousedown", onClickOutside);
-    return () => document.removeEventListener("mousedown", onClickOutside);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onClickOutside);
+      document.removeEventListener("keydown", onKeyDown);
+    };
   }, []);
 
   const current  = guilds.find((g) => String(g.id) === String(guildId));
@@ -77,7 +96,10 @@ function GuildSwitcher({ guildId }: { guildId: string }) {
     <div className="relative mb-2" ref={ref}>
       <button
         type="button"
+        ref={triggerRef}
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="menu"
         className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg hover:bg-bg-hover transition-colors text-left"
       >
         {current?.icon ? (
@@ -94,9 +116,13 @@ function GuildSwitcher({ guildId }: { guildId: string }) {
       </button>
 
       {open && (
-        <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-bg-card border border-border rounded-xl shadow-xl py-1.5 max-h-80 overflow-y-auto">
+        <div role="menu" className="absolute left-0 right-0 top-full mt-1 z-50 bg-bg-card border border-border rounded-xl shadow-xl py-1.5 max-h-80 overflow-y-auto">
           {managed.length === 0 ? (
-            <p className="px-4 py-3 text-sm text-muted">불러오는 중...</p>
+            <p className="px-4 py-3 text-sm text-muted">
+              {guildsState === "loading" ? "불러오는 중..."
+                : guildsState === "error" ? "서버 목록을 불러오지 못했습니다."
+                : "관리 중인 다른 서버가 없습니다."}
+            </p>
           ) : (
             managed.map((g) => (
               <Link
@@ -178,11 +204,14 @@ export default function Sidebar({ guildId }: { guildId: string }) {
       {/* ── Mobile bottom nav (< md) ── */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40
                       border-t border-border bg-bg-card/95 backdrop-blur-sm">
-        <div className="flex items-stretch h-14">
+        {/* 12개 항목 × 44px = 528px 이라 390px 화면에 다 들어가지 않는다. 폭을 줄여
+            44px 아래로 내리는 대신(실측: 기준본에서 항목당 32px) 가로로 스크롤한다.
+            overflow를 숨겨 넘치는 항목을 접근 불가로 만들지 않는다. */}
+        <div className="flex items-stretch h-14 overflow-x-auto">
           {/* Back to server list */}
           <Link
             href="/dashboard"
-            className="flex-1 flex flex-col items-center justify-center gap-0.5
+            className="flex-1 min-w-[44px] flex flex-col items-center justify-center gap-0.5
                        text-muted hover:text-fg transition-colors"
           >
             <ChevronLeft size={20} />
@@ -205,7 +234,7 @@ export default function Sidebar({ guildId }: { guildId: string }) {
                     key={item.href}
                     href={href}
                     className={clsx(
-                      "flex-1 flex flex-col items-center justify-center gap-0.5 transition-colors",
+                      "flex-1 min-w-[44px] flex flex-col items-center justify-center gap-0.5 transition-colors",
                       active ? "text-accent" : "text-muted hover:text-fg"
                     )}
                   >
