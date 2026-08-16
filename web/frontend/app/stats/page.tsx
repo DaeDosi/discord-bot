@@ -14,7 +14,6 @@ import type {
   RisingPeriodRanking, PeriodRange, PeriodSort, RisingCategoryStreamers,
 } from "@/lib/types";
 import Footer from "@/components/Footer";
-import CollapsibleAbout from "@/components/CollapsibleAbout";
 import CategoryRankCards from "./CategoryRankCards";
 import RankingCharts from "./RankingCharts";
 import TagSearch from "./TagSearch";
@@ -477,119 +476,30 @@ function CategoryDonut() {
   );
 }
 
-// 서비스 소개 서술형 섹션 — SEO / 크롤러용.
+// 통계 안내로 가는 짧은 링크.
 //
-// 중요: 이 섹션은 loading/error/empty 분기 '밖'에 렌더해야 한다. 이 페이지는 데이터를
-// 클라이언트에서 받아오므로 서버 렌더링 HTML에는 로딩 스피너만 담긴다(실측 263자).
-// 크롤러가 보는 게 그것뿐이라 애드센스가 '가치가 별로 없는 콘텐츠'로 판단했다.
-// 분기 밖에 두면 데이터 상태와 무관하게 항상 초기 HTML에 포함된다.
+// 예전에는 여기에 서비스 설명 본문이 통째로 들어 있었다. 같은 내용이 스트리머 상세
+// 하단에도 있어 두 곳이 겹쳤고, 화면 아래가 길어져 실제 지표보다 설명이 더 컸다.
+// 본문은 `/stats/guide` 한 곳으로 옮기고 여기서는 링크만 건다.
+//
+// 이 섹션도 loading/error 분기 **밖**에 둔다 — 이 페이지는 데이터를 클라이언트에서
+// 받아오므로 서버 렌더링 HTML에는 로딩 스피너만 담긴다. 크롤러가 읽을 본문이 최소한
+// 하나는 초기 HTML에 있어야 한다.
 function StatsAbout() {
   return (
-    <CollapsibleAbout title="NEXBOT 치지직 방송 통계 서비스 소개">
-      <div className="space-y-4 text-sm leading-relaxed text-muted max-w-4xl">
-        <p>
-          NEXBOT 치지직 통계는 치지직(CHZZK)에서 방송하는 스트리머들이 자신의 방송 성과를
-          객관적인 수치로 확인하고 다음 방송 전략을 세울 수 있도록 만든 실시간 트래픽 분석
-          도구입니다. 방송을 오래 해도 &ldquo;오늘은 사람이 많았나, 적었나&rdquo;를 감으로만
-          판단하게 되는 경우가 많습니다. 특히 이제 방송을 시작한 신입 스트리머나 소규모 채널은
-          비교 기준이 될 데이터가 없어 성장하고 있는지조차 알기 어렵습니다. 이 서비스는 치지직이
-          공개하는 라이브 방송 목록을 주기적으로 수집해 시간에 따른 변화를 기록하고, 개인의
-          체감이 아니라 누적된 수치로 방송 흐름을 되짚어볼 수 있게 합니다.
-        </p>
-
-        <div>
-          <h3 className="text-fg font-bold mb-2">화면의 숫자가 뜻하는 것</h3>
-          <ul className="space-y-1.5 list-disc pl-5">
-            <li><b className="text-fg">현재 라이브 방송</b> — 가장 최근 수집 시점에 라이브로 확인된 채널 수입니다.</li>
-            <li><b className="text-fg">전체 동시 시청자</b> — 그 시점에 수집된 라이브 채널들의 시청자 수를 모두 더한 값입니다.</li>
-            <li><b className="text-fg">방송당 평균 시청자</b> — 전체 동시 시청자를 현재 라이브 방송 수로 나눈 값입니다. 큰 방송 하나가 평균을 끌어올릴 수 있으므로 순위와 함께 보는 편이 정확합니다.</li>
-            <li><b className="text-fg">뷰어십(누적 시청 시간)</b> — 각 수집 시점의 시청자 수에 수집 간격을 곱해 더한 값으로, 단위는 시청자-시간입니다. 100명이 1시간 본 방송과 50명이 2시간 본 방송이 같은 값이 됩니다. 시청자 수와 방송 길이를 하나로 합쳐 보는 지표입니다.</li>
-            <li><b className="text-fg">신규 스트리머</b> — 첫 방송 확인일로부터 60일 이내인 채널입니다. 시청자 규모와 무관합니다.</li>
-            <li><b className="text-fg">소형 스트리머</b> — 최근 평균 동시 시청자가 10명 이하인 채널입니다. 경력과 무관하므로 신규 그룹과 겹칠 수 있습니다.</li>
-          </ul>
-        </div>
-
-        <div>
-          <h3 className="text-fg font-bold mb-2">각 화면이 답하는 질문</h3>
-          <ul className="space-y-1.5 list-disc pl-5">
-            <li><b className="text-fg">랭킹</b> — &ldquo;지금 누가 많이 보고 있는가.&rdquo; 기본은 동시 시청자 기준이며 팔로워·방송 시간으로 정렬을 바꿀 수 있습니다.</li>
-            <li><b className="text-fg">카테고리 분석</b> — &ldquo;어디에 시청자가 모여 있고, 어디가 덜 붐비는가.&rdquo; 시청자 수와 방송 수를 함께 봐야 판단이 됩니다.</li>
-            <li><b className="text-fg">신규 &amp; 초기 분석</b> — &ldquo;막 시작한 채널 중 지금 반응이 오는 곳은 어디인가.&rdquo;</li>
-            <li><b className="text-fg">기간 분석</b> — &ldquo;이 기간 전체로 보면 어땠는가.&rdquo; 누적 시청 시간은 기간이 길수록 커지므로, 방송 하나의 성적은 평균 시청자로 함께 확인하시기 바랍니다.</li>
-          </ul>
-        </div>
-
-        <div>
-          <h3 className="text-fg font-bold mb-2">수집 주기와 화면 갱신</h3>
-          <p>
-            기능마다 수집 주기가 다릅니다. 라이브 방송 통계는 약 10분 간격으로 수집하고, 싱드컵
-            이벤트의 신규 클립 탐색은 약 4분 간격입니다. 싱드컵 클립의 하트·조회수는 정해진 시각이
-            아니라 계속 이어지는 방식으로 갱신하는데, 대상 클립 수와 외부 API 요청 제한에 따라
-            한 클립이 다시 갱신되기까지 대략 55분에서 115분까지 걸릴 수 있습니다. 화면 쪽은
-            싱드컵 페이지가 약 5분 간격으로 다시 받아 옵니다. 이 값들은 운영 설정에 따라 달라질
-            수 있어 고정된 보장이 아닙니다.
-          </p>
-          <p className="mt-2">
-            그래서 <b className="text-fg">&ldquo;실시간&rdquo;은 매초 완전히 동기화된다는 뜻이 아닙니다.</b>{" "}
-            화면의 값은 마지막 수집 시점의 값이며, 각 화면에 그 시각을 함께 적어 두었습니다.
-            방금 시작하거나 끝난 방송, 주기 사이에 잠깐 켜졌다 꺼진 방송은 아직 반영되지 않았을
-            수 있습니다.
-          </p>
-        </div>
-
-        <div>
-          <h3 className="text-fg font-bold mb-2">실제 치지직 화면과 다를 수 있는 이유</h3>
-          <p>
-            수집 시점 차이가 가장 큰 이유입니다. 그 밖에 원본 API가 일시적으로 응답하지 않거나
-            값을 나중에 수정하는 경우, 일부 항목만 내려 주는 경우에도 차이가 생깁니다. 과거 이력은
-            저희가 수집을 시작한 이후 구간만 존재하며 그 이전은 복원할 수 없습니다. 수치가 실제와
-            다르다고 판단되시면{" "}
-            <Link href="/contact" className="text-accent hover:underline">문의 페이지</Link>로
-            알려 주시기 바랍니다.
-          </p>
-        </div>
-
-        <div>
-          <h3 className="text-fg font-bold mb-2">수집하고 제공하는 데이터</h3>
-          <p>
-            플랫폼 전체의 동시 시청자 추이와 동시 라이브 방송 수를 최근 24시간 동안 10분 간격으로
-            기록해 꺾은선 그래프로 보여 줍니다. 여기에서 시청자가 가장 많이 몰리는 피크 타임과,
-            경쟁 방송이 적어 상대적으로 노출 기회가 큰 시간대를 함께 계산합니다. 카테고리(게임/토크)
-            별 점유율은 어떤 콘텐츠에 시청자가 모여 있는지, 방송 수 대비 시청자가 많은 이른바
-            블루오션 카테고리가 어디인지 보여 줍니다. 전체 스트리머 랭킹에서는 동시 시청자, 팔로워,
-            방송 시간을 기준으로 순위를 확인할 수 있고, 직전 수집 대비 시청자 증감과 24시간 동안의
-            신규 팔로워 유입도 함께 제공합니다. 신규·라이징 스트리머 지표는 팔로워 규모가 작은
-            채널만 따로 모아, 현재 시청자가 그 채널의 최근 7일 평균보다 얼마나 높은지를 나타내는
-            성장률 기준으로 정렬합니다. 절대 시청자 수가 아니라 자기 자신 대비 변화를 보기 때문에
-            규모가 작은 채널도 상위권에 오를 수 있습니다.
-          </p>
-        </div>
-
-        <div>
-          <h3 className="text-fg font-bold mb-2">스트리머를 위한 데이터 활용 가이드</h3>
-          <p>
-            먼저 방송 시작 시간을 정할 때 노출 최적 시간대를 참고하시기 바랍니다. 시청자가 가장 많은
-            피크 타임은 동시에 경쟁 방송도 가장 많은 시간이므로, 규모가 작은 채널이라면 방송당 평균
-            시청자가 높게 유지되는 구간을 노리는 편이 신규 유입에 유리할 수 있습니다. 다음으로
-            카테고리를 고를 때는 단순히 시청자가 많은 카테고리보다 방송 수 대비 평균 시청자가 높은
-            카테고리를 확인하시기 바랍니다. 시청자가 아무리 많아도 방송이 그보다 더 많으면 목록에서
-            묻히기 쉽습니다. 신입 그룹의 평균 시청자와 상위 20퍼센트, 상위 10퍼센트 컷오프 수치는
-            막연한 목표 대신 구체적인 다음 단계를 잡는 기준선으로 쓸 수 있습니다. 마지막으로 개별
-            채널 분석에서는 방송 시간과 시청 시간(시청자 수와 방송 시간을 곱한 누적 시청 시간)을 함께
-            보시기 바랍니다. 같은 시청자 수라도 방송을 오래 유지했을 때 누적 시청 시간이 늘어나므로,
-            방송 길이와 시청자 수 중 무엇을 조정할지 판단하는 데 도움이 됩니다.
-          </p>
-        </div>
-
-        <p className="text-xs text-muted/70">
-          본 서비스는 치지직이 공개하는 정보를 자체 수집·가공한 비공식 서비스로, 네이버 및
-          치지직과 제휴 관계가 없습니다. 수집 주기와 공개 API의 한계로 실제 수치와 오차가 있을 수
-          있으며, 과거 이력은 저희가 수집을 시작한 시점 이후 구간만 존재합니다. 서비스 이용과
-          데이터 처리에 관한 내용은 <Link href="/terms" className="text-accent hover:underline">이용약관</Link>과{" "}
-          <Link href="/privacy" className="text-accent hover:underline">개인정보처리방침</Link>에서 확인하실 수 있습니다.
-        </p>
-      </div>
-    </CollapsibleAbout>
+    <section className="mt-8 rounded-xl border border-border bg-bg-card/40 px-4 py-4">
+      <h2 className="text-base font-bold text-fg">치지직 통계 안내</h2>
+      <p className="mt-1.5 max-w-3xl text-sm leading-relaxed text-muted">
+        데이터를 어떻게 모으는지, 동시 시청자·뷰어십·카테고리·활동 잔디가 각각 무엇을
+        뜻하는지, 실제 치지직 화면과 값이 다를 수 있는 이유를 안내 페이지에 정리했습니다.
+        NexBot은 치지직 공개 정보를 자체 수집·가공한 비공식 서비스로 네이버 및 치지직과
+        제휴 관계가 없습니다.
+      </p>
+      <Link href="/stats/guide"
+            className="btn-secondary nb-tap mt-3 inline-flex text-sm">
+        통계 안내 보기
+      </Link>
+    </section>
   );
 }
 

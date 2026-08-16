@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
-import { ChevronDown, LineChart as LineIcon, ListOrdered, Gamepad2, Sprout, Radio, Users, Hash, SlidersHorizontal, Trophy } from "lucide-react";
+import Link from "next/link";
+import { BookOpen, ChevronDown, LineChart as LineIcon, ListOrdered, Gamepad2, Sprout, Radio, Users, Hash, SlidersHorizontal, Trophy } from "lucide-react";
 
 // /stats 좌측 메뉴. 탭은 URL이 아니라 state로 전환된다.
 // (route 기반 항목을 지원하던 분기는 /stats/network 제거와 함께 걷어냈다.)
@@ -147,6 +148,14 @@ export default function StatsNav({
           );
         })}
       </nav>
+      {/* 통계 안내 — 탭이 아니라 별도 페이지라 nav 목록 안에 넣지 않고 그 아래에 둔다.
+          목록에 섞으면 "탭을 하나 더 눌렀는데 페이지가 통째로 바뀌는" 동작이 된다. */}
+      <Link href="/stats/guide"
+            className="nb-tap mt-2 flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm
+                       font-semibold text-muted transition-colors hover:bg-bg-hover hover:text-fg">
+        <BookOpen size={16} className="shrink-0" aria-hidden="true" />
+        통계 안내
+      </Link>
       <p className="hidden md:block text-[11px] text-muted/60 mt-4 px-1 leading-relaxed">
         약 10분 주기로 치지직 공개 라이브 목록을 수집합니다. 비공식 서비스로 실제 수치와 오차가 있을 수 있습니다.
       </p>

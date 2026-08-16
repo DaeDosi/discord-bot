@@ -14,6 +14,8 @@ export default function sitemap(): MetadataRoute.Sitemap {
   return [
     { url: `${SITE}/`,        lastModified: now, changeFrequency: "weekly",  priority: 1.0 },
     { url: `${SITE}/stats`,   lastModified: now, changeFrequency: "hourly",  priority: 0.9 },
+    // 통계 지표 안내. 전역 `/guide`(디스코드 봇 사용법)와 다른 문서다.
+    { url: `${SITE}/stats/guide`, lastModified: now, changeFrequency: "monthly", priority: 0.7 },
     { url: `${SITE}/guide`,   lastModified: now, changeFrequency: "monthly", priority: 0.7 },
     { url: `${SITE}/faq`,     lastModified: now, changeFrequency: "monthly", priority: 0.6 },
     // 게시자 신원과 문의 경로를 알리는 공개 페이지. 내용이 자주 바뀌지 않아

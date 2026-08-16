@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { fetchStreamerMeta, shouldNoIndex } from "@/lib/streamerMeta";
 import Footer from "@/components/Footer";
-import CollapsibleAbout from "@/components/CollapsibleAbout";
 
 // 스트리머별 분석 페이지의 서버 사이드 레이어.
 //
@@ -82,66 +81,24 @@ export default async function StreamerLayout(
     <div className="min-h-screen bg-bg text-fg flex flex-col">
       {children}
 
-      {/* 크롤러용 서버 렌더링 본문. page.tsx의 loading 분기 밖(형제)이라 데이터 로딩
-          상태와 무관하게 항상 초기 HTML에 포함된다. */}
-      <section className="w-full max-w-[1600px] mx-auto px-4 md:px-6 pb-10">
-        <CollapsibleAbout title={name ? `${name} 치지직 방송 통계 분석` : "치지직 스트리머 방송 통계 분석"}>
-          <div className="space-y-4 text-sm leading-relaxed text-muted max-w-4xl">
-            {name ? (
-              <p>
-                이 페이지는 치지직 스트리머 <strong className="text-fg">{name}</strong> 채널의 방송 지표를
-                NEXBOT이 자체 수집한 데이터로 정리한 분석 리포트입니다.
-                {sm?.avg_viewers != null && <> 최근 30일 기준 평균 동시 시청자는 약 {sm.avg_viewers.toLocaleString("ko-KR")}명이며,</>}
-                {sm?.peak_viewers != null && <> 같은 기간 최고 동시 시청자는 {sm.peak_viewers.toLocaleString("ko-KR")}명을 기록했습니다.</>}
-                {sm?.broadcast_hours != null && <> 집계된 방송 시간은 약 {sm.broadcast_hours.toLocaleString("ko-KR")}시간입니다.</>}
-                {" "}아래 대시보드에서는 이 수치들이 어떻게 변해 왔는지 시간 순서대로 확인할 수 있습니다.
-              </p>
-            ) : (
-              <p>
-                이 페이지는 치지직 스트리머 개별 채널의 방송 지표를 NEXBOT이 자체 수집한 데이터로 정리한
-                분석 리포트입니다. 해당 채널이 라이브를 시작하면 약 10분 주기로 수집이 이루어지고, 이후
-                아래 항목들이 순차적으로 채워집니다.
-              </p>
-            )}
-
-            <div>
-              <h3 className="text-fg font-bold mb-2">이 페이지에서 확인할 수 있는 지표</h3>
-              <p>
-                평균 동시 시청자와 최고 동시 시청자는 방송의 현재 체급을 보여 주는 기본 지표입니다.
-                방송 시간은 수집된 스냅샷을 기준으로 추정한 실제 송출 시간이며, 시청 시간(누적 시청 시간)은
-                동시 시청자 수와 방송 시간을 곱해 계산합니다. 같은 평균 시청자라도 방송을 길게 유지하면 시청
-                시간이 늘어나기 때문에, 두 값을 함께 보면 시청자 수와 방송 길이 중 무엇이 성과를 만들었는지
-                구분할 수 있습니다. 카테고리 비중은 어떤 게임이나 콘텐츠에 방송 시간을 얼마나 배분했는지
-                보여 주며, 특정 카테고리에 편중되어 있는지 여러 콘텐츠를 병행하는지 판단하는 근거가 됩니다.
-                방송 기록과 잔디 히트맵은 최근 방송 빈도와 공백 구간을 한눈에 보여 주므로, 방송 주기가
-                일정한지 점검할 때 유용합니다.
-              </p>
-            </div>
-
-            <div>
-              <h3 className="text-fg font-bold mb-2">데이터를 읽을 때 주의할 점</h3>
-              <p>
-                모든 수치는 치지직이 공개하는 라이브 목록을 약 10분 간격으로 수집해 추정한 값입니다. 따라서
-                방송 시간과 시청 시간은 10분 단위로 근사되며, 수집 공백이 있었다면 실제보다 낮게 집계될 수
-                있습니다. 또한 과거 이력은 NEXBOT이 수집을 시작한 시점 이후 구간만 존재하므로, 그보다 오래된
-                방송은 반영되지 않습니다. 절대 수치를 다른 채널과 직접 비교하기보다는, 같은 채널의 시간에 따른
-                변화 추세를 보는 용도로 활용하시는 것을 권합니다. 다른 채널과의 상대적인 위치가 궁금하다면{" "}
-                <Link href="/stats" className="text-accent hover:underline">치지직 전체 방송 통계</Link> 페이지의
-                랭킹과 카테고리 점유율을 함께 참고하시기 바랍니다.
-              </p>
-            </div>
-
-            <p className="text-xs text-muted/70">
-              NEXBOT은 치지직 공개 정보를 자체 수집·가공한 비공식 서비스로, 네이버 및 치지직과 제휴 관계가
-              없습니다. 자세한 내용은{" "}
-              <Link href="/terms" className="text-accent hover:underline">이용약관</Link>과{" "}
-              <Link href="/privacy" className="text-accent hover:underline">개인정보처리방침</Link>을 확인해
-              주시기 바랍니다.
-            </p>
-          </div>
-        </CollapsibleAbout>
+      {/* 통계 읽는 법은 `/stats/guide` 한 곳에 있다. 예전에는 여기에 본문이 통째로
+          들어 있었는데, 채널 이름과 그때의 수치가 문장에 섞여 페이지마다 다른 글이
+          됐고 통계 메인 하단과도 내용이 겹쳤다. 여기서는 링크만 건다. */}
+      <section className="mx-auto w-full max-w-[1600px] px-4 pb-10 md:px-6">
+        <div className="rounded-xl border border-border bg-bg-card/40 px-4 py-4">
+          <h2 className="text-base font-bold text-fg">이 수치는 어떻게 계산되나</h2>
+          <p className="mt-1.5 max-w-3xl text-sm leading-relaxed text-muted">
+            평균·최고 동시 시청자, 방송 시간, 시청 시간, 카테고리 비중, 활동 잔디가
+            각각 무엇을 뜻하는지와 수집 주기로 인한 오차를 안내 페이지에 정리했습니다.
+            NexBot은 치지직 공개 정보를 자체 수집·가공한 비공식 서비스로 네이버 및
+            치지직과 제휴 관계가 없습니다.
+          </p>
+          <Link href="/stats/guide"
+                className="btn-secondary nb-tap mt-3 inline-flex text-sm">
+            통계 안내 보기
+          </Link>
+        </div>
       </section>
-
       <Footer />
     </div>
   );
