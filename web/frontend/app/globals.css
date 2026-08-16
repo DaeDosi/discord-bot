@@ -344,3 +344,10 @@
           background-clip: text;
   -webkit-text-fill-color: transparent;
 }
+
+/* 404·error 화면에서는 우측 하단 지원 버튼을 띄우지 않는다.
+   이 화면들도 루트 레이아웃 안에서 렌더되므로 버튼이 그대로 떠 있었다(실측 확인).
+   경로로는 판정할 수 없어서 — 어떤 경로든 404가 될 수 있다 — 화면이 다는
+   `data-nb-chrome="minimal"` 표시를 보고 감춘다.
+   `display:none`이라 탭 순서에서도 빠진다(시각적으로만 숨기면 키보드로 닿는다). */
+body:has([data-nb-chrome="minimal"]) [data-nb-support] { display: none; }

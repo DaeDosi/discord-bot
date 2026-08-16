@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { ExternalLink, HelpCircle, Mail, Megaphone, MessageSquare, X } from "lucide-react";
 
 import { api } from "@/lib/api";
+import { shouldShowSupportMenu } from "@/lib/supportMenu";
 
 // 우측 하단 지원 버튼.
 //
@@ -12,17 +13,15 @@ import { api } from "@/lib/api";
 // `app/layout.tsx`에서 **한 번만** 렌더한다. 화면마다 붙이면 같은 버튼이 두 번
 // 그려지거나 화면별로 동작이 갈라진다.
 //
-// 아래 경로에서는 띄우지 않는다:
-//  · 인증 왕복(`/login` `/callback` `/verify`) — 사용자가 다른 창으로 넘어가는 중이라
-//    떠 있는 버튼이 흐름을 방해한다.
-//  · `/overlay/*` — OBS 브라우저 소스다. 방송 화면에 지원 버튼이 찍히면 안 된다.
+// 어떤 경로에서 띄우지 않는지는 `lib/supportMenu.ts`가 정한다(순수 함수 + 테스트).
+// 404·error 화면에서 숨기는 것은 경로로 판정할 수 없어서 `globals.css`가 맡는다 —
+// `app/not-found.tsx`·`app/error.tsx`가 다는 `data-nb-chrome="minimal"` 표시를 보고
+// 감춘다. 실제로 이 화면들에서 버튼이 떠 있는 것을 실측으로 확인해 막은 것이다.
 //
 // ── 가리지 않기 ─────────────────────────────────────────────────────────────
 // 페이지 하단 콘텐츠(푸터·표 마지막 행)를 덮지 않도록 `Footer`에 하단 여백을 주는
 // 대신, 버튼 자체를 작게 두고 스크롤을 막지 않는다(`pointer-events`는 버튼에만).
 // iOS 홈 인디케이터를 피하려고 `env(safe-area-inset-*)`를 더한다.
-
-const EXCLUDED_PREFIXES = ["/login", "/callback", "/verify", "/overlay"];
 
 const SUPPORT_DISCORD = "https://discord.gg/DaZxywE4Ka"; // components/Footer.tsx와 같은 값
 
@@ -65,7 +64,7 @@ export default function SupportMenu() {
       .catch(() => setNotice(null));
   }, [open, noticeLoaded]);
 
-  if (!pathname || EXCLUDED_PREFIXES.some((p) => pathname.startsWith(p))) return null;
+  if (!shouldShowSupportMenu(pathname)) return null;
 
   const itemCls =
     "nb-tap flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-fg " +
@@ -74,6 +73,7 @@ export default function SupportMenu() {
   return (
     <div
       ref={rootRef}
+      data-nb-support=""
       className="fixed right-4 z-40 flex flex-col items-end gap-2"
       style={{
         bottom: "calc(1rem + env(safe-area-inset-bottom, 0px))",

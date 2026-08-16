@@ -124,11 +124,25 @@ test("요구10: 지원 메뉴는 정확히 세 항목이고 임의 URL을 만들
   assert.ok(s.includes("aria-expanded={open}"));
   assert.ok(s.includes('e.key === "Escape"'));
   assert.ok(s.includes("triggerRef.current?.focus()"));
-  // 인증 왕복과 OBS 오버레이에서는 뜨지 않는다.
-  assert.ok(s.includes('"/overlay"') && s.includes('"/login"'));
+  // 노출 판정은 순수 함수에 위임한다 — 컴포넌트 안에서 접두 비교로 되돌리지 않는다.
+  assert.ok(s.includes("shouldShowSupportMenu"));
+  assert.ok(!s.includes("startsWith("), "경로 판정을 컴포넌트로 되돌리지 않는다");
+  // 404·error 화면에서 감출 수 있도록 표시를 단다.
+  assert.ok(s.includes("data-nb-support"));
 });
 
 test("요구10: 지원 버튼은 레이아웃에서 한 번만 렌더된다", () => {
   const layout = read("app/layout.tsx");
   assert.equal((layout.match(/<SupportMenu \/>/g) ?? []).length, 1);
+});
+
+test("요구10: 404·error 화면은 부가 UI를 끄는 표시를 달고, CSS가 그걸 본다", () => {
+  // 이 셋 중 하나라도 빠지면 404 위에 지원 버튼이 다시 뜬다 — 실제로 그랬다.
+  for (const f of ["app/not-found.tsx", "app/error.tsx"]) {
+    assert.ok(read(f).includes('data-nb-chrome="minimal"'), `${f}에 표시가 없다`);
+  }
+  const css = read("app/globals.css");
+  assert.ok(css.includes('body:has([data-nb-chrome="minimal"]) [data-nb-support]'));
+  assert.ok(/\[data-nb-support\]\s*\{\s*display:\s*none/.test(css),
+    "시각적으로만 숨기면 키보드로 닿는다");
 });
