@@ -195,6 +195,10 @@ def _admin(row) -> dict:
         "createdAt": int(row["created_at"]),
         "updatedAt": int(row["updated_at"]),
         "assignedCount": int(row["assigned_count"]) if "assigned_count" in row.keys() else 0,
+        # 전체 스트리머 랭킹에서 이 그룹의 멤버를 뺄지. 운영 화면에서만 쓰는 값이라
+        # 공개 응답(`_public`)에는 넣지 않는다.
+        "excludeFromRanking": bool(row["exclude_from_ranking"])
+            if "exclude_from_ranking" in row.keys() else False,
     })
     return d
 
@@ -285,7 +289,8 @@ async def get_tag(tag_id: int):
 # ── 쓰기 ────────────────────────────────────────────────────────────────────
 
 async def create_tag(*, name, color_mode, color_start, color_end,
-                     gradient_direction, kind="team") -> dict:
+                     gradient_direction, kind="team",
+                     exclude_from_ranking: bool = False) -> dict:
     clean = clean_name(name)
     style = clean_style(color_mode, color_start, color_end, gradient_direction)
     k = clean_kind(kind)
@@ -296,10 +301,12 @@ async def create_tag(*, name, color_mode, color_start, color_end,
         cur = await db.execute(
             """INSERT INTO streamer_tags
                    (name, slug, kind, color_mode, color_start, color_end,
-                    gradient_direction, active, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,1,?,?)""",
+                    gradient_direction, active, exclude_from_ranking,
+                    created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,1,?,?,?)""",
             (clean, slug, k, style["color_mode"], style["color_start"],
-             style["color_end"], style["gradient_direction"], now, now))
+             style["color_end"], style["gradient_direction"],
+             1 if exclude_from_ranking else 0, now, now))
         await db.commit()
     except Exception as e:
         # 유니크 인덱스가 이름/슬러그 중복을 잡는다. 메시지로 원인을 구분해 준다.
@@ -313,7 +320,8 @@ async def create_tag(*, name, color_mode, color_start, color_end,
 
 
 async def update_tag(tag_id: int, *, name=None, color_mode=None, color_start=None,
-                     color_end=None, gradient_direction=None, active=None) -> dict:
+                     color_end=None, gradient_direction=None, active=None,
+                     exclude_from_ranking=None) -> dict:
     row = await get_tag(tag_id)
     if row is None:
         raise TagError("존재하지 않는 태그입니다.")
@@ -333,6 +341,8 @@ async def update_tag(tag_id: int, *, name=None, color_mode=None, color_start=Non
             else row["gradient_direction"]))
     if active is not None:
         fields["active"] = 1 if active else 0
+    if exclude_from_ranking is not None:
+        fields["exclude_from_ranking"] = 1 if exclude_from_ranking else 0
     if not fields:
         return _admin(row)
     fields["updated_at"] = int(time.time())
@@ -573,3 +583,32 @@ __all__ = [
     "assign", "unassign", "reorder", "search_streamers", "assignments_of_tag",
     "MEMBER_PAGE_MAX", "MEMBER_PAGE_DEFAULT", "reorder_members",
 ]
+
+
+# ── 전체 스트리머 랭킹 제외 (UI-R 요구 6) ────────────────────────────────────
+
+RANKING_EXCLUSION_SQL = """
+    SELECT a.streamer_channel_id
+      FROM streamer_tag_assignments a
+      JOIN streamer_tags t ON t.id = a.tag_id
+     WHERE t.active = 1 AND t.exclude_from_ranking = 1
+"""
+"""전체 스트리머 랭킹에서 뺄 채널을 뽑는 서브쿼리.
+
+**쿼리 안에서 직접 쓰라고 문자열로 둔다.** 파이썬으로 목록을 만들어 `NOT IN (?,?,…)`을
+조립하면 (1) 목록이 길어질수록 바인딩이 늘고 (2) 조회와 랭킹 쿼리 사이에 값이 바뀌는
+창이 생긴다. 서브쿼리는 한 트랜잭션 안에서 항상 최신 상태를 본다.
+
+계약:
+ · **활성 그룹만** 본다 — 그룹을 비활성화하면 멤버가 즉시 랭킹에 돌아온다.
+ · 지정(assignment) 행이 사라지면 역시 즉시 돌아온다.
+ · 여러 그룹에 속하면 **하나라도 제외 그룹이면 제외**된다(EXISTS 의미).
+ · 그룹 **이름**을 보지 않으므로 이름을 바꿔도 정책이 유지된다.
+"""
+
+
+async def excluded_channel_ids() -> set[str]:
+    """제외 대상 채널 id 집합. 테스트와 진단용 — 랭킹 쿼리는 위 서브쿼리를 직접 쓴다."""
+    db = await get_db()
+    rows = await (await db.execute(RANKING_EXCLUSION_SQL)).fetchall()
+    return {r["streamer_channel_id"] for r in rows}

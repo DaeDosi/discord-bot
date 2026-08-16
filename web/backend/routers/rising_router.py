@@ -363,6 +363,18 @@ async def live_ranking(limit: int = 200):
            LEFT JOIN rising_live_snapshots f
              ON f.chzzk_channel_id = n.chzzk_channel_id AND f.collected_at = ?
            WHERE n.collected_at = ?
+             -- 전체 스트리머 랭킹에서만 제외한다 (UI-R 요구 6).
+             -- 그룹 *이름*이 아니라 `streamer_tags.exclude_from_ranking` 속성으로
+             -- 판정하므로 그룹 이름을 바꿔도 정책이 유지된다. 활성 그룹만 보므로
+             -- 그룹을 비활성화하거나 멤버를 빼면 즉시 랭킹에 돌아온다.
+             -- **이 필터는 여기(live-ranking)에만 있다** — 검색·상세·신규 랭킹·
+             -- 싱드컵·수집·저장은 그대로다.
+             AND n.chzzk_channel_id NOT IN (
+                 SELECT a.streamer_channel_id
+                   FROM streamer_tag_assignments a
+                   JOIN streamer_tags t ON t.id = a.tag_id
+                  WHERE t.active = 1 AND t.exclude_from_ranking = 1
+             )
            ORDER BY n.concurrent_viewers DESC
            LIMIT ?""",
         (prev_ts if prev_ts is not None else -1, t24 if t24 is not None else -1, ts, limit)

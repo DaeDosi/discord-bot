@@ -1,11 +1,12 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus, Search, Tag as TagIcon, Users, X, ArrowUp, ArrowDown, Check } from "lucide-react";
+import { Plus, Tag as TagIcon, Users, X, ArrowUp, ArrowDown, Check } from "lucide-react";
+import Switch from "@/components/Switch";
 import GroupMembersDrawer from "./GroupMembersDrawer";
 import { api } from "@/lib/api";
 import { StreamerTagBadge } from "@/components/StreamerTag";
 import type {
-  StreamerTag, StreamerTagAdmin, StreamerTagSearchItem, TagGradientDirection,
+  StreamerTag, StreamerTagAdmin, TagGradientDirection,
 } from "@/lib/types";
 
 /** 방향 선택지 — **닫힌 목록**이다. 서버도 같은 목록으로 검증한다.
@@ -70,6 +71,10 @@ function TagForm({ editing, onDone, onCancel }: {
   const [colorEnd, setColorEnd] = useState(editing?.colorEnd ?? "#c084fc");
   const [dir, setDir] = useState<TagGradientDirection>(
     editing?.gradientDirection ?? "to-right");
+  // 전체 스트리머 랭킹 제외 — 그룹 **이름**이 아니라 이 속성으로 판정한다.
+  // 이름을 바꿔도 정책이 유지되는 것이 핵심이다(요구 6).
+  const [excludeFromRanking, setExcludeFromRanking] = useState(
+    editing?.excludeFromRanking ?? false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -85,6 +90,7 @@ function TagForm({ editing, onDone, onCancel }: {
         name: name.trim(), colorMode, colorStart,
         colorEnd: colorMode === "gradient" ? colorEnd : null,
         gradientDirection: dir,
+        excludeFromRanking,
       };
       if (editing) await api.admin.streamerTagUpdate(editing.id, body);
       else await api.admin.streamerTagCreate(body);
@@ -139,6 +145,20 @@ function TagForm({ editing, onDone, onCancel }: {
         )}
       </div>
 
+      {/* 전체 스트리머 랭킹 제외 — `Switch`는 `<label>`로 감싸야 클릭이 먹는다
+          (루트 CLAUDE.md 명시). 적용 범위를 문구로 정확히 적어 둔다. */}
+      <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-bg p-3">
+        <Switch checked={excludeFromRanking} onChange={setExcludeFromRanking} />
+        <span className="min-w-0">
+          <span className="block text-sm font-semibold text-fg">전체 스트리머 랭킹에서 제외</span>
+          <span className="mt-0.5 block text-xs leading-relaxed text-muted">
+            이 그룹에 속한 스트리머를 <b className="text-fg">전체 스트리머 랭킹</b>에만 노출하지 않습니다.
+            검색·스트리머 상세·신규 스트리머 랭킹·싱드컵·통계 수집에는 영향이 없습니다.
+            그룹을 비활성화하거나 멤버에서 빼면 즉시 다시 노출됩니다.
+          </span>
+        </span>
+      </label>
+
       {/* 실제 화면에 쓰이는 것과 **같은 컴포넌트**로 미리 본다. 따로 그리면 드리프트한다. */}
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-bg p-3">
         <span className="text-xs font-semibold text-muted">미리보기</span>
@@ -166,115 +186,6 @@ function TagForm({ editing, onDone, onCancel }: {
   );
 }
 
-/** 한 스트리머의 소속 그룹 지정 카드 — 지정/해제/순서 변경. */
-function StreamerRow({ item, tags, maxPerStreamer, onChanged }: {
-  item: StreamerTagSearchItem;
-  tags: StreamerTagAdmin[];
-  maxPerStreamer: number;
-  onChanged: (channelId: string, next: StreamerTag[]) => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const assignedIds = useMemo(() => new Set(item.tags.map((t) => t.id)), [item.tags]);
-  const assignable = tags.filter((t) => t.active && !assignedIds.has(t.id));
-  const full = item.tags.length >= maxPerStreamer;
-
-  const run = async (fn: () => Promise<{ tags: StreamerTag[] }>) => {
-    if (busy) return;
-    setBusy(true); setErr(null);
-    try {
-      const res = await fn();
-      onChanged(item.channelId, res.tags);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "요청에 실패했습니다.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const move = (idx: number, delta: number) => {
-    const next = [...item.tags];
-    const j = idx + delta;
-    if (j < 0 || j >= next.length) return;
-    [next[idx], next[j]] = [next[j], next[idx]];
-    void run(() => api.admin.streamerTagReorder(item.channelId, next.map((t) => t.id)));
-  };
-
-  return (
-    <div className="space-y-2 rounded-xl border border-border bg-bg-card/60 p-3">
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <span className="min-w-0 truncate text-sm font-semibold text-fg">
-          {item.channelName || "(이름 미상)"}
-        </span>
-        <code className="shrink-0 rounded bg-bg-hover px-1.5 py-0.5 text-[11px] text-muted">
-          {item.channelId.slice(0, 8)}…
-        </code>
-      </div>
-
-      {/* 현재 지정 — 순서가 곧 화면 노출 순서다 */}
-      {item.tags.length === 0 ? (
-        <p className="text-xs text-muted">지정된 소속 그룹이 없습니다.</p>
-      ) : (
-        <ul className="flex flex-col gap-1.5">
-          {item.tags.map((t, i) => (
-            <li key={t.id} className="flex min-w-0 items-center gap-1.5">
-              <span className="w-5 shrink-0 text-center text-[11px] tabular-nums text-muted">
-                {i + 1}
-              </span>
-              <StreamerTagBadge tag={t} />
-              {i >= 2 && (
-                <span className="shrink-0 text-[11px] text-muted"
-                      title={`목록 화면에서는 앞 2개만 보이고 나머지는 +N으로 접힙니다.`}>
-                  (목록에서 접힘)
-                </span>
-              )}
-              <span className="ml-auto flex shrink-0 items-center gap-1">
-                <button onClick={() => move(i, -1)} disabled={busy || i === 0}
-                        aria-label={`${t.name} 위로`} className="btn-secondary !px-1.5 !py-1 disabled:opacity-40">
-                  <ArrowUp size={13} />
-                </button>
-                <button onClick={() => move(i, 1)} disabled={busy || i === item.tags.length - 1}
-                        aria-label={`${t.name} 아래로`} className="btn-secondary !px-1.5 !py-1 disabled:opacity-40">
-                  <ArrowDown size={13} />
-                </button>
-                <button onClick={() => void run(() =>
-                          api.admin.streamerTagUnassign(item.channelId, t.id))}
-                        disabled={busy} aria-label={`${t.name} 해제`}
-                        className="btn-secondary !px-1.5 !py-1 disabled:opacity-40">
-                  <X size={13} />
-                </button>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {/* 지정 — 이미 붙은 그룹은 목록에서 빠진다(중복 지정 자체가 불가능하다) */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        {full ? (
-          <span className="text-xs text-muted">
-            소속 그룹은 최대 {maxPerStreamer}개까지 지정할 수 있습니다.
-          </span>
-        ) : assignable.length === 0 ? (
-          <span className="text-xs text-muted">붙일 수 있는 소속 그룹이 없습니다.</span>
-        ) : (
-          assignable.map((t) => (
-            <button key={t.id} disabled={busy}
-                    onClick={() => void run(() =>
-                      api.admin.streamerTagAssign(item.channelId, t.id))}
-                    className="inline-flex items-center gap-1 rounded-md border border-dashed
-                               border-border px-1.5 py-0.5 text-[11px] font-semibold
-                               text-muted transition-colors hover:text-fg disabled:opacity-40">
-              <Plus size={11} /> {t.name}
-            </button>
-          ))
-        )}
-      </div>
-
-      {err && <p role="alert" className="text-xs text-red-400">{err}</p>}
-    </div>
-  );
-}
 
 export default function StreamerTagsPanel() {
   const [tags, setTags] = useState<StreamerTagAdmin[]>([]);
@@ -286,10 +197,6 @@ export default function StreamerTagsPanel() {
   /** 멤버 관리 drawer를 연 그룹. null이면 닫혀 있다. */
   const [membersOf, setMembersOf] = useState<StreamerTagAdmin | null>(null);
 
-  const [keyword, setKeyword] = useState("");
-  const [results, setResults] = useState<StreamerTagSearchItem[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [searchErr, setSearchErr] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setLoadErr(null);
@@ -306,30 +213,8 @@ export default function StreamerTagsPanel() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const search = async () => {
-    const kw = keyword.trim();
-    // 최소 길이는 서버도 막지만, 여기서 먼저 막아 헛요청을 줄인다.
-    if (kw.length < 2) { setSearchErr("검색어는 2자 이상이어야 합니다."); return; }
-    setSearching(true); setSearchErr(null);
-    try {
-      const res = await api.admin.streamerTagSearch(kw);
-      setResults(res.streamers);
-      if (res.streamers.length === 0) setSearchErr("검색 결과가 없습니다.");
-    } catch (e) {
-      setSearchErr(e instanceof Error ? e.message : "검색에 실패했습니다.");
-    } finally {
-      setSearching(false);
-    }
-  };
-
   /** 지정/해제/순서 변경 후 서버가 준 최종 소속 그룹 목록으로 그 행만 갈아 끼운다.
    *  전체를 다시 검색하지 않는다 — 목록이 흔들려 방금 만진 행을 놓친다. */
-  const onRowChanged = (channelId: string, next: StreamerTag[]) => {
-    setResults((prev) => prev.map((r) =>
-      r.channelId === channelId ? { ...r, tags: next } : r));
-    void load();          // 그룹별 멤버 수를 다시 센다
-  };
-
   const visibleTags = showInactive ? tags : tags.filter((t) => t.active);
 
   return (
@@ -419,31 +304,15 @@ export default function StreamerTagsPanel() {
                             onChanged={() => void load()} />
       )}
 
-      {/* ── 스트리머 검색 · 지정 ── */}
-      <section className="space-y-2">
-        <h3 className="text-sm font-bold text-fg">스트리머에게 그룹 지정</h3>
-        <div className="flex flex-wrap items-center gap-2">
-          <input value={keyword} onChange={(e) => setKeyword(e.target.value)}
-                 onKeyDown={(e) => { if (e.key === "Enter") void search(); }}
-                 placeholder="스트리머 이름 또는 채널 ID (2자 이상)"
-                 className="min-w-0 flex-1 rounded-lg border border-border bg-bg
-                            px-2.5 py-1.5 text-sm"
-                 style={{ minWidth: 200 }} />
-          <button onClick={() => void search()} disabled={searching}
-                  className="btn-primary inline-flex items-center gap-1.5 text-sm disabled:opacity-50">
-            <Search size={14} /> {searching ? "검색 중…" : "검색"}
-          </button>
-        </div>
-        {searchErr && <p role="alert" className="text-sm text-muted">{searchErr}</p>}
-        {results.length > 0 && (
-          <div className="flex flex-col gap-2">
-            {results.map((r) => (
-              <StreamerRow key={r.channelId} item={r} tags={tags}
-                           maxPerStreamer={maxPerStreamer} onChanged={onRowChanged} />
-            ))}
-          </div>
-        )}
-      </section>
+      {/* ── '스트리머에게 그룹 지정' 섹션은 제거했다 (UI-R 요구 7) ─────────────
+          같은 일을 하는 경로가 둘이었다 — 여기(스트리머 → 그룹)와 위의 '멤버 관리'
+          (그룹 → 스트리머). 두 화면이 같은 데이터를 다르게 보여 주면 어느 쪽이
+          최신인지 알 수 없고, 멤버 수(`assignedCount`)도 한쪽에서만 갱신됐다.
+          그룹 목록에서 바로 들어가는 **'멤버 관리' 하나로 통일**한다.
+
+          **API는 그대로 둔다** — `streamer-tags/search` · `assign` · `unassign` ·
+          `reorder`는 `GroupMembersDrawer`가 계속 쓴다. 소비자가 남아 있으므로
+          지우지 않는다. */}
     </div>
   );
 }

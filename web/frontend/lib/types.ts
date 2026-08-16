@@ -911,6 +911,8 @@ export interface StreamerTagAdmin extends StreamerTag {
   createdAt: number;
   updatedAt: number;
   assignedCount: number;
+  /** 이 그룹 멤버를 **전체 스트리머 랭킹에서만** 뺄지. 운영 응답에만 있다. */
+  excludeFromRanking: boolean;
 }
 
 export interface StreamerTagListResponse {

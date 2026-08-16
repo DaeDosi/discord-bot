@@ -1144,6 +1144,22 @@ async def init_db():
         # 관리 화면은 반대로 "이 태그가 붙은 채널"을 읽는다.
         "CREATE INDEX IF NOT EXISTS idx_streamer_tag_assign_tag "
         "ON streamer_tag_assignments(tag_id, display_order)",
+
+        # ── 전체 스트리머 랭킹 제외 (UI-R 요구 6) ──────────────────────────
+        # '공식' 그룹처럼 플랫폼이 직접 운영하는 채널을 전체 랭킹에서 빼기 위한
+        # **명시적 관리 속성**이다. 그룹 *이름*으로 판정하지 않는 이유는,
+        # 이름을 바꾸는 순간 정책이 조용히 풀리기 때문이다.
+        #
+        # 적용 범위는 **전체 스트리머 랭킹 하나뿐**이다 — 검색·상세·신규 랭킹·
+        # 싱드컵·수집·저장에는 관여하지 않는다(요구 6 명시).
+        "ALTER TABLE streamer_tags ADD COLUMN exclude_from_ranking INTEGER NOT NULL DEFAULT 0",
+        # 랭킹 쿼리가 "제외 대상 채널"을 뽑을 때 타는 인덱스.
+        "CREATE INDEX IF NOT EXISTS idx_streamer_tags_exclude "
+        "ON streamer_tags(exclude_from_ranking, active)",
+        # 기존 '공식' 그룹에 정책을 적용한다. 이후 이름이 바뀌어도 컬럼 값이 남으므로
+        # 정책은 유지된다. 이미 값이 1이면 아무것도 바꾸지 않는다.
+        "UPDATE streamer_tags SET exclude_from_ranking = 1 "
+        "WHERE name = '공식' AND exclude_from_ranking = 0",
     ]:
         try:
             await db.execute(sql)

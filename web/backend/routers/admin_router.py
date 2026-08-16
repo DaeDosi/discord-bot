@@ -1143,6 +1143,8 @@ class TagCreate(BaseModel):
     colorEnd: Optional[str] = None
     gradientDirection: str = "to-right"
     kind: str = "team"
+    # 이 그룹의 멤버를 **전체 스트리머 랭킹에서만** 뺄지. 기본은 끔.
+    excludeFromRanking: bool = False
 
 
 class TagUpdate(BaseModel):
@@ -1152,6 +1154,7 @@ class TagUpdate(BaseModel):
     colorEnd: Optional[str] = None
     gradientDirection: Optional[str] = None
     active: Optional[bool] = None
+    excludeFromRanking: Optional[bool] = None
 
 
 class TagAssign(BaseModel):
@@ -1197,7 +1200,8 @@ async def streamer_tags_create(body: TagCreate,
         return {"ok": True, "tag": await st.create_tag(
             name=body.name, color_mode=body.colorMode,
             color_start=body.colorStart, color_end=body.colorEnd,
-            gradient_direction=body.gradientDirection, kind=body.kind)}
+            gradient_direction=body.gradientDirection, kind=body.kind,
+            exclude_from_ranking=body.excludeFromRanking)}
     except st.TagError as e:
         raise _tag_400(e) from e
 
@@ -1215,7 +1219,8 @@ async def streamer_tags_update(tag_id: int, body: TagUpdate,
         return {"ok": True, "tag": await st.update_tag(
             tag_id, name=body.name, color_mode=body.colorMode,
             color_start=body.colorStart, color_end=body.colorEnd,
-            gradient_direction=body.gradientDirection, active=body.active)}
+            gradient_direction=body.gradientDirection, active=body.active,
+            exclude_from_ranking=body.excludeFromRanking)}
     except st.TagError as e:
         raise _tag_400(e) from e
 
