@@ -2184,17 +2184,58 @@ export default function StatsPage() {
             {/* 싱드컵 탭에는 '싱드컵 집계'가 그 화면 우측 상단에 따로 있다. 수집기가
                 다른 두 시각(라이브 스냅샷 / 싱드컵 클립)이 같은 자리에 겹쳐 보이면
                 어느 쪽이 맞는지 알 수 없으므로, 싱드컵 탭에서는 이쪽을 숨긴다. */}
-            {collectedLabel && tab !== "singcup" && (
-              <span className="inline-flex items-center gap-1 text-muted/70 text-sm shrink-0 ml-auto"
-                    title="치지직 라이브 방송 스냅샷을 마지막으로 수집한 시각입니다. 싱드컵 순위는 별도 수집기로 갱신됩니다.">
-                <Circle size={7} className="fill-current" style={{ color: GREEN }} /> 라이브 집계 {collectedLabel}
+            {/* 이 칩은 데이터가 도착해야 값이 생긴다. 예전에는 그때 처음 나타났는데,
+                좁은 화면에서는 설명 문장 옆에 자리가 없어 **새 줄로 접히면서** 아래를
+                밀어냈다. 그래서 값이 없을 때도 같은 자리를 비워 둔다 — `invisible`은
+                레이아웃을 그대로 차지하면서 화면에서만 감춘다(`hidden`이면 자리까지
+                없어져 원래대로다). 빈 칩을 읽지 않도록 `aria-hidden`을 붙이고 title도 뗀다.
+
+                폭은 **고정 px이 아니라 `min-width`로** 잡는다. 플레이스홀더 글자로 폭을
+                맞추려 했더니 실제 칩(230px)보다 좁아져(185px) 자리 예약이 부족했다 —
+                날짜 길이("8월 7일" vs "12월 17일")와 글꼴 배율(125·150%)에 따라 실제 폭이
+                달라지므로, 어떤 숫자를 골라도 언젠가 어긋난다. `min-w`로 바닥만 정하고
+                실제 내용이 그보다 넓으면 자연히 넓어지게 둔다. `14rem`은 글꼴 배율을 따라
+                같이 커지므로 확대에서도 비율이 유지된다(px 고정은 그러지 못한다). */}
+            {tab !== "singcup" && (
+              <span className={"inline-flex min-w-[14rem] items-center justify-end gap-1"
+                               + " text-muted/70 text-sm shrink-0 ml-auto"
+                               + (collectedLabel ? "" : " invisible")}
+                    aria-hidden={collectedLabel ? undefined : true}
+                    title={collectedLabel
+                      ? "치지직 라이브 방송 스냅샷을 마지막으로 수집한 시각입니다. 싱드컵 순위는 별도 수집기로 갱신됩니다."
+                      : undefined}>
+                {collectedLabel && (
+                  <>
+                    <Circle size={7} className="fill-current" style={{ color: GREEN }} />
+                    라이브 집계 {collectedLabel}
+                  </>
+                )}
               </span>
             )}
           </div>
         </div>
 
+        {/* ── 전이 상태의 높이를 실제 화면과 맞춘다 (CLS) ──────────────────────
+            로딩 스피너는 `py-24`뿐이라 높이가 약 208px이었다. 데이터가 도착하면 그 자리에
+            좌측 메뉴 + 본문 그리드가 들어서며 높이가 몇 배로 뛰고, **그 아래에 있던 통계
+            안내 섹션과 푸터가 화면 밖으로 밀려난다.** 뷰포트 안에서 일어나는 이동이라
+            그대로 CLS가 됐다(실측 768px 0.70 / 1440px 0.34).
+
+            그래서 로딩·오류·빈 상태가 모두 같은 최소 높이를 차지하게 한다. 아래 콘텐츠가
+            처음부터 접힘선 밑에서 시작하면, 데이터가 들어와도 화면 안에서 움직일 것이
+            없다. 스켈레톤 행을 흉내 내 높이를 맞추는 방법도 있지만, 실제 행 수가 데이터에
+            따라 달라져 어차피 정확히 맞출 수 없다 — 컨테이너 하나로 바닥을 깔아 두는 편이
+            데이터 양과 무관하게 안정적이다.
+
+            `100svh`를 쓰는 이유: 모바일 주소창이 접혔다 펴질 때 `vh`는 값이 바뀌어
+            그 자체가 또 다른 이동을 만든다. `svh`는 가장 작은 뷰포트 기준이라 변하지 않는다.
+            220px는 위쪽 헤더(제목 + 설명 + 집계 칩)가 차지하는 대략적인 높이다. */}
+        {/* 네 상태(로딩·오류·빈 상태·정상)를 **같은 최소 높이** 위에 올린다.
+            로딩에만 높이를 주면 짧은 빈 상태로 바뀔 때 아래 콘텐츠가 위로 당겨져
+            같은 문제가 방향만 바꿔 다시 생긴다(실측: 빈 상태 0.0365 → 0.0807). */}
+        <div className="min-h-[calc(100svh-220px)]">
         {loading ? (
-          <div className="flex items-center justify-center gap-2 text-muted py-24">
+          <div className="flex items-start justify-center gap-2 pt-24 text-muted">
             <Loader2 size={18} className="animate-spin" /> 통계를 불러오는 중입니다. 잠시만 기다려 주세요.
           </div>
         ) : error ? (
@@ -2256,6 +2297,7 @@ export default function StatsPage() {
             </div>
           </div>
         )}
+        </div>
 
         {/* 서비스 소개 — 로딩/에러 분기 밖에 두어 데이터 상태와 무관하게
             항상 서버 렌더링 HTML에 포함되게 한다(크롤러가 읽는 본문). */}
