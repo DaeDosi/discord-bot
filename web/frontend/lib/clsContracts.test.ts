@@ -36,7 +36,7 @@ test("최소 높이는 vh가 아니라 svh를 쓴다", () => {
 // ── 라이브 집계 칩의 자리 예약 ──────────────────────────────────────────────
 test("collectedLabel이 없어도 칩이 자리를 차지한다", () => {
   const s = read(PAGE);
-  const i = s.indexOf('min-w-[14rem]');
+  const i = s.indexOf('min-w-[min(14rem,100%)]');
   assert.ok(i > -1, "칩의 폭 바닥(min-width) 계약이 사라졌다");
   const block = s.slice(Math.max(0, i - 400), i + 700);
   // 조건부 렌더로 되돌아가면(= 값이 있을 때만 span을 그리면) 자리 예약이 사라진다.
@@ -49,7 +49,11 @@ test("collectedLabel이 없어도 칩이 자리를 차지한다", () => {
 test("칩 폭은 고정 px이 아니라 min-width 계약이다", () => {
   const s = read(PAGE);
   // 고정 폭은 날짜 길이·글꼴 배율에 취약하다(실측: 플레이스홀더 185px < 실제 230px).
-  assert.ok(/min-w-\[\d+rem\]/.test(s), "rem 기반 min-width여야 확대에서 함께 커진다");
+  // UI-S: 바닥값에 뷰포트 상한을 씌웠다. rem 기반은 그대로 유지된다.
+  assert.ok(/min-w-\[min\(\d+rem,100%\)\]/.test(s),
+    "rem 기반 min-width여야 확대에서 함께 커진다");
+  assert.ok(!/min-w-\[\d+rem\](?!\))/.test(s),
+    "상한 없는 고정 min-width가 되살아났다 — 확대에서 페이지가 넘친다");
   assert.ok(!/w-\[\d+px\]/.test(s.slice(s.indexOf("라이브 집계") - 600,
                                         s.indexOf("라이브 집계") + 200)),
     "칩에 고정 px 폭이 들어갔다");
@@ -57,7 +61,7 @@ test("칩 폭은 고정 px이 아니라 min-width 계약이다", () => {
 
 test("빈 칩은 스크린리더에 노출되지 않고 초점도 받지 않는다", () => {
   const s = read(PAGE);
-  const i = s.indexOf('min-w-[14rem]');
+  const i = s.indexOf('min-w-[min(14rem,100%)]');
   const block = s.slice(i, i + 800);
   assert.ok(block.includes("aria-hidden={collectedLabel ? undefined : true}"),
     "값이 없을 때 aria-hidden이 붙지 않는다");
@@ -70,7 +74,7 @@ test("빈 칩은 스크린리더에 노출되지 않고 초점도 받지 않는�
 
 test("빈 값이 사용자에게 날짜처럼 읽히지 않는다", () => {
   const s = read(PAGE);
-  const i = s.indexOf('min-w-[14rem]');
+  const i = s.indexOf('min-w-[min(14rem,100%)]');
   const block = s.slice(i, i + 800);
   // 예전에는 "라이브 집계 0월 0일 오전 00:00"이라는 가짜 날짜로 폭을 맞췄다.
   assert.ok(!/0월 0일|00:00/.test(block), "가짜 날짜가 플레이스홀더로 남아 있다");

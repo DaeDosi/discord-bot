@@ -263,7 +263,7 @@ export default function HomePage() {
       {/* ── Navbar ── */}
       <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
         <div className="max-w-6xl mx-auto px-5 flex items-center justify-between" style={{ height: 60 }}>
-          <Link href="/" className="flex items-center gap-2 font-bold text-[17px] text-fg">
+          <Link href="/" className="nb-brand-tap flex items-center gap-2 font-bold text-[17px] text-fg">
             <Bot size={20} className="text-accent" />
             NexBot
           </Link>
@@ -388,10 +388,16 @@ export default function HomePage() {
       <section className="border-y border-border bg-bg-card/40">
         {/* 390px에서 3열 × gap-8 + text-4xl 숫자가 뷰포트를 52px 넘겨 가로 스크롤이
             생겼다(실측 scrollWidth 437 > clientWidth 385). 좁은 화면에서만 간격과
-            숫자 크기를 낮춘다 — 640px 이상은 기존 그대로다. */}
-        <div className="max-w-4xl mx-auto px-5 py-12 grid grid-cols-3 gap-3 sm:gap-8 text-center">
+            숫자 크기를 낮춘다 — 640px 이상은 기존 그대로다.
+
+            그래도 **340px 미만·확대 150%(CSS 뷰포트 260px)에서는 3열이 불가능하다.**
+            숫자가 "3,935,120"처럼 길어 어떤 글꼴 크기로도 세 칸이 들어가지 않는다
+            (실측: 페이지가 31px 넘쳤고, 원인은 이 타일의 숫자였다). 글자를 더 줄이는
+            대신 열을 접는다 — WCAG reflow가 요구하는 방향이고 정보도 그대로 남는다.
+            grid item의 기본 `min-width:auto`도 함께 풀어 준다. */}
+        <div className="max-w-4xl mx-auto px-5 py-12 grid grid-cols-1 min-[340px]:grid-cols-3 gap-3 sm:gap-8 text-center">
           {statsDisplay.map(({ value, label }, i) => (
-            <div key={label} className={`reveal reveal-delay-${i + 1}`}>
+            <div key={label} className={`min-w-0 reveal reveal-delay-${i + 1}`}>
               <p className={`text-2xl sm:text-4xl font-bold mb-1 ${
                 value
                   ? "bg-gradient-to-r from-[#5865f2] to-[#818cf8] bg-clip-text text-transparent"
@@ -448,7 +454,12 @@ export default function HomePage() {
               </ul>
             </div>
 
-            <div className="flex-1 flex justify-center lg:justify-end">
+            {/* 확대 150%(CSS 뷰포트 260px)에서 목업 카드가 301px를 그대로 차지해
+                좌우로 삐져나갔다(실측 left=-20 / right=280).
+                부모가 `flex-col items-center`라 cross axis(가로)에서 자식이 stretch되지
+                않아, 카드의 `w-full`이 참조할 폭이 없어 콘텐츠 폭이 된다. `w-full`을
+                여기서 명시해 컨테이너 폭을 따르게 하고, `min-w-0`으로 축소도 허용한다. */}
+            <div className="w-full min-w-0 flex-1 flex justify-center lg:justify-end">
               {mockup}
             </div>
           </div>

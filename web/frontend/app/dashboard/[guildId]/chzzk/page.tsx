@@ -1130,8 +1130,12 @@ export default function ChzzkPage() {
       {/* 팔로워 역할 지급 */}
       {subs.length > 0 && (
         <div className="card space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
+          {/* 확대 150%·320px에서 오른쪽 버튼 그룹(`ml-4 shrink-0`, 260px)이 줄지도
+              접히지도 못해 페이지가 통째로 가로로 넘쳤다(실측 sw 388~389 / cw 260·320).
+              좁으면 버튼 줄이 아래로 내려가도록 `flex-wrap`을 주고, 설명 쪽에는
+              `min-w-0`을 줘 flex child의 기본 `min-width:auto`가 축소를 막지 않게 한다. */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0 flex-1">
               <h2 className="section-title">팔로워 역할 지급</h2>
               <div className="page-subtitle space-y-1.5">
                 <p>치지직 OAuth 인증 시 팔로우 기간에 따라 역할을 자동으로 부여합니다. 티어를 여러 개 추가할 수 있으며, 조건을 만족하는 티어 중 가장 높은 역할이 지급됩니다.</p>
@@ -1142,7 +1146,9 @@ export default function ChzzkPage() {
                 </p>
               </div>
             </div>
-            <div className="ml-4 shrink-0 flex items-center gap-2">
+            {/* 그룹 자체도 접혀야 한다 — 두 버튼(110px + 140px + gap)이 한 줄에 묶여
+                있으면 확대 150%(뷰포트 260px)에서 카드 패딩까지 더해 304px가 된다. */}
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={() => setShowFollowGuide((v) => !v)}
                 className="flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg
@@ -1196,9 +1202,12 @@ export default function ChzzkPage() {
             )}
             {followTiers.map((tier) => {
               const role = roles.find((r) => r.id === tier.role_id);
+              // 확대 150%(뷰포트 260px)에서 `w-24` 조건 라벨 + 역할 배지 + 44px 삭제
+              // 버튼이 한 줄에 묶여 조금씩 넘쳤다(요소별 2px씩, 합 28px).
+              // 행과 좌측 그룹을 함께 접어 준다.
               return (
-                <div key={tier.id} className="flex items-center justify-between bg-bg rounded-lg px-4 py-3 border border-border">
-                  <div className="flex items-center gap-3">
+                <div key={tier.id} className="flex flex-wrap items-center justify-between gap-2 bg-bg rounded-lg px-4 py-3 border border-border">
+                  <div className="flex min-w-0 flex-wrap items-center gap-3">
                     <span className="text-sm font-semibold text-accent w-24">{tier.months}개월 이상</span>
                     {role && (
                       <span className="text-sm px-2 py-0.5 rounded-full border border-border"

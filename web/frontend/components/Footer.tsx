@@ -54,7 +54,7 @@ export default function Footer() {
           <div className="col-span-2 sm:col-span-1">
             <Link
               href="/"
-              className="flex items-center gap-2 font-bold text-[15px] text-fg mb-3"
+              className="nb-brand-tap flex items-center gap-2 font-bold text-[15px] text-fg mb-3"
             >
               <Bot size={17} className="text-accent" />
               NexBot

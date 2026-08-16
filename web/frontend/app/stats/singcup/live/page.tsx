@@ -221,7 +221,7 @@ export default function SingcupLivePage() {
       <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
         <div className="flex w-full items-center justify-between px-4 md:px-6" style={{ height: 60 }}>
           <div className="flex items-center gap-2.5">
-            <Link href="/" className="flex items-center gap-2 text-[15px] font-bold text-muted
+            <Link href="/" className="nb-brand-tap flex items-center gap-2 text-[15px] font-bold text-muted
                                       transition-colors hover:text-fg">
               <Bot size={18} className="text-accent" /> NexBot
             </Link>

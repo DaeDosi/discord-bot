@@ -75,7 +75,7 @@ export default function FaqPage() {
       {/* Navbar */}
       <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
         <div className="max-w-3xl mx-auto px-5 flex items-center gap-3" style={{ height: 60 }}>
-          <Link href="/" className="flex items-center gap-2 font-bold text-[17px] text-fg">
+          <Link href="/" className="nb-brand-tap flex items-center gap-2 font-bold text-[17px] text-fg">
             <Bot size={20} className="text-accent" />
             NexBot
           </Link>

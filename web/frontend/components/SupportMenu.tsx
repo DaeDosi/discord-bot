@@ -74,7 +74,10 @@ export default function SupportMenu() {
     <div
       ref={rootRef}
       data-nb-support=""
-      className="fixed right-4 z-40 flex flex-col items-end gap-2"
+      /* 고정 요소라도 내용이 뷰포트보다 넓으면 페이지 스크롤 폭을 늘린다
+         (실측 320px: 컨테이너 right=332 → 페이지 sw 351). 좌우 여백 1rem씩을 뺀 값으로
+         상한을 두면 본문을 가리지도, 페이지를 넓히지도 않는다. */
+      className="fixed right-4 z-40 flex max-w-[calc(100vw-2rem)] flex-col items-end gap-2"
       style={{
         bottom: "calc(1rem + env(safe-area-inset-bottom, 0px))",
         right: "calc(1rem + env(safe-area-inset-right, 0px))",

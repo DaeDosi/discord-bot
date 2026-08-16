@@ -2143,7 +2143,7 @@ export default function StatsPage() {
       <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
         <div className="w-full px-4 md:px-6 flex items-center justify-between" style={{ height: 60 }}>
           <div className="flex items-center gap-2.5">
-            <Link href="/" className="flex items-center gap-2 font-bold text-[15px] text-muted hover:text-fg transition-colors">
+            <Link href="/" className="nb-brand-tap flex items-center gap-2 font-bold text-[15px] text-muted hover:text-fg transition-colors">
               <Bot size={18} className="text-accent" /> NexBot
             </Link>
             <span className="text-border">/</span>
@@ -2195,10 +2195,17 @@ export default function StatsPage() {
                 날짜 길이("8월 7일" vs "12월 17일")와 글꼴 배율(125·150%)에 따라 실제 폭이
                 달라지므로, 어떤 숫자를 골라도 언젠가 어긋난다. `min-w`로 바닥만 정하고
                 실제 내용이 그보다 넓으면 자연히 넓어지게 둔다. `14rem`은 글꼴 배율을 따라
-                같이 커지므로 확대에서도 비율이 유지된다(px 고정은 그러지 못한다). */}
+                같이 커지므로 확대에서도 비율이 유지된다(px 고정은 그러지 못한다).
+
+                **단, 바닥값에 상한이 필요하다.** 확대 150%(CSS 뷰포트 260px)에서
+                14rem 바닥이 그대로 살아 계산된 min-width가 266px가 되면서 페이지가
+                통째로 가로로 넘쳤다(실측 sw 296~309 / cw 260). `min(14rem,100%)`는
+                넉넉한 화면에서는 14rem 자리 예약을 그대로 유지하고, 좁은 화면에서만
+                부모 폭까지 물러선다. `shrink-0`도 뺐다 — 그게 남아 있으면 flex가
+                칩을 줄이지 못해 상한이 무의미해진다. */}
             {tab !== "singcup" && (
-              <span className={"inline-flex min-w-[14rem] items-center justify-end gap-1"
-                               + " text-muted/70 text-sm shrink-0 ml-auto"
+              <span className={"inline-flex min-w-[min(14rem,100%)] items-center justify-end gap-1"
+                               + " text-muted/70 text-sm ml-auto"
                                + (collectedLabel ? "" : " invisible")}
                     aria-hidden={collectedLabel ? undefined : true}
                     title={collectedLabel

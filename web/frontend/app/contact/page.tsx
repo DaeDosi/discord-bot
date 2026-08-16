@@ -71,7 +71,7 @@ export default function ContactPage() {
     <div className="min-h-screen bg-bg text-fg flex flex-col">
       <header className="border-b border-border">
         <div className="max-w-4xl mx-auto px-5 h-14 flex items-center gap-2.5">
-          <Link href="/" className="flex items-center gap-2 font-bold text-[15px] text-muted hover:text-fg transition-colors">
+          <Link href="/" className="nb-brand-tap flex items-center gap-2 font-bold text-[15px] text-muted hover:text-fg transition-colors">
             <ChevronLeft size={16} /> <Bot size={17} className="text-accent" /> NexBot
           </Link>
         </div>
