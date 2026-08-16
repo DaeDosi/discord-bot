@@ -2049,25 +2049,25 @@ function CategoryTab({ cats, onPick }: { cats: RisingCategories; onPick: (c: str
                   <tr key={c.category}
                       onClick={() => onPick(c.category)}
                       className="border-b border-border hover:bg-bg-hover/70 transition-colors cursor-pointer">
-                    <td className="py-3.5 pl-2 tabular-nums text-sm align-top">
+                    <td className="py-3.5 pl-2 tabular-nums text-sm align-middle">
                       {medal
                         ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
                         : <span className="text-muted">{i + 1}</span>}
                     </td>
-                    <td className="py-3.5 align-top">
+                    <td className="py-3.5 align-middle">
                       <span className="inline-block max-w-[180px] truncate rounded-full border border-border
                                        bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{c.category}</span>
                     </td>
-                    <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
+                    <td className="py-3.5 px-6 align-middle" style={{ minWidth: 140 }}>
                       <CellCol>
                         <div className="text-right"><StatNum value={c.viewers} unit="명" /></div>
                         <CellBar pct={(c.viewers / maxV) * 100} background={YELLOW_GRAD} />
                       </CellCol>
                     </td>
-                    <td className="py-3.5 px-6 text-right align-top hidden sm:table-cell">
+                    <td className="py-3.5 px-6 text-right align-middle hidden sm:table-cell">
                       <StatNum value={c.lives} unit="개" />
                     </td>
-                    <td className="py-3.5 px-6 text-right align-top">
+                    <td className="py-3.5 px-6 text-right align-middle">
                       <StatNum value={c.avg_viewers} unit="명" />
                     </td>
                   </tr>
