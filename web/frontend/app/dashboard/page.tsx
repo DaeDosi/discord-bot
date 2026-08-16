@@ -4,6 +4,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { Settings, Plus, Server, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
+import DashboardError from "@/components/DashboardError";
+import { isHandledElsewhere } from "@/lib/dashboardErrors";
 import type { Guild } from "@/lib/types";
 
 const CLIENT_ID = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID || "";
@@ -55,12 +57,21 @@ export default function DashboardPage() {
   const [guilds, setGuilds]   = useState<Guild[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [listError, setListError]   = useState<unknown>(null);
 
+  // 실패를 빈 배열로 바꿔치기하면 "서버가 없다"와 "불러오지 못했다"가 같은 화면이 된다
+  // (실측: GET /api/guilds 500 에도 '관리 권한이 있는 서버가 없습니다'가 떴다).
   const loadGuilds = useCallback(async () => {
-    const data = await api.guilds.list().catch(() => []);
-    setGuilds(data);
-    setLoading(false);
-    setRefreshing(false);
+    try {
+      setListError(null);
+      setGuilds(await api.guilds.list());
+    } catch (e: unknown) {
+      // 401은 api.ts가 이미 토큰 삭제 + /login 이동을 처리한다.
+      if (!isHandledElsewhere(e)) setListError(e);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, []);
 
   useEffect(() => { loadGuilds(); }, [loadGuilds]);
@@ -94,7 +105,9 @@ export default function DashboardPage() {
         <button
           onClick={() => { setRefreshing(true); loadGuilds(); }}
           disabled={refreshing}
-          className="p-2 text-muted hover:text-fg transition-colors rounded-lg hover:bg-bg-hover"
+          className="min-w-[44px] min-h-[44px] flex items-center justify-center
+                     text-muted hover:text-fg transition-colors rounded-lg hover:bg-bg-hover"
+          aria-label="서버 목록 새로고침"
           title="새로고침"
         >
           <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
@@ -108,6 +121,8 @@ export default function DashboardPage() {
             <div key={i} className="card animate-pulse h-20 bg-bg-hover" />
           ))}
         </div>
+      ) : listError ? (
+        <DashboardError error={listError} onRetry={() => { setRefreshing(true); loadGuilds(); }} />
       ) : (
         <div className="space-y-8">
           {withBot.length > 0 && (
@@ -131,9 +146,20 @@ export default function DashboardPage() {
             </section>
           )}
           {guilds.length === 0 && (
-            <div className="text-center py-20 text-muted">
+            <div className="text-center py-20 text-muted space-y-3">
               <Server size={40} className="mx-auto mb-3 opacity-40" />
               <p>관리 권한이 있는 서버가 없습니다.</p>
+              <p className="text-sm">
+                Discord에서 서버를 만들거나 관리 권한을 받은 뒤 봇을 초대해 주세요.
+              </p>
+              <a
+                href={getBotInviteUrl()}
+                target="_blank"
+                rel="noreferrer"
+                className="btn-primary text-sm mx-auto"
+              >
+                <Plus size={14} /> 봇 초대하기
+              </a>
             </div>
           )}
         </div>

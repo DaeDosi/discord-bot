@@ -9,6 +9,8 @@ import {
 import { api } from "@/lib/api";
 import type { Mission, MissionSubmission, PointsEntry, ShopItem, ShopExchange, GuildMember } from "@/lib/types";
 import MemberSearch from "@/components/MemberSearch";
+import InlineError from "@/components/InlineError";
+import { useMutation } from "@/lib/useMutation";
 
 type Tab = "missions" | "submissions" | "leaderboard" | "adjust" | "shop" | "gambling";
 
@@ -272,8 +274,7 @@ export default function PointsPage() {
   const [gamblingConfig, setGamblingConfig] = useState<{
     title: string; duration: number; bet_amount: number; options: string[];
   }>({ title: "포인트 도박", duration: 1, bet_amount: 100, options: ["", ""] });
-  const [savingGambling, setSavingGambling] = useState(false);
-  const [savedGambling, setSavedGambling]   = useState(false);
+  const [gamblingFieldError, setGamblingFieldError] = useState<string | null>(null);
 
   const [missionModal, setMissionModal] = useState<"new" | Mission | null>(null);
   const [shopModal, setShopModal]       = useState<"new" | ShopItem | null>(null);
@@ -300,82 +301,99 @@ export default function PointsPage() {
     loadGambling();
   }, [loadMissions, loadSubmissions, loadLeaderboard, loadShopItems, loadExchanges, loadGambling]);
 
-  const saveMission = async (data: { title: string; description: string; points: number }) => {
+  // 이 화면의 mutation은 오류 처리가 전혀 없어서, 실패하면 아무 일도 없었던 것처럼
+  // 보이거나(모달이 열린 채 멈춤) 로컬 목록만 바뀌어 성공한 것처럼 보였다.
+  const missionM  = useMutation(0);
+  const shopM     = useMutation(0);
+  const exchangeM = useMutation(0);
+  const submitM   = useMutation(0);
+  const adjustM   = useMutation(0);
+  const gamblingM = useMutation();
+
+  const saveMission = async (data: { title: string; description: string; points: number }): Promise<void> => {
     const payload = { ...data, is_active: true };
-    if (missionModal === "new") {
-      await api.points.missions.create(guildId, payload);
-    } else if (missionModal && typeof missionModal === "object") {
-      await api.points.missions.update(guildId, missionModal.id, payload);
-    }
-    setMissionModal(null);
-    loadMissions();
-    showToast("미션이 저장되었습니다.");
+    const call = missionModal === "new"
+      ? () => api.points.missions.create(guildId, payload)
+      : (missionModal && typeof missionModal === "object")
+        ? () => api.points.missions.update(guildId, missionModal.id, payload)
+        : null;
+    if (!call) return;
+    await missionM.run(call, {
+      onSuccess: () => { setMissionModal(null); loadMissions(); showToast("미션이 저장되었습니다."); },
+    });
   };
 
-  const deleteMission = async (id: number) => {
+  const deleteMission = (id: number) => {
     if (!confirm("이 미션을 삭제하시겠습니까?")) return;
-    await api.points.missions.delete(guildId, id);
-    loadMissions();
-    showToast("미션이 삭제되었습니다.");
+    return missionM.run(() => api.points.missions.delete(guildId, id), {
+      onSuccess: () => { loadMissions(); showToast("미션이 삭제되었습니다."); },
+    });
   };
 
-  const saveShopItem = async (data: { name: string; description: string; image_url: string; points_cost: number; stock: number }) => {
-    if (shopModal === "new") {
-      await api.points.shop.items.create(guildId, data);
-    } else if (shopModal && typeof shopModal === "object") {
-      await api.points.shop.items.update(guildId, shopModal.id, data);
-    }
-    setShopModal(null);
-    loadShopItems();
-    showToast("아이템이 저장되었습니다.");
+  const saveShopItem = async (data: { name: string; description: string; image_url: string; points_cost: number; stock: number }): Promise<void> => {
+    const call = shopModal === "new"
+      ? () => api.points.shop.items.create(guildId, data)
+      : (shopModal && typeof shopModal === "object")
+        ? () => api.points.shop.items.update(guildId, shopModal.id, data)
+        : null;
+    if (!call) return;
+    await shopM.run(call, {
+      onSuccess: () => { setShopModal(null); loadShopItems(); showToast("아이템이 저장되었습니다."); },
+    });
   };
 
-  const deleteShopItem = async (id: number) => {
+  const deleteShopItem = (id: number) => {
     if (!confirm("이 아이템을 삭제하시겠습니까?")) return;
-    await api.points.shop.items.delete(guildId, id);
-    loadShopItems();
-    showToast("아이템이 삭제되었습니다.");
+    return shopM.run(() => api.points.shop.items.delete(guildId, id), {
+      onSuccess: () => { loadShopItems(); showToast("아이템이 삭제되었습니다."); },
+    });
   };
 
-  const markUsed = async (id: number) => {
-    await api.points.shop.exchanges.markUsed(guildId, id);
-    setExchanges((prev) => prev.map((e) => e.id === id ? { ...e, is_used: 1 } : e));
-    showToast("사용 처리되었습니다.");
+  // 아래 셋은 로컬 목록을 **성공한 뒤에만** 바꾼다. 실패했는데 처리된 것처럼 남으면
+  // 운영자가 같은 건을 두 번 처리하거나 포기해 버린다.
+  const markUsed = (id: number) =>
+    exchangeM.run(() => api.points.shop.exchanges.markUsed(guildId, id), {
+      onSuccess: () => {
+        setExchanges((prev) => prev.map((e) => e.id === id ? { ...e, is_used: 1 } : e));
+        showToast("사용 처리되었습니다.");
+      },
+    });
+
+  const approve = (id: number) =>
+    submitM.run(() => api.points.submissions.approve(guildId, id), {
+      onSuccess: () => {
+        setSubmissions((prev) => prev.map((s) => s.id === id ? { ...s, status: "approved" } : s));
+        showToast("승인 완료. 포인트가 지급됩니다.");
+      },
+    });
+
+  const reject = (id: number) =>
+    submitM.run(() => api.points.submissions.reject(guildId, id), {
+      onSuccess: () => {
+        setSubmissions((prev) => prev.map((s) => s.id === id ? { ...s, status: "rejected" } : s));
+        showToast("거절되었습니다.");
+      },
+    });
+
+  const adjust = async (data: { user_id: string; amount: number; reason: string }): Promise<void> => {
+    await adjustM.run(() => api.points.adjust(guildId, data), {
+      onSuccess: () => {
+        setAdjustModal(false);
+        showToast("포인트가 조정되었습니다.");
+        if (tab === "leaderboard") loadLeaderboard();
+      },
+    });
   };
 
-  const approve = async (id: number) => {
-    await api.points.submissions.approve(guildId, id);
-    setSubmissions((prev) => prev.map((s) => s.id === id ? { ...s, status: "approved" } : s));
-    showToast("승인 완료. 포인트가 지급됩니다.");
-  };
-
-  const reject = async (id: number) => {
-    await api.points.submissions.reject(guildId, id);
-    setSubmissions((prev) => prev.map((s) => s.id === id ? { ...s, status: "rejected" } : s));
-    showToast("거절되었습니다.");
-  };
-
-  const adjust = async (data: { user_id: string; amount: number; reason: string }) => {
-    await api.points.adjust(guildId, data);
-    setAdjustModal(false);
-    showToast("포인트가 조정되었습니다.");
-    if (tab === "leaderboard") loadLeaderboard();
-  };
-
-  const saveGambling = async () => {
+  const saveGambling = () => {
     const options = gamblingConfig.options.map((o) => o.trim()).filter(Boolean);
-    if (options.length < 2) { showToast("옵션은 최소 2개 이상 입력해야 합니다."); return; }
-    setSavingGambling(true);
-    try {
-      await api.points.gambling.save(guildId, { ...gamblingConfig, options });
-      setSavedGambling(true);
-      setTimeout(() => setSavedGambling(false), 2500);
-      showToast("도박 설정이 저장되었습니다.");
-    } catch (e: unknown) {
-      showToast(e instanceof Error ? e.message : "저장 실패");
-    } finally {
-      setSavingGambling(false);
-    }
+    // 클라이언트가 먼저 잡을 수 있는 입력 오류는 요청을 보내지 않고 필드 옆에 세운다
+    // (폼 전체를 가리는 오류와 역할이 다르다).
+    if (options.length < 2) { setGamblingFieldError("옵션은 최소 2개 이상 입력해야 합니다."); return; }
+    setGamblingFieldError(null);
+    return gamblingM.run(() => api.points.gambling.save(guildId, { ...gamblingConfig, options }), {
+      onSuccess: () => loadGambling(),   // 서버가 정규화한 값으로 확정한다
+    });
   };
 
   const pendingCount = submissions.filter((s) => s.status === "pending").length;
@@ -452,6 +470,13 @@ export default function PointsPage() {
           </button>
         ))}
       </div>
+
+      {/* 탭과 무관하게 마지막 동작의 실패를 한 자리에서 알린다 — 성공은 toast,
+          실패는 여기. 실패를 toast로 띄우면 2.5초 뒤 사라져 놓치기 쉽다. */}
+      <InlineError
+        message={missionM.error || shopM.error || exchangeM.error
+                 || submitM.error || adjustM.error}
+      />
 
       {/* ── 미션 관리 ── */}
       {tab === "missions" && (
@@ -689,14 +714,16 @@ export default function PointsPage() {
           </div>
           </div>
 
+          <InlineError message={gamblingFieldError || gamblingM.error} />
+
           <button
             onClick={saveGambling}
-            disabled={savingGambling}
+            disabled={gamblingM.pending}
             className="btn-primary"
           >
-            {savedGambling
+            {gamblingM.succeeded
               ? <><CheckCircle size={15} /> 저장됨</>
-              : <><Save size={15} /> {savingGambling ? "저장 중..." : "설정 저장"}</>}
+              : <><Save size={15} /> {gamblingM.pending ? "저장 중..." : "설정 저장"}</>}
           </button>
         </div>
       )}

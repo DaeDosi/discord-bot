@@ -1,8 +1,12 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
-import { Save, CheckCircle } from "lucide-react";
+import { Save, CheckCircle, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
+import DashboardError from "@/components/DashboardError";
+import InlineError from "@/components/InlineError";
+import { useMutation } from "@/lib/useMutation";
+import { isHandledElsewhere } from "@/lib/dashboardErrors";
 import type { GuildConfig, Channel } from "@/lib/types";
 
 function SelectField({
@@ -32,10 +36,14 @@ export default function GeneralSettingsPage() {
 
   const [cfg, setCfg]           = useState<GuildConfig>({});
   const [channels, setChannels] = useState<Channel[]>([]);
-  const [saving, setSaving]     = useState(false);
-  const [saved, setSaved]       = useState(false);
+  const [loading, setLoading]   = useState(true);
+  const [loadError, setLoadError]   = useState<unknown>(null);
+  // 저장은 공통 계약으로 — 수동 try/catch는 중복 클릭을 막지 못했다(실측: 연타 3회 → 요청 3건).
+  const saveM = useMutation();
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoading(true);
+    setLoadError(null);
     Promise.all([
       api.settings.get(guildId),
       api.guilds.channels(guildId),
@@ -48,28 +56,53 @@ export default function GeneralSettingsPage() {
         levelup_channel: c.levelup_channel ? String(c.levelup_channel) : "",
       });
       setChannels(ch);
-    });
+    }).catch((e: unknown) => {
+      // 401은 api.ts가 이미 토큰 삭제 + /login 이동을 처리한다.
+      if (!isHandledElsewhere(e)) setLoadError(e);
+    }).finally(() => setLoading(false));
   }, [guildId]);
 
-  const save = async () => {
-    setSaving(true);
-    await api.settings.save(guildId, cfg).catch(() => {});
-    setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
-  };
+  useEffect(() => { load(); }, [load]);
+
+  // 실패를 삼키고 "저장됨"을 띄우면 사용자는 저장된 줄 안다(실측: PUT 500에도 저장됨).
+  const save = () => saveM.run(() => api.settings.save(guildId, cfg));
 
   const set = (key: keyof GuildConfig) => (v: string | boolean) =>
     setCfg((p) => ({ ...p, [key]: v }));
 
   const textChannels = channels.filter((c) => c.type === 0);
 
+  const header = (
+    <div>
+      <h1 className="page-title">일반 설정</h1>
+      <p className="page-subtitle">서버의 기본 봇 설정을 관리합니다.</p>
+    </div>
+  );
+
+  // 권한이 없거나 불러오지 못했으면 폼을 그리지 않는다 — 남겨 두면 저장 버튼이
+  // 눌려서 "설정한 것 같은데 반영이 안 된다"가 된다(실측: 403에도 폼이 그대로였다).
+  if (loadError) {
+    return (
+      <div className="space-y-6">
+        {header}
+        <DashboardError error={loadError} onRetry={load} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="page-title">일반 설정</h1>
-        <p className="page-subtitle">서버의 기본 봇 설정을 관리합니다.</p>
-      </div>
+      {header}
+
+      {/* 자리를 항상 잡아 둔다 — 로딩 줄이 나타났다 사라지면 아래 카드가 통째로
+          위아래로 밀린다(실측 CLS 0.0191). UI-Q에서 같은 결론이 났다. */}
+      <p
+        className={"flex items-center gap-2 text-muted text-sm" + (loading ? "" : " invisible")}
+        aria-hidden={loading ? undefined : true}
+      >
+        <Loader2 size={16} className={loading ? "animate-spin" : ""} />
+        {loading ? "설정을 불러오는 중입니다." : " "}
+      </p>
 
       {/* 채널 설정 */}
       <div className="card space-y-4">
@@ -128,8 +161,10 @@ export default function GeneralSettingsPage() {
         </label>
       </div>
 
-      <button onClick={save} disabled={saving} className="btn-primary">
-        {saved ? <><CheckCircle size={16} /> 저장됨</> : <><Save size={16} /> {saving ? "저장 중..." : "변경사항 저장"}</>}
+      <InlineError message={saveM.error && `저장하지 못했습니다. ${saveM.error}`} />
+
+      <button onClick={save} disabled={saveM.pending || loading} className="btn-primary">
+        {saveM.succeeded ? <><CheckCircle size={16} /> 저장됨</> : <><Save size={16} /> {saveM.pending ? "저장 중..." : "변경사항 저장"}</>}
       </button>
     </div>
   );

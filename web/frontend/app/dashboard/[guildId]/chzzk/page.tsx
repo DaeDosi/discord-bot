@@ -11,6 +11,9 @@ import {
   Power, Crown, Unlink,
 } from "lucide-react";
 import { api, BASE, isReauthRequiredError } from "@/lib/api";
+import InlineError from "@/components/InlineError";
+import { useMutation } from "@/lib/useMutation";
+import { isHandledElsewhere, mutationErrorMessage } from "@/lib/dashboardErrors";
 import Switch from "@/components/Switch";
 import type { ChzzkSubscription, Channel, Role, FollowerRoles, FollowRoleTier, ChzzkVerification, ChatCommand, ChatStatus } from "@/lib/types";
 
@@ -181,12 +184,19 @@ function AddStreamerForm({ channels, guildId }: { channels: Channel[]; guildId: 
   const [discordChannel, setDiscordChannel] = useState("");
   const [mentionEveryone, setMentionEveryone] = useState(false);
 
+  const [linkError, setLinkError] = useState<string | null>(null);
+
   const handleConnect = async () => {
     if (!discordChannel) return;
+    setLinkError(null);
     try {
       const d = await api.chzzkAuth.getStreamerLoginUrl(guildId, discordChannel, mentionEveryone);
-      window.location.href = d.url;
-    } catch {}
+      // url이 없으면 `location.href = undefined`가 되어 /undefined 404로 간다(실측).
+      if (typeof d?.url === "string" && d.url) window.location.href = d.url;
+      else setLinkError(mutationErrorMessage(undefined));
+    } catch (e: unknown) {
+      if (!isHandledElsewhere(e)) setLinkError(mutationErrorMessage(e));
+    }
   };
 
   return (
@@ -220,6 +230,8 @@ function AddStreamerForm({ channels, guildId }: { channels: Channel[]; guildId: 
           {mentionEveryone ? "@everyone 멘션 켜짐" : "@everyone 멘션 끄기"}
         </span>
       </button>
+
+      <InlineError message={linkError} />
 
       <button onClick={handleConnect} disabled={!discordChannel} className="btn-primary w-full justify-center">
         <ExternalLink size={16} />
@@ -410,7 +422,7 @@ function ChatConnectionCard({
   guildId: string; mainSub?: ChzzkSubscription; onChanged: () => void;
   status: ChatStatus | null; health: ChatHealth; onRefresh: () => void;
 }) {
-  const [saving, setSaving] = useState(false);
+  const toggleM = useMutation(0);
   const load = onRefresh;
 
   if (!mainSub) {
@@ -421,14 +433,10 @@ function ChatConnectionCard({
     );
   }
 
-  const toggle = async (enabled: boolean) => {
-    setSaving(true);
-    try {
-      await api.chzzk.update(guildId, mainSub.id, { chat_enabled: enabled });
-      onChanged();
-    } catch {}
-    setSaving(false);
-  };
+  // 실패해도 아무 말이 없어서, 토글이 원래 값으로 돌아가면 "버튼이 안 눌린다"로 읽혔다.
+  const toggle = (enabled: boolean) =>
+    toggleM.run(() => api.chzzk.update(guildId, mainSub.id, { chat_enabled: enabled }),
+      { onSuccess: () => onChanged() });
 
   const enabled = mainSub.chat_enabled;
   const connected = !!status?.connected;
@@ -463,8 +471,9 @@ function ChatConnectionCard({
             켜면 치지직 방송 채팅에 봇이 접속해 아래 출석체크·자동응답·포인트·도박 명령어가 동작합니다.
           </p>
         </div>
-        <Switch checked={enabled} disabled={saving || health.needsReconnect} onChange={toggle} />
+        <Switch checked={enabled} disabled={toggleM.pending || health.needsReconnect} onChange={toggle} />
       </label>
+      <InlineError message={toggleM.error} />
 
       <div className="pt-3 border-t border-border space-y-3">
         <div className="flex items-center justify-between flex-wrap gap-2">
@@ -524,7 +533,7 @@ function ChzzkChatFeed({ guildId, health }: { guildId: string; health: ChatHealt
   const containerRef = useRef<HTMLDivElement>(null);
   const [testInput, setTestInput]   = useState("");
   const [asStreamer, setAsStreamer] = useState(false);
-  const [sending, setSending]       = useState(false);
+  const sendM = useMutation(0);
   const blocked = health.needsReconnect;
 
   useEffect(() => {
@@ -544,15 +553,11 @@ function ChzzkChatFeed({ guildId, health }: { guildId: string; health: ChatHealt
   // "채팅이 안 오는 중"으로 오해한다.
   useEffect(() => { if (blocked) setOpen(false); }, [blocked]);
 
-  const sendTest = async () => {
+  const sendTest = () => {
     const content = testInput.trim();
     if (!content) return;
-    setSending(true);
-    try {
-      await api.chzzk.sendChatTest(guildId, content, asStreamer);
-      setTestInput("");
-    } catch {}
-    setSending(false);
+    return sendM.run(() => api.chzzk.sendChatTest(guildId, content, asStreamer),
+      { onSuccess: () => setTestInput("") });
   };
 
   useEffect(() => {
@@ -630,12 +635,13 @@ function ChzzkChatFeed({ guildId, health }: { guildId: string; health: ChatHealt
           />
           <button
             onClick={sendTest}
-            disabled={sending || !testInput.trim()}
+            disabled={sendM.pending || !testInput.trim()}
             className="btn-secondary text-sm shrink-0"
           >
             전송
           </button>
         </div>
+        <InlineError message={sendM.error} />
         <label className="flex items-center gap-1.5 text-xs text-muted cursor-pointer select-none">
           <input
             type="checkbox" checked={asStreamer}
@@ -723,6 +729,7 @@ function ChatCommandsPanel({
   const [loading, setLoading]   = useState(true);
   const [modal, setModal]       = useState<{ type: "checkin" | "reply"; initial?: ChatCommand } | null>(null);
   const [toast, setToast]       = useState("");
+  const [cmdError, setCmdError] = useState<string | null>(null);
   const [status, setStatus]       = useState<ChatStatus | null>(null);
   const [statusFailed, setFailed] = useState(false);
 
@@ -755,6 +762,7 @@ function ChatCommandsPanel({
 
   const save = async (data: { trigger_text: string; reward_points: number; reward_xp: number; reply_text: string }) => {
     if (!modal) return;
+    setCmdError(null);
     try {
       if (modal.initial) {
         await api.chzzk.chatCommands.update(guildId, modal.initial.id, { ...data, is_active: true });
@@ -769,23 +777,28 @@ function ChatCommandsPanel({
       // 다른 탭에서 만료됐다면 이 화면은 아직 정상으로 보이고 있을 수 있다.
       if (isReauthRequiredError(e)) {
         loadStatus();
-        showToast("치지직 재연동이 필요합니다.");
+        setCmdError("치지직 재연동이 필요합니다.");
         return;
       }
-      showToast(e instanceof Error ? e.message : "저장 실패");
+      if (isHandledElsewhere(e)) return;
+      setCmdError(mutationErrorMessage(e));
     }
   };
 
   const remove = async (id: number) => {
     if (!confirm("이 명령어를 삭제하시겠습니까?")) return;
+    setCmdError(null);
     try {
       await api.chzzk.chatCommands.remove(guildId, id);
     } catch (e: unknown) {
       if (isReauthRequiredError(e)) {
         loadStatus();
-        showToast("치지직 재연동이 필요합니다.");
+        setCmdError("치지직 재연동이 필요합니다.");
         return;
       }
+      // 재연동 외의 실패도 삼키면 "삭제를 눌러도 아무 일이 없다"가 된다.
+      if (!isHandledElsewhere(e)) setCmdError(mutationErrorMessage(e));
+      return;
     }
     load();
   };
@@ -809,6 +822,8 @@ function ChatCommandsPanel({
           onClose={() => setModal(null)}
         />
       )}
+
+      <InlineError message={cmdError} />
 
       {blocked && <ReauthRequiredCard guildId={guildId} onRefresh={loadStatus} />}
       <ChatConnectionCard guildId={guildId} mainSub={mainSub} onChanged={onSubChanged}
@@ -918,7 +933,8 @@ export default function ChzzkPage() {
   const [followTiers, setFollowTiers] = useState<FollowRoleTier[]>([]);
   const [newMonths, setNewMonths]     = useState("");
   const [newRole, setNewRole]         = useState("");
-  const [addingTier, setAddingTier]   = useState(false);
+  const tierM = useMutation(0);
+  const subM  = useMutation(0);
 
   const [verifications, setVerifications] = useState<ChzzkVerification[]>([]);
   const [verifOpen, setVerifOpen]         = useState(false);
@@ -958,32 +974,31 @@ export default function ChzzkPage() {
         chzzk_channel_not_found:  "치지직 채널 정보를 가져오지 못했습니다. 다시 시도해주세요.",
         chzzk_already_registered: `이미 다른 디스코드 서버(${otherGuild})에 등록된 치지직 계정입니다. 한 계정은 하나의 서버에만 등록할 수 있습니다.`,
       };
-      setErrorMsg(messages[error] || `오류: ${error}`);
+      setErrorMsg(messages[error] || "치지직 연동 중 문제가 발생했습니다. 잠시 후 다시 시도해 주세요.");
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, [guildId]);
 
-  const addTier = async () => {
+  const addTier = () => {
     if (!newMonths || !newRole) return;
-    setAddingTier(true);
-    try {
-      await api.chzzk.followTiers.add(guildId, parseInt(newMonths), newRole);
-      const ft = await api.chzzk.followTiers.list(guildId);
-      setFollowTiers(ft);
-      setNewMonths(""); setNewRole("");
-    } catch {}
-    setAddingTier(false);
+    return tierM.run(() => api.chzzk.followTiers.add(guildId, parseInt(newMonths), newRole), {
+      onSuccess: async () => {
+        setFollowTiers(await api.chzzk.followTiers.list(guildId));
+        setNewMonths(""); setNewRole("");
+      },
+    });
   };
 
-  const removeTier = async (tierId: number) => {
-    await api.chzzk.followTiers.remove(guildId, tierId).catch(() => {});
-    setFollowTiers((p) => p.filter((t) => t.id !== tierId));
-  };
+  // 이전에는 실패를 삼킨 뒤 **무조건** 목록에서 지워, 지워지지 않은 등급이 사라진 것처럼 보였다.
+  const removeTier = (tierId: number) =>
+    tierM.run(() => api.chzzk.followTiers.remove(guildId, tierId), {
+      onSuccess: () => setFollowTiers((p) => p.filter((t) => t.id !== tierId)),
+    });
 
-  const remove = async (id: number) => {
-    await api.chzzk.remove(guildId, id);
-    setSubs((p) => p.filter((s) => s.id !== id));
-  };
+  const remove = (id: number) =>
+    subM.run(() => api.chzzk.remove(guildId, id), {
+      onSuccess: () => setSubs((p) => p.filter((s) => s.id !== id)),
+    });
 
   const findChannel = (id: string) => channels.find((c) => String(c.id) === id);
 
@@ -991,12 +1006,16 @@ export default function ChzzkPage() {
   const mainSub = subs[0];
   const handleRelinkMain = async () => {
     if (!mainSub) return;
+    setErrorMsg("");
     try {
       const d = await api.chzzkAuth.getStreamerLoginUrl(
         guildId, mainSub.discord_channel, !!mainSub.mention_everyone
       );
-      window.location.href = d.url;
-    } catch {}
+      if (typeof d?.url === "string" && d.url) window.location.href = d.url;
+      else setErrorMsg(mutationErrorMessage(undefined));
+    } catch (e: unknown) {
+      if (!isHandledElsewhere(e)) setErrorMsg(mutationErrorMessage(e));
+    }
   };
 
   return (
@@ -1007,6 +1026,8 @@ export default function ChzzkPage() {
           <button onClick={() => setErrorMsg("")} className="shrink-0 text-danger/70 hover:text-danger">✕</button>
         </div>
       )}
+
+      <InlineError message={subM.error} />
       {verifOpen && (
         <VerifModal
           verifications={verifications}
@@ -1078,7 +1099,11 @@ export default function ChzzkPage() {
                   {ch && <span className="text-sm text-muted mt-1 block">→ #{ch.name}</span>}
                 </div>
                 <button onClick={() => remove(sub.id)}
-                  className="p-2 text-muted hover:text-danger transition-colors rounded-lg hover:bg-danger/10 shrink-0">
+                  disabled={subM.pending}
+                  aria-label="등록된 스트리머 삭제"
+                  className="min-w-[44px] min-h-[44px] flex items-center justify-center text-muted
+                             hover:text-danger transition-colors rounded-lg hover:bg-danger/10 shrink-0
+                             disabled:opacity-50">
                   <Trash2 size={16} />
                 </button>
               </div>
@@ -1184,7 +1209,11 @@ export default function ChzzkPage() {
                     {!role && <span className="text-xs text-muted">역할 ID: {tier.role_id}</span>}
                   </div>
                   <button onClick={() => removeTier(tier.id)}
-                          className="text-muted hover:text-danger transition-colors p-1">
+                          disabled={tierM.pending}
+                          aria-label={`${tier.months}개월 이상 등급 삭제`}
+                          className="min-w-[44px] min-h-[44px] flex items-center justify-center
+                                     text-muted hover:text-danger transition-colors
+                                     disabled:opacity-50">
                     <Trash2 size={14} />
                   </button>
                 </div>
@@ -1214,12 +1243,13 @@ export default function ChzzkPage() {
                 <option value="">역할 선택...</option>
                 {roles.map((r) => <option key={r.id} value={r.id}>@{r.name}</option>)}
               </select>
-              <button onClick={addTier} disabled={addingTier || !newMonths || !newRole}
+              <button onClick={addTier} disabled={tierM.pending || !newMonths || !newRole}
                       className="btn-primary shrink-0">
-                <Plus size={15} /> {addingTier ? "추가 중..." : "추가"}
+                <Plus size={15} /> {tierM.pending ? "추가 중..." : "추가"}
               </button>
             </div>
           )}
+          <InlineError message={tierM.error} />
         </div>
       )}
       </>

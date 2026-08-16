@@ -5,6 +5,9 @@ import {
   Save, CheckCircle, Shield, AlertTriangle, X, Trash2, ChevronLeft, ChevronRight, UserPlus,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import InlineError from "@/components/InlineError";
+import { useMutation } from "@/lib/useMutation";
+import { isHandledElsewhere } from "@/lib/dashboardErrors";
 import type { GuildConfig, Channel, Role, WarnUser, WarnDetail, GuildMember } from "@/lib/types";
 import MemberSearch from "@/components/MemberSearch";
 import Switch from "@/components/Switch";
@@ -34,12 +37,14 @@ function ManagerModal({
   onAdd,
   onRemove,
   onClose,
+  error,
 }: {
   guildId: string;
   managers: { user_id: string; display_name: string }[];
   onAdd: (member: GuildMember) => Promise<void>;
   onRemove: (userId: string) => Promise<void>;
   onClose: () => void;
+  error: string | null;
 }) {
   const [newMember, setNewMember] = useState<GuildMember | null>(null);
   const [adding, setAdding] = useState(false);
@@ -82,6 +87,7 @@ function ManagerModal({
               추가
             </button>
           </div>
+          <InlineError message={error} />
           {managers.length === 0 ? (
             <p className="text-sm text-muted text-center py-4">등록된 매니저가 없습니다.</p>
           ) : (
@@ -94,7 +100,8 @@ function ManagerModal({
                   <p className="text-sm font-medium text-fg">{m.display_name}</p>
                   <button
                     onClick={() => onRemove(m.user_id)}
-                    className="text-muted hover:text-danger transition-colors p-1"
+                    aria-label={`${m.display_name} 매니저 해제`}
+                    className="min-w-[44px] min-h-[44px] flex items-center justify-center text-muted hover:text-danger transition-colors disabled:opacity-50"
                   >
                     <X size={14} />
                   </button>
@@ -125,6 +132,7 @@ function WarnModal({
   const [details, setDetails]       = useState<WarnDetail[]>([]);
   const [loading, setLoading]       = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const warnM = useMutation(0);
 
   const loadUsers = useCallback(() => {
     setLoading(true);
@@ -147,27 +155,36 @@ function WarnModal({
     }
   };
 
-  const deleteOne = async (id: number) => {
+  // 삭제가 실패해도 화면에서는 지워져 성공한 것처럼 보였다 — 성공한 뒤에만 반영한다.
+  const deleteOne = (id: number) => {
     if (!selected) return;
-    await api.moderation.deleteWarning(guildId, selected.user_id, id);
-    const updated = details.filter((d) => d.id !== id);
-    setDetails(updated);
-    if (updated.length === 0) {
-      setSelected(null);
-      loadUsers();
-    } else {
-      setWarnUsers((prev) =>
-        prev.map((u) => u.user_id === selected.user_id ? { ...u, count: updated.length } : u)
-      );
-      setSelected((prev) => prev ? { ...prev, count: updated.length } : null);
-    }
+    const target = selected;
+    return warnM.run(() => api.moderation.deleteWarning(guildId, target.user_id, id), {
+      onSuccess: () => {
+        const updated = details.filter((d) => d.id !== id);
+        setDetails(updated);
+        if (updated.length === 0) {
+          setSelected(null);
+          loadUsers();
+        } else {
+          setWarnUsers((prev) =>
+            prev.map((u) => u.user_id === target.user_id ? { ...u, count: updated.length } : u)
+          );
+          setSelected((prev) => prev ? { ...prev, count: updated.length } : null);
+        }
+      },
+    });
   };
 
-  const clearAll = async () => {
+  const clearAll = () => {
     if (!selected) return;
-    await api.moderation.clearWarnings(guildId, selected.user_id);
-    setWarnUsers((prev) => prev.filter((u) => u.user_id !== selected.user_id));
-    setSelected(null);
+    const target = selected;
+    return warnM.run(() => api.moderation.clearWarnings(guildId, target.user_id), {
+      onSuccess: () => {
+        setWarnUsers((prev) => prev.filter((u) => u.user_id !== target.user_id));
+        setSelected(null);
+      },
+    });
   };
 
   return (
@@ -260,7 +277,8 @@ function WarnModal({
                       </div>
                       <button
                         onClick={() => deleteOne(w.id)}
-                        className="shrink-0 text-muted hover:text-danger transition-colors p-1"
+                        className="shrink-0 min-w-[44px] min-h-[44px] flex items-center justify-center text-muted hover:text-danger transition-colors disabled:opacity-50"
+                        aria-label="경고 삭제"
                         title="경고 삭제"
                       >
                         <Trash2 size={14} />
@@ -275,15 +293,20 @@ function WarnModal({
 
         {/* Footer */}
         {selected && (
-          <div className="p-4 border-t border-border shrink-0 flex justify-end gap-2">
-            <button onClick={() => setSelected(null)} className="btn-secondary text-sm">닫기</button>
-            <button
-              onClick={clearAll}
-              className="text-sm px-3 py-1.5 rounded-lg bg-danger/10 text-danger border border-danger/20
-                         hover:bg-danger/20 transition-colors flex items-center gap-1.5"
-            >
-              <Trash2 size={14} /> 전체 삭제
-            </button>
+          <div className="p-4 border-t border-border shrink-0 space-y-3">
+            <InlineError message={warnM.error} />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setSelected(null)} className="btn-secondary text-sm">닫기</button>
+              <button
+                onClick={clearAll}
+                disabled={warnM.pending}
+                className="text-sm px-3 py-1.5 rounded-lg bg-danger/10 text-danger border border-danger/20
+                           hover:bg-danger/20 transition-colors flex items-center gap-1.5
+                           disabled:opacity-50"
+              >
+                <Trash2 size={14} /> {warnM.pending ? "삭제 중..." : "전체 삭제"}
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -297,8 +320,8 @@ export default function ModerationPage() {
   const [cfg, setCfg]           = useState<GuildConfig>({});
   const [channels, setChannels] = useState<Channel[]>([]);
   const [roles, setRoles]       = useState<Role[]>([]);
-  const [saving, setSaving]     = useState(false);
-  const [saved, setSaved]       = useState(false);
+  const saveM = useMutation();
+  const managerM = useMutation(0);
   const [warnOpen, setWarnOpen] = useState(false);
 
   const [managers, setManagers] = useState<{ user_id: string; display_name: string }[]>([]);
@@ -325,23 +348,21 @@ export default function ModerationPage() {
 
   const totalWarnings = warnUsers.reduce((s, u) => s + u.count, 0);
 
-  const addManager = async (member: GuildMember) => {
-    await api.settings.managers.add(guildId, member.id);
-    setManagers((prev) => [...prev, { user_id: member.id, display_name: member.display_name }]);
+  const addManager = async (member: GuildMember): Promise<void> => {
+    await managerM.run(() => api.settings.managers.add(guildId, member.id), {
+      onSuccess: () =>
+        setManagers((prev) => [...prev, { user_id: member.id, display_name: member.display_name }]),
+    });
   };
 
-  const removeManager = async (userId: string) => {
-    await api.settings.managers.remove(guildId, userId);
-    setManagers((prev) => prev.filter((m) => m.user_id !== userId));
+  const removeManager = async (userId: string): Promise<void> => {
+    await managerM.run(() => api.settings.managers.remove(guildId, userId), {
+      onSuccess: () => setManagers((prev) => prev.filter((m) => m.user_id !== userId)),
+    });
   };
 
-  const save = async () => {
-    setSaving(true);
-    await api.settings.save(guildId, cfg).catch(() => {});
-    setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
-  };
+  // 실패를 삼키고 "저장됨"을 띄우면 사용자는 저장된 줄 안다.
+  const save = () => saveM.run(() => api.settings.save(guildId, cfg));
 
   const set = (key: keyof GuildConfig) => (v: string | boolean | number) =>
     setCfg((p) => ({ ...p, [key]: v }));
@@ -364,6 +385,7 @@ export default function ModerationPage() {
           onAdd={addManager}
           onRemove={removeManager}
           onClose={() => setMgrOpen(false)}
+          error={managerM.error}
         />
       )}
 
@@ -479,10 +501,12 @@ export default function ModerationPage() {
         </div>
       </div>
 
-      <button onClick={save} disabled={saving} className="btn-primary">
-        {saved
+      <InlineError message={saveM.error && `저장하지 못했습니다. ${saveM.error}`} />
+
+      <button onClick={save} disabled={saveM.pending} className="btn-primary">
+        {saveM.succeeded
           ? <><CheckCircle size={16} /> 저장됨</>
-          : <><Save size={16} /> {saving ? "저장 중..." : "변경사항 저장"}</>}
+          : <><Save size={16} /> {saveM.pending ? "저장 중..." : "변경사항 저장"}</>}
       </button>
 
     </div>

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Bot, AlertCircle } from "lucide-react";
+import { Bot, AlertCircle, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 
 export default function LoginPage() {
@@ -19,7 +19,12 @@ export default function LoginPage() {
     // redirect_uri를 보내는 바람에 어느 경로로 로그인을 시작했는지에 따라 "잘못된 OAuth
     // redirect_uri" 에러가 나거나 안 나는 문제가 있었다.
     api.auth.getLoginUrl()
-      .then((d) => { window.location.href = d.url; })
+      .then((d) => {
+        // 응답에 url이 없으면 `window.location.href = undefined`가 되어 /undefined 로
+        // 이동하고 404가 뜬다(실측으로 재현했다). 없으면 오류 화면으로 간다.
+        if (typeof d?.url === "string" && d.url) window.location.href = d.url;
+        else setError(true);
+      })
       .catch(() => setError(true));
   }, []);
 
@@ -29,19 +34,18 @@ export default function LoginPage() {
         <div className="card max-w-sm w-full text-center space-y-4">
           <AlertCircle size={40} className="text-danger mx-auto" />
           <h2 className="text-fg font-semibold">로그인을 시작할 수 없습니다</h2>
-          <p className="text-muted text-sm">
-            백엔드 서버에 연결하지 못했습니다.
+          <p className="text-muted text-sm leading-relaxed">
+            일시적인 문제로 Discord 로그인 화면으로 이동하지 못했습니다.
+            잠시 후 다시 시도해 주세요.
           </p>
-          <p className="text-muted text-xs leading-relaxed">
-            <code className="text-xs">NEXT_PUBLIC_API_URL</code> 설정과 백엔드 서버 실행 상태를 확인해주세요.
-          </p>
-          <a
-            href="https://discord.com/developers/applications"
-            target="_blank"
-            rel="noreferrer"
-            className="btn-primary justify-center text-sm"
+          <button
+            onClick={() => window.location.reload()}
+            className="btn-primary justify-center text-sm w-full"
           >
-            Developer Portal 열기
+            <RefreshCw size={16} /> 다시 시도
+          </button>
+          <a href="/" className="block text-muted text-xs hover:text-fg transition-colors">
+            홈으로 돌아가기
           </a>
         </div>
       </div>

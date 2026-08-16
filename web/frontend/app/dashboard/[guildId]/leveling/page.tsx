@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { Plus, Trash2, Heart, Trophy, Award, X, Save, CheckCircle, Coins } from "lucide-react";
 import { api } from "@/lib/api";
+import InlineError from "@/components/InlineError";
+import { useMutation } from "@/lib/useMutation";
 import type { LevelReward, Role, GuildConfig } from "@/lib/types";
 
 // ── 요약 통계 타일 ────────────────────────────────────────────────────────────
@@ -30,13 +32,16 @@ export default function LevelingPage() {
   const [lb, setLb]             = useState<{ user_id: string; display_name?: string; xp: number; level: number }[]>([]);
   const [newLevel, setNewLevel] = useState("");
   const [newRole, setNewRole]   = useState("");
-  const [adding, setAdding]     = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [toast, setToast]           = useState("");
 
   const [cfg, setCfg]             = useState<GuildConfig>({});
-  const [savingCfg, setSavingCfg] = useState(false);
-  const [savedCfg, setSavedCfg]   = useState(false);
+
+  // 공통 저장 계약 — 성공 판정·중복 클릭·실패 복구·문구가 전부 여기에 있다.
+  const cfgSave  = useMutation();
+  const addM     = useMutation(0);
+  const removeM  = useMutation(0);
+  const deleteLb = useMutation(0);
 
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(""), 2500); };
 
@@ -52,45 +57,42 @@ export default function LevelingPage() {
     ]).then(([r, roles, lb, c]) => { setRewards(r); setRoles(roles); setLb(lb); setCfg(c); });
   }, [guildId]);
 
-  const saveCfg = async () => {
-    setSavingCfg(true);
-    try {
-      await api.settings.save(guildId, cfg);
-      setSavedCfg(true);
-      setTimeout(() => setSavedCfg(false), 2500);
-    } catch {
-      showToast("저장 실패");
-    } finally {
-      setSavingCfg(false);
-    }
-  };
+  const saveCfg = () => cfgSave.run(() => api.settings.save(guildId, cfg));
 
-  const addReward = async () => {
+  // 이전에는 try/catch가 없어서 실패하면 setAdding(false)에 도달하지 못하고
+  // 버튼이 "추가 중"으로 영원히 고착했다.
+  const addReward = () => {
     if (!newLevel || !newRole) return;
-    setAdding(true);
-    await api.settings.levelRewards.add(guildId, { level: parseInt(newLevel), role_id: newRole });
-    const r = await api.settings.levelRewards.list(guildId);
-    setRewards(r);
-    setNewLevel(""); setNewRole("");
-    setAdding(false);
+    return addM.run(
+      () => api.settings.levelRewards.add(guildId, { level: parseInt(newLevel), role_id: newRole }),
+      {
+        // 성공 후 서버 값을 다시 읽어 확정한다(중복 레벨 등을 서버가 어떻게 처리했는지 포함).
+        onSuccess: async () => {
+          setRewards(await api.settings.levelRewards.list(guildId));
+          setNewLevel(""); setNewRole("");
+        },
+      },
+    );
   };
 
-  const remove = async (level: number) => {
-    await api.settings.levelRewards.remove(guildId, level);
-    setRewards((p) => p.filter((r) => r.level !== level));
+  const remove = (level: number) => {
+    const before = rewards;
+    return removeM.run(() => api.settings.levelRewards.remove(guildId, level), {
+      onSuccess: () => setRewards((p) => p.filter((r) => r.level !== level)),
+      onFailure: () => setRewards(before),
+    });
   };
 
-  const deleteLbEntry = async (userId: string) => {
+  const deleteLbEntry = (userId: string) => {
     setDeletingId(userId);
-    try {
-      await api.settings.deleteLeaderboard(guildId, userId);
-      setLb((p) => p.filter((e) => String(e.user_id) !== String(userId)));
-      showToast("삭제되었습니다.");
-    } catch {
-      showToast("삭제 실패");
-    } finally {
-      setDeletingId(null);
-    }
+    const before = lb;
+    return deleteLb.run(() => api.settings.deleteLeaderboard(guildId, userId), {
+      onSuccess: () => {
+        setLb((p) => p.filter((e) => String(e.user_id) !== String(userId)));
+        showToast("삭제되었습니다.");
+      },
+      onFailure: () => setLb(before),
+    }).finally(() => setDeletingId(null));
   };
 
   return (
@@ -130,12 +132,13 @@ export default function LevelingPage() {
             onChange={(e) => setCfg((p) => ({ ...p, points_per_level: Math.max(0, Number(e.target.value) || 0) }))}
           />
           <span className="text-sm text-muted">P / 레벨당</span>
-          <button onClick={saveCfg} disabled={savingCfg} className="btn-primary text-sm flex items-center gap-1.5 ml-auto">
-            {savedCfg
+          <button onClick={saveCfg} disabled={cfgSave.pending} className="btn-primary text-sm flex items-center gap-1.5 ml-auto">
+            {cfgSave.succeeded
               ? <><CheckCircle size={14} /> 저장됨</>
-              : <><Save size={14} /> {savingCfg ? "저장 중..." : "저장"}</>}
+              : <><Save size={14} /> {cfgSave.pending ? "저장 중..." : "저장"}</>}
           </button>
         </div>
+        <InlineError message={cfgSave.error} />
       </div>
 
       {/* 레벨 보상 */}
@@ -158,7 +161,10 @@ export default function LevelingPage() {
                     </span>
                   )}
                 </div>
-                <button onClick={() => remove(r.level)} className="text-muted hover:text-danger transition-colors p-1">
+                <button onClick={() => remove(r.level)}
+                        disabled={removeM.pending}
+                        aria-label={`레벨 ${r.level} 보상 삭제`}
+                        className="min-w-[44px] min-h-[44px] flex items-center justify-center text-muted hover:text-danger transition-colors disabled:opacity-50">
                   <Trash2 size={14} />
                 </button>
               </div>
@@ -182,10 +188,11 @@ export default function LevelingPage() {
             <option value="">역할 선택...</option>
             {roles.map((r) => <option key={r.id} value={r.id}>@{r.name}</option>)}
           </select>
-          <button onClick={addReward} disabled={adding || !newLevel || !newRole} className="btn-primary">
-            <Plus size={16} /> 추가
+          <button onClick={addReward} disabled={addM.pending || !newLevel || !newRole} className="btn-primary">
+            <Plus size={16} /> {addM.pending ? "추가 중..." : "추가"}
           </button>
         </div>
+        <InlineError message={addM.error || removeM.error} />
       </div>
 
       {/* 리더보드 */}
@@ -193,6 +200,7 @@ export default function LevelingPage() {
         <h2 className="section-title flex items-center gap-2">
           <Trophy size={16} className="text-warning" /> 서버 애정도 리더보드 (상위 20)
         </h2>
+        <InlineError message={deleteLb.error} />
         <div className="space-y-2">
           {lb.map((entry, i) => (
             <div key={entry.user_id}
@@ -207,8 +215,11 @@ export default function LevelingPage() {
               <button
                 onClick={() => deleteLbEntry(String(entry.user_id))}
                 disabled={deletingId === String(entry.user_id)}
+                aria-label={`${entry.display_name || entry.user_id}의 애정도 삭제`}
                 title="애정도 삭제"
-                className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger transition-all p-1 shrink-0"
+                className="opacity-0 group-hover:opacity-100 min-w-[44px] min-h-[44px]
+                           flex items-center justify-center text-muted hover:text-danger
+                           transition-all shrink-0 disabled:opacity-50"
               >
                 <X size={13} />
               </button>

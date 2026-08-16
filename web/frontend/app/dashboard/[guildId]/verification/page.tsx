@@ -1,8 +1,12 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { Save, CheckCircle, Radio as ChzzkIcon, Eye, EyeOff, ShieldCheck, ExternalLink } from "lucide-react";
 import { api } from "@/lib/api";
+import InlineError from "@/components/InlineError";
+import { useMutation } from "@/lib/useMutation";
+import DashboardError from "@/components/DashboardError";
+import { isHandledElsewhere } from "@/lib/dashboardErrors";
 import Switch from "@/components/Switch";
 import type { VerificationConfig, Channel, Role } from "@/lib/types";
 
@@ -95,13 +99,12 @@ export default function VerificationPage() {
   });
   const [channels, setChannels] = useState<Channel[]>([]);
   const [roles, setRoles]       = useState<Role[]>([]);
-  const [saving, setSaving]     = useState(false);
-  const [saved, setSaved]       = useState(false);
-  const [error, setError]       = useState("");
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [showPreview, setShowPreview] = useState(false);
 
-  useEffect(() => {
-    Promise.all([
+  const load = useCallback(() => {
+    setLoadError(null);
+    return Promise.all([
       api.settings.getVerification(guildId),
       api.guilds.channels(guildId),
       api.guilds.roles(guildId),
@@ -118,8 +121,12 @@ export default function VerificationPage() {
       });
       setChannels(ch.filter((c) => c.type === 0 || c.type === 5));
       setRoles(r);
-    }).catch(() => setError("설정을 불러오는 데 실패했습니다."));
+    // 권한 없음(403)까지 "불러오는 데 실패했습니다"로 뭉개지 않는다 —
+    // 사용자가 할 일이 완전히 다르다.
+    }).catch((e: unknown) => { if (!isHandledElsewhere(e)) setLoadError(e); });
   }, [guildId]);
+
+  useEffect(() => { load(); }, [load]);
 
   const set = (key: keyof VerificationConfig) => (v: string | boolean) =>
     setCfg((p) => ({ ...p, [key]: v }));
@@ -130,36 +137,47 @@ export default function VerificationPage() {
     }
   };
 
-  const save = async () => {
-    setSaving(true);
-    setError("");
-    try {
-      await api.settings.saveVerification(guildId, cfg);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2500);
-    } catch {
-      setError("저장에 실패했습니다. 다시 시도해주세요.");
-    } finally {
-      setSaving(false);
-    }
-  };
+  // 공통 저장 계약 — 상태별 문구·중복 클릭 차단·실패 복구가 한 곳에 있다.
+  const saveM = useMutation();
+  const save = () => saveM.run(
+    () => api.settings.saveVerification(guildId, cfg),
+    // 저장 후 서버 값으로 확정한다(색상 정규화 등 서버가 손보는 값이 있다).
+    { onSuccess: async () => {
+        const v = await api.settings.getVerification(guildId);
+        setCfg((p) => ({ ...p, ...v,
+          verification_channel: v.verification_channel ? String(v.verification_channel) : "",
+          unverified_role_id:   v.unverified_role_id   ? String(v.unverified_role_id)   : "",
+          verified_role_id:     v.verified_role_id     ? String(v.verified_role_id)     : "",
+        }));
+      } },
+  );
+
+  const header = (
+    <div>
+      <h1 className="page-title">입장 인증</h1>
+      <p className="page-subtitle">
+        신규 멤버 입장 인증 흐름을 설정합니다.
+        설정 저장 후 Discord에서 <code className="text-accent">/입장메시지설정</code> 명령어를 실행하면
+        아래 설정값으로 입장 채널에 인증 임베드가 전송(또는 수정)됩니다.
+      </p>
+    </div>
+  );
+
+  // 불러오지 못했으면 폼을 그리지 않는다 — 빈 폼을 남기면 저장 버튼이 눌린다.
+  if (loadError) {
+    return (
+      <div className="space-y-6">
+        {header}
+        <DashboardError error={loadError} onRetry={load} />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="page-title">입장 인증</h1>
-        <p className="page-subtitle">
-          신규 멤버 입장 인증 흐름을 설정합니다.
-          설정 저장 후 Discord에서 <code className="text-accent">/입장메시지설정</code> 명령어를 실행하면
-          아래 설정값으로 입장 채널에 인증 임베드가 전송(또는 수정)됩니다.
-        </p>
-      </div>
+      {header}
 
-      {error && (
-        <p className="text-sm text-danger bg-danger/10 border border-danger/30 rounded-lg px-4 py-3">
-          {error}
-        </p>
-      )}
+      <InlineError message={saveM.error} />
 
       {/* 채널 · 역할 */}
       <div className="card space-y-4">
@@ -303,10 +321,10 @@ export default function VerificationPage() {
         )}
       </div>
 
-      <button onClick={save} disabled={saving} className="btn-primary">
-        {saved
+      <button onClick={save} disabled={saveM.pending} className="btn-primary">
+        {saveM.succeeded
           ? <><CheckCircle size={16} /> 저장됨</>
-          : <><Save size={16} /> {saving ? "저장 중..." : "변경사항 저장"}</>}
+          : <><Save size={16} /> {saveM.pending ? "저장 중..." : "변경사항 저장"}</>}
       </button>
     </div>
   );

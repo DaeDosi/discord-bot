@@ -21,7 +21,9 @@ function CallbackInner() {
     const error = params.get("error");
     if (error) {
       setStatus("error");
-      setErrMsg(`Discord 인증 거부: ${error}`);
+      // Discord가 준 error 코드(access_denied 등)를 그대로 노출하지 않는다 —
+      // 사용자가 할 수 있는 일만 말한다.
+      setErrMsg("Discord 로그인이 취소되었거나 승인되지 않았습니다.");
       return;
     }
 
@@ -67,13 +69,11 @@ function CallbackInner() {
         localStorage.setItem("token", token);
         router.replace("/dashboard");
       })
-      .catch((e: Error) => {
+      .catch(() => {
         setStatus("error");
-        if (e.message.includes("fetch") || e.message.includes("network")) {
-          setErrMsg("백엔드 서버에 연결할 수 없습니다.\n환경변수 NEXT_PUBLIC_API_URL을 확인해주세요.");
-        } else {
-          setErrMsg(e.message || "인증에 실패했습니다.");
-        }
+        // 서버가 준 원문(예: "internal")은 사용자에게 의미가 없고 내부 정보일 수 있다.
+        // 분류는 상태 코드로 하고, 화면에는 사용자가 할 수 있는 일만 적는다.
+        setErrMsg("로그인 처리 중 문제가 발생했습니다. 잠시 후 다시 시도해 주세요.");
       });
   }, [params, router]);
 
@@ -84,19 +84,6 @@ function CallbackInner() {
           <AlertCircle size={40} className="text-danger mx-auto" />
           <h2 className="text-fg font-semibold">로그인 실패</h2>
           <p className="text-muted text-sm whitespace-pre-line">{errMsg}</p>
-
-          <div className="bg-bg rounded-lg p-3 text-left text-xs text-muted space-y-1">
-            <p className="text-fg font-medium mb-2">체크리스트</p>
-            <p>① 백엔드 실행 여부 확인</p>
-            <code className="block bg-black/30 rounded px-2 py-1 text-accent">
-              cd web/backend && uvicorn main:app --reload --port 8000
-            </code>
-            <p className="mt-2">② Discord Developer Portal → Redirects (백엔드 콜백 URL)</p>
-            <code className="block bg-black/30 rounded px-2 py-1 text-accent">
-              http://localhost:8000/api/auth/callback
-            </code>
-            <p className="mt-2">③ .env 파일 DISCORD_CLIENT_SECRET / DISCORD_REDIRECT_URI 확인</p>
-          </div>
 
           <button
             onClick={() => { window.location.href = "/login"; }}
