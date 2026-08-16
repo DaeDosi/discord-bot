@@ -6,7 +6,6 @@ import {
 } from "lucide-react";
 import { useSingcupMain } from "@/lib/useSingcupMain";
 import type { SingcupStreamer } from "@/lib/types";
-import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
 import {
   Disclaimer, EventBadge, GOLD, GREEN, StaleBadge, StatusChip,
@@ -237,7 +236,6 @@ export default function SingcupLivePage() {
               <Radio size={16} /> 싱드컵 라이브
             </span>
           </div>
-          <ThemeToggle />
         </div>
       </header>
 

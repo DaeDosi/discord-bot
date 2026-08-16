@@ -3,7 +3,6 @@ import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { Bot, LogOut } from "lucide-react";
-import ThemeToggle from "@/components/ThemeToggle";
 import type { User } from "@/lib/types";
 
 interface Props { user: User | null }
@@ -24,7 +23,6 @@ export default function Navbar({ user }: Props) {
           NexBot
         </Link>
         <div className="flex items-center gap-3">
-          <ThemeToggle />
           {user && (
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-2">

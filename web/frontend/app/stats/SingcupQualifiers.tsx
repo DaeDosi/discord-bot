@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useMemo, useState } from "react";
-import { Award, ExternalLink, Eye, Heart, Radio, Search, Users, X } from "lucide-react";
+import { Award, ExternalLink, Eye, Heart, Info, Radio, Search, Users, X } from "lucide-react";
 
 import {
   SINGCUP_QUALIFIERS,
@@ -223,18 +223,42 @@ export default function SingcupQualifiers({ onRanking }: { onRanking: () => void
             공식 발표
           </span>
         </div>
-        <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted">
-          치지직이 공식 공지로 발표한 예선 참가자 명단입니다. 아래 하트·조회수는 참가자의{" "}
-          <b className="text-fg">#싱드컵</b> 클립 지표일 뿐이며,{" "}
-          <b className="text-fg">공식 심사 결과나 순위가 아닙니다.</b>
+        {/* ── 설명 2단 ────────────────────────────────────────────────────────
+            첫 문장은 **무엇인가**(공식 명단), 둘째 문장은 **오해 방지 안내**다.
+            성격이 다르므로 한 문단에 이어 붙이지 않는다. 들여쓰기를 공백 문자로
+            만들지 않고 별도 블록 + 왼쪽 보더로 구조를 준다 — 공백은 화면 폭이
+            바뀌면 정렬이 무너지고 스크린리더에도 의미가 전달되지 않는다. */}
+        <p className="mt-2 max-w-3xl text-sm leading-relaxed text-fg">
+          치지직이 공식 공지로 발표한 예선 참가자 명단입니다.
         </p>
+        <p className="mt-2 flex max-w-3xl items-start gap-2 border-l-2 border-border pl-3
+                      text-[13px] leading-relaxed text-muted">
+          <Info size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span>
+            아래 하트·조회수는 참가자의 <b className="text-fg">#싱드컵</b> 클립 지표일 뿐이며,{" "}
+            <b className="text-fg">공식 심사 결과나 순위가 아닙니다.</b>
+          </span>
+        </p>
+      </div>
+
+      {/* ── 액션 그룹 ────────────────────────────────────────────────────────
+          '공식 공지 원문'과 '비공식 인기점수 랭킹'은 성격이 정반대다(치지직 공식 ↔
+          NexBot 자체 계산). 같은 줄에 두되 **무게를 다르게** 준다 —
+          공식 링크는 본문 강조, 비공식은 보조 버튼 + '비공식' 문구를 앞세운다.
+          좁은 화면에서는 flex-wrap으로 자연스럽게 다음 줄로 내려간다. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 nb-tap-gap">
         {/* 링크 글자는 본문 색으로 두고 아이콘만 골드로 둔다 — 골드 글자는 라이트
             테마에서 읽히지 않는다(위 ON_GOLD 주석). */}
         <a href={sourceUrl} target="_blank" rel="noopener noreferrer"
-           className="mt-2 inline-flex items-center gap-1.5 text-sm font-bold text-fg underline underline-offset-2 hover:opacity-80">
-          <ExternalLink size={14} style={{ color: GOLD }} /> 공식 공지 원문 보기
+           className="nb-tap inline-flex items-center gap-1.5 text-sm font-bold text-fg underline underline-offset-2 hover:opacity-80">
+          <ExternalLink size={14} style={{ color: GOLD }} aria-hidden="true" /> 공식 공지 원문 보기
           <span className="sr-only">({sourceTitle}) 새 창에서 열림</span>
         </a>
+        <button type="button" onClick={onRanking}
+                className="btn-secondary nb-tap ml-auto text-sm"
+                title="NexBot이 공개 조회수와 하트로 계산한 랭킹입니다. 공식 심사 결과와는 무관합니다.">
+          비공식 인기점수 랭킹 보기
+        </button>
       </div>
 
       {/* 인원 요약 — 그룹은 팀 단위로 센다. 73은 링크 항목 수라서 인원 합계로 쓰지 않는다. */}
@@ -343,17 +367,6 @@ export default function SingcupQualifiers({ onRanking }: { onRanking: () => void
         </div>
       )}
 
-      {/* 비공식 랭킹으로 가는 길 — 숨기지 않는다. 다만 이 화면이 공식이라는 것과
-          저쪽이 NexBot 자체 계산이라는 것을 문장으로 구분해 둔다. */}
-      <div className="rounded-xl border border-border p-4">
-        <p className="text-sm leading-relaxed text-muted">
-          NexBot이 공개 조회수와 하트로 계산한 <b className="text-fg">비공식 인기점수 랭킹</b>도 함께 제공합니다.
-          공식 심사 결과와는 무관합니다.
-        </p>
-        <button type="button" onClick={onRanking} className="btn-secondary mt-2.5 text-sm">
-          비공식 인기점수 랭킹 보기
-        </button>
-      </div>
     </div>
   );
 }

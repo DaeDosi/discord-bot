@@ -80,14 +80,21 @@ export function TrafficHeatmap() {
   }, []);
 
   const max = Math.max(1, ...(grid ?? []).flat().map((c) => c.avg_viewers));
+
+  // 색 단계를 배열 하나로 모은다 — **범례가 이 배열을 그대로 쓰기 위해서**다.
+  // 두 곳에 따로 적어 두면 단계를 손볼 때 반드시 어긋난다.
+  const HEAT_STEPS = ["rgba(0,255,163,0.10)", "rgba(0,255,163,0.24)",
+                      "rgba(0,255,163,0.42)", "rgba(0,255,163,0.66)", GREEN];
+  const EMPTY_CELL = "rgb(var(--color-bg-hover-rgb))";
+
   const shade = (c: HeatCell) => {
-    if (c.samples === 0) return "rgb(var(--color-bg-hover-rgb))";
+    if (c.samples === 0) return EMPTY_CELL;
     const r = c.avg_viewers / max;
-    return r >= 0.8 ? GREEN
-         : r >= 0.6 ? "rgba(0,255,163,0.66)"
-         : r >= 0.4 ? "rgba(0,255,163,0.42)"
-         : r >= 0.2 ? "rgba(0,255,163,0.24)"
-         : "rgba(0,255,163,0.10)";
+    return r >= 0.8 ? HEAT_STEPS[4]
+         : r >= 0.6 ? HEAT_STEPS[3]
+         : r >= 0.4 ? HEAT_STEPS[2]
+         : r >= 0.2 ? HEAT_STEPS[1]
+         : HEAT_STEPS[0];
   };
 
   return (
@@ -106,17 +113,15 @@ export function TrafficHeatmap() {
       ) : (
         <>
           <div className="mt-4 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            <div style={{ minWidth: 560 }}>
-              {/* 시간 라벨 */}
-              <div className="mb-1 flex gap-[2px] pl-[26px]">
-                {Array.from({ length: 24 }, (_, h) => (
-                  <span key={h} className="flex-1 text-center text-[9px] tabular-nums"
-                        style={{ color: GRAY }}>{h % 3 === 0 ? h : ""}</span>
-                ))}
-              </div>
+            {/* 라벨을 키운 만큼 최소 폭도 함께 올린다 — 좁은 화면에서 시간 숫자끼리
+                겹치지 않게 하려면 셀 폭이 같이 확보돼야 한다. */}
+            <div style={{ minWidth: 640 }}>
               {grid.map((row, d) => (
                 <div key={d} className="mb-[2px] flex items-center gap-[2px]">
-                  <span className="w-[24px] shrink-0 text-[10px]" style={{ color: GRAY }}>{DOW[d]}</span>
+                  {/* 요일 라벨 — 셀과 세로 중심을 맞추고 오른쪽 정렬해
+                      요일과 첫 셀 사이 간격이 일정해진다. */}
+                  <span className="w-[30px] shrink-0 pr-1.5 text-right text-[12px] font-medium leading-none"
+                        style={{ color: GRAY }}>{DOW[d]}</span>
                   {row.map((c, h) => (
                     <div key={h} className="h-4 flex-1 cursor-pointer rounded-[2px] transition-transform hover:scale-125"
                          style={{ background: shade(c) }}
@@ -131,8 +136,38 @@ export function TrafficHeatmap() {
                   ))}
                 </div>
               ))}
+
+              {/* 시간 라벨 — 그리드 **아래**로 내렸다. 위에 있으면 요일 라벨과
+                  같은 줄에서 시작점이 어긋나 보이고, 값을 읽을 때 시선이
+                  위아래로 두 번 움직인다. 요일 라벨과 같은 폭(30px)을 앞에 두어
+                  첫 셀과 '0'의 중심이 정확히 맞는다. */}
+              <div className="mt-1.5 flex gap-[2px]">
+                <span className="w-[30px] shrink-0" aria-hidden="true" />
+                {Array.from({ length: 24 }, (_, h) => (
+                  <span key={h} className="flex-1 text-center text-[11px] tabular-nums leading-none"
+                        style={{ color: GRAY }}>{h % 3 === 0 ? h : ""}</span>
+                ))}
+              </div>
             </div>
           </div>
+
+          {/* 범례 — 오른쪽 아래. 색 단계는 `HEAT_STEPS`를 그대로 쓰므로 셀과 항상 같다.
+              색만으로 뜻을 전하지 않도록 '낮음'·'높음' 글자를 양쪽에 둔다. */}
+          <div className="mt-3 flex flex-wrap items-center justify-end gap-x-2 gap-y-1.5">
+            <span className="text-[11px]" style={{ color: GRAY }}>낮음</span>
+            <span className="flex items-center gap-[3px]"
+                  role="img" aria-label="색이 짙을수록 평균 시청자가 많습니다">
+              {HEAT_STEPS.map((c, i) => (
+                <span key={i} className="h-3 w-3 rounded-[2px]" style={{ background: c }} />
+              ))}
+            </span>
+            <span className="text-[11px]" style={{ color: GRAY }}>높음</span>
+            <span className="ml-2 flex items-center gap-1.5 text-[11px]" style={{ color: GRAY }}>
+              <span className="h-3 w-3 rounded-[2px]" style={{ background: EMPTY_CELL }} />
+              수집 없음
+            </span>
+          </div>
+
           <Sub>* 최근 14일 수집 이력 기준이며, 회색은 해당 시간대 수집 기록이 없다는 뜻입니다.</Sub>
         </>
       )}

@@ -13,7 +13,6 @@ import {
 const BOT_CLIENT_ID = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID || "YOUR_CLIENT_ID";
 const INVITE_URL    = `https://discord.com/oauth2/authorize?client_id=${BOT_CLIENT_ID}&permissions=8&scope=bot%20applications.commands`;
 
-import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
 import { api } from "@/lib/api";
 import type { User } from "@/lib/types";
@@ -281,7 +280,6 @@ export default function HomePage() {
             >
               사용 방법
             </Link>
-            <ThemeToggle />
             {user
               ? <ProfileDropdown user={user} />
               : loginUrl
@@ -388,17 +386,20 @@ export default function HomePage() {
 
       {/* ── Stats ── */}
       <section className="border-y border-border bg-bg-card/40">
-        <div className="max-w-4xl mx-auto px-5 py-12 grid grid-cols-3 gap-8 text-center">
+        {/* 390px에서 3열 × gap-8 + text-4xl 숫자가 뷰포트를 52px 넘겨 가로 스크롤이
+            생겼다(실측 scrollWidth 437 > clientWidth 385). 좁은 화면에서만 간격과
+            숫자 크기를 낮춘다 — 640px 이상은 기존 그대로다. */}
+        <div className="max-w-4xl mx-auto px-5 py-12 grid grid-cols-3 gap-3 sm:gap-8 text-center">
           {statsDisplay.map(({ value, label }, i) => (
             <div key={label} className={`reveal reveal-delay-${i + 1}`}>
-              <p className={`text-4xl font-bold mb-1 ${
+              <p className={`text-2xl sm:text-4xl font-bold mb-1 ${
                 value
                   ? "bg-gradient-to-r from-[#5865f2] to-[#818cf8] bg-clip-text text-transparent"
                   : "text-muted/30 animate-pulse"
               }`}>
                 {value ?? "—"}
               </p>
-              <p className="text-sm text-muted">{label}</p>
+              <p className="text-xs sm:text-sm text-muted break-keep">{label}</p>
             </div>
           ))}
         </div>

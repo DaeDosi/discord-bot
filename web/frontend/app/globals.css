@@ -14,19 +14,12 @@
   --color-fg-rgb:       235 239 246;   /* #ebeff6 — crisper near-white for more separation from muted */
 }
 
-html.light {
-  /* Light mode */
-  --color-bg-rgb:       240 242 245;   /* #f0f2f5 */
-  --color-bg-card-rgb:  255 255 255;   /* #ffffff */
-  --color-bg-hover-rgb: 232 234 238;   /* #e8eaee */
-  --color-border-rgb:   227 230 236;   /* #e3e6ec — softer hairline */
-  --color-muted-rgb:    94 98 120;     /* #5e6278 */
-  --color-fg-rgb:       18 21 26;      /* #12151a — deeper near-black for more separation from muted */
-}
 
 /* ── Base ─────────────────────────────────────────────────────────────── */
 @layer base {
   * { box-sizing: border-box; }
+  /* 브라우저가 그리는 부분(스크롤바·폼 컨트롤·자동완성)도 다크로 맞춘다. */
+  html { color-scheme: dark; }
   html { font-size: 118.75%; } /* 19px base — 대시보드가 풀와이드로 넓어지면서 기존 17px 기준으로는
     본문 글자가 상대적으로 더 작아 보이는 문제가 있어 한 단계 더 키움. rem 기반이라 모든
     text-* 유틸리티가 비례해서 같이 커진다. */
@@ -323,13 +316,12 @@ html.light {
    값 자체는 `components/StreamerTag.tsx`가 색상(hue)을 유지한 채 명도만 안전
    구간으로 끌어와 CSS 변수로 넘긴다. 여기서는 **어느 쪽을 쓸지만** 고른다.
    (테마를 JS로 읽어 분기하면 하이드레이션 때 색이 한 번 튄다.)
-   이 파일에 두는 이유는 `html.light` 선택자가 필요해서다 — Tailwind의 동적
+   이 파일에 두는 이유는 값이 CSS 변수로 들어오기 때문이다 — Tailwind의 동적
    임의값 클래스는 빌드 시점에 생성되지 않아 쓸 수 없다. */
 .nb-tag { color: var(--nb-tag-fg); }
-html.light .nb-tag { color: var(--nb-tag-fg-l); }
 
 /* ── 싱드컵 카드의 하트·LIVE (UI-4) ───────────────────────────────────────
-   `.nb-tag`와 같은 이유로 여기에 둔다 — `html.light` 선택자가 필요하고, 테마를
+   `.nb-tag`와 같은 이유로 여기에 둔다 — 값이 CSS 변수로 들어오고, 테마를
    JS로 읽어 분기하면 하이드레이션 때 색이 한 번 튄다.
 
    하트: 골드 #FACC15는 **다크에서만** 쓸 수 있는 색이다. 카드 배경이 흰색인
@@ -337,14 +329,12 @@ html.light .nb-tag { color: var(--nb-tag-fg-l); }
    그대로 두고 명도만 내린 amber-700으로 바꾼다 — 싱드컵의 골드 정체성은 유지된다.
    숫자는 이미 `text-muted`라 양쪽 5.3:1 이상이므로 건드리지 않는다. */
 .nb-heart-icon { color: #FACC15; }
-html.light .nb-heart-icon { color: #A16207; }
 
 /* LIVE: 밝은 네온 초록 글자 + 같은 색 12% 배경이라 라이트에서 글자와 배경이 사실상
    같은 밝기였다(실측 1.0:1). 다크는 어두운 카드 위라 그대로 성립하므로 유지하고,
    라이트만 진한 emerald로 내린다. 배경은 단색 tint 하나뿐이고 그라데이션이 아니다.
    'LIVE' 글자와 아이콘을 함께 두는 이유는 색만으로 상태를 전달하지 않기 위해서다. */
 .nb-live-badge { color: #00FFA3; background: rgba(0, 255, 163, 0.14); }
-html.light .nb-live-badge { color: #047857; background: rgba(4, 120, 87, 0.12); }
 
 /* 그라데이션 글자. background-clip:text를 지원하지 않는 환경에서는 이 규칙이
    무시되고 부모 `.nb-tag`의 color가 그대로 보인다 — 그게 폴백이다. */
@@ -354,4 +344,3 @@ html.light .nb-live-badge { color: #047857; background: rgba(4, 120, 87, 0.12); 
           background-clip: text;
   -webkit-text-fill-color: transparent;
 }
-html.light .nb-tag-grad { background-image: var(--nb-tag-grad-l); }

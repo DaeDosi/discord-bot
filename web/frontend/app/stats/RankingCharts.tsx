@@ -4,6 +4,8 @@ import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { BarChart3, ScatterChart, ChevronDown, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
 
+import StreamerAvatar from "./StreamerAvatar";
+
 // 랭킹 테이블 상단 요약 차트. 외부 차트 라이브러리 없이 SVG/div로 그린다
 // (vis-network 도입 때 확인했듯 차트 라이브러리는 번들이 크다).
 // 전체 스트리머 랭킹과 신규 스트리머 랭킹이 공유하므로, Y축 지표를 주입받는다:
@@ -169,12 +171,10 @@ function BarPanel({ rows, onPick, deltaName }:
             setHot((p) => (p?.id === r.chzzk_channel_id ? null : { id: r.chzzk_channel_id, el }));
           }}>
           <span className="w-5 shrink-0 text-right text-[11px] tabular-nums text-muted">{i + 1}</span>
-          <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full bg-bg-hover">
-            {r.channel_image_url && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={r.channel_image_url} alt="" width={24} height={24} loading="lazy" className="h-full w-full object-cover" />
-            )}
-          </span>
+          {/* 이 Top 10 목록은 랭킹 표보다 **위**에 있어 초기 화면을 차지한다.
+              표만 eager로 바꾸고 여기를 lazy로 두면 정작 보이는 아바타가
+              늦게 뜬다(실측으로 확인). 같은 컴포넌트로 통일한다. */}
+          <StreamerAvatar src={r.channel_image_url} index={i} />
           <button type="button" onClick={() => onPick(r.chzzk_channel_id)}
             className="w-[64px] shrink-0 truncate text-left text-xs font-semibold text-fg
                        transition-colors hover:text-accent sm:w-[88px] md:w-[104px]">

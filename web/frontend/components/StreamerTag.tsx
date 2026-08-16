@@ -31,7 +31,7 @@ const FALLBACK_END = "#C084FC";
    운영자가 고른 색이 아주 어두우면(#123456) 다크에서 안 보이고, 아주 밝으면(#FACC15)
    라이트에서 안 보인다.
    해결은 **색상(hue)은 그대로 두고 명도만 테마별 안전 구간으로 끌어오는 것**이다.
-   두 값을 CSS 변수로 내보내고, `globals.css`가 `html.light`에서 두 번째 값을 쓴다
+   두 값을 CSS 변수로 내보낸다. 라이트 모드를 제거한 뒤로 두 번째(-l) 값은 쓰이지 않는다
    (테마를 JS로 읽으면 하이드레이션 때 색이 한 번 튄다). */
 
 function hexToHsl(hex: string): [number, number, number] {

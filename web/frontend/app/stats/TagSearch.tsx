@@ -5,6 +5,8 @@ import { Search, Loader2, X, Hash } from "lucide-react";
 import { api } from "@/lib/api";
 import type { RisingTag, TagStreamer, RisingTagEffect } from "@/lib/types";
 
+import StreamerAvatar from "./StreamerAvatar";
+
 // 태그 검색 — 스트리머가 방송에 붙인 태그로 라이브를 찾는다.
 // 태그는 자유 입력이라 표기가 제각각이므로 기본은 부분 일치로 찾고,
 // 인기 태그 칩으로 탐색도 가능하게 한다.
@@ -249,13 +251,9 @@ export default function TagSearch() {
                         </td>
                         <td className="py-3.5 align-top">
                           <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="group flex items-center gap-2">
-                            <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full bg-bg-hover"
-                                  style={medal ? { boxShadow: `0 0 0 2px ${medal.color}` } : undefined}>
-                              {s.channel_image_url && (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="h-full w-full object-cover" />
-                              )}
-                            </span>
+                            <StreamerAvatar
+                              src={s.channel_image_url} index={i}
+                              ringStyle={medal ? { boxShadow: `0 0 0 2px ${medal.color}` } : undefined} />
                             <span className="truncate max-w-[150px] text-base font-semibold text-fg transition-colors group-hover:text-accent md:max-w-none">
                               {s.channel_name}
                             </span>

@@ -10,7 +10,6 @@ import { StreamerTagList } from "@/components/StreamerTag";
 import type {
   StreamerDashboard, StreamerDetail, StreamerSessionSeries, StreamerDaily, StreamerHourly,
 } from "@/lib/types";
-import ThemeToggle from "@/components/ThemeToggle";
 import LineChart, { type LinePoint } from "../../LineChart";
 import Heatmap, { HEAT_METRICS, type HeatMetric } from "./Heatmap";
 
@@ -313,7 +312,6 @@ export default function StreamerPage() {
               <BarChart3 size={16} /> 스트리머 분석
             </span>
           </div>
-          <ThemeToggle />
         </div>
       </header>
 

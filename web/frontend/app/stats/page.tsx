@@ -13,7 +13,6 @@ import type {
   NewcomerCategory, NewcomerGroup, NewcomerInsights,
   RisingPeriodRanking, PeriodRange, PeriodSort, RisingCategoryStreamers,
 } from "@/lib/types";
-import ThemeToggle from "@/components/ThemeToggle";
 import Footer from "@/components/Footer";
 import CollapsibleAbout from "@/components/CollapsibleAbout";
 import CategoryRankCards from "./CategoryRankCards";
@@ -24,6 +23,7 @@ import Singcup from "./Singcup";
 import { ViewerDistribution, TrafficHeatmap, TitleKeywordRank } from "./OverviewViz";
 import { GoldenHourHeatmap, BlueOceanCards, TierDistribution, TitleKeywordCard, VacancyHours } from "./NewcomerInsightViz";
 import StatsNav, { isTab, type Tab } from "./StatsNav";
+import StreamerAvatar from "./StreamerAvatar";
 import { StreamerTagList } from "@/components/StreamerTag";
 import { CARD_BORDER, CARD_DARK } from "./cardStyle";
 
@@ -892,24 +892,18 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                 <tr key={s.chzzk_channel_id}
                     className="border-b border-border hover:bg-bg-hover/70 transition-colors">
                   {/* 순위 — TOP 3는 골드/실버/브론즈 강조 */}
-                  <td className="py-3.5 pl-2 tabular-nums text-sm align-top">
+                  <td className="py-3.5 pl-2 tabular-nums text-sm align-middle">
                     {medal
                       ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
                       : <span className="text-muted">{i + 1}</span>}
                   </td>
 
                   {/* 스트리머 — 개인 분석 대시보드로 이동 */}
-                  <td className="py-3.5 align-top">
+                  <td className="py-3.5 align-middle">
                     <Link href={`/stats/streamer/${s.chzzk_channel_id}`}
                        className="flex items-center gap-2 group">
-                      <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0"
-                            style={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined}>
-                        {s.channel_image_url && (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={s.channel_image_url} alt="" width={24} height={24}
-                               loading="lazy" className="w-full h-full object-cover" />
-                        )}
-                      </span>
+                      <StreamerAvatar src={s.channel_image_url} index={i}
+                                      ringStyle={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined} />
                       <ChzzkMark />
                       <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[150px] md:max-w-none">
                         {s.channel_name}
@@ -922,7 +916,7 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                   </td>
 
                   {/* 카테고리 — 알약형 뱃지 (테마 토큰 사용, 라이트 모드에서도 대비 유지) */}
-                  <td className="py-3.5 px-6 hidden sm:table-cell align-top">
+                  <td className="py-3.5 px-6 hidden sm:table-cell align-middle">
                     {s.category_name
                       ? <span className="inline-block max-w-[150px] truncate rounded-full border border-border
                                          bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{s.category_name}</span>
@@ -930,7 +924,7 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                   </td>
 
                   {/* 현재 시청자 — 증감 + 숫자 / 바로 아래 골드 바 (1위 대비 %) */}
-                  <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
+                  <td className="py-3.5 px-6 align-middle" style={{ minWidth: 140 }}>
                     <CellCol>
                       <div className="flex items-center justify-end gap-1.5">
                         {vwDelta !== null && <span className="text-[11px]"><Delta pct={vwDelta} /></span>}
@@ -941,7 +935,7 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                   </td>
 
                   {/* 방송시간 — 퍼플 바 (최대 24시간 대비 비율) */}
-                  <td className="py-3.5 px-6 hidden md:table-cell align-top" style={{ minWidth: 128 }}>
+                  <td className="py-3.5 px-6 hidden md:table-cell align-middle" style={{ minWidth: 128 }}>
                     <CellCol>
                       <div className="text-right tabular-nums text-muted text-sm">{s.dur.label}</div>
                       <CellBar pct={durPct} background={PURPLE_GRAD} />
@@ -949,7 +943,7 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
                   </td>
 
                   {/* 팔로워 — 신규 유입 + 시안 바 */}
-                  <td className="py-3.5 px-6 align-top" style={{ minWidth: 140 }}>
+                  <td className="py-3.5 px-6 align-middle" style={{ minWidth: 140 }}>
                     <CellCol>
                       <div className="flex items-center justify-end gap-1.5">
                         {newFol != null && newFol > 0 &&
@@ -1214,54 +1208,48 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
             return (
               <tr key={s.chzzk_channel_id} className="border-b border-border hover:bg-bg-hover/70 transition-colors">
                 {/* 순위 — TOP 3는 골드/실버/브론즈 강조 */}
-                <td className="py-3.5 pl-2 tabular-nums text-sm align-top">
+                <td className="py-3.5 pl-2 tabular-nums text-sm align-middle">
                   {medal
                     ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
                     : <span className="text-muted">{i + 1}</span>}
                 </td>
-                <td className="py-3.5 align-top">
+                <td className="py-3.5 align-middle">
                   <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="flex items-center gap-2 group">
-                    <Sprout size={14} className="shrink-0" style={{ color: GREEN }} />
-                    <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0"
-                          style={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined}>
-                      {s.channel_image_url && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
-                      )}
-                    </span>
+                    <StreamerAvatar src={s.channel_image_url} index={i}
+                                      ringStyle={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined} />
                     <ChzzkMark />
                     <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[130px] md:max-w-none">{s.channel_name}</span>
                     {/* 팀/소속 태그 — 랭킹 목록과 같은 규칙(2개 + +N) */}
                     <StreamerTagList tags={s.team_tags} />
                   </Link>
                 </td>
-                <td className="py-3.5 px-6 hidden sm:table-cell align-top">
+                <td className="py-3.5 px-6 hidden sm:table-cell align-middle">
                   {s.category_name
                     ? <span className="inline-block max-w-[150px] truncate rounded-full border border-border
                                        bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{s.category_name}</span>
                     : <span className="text-muted text-sm">-</span>}
                 </td>
-                {/* 성장률 — 다른 셀은 수치+바 2줄이라 align-top이지만 이 셀은 1줄이라
+                {/* 성장률 — 다른 셀은 수치+바 2줄이라 align-middle이지만 이 셀은 1줄이라
                     가운데 정렬해야 행 높이 안에서 위로 붙지 않는다. 크기도 한 단계 키움. */}
                 <td className="py-3.5 px-6 text-right text-sm font-semibold align-middle whitespace-nowrap">
                   <Delta pct={s.growth_rate} />
                 </td>
                 {/* 시청자 — 바로 아래 골드 바 (1위 대비 %) */}
-                <td className="py-3.5 px-6 align-top" style={{ minWidth: 132 }}>
+                <td className="py-3.5 px-6 align-middle" style={{ minWidth: 132 }}>
                   <CellCol>
                     <div className="text-right"><StatNum value={s.concurrent_viewers} unit="명" /></div>
                     <CellBar pct={vwPct} background={YELLOW_GRAD} />
                   </CellCol>
                 </td>
                 {/* 방송시간 — 퍼플 바 (최대 24시간 대비 비율) */}
-                <td className="py-3.5 px-6 align-top hidden md:table-cell" style={{ minWidth: 128 }}>
+                <td className="py-3.5 px-6 align-middle hidden md:table-cell" style={{ minWidth: 128 }}>
                   <CellCol>
                     <div className="text-right tabular-nums text-muted text-sm">{dur.label}</div>
                     <CellBar pct={durPct} background={PURPLE_GRAD} />
                   </CellCol>
                 </td>
                 {/* 팔로워 — 시안 바 */}
-                <td className="py-3.5 px-6 align-top" style={{ minWidth: 132 }}>
+                <td className="py-3.5 px-6 align-middle" style={{ minWidth: 132 }}>
                   <CellCol>
                     <div className="text-right">{s.follower_count > 0 ? <StatNum value={s.follower_count} unit="명" /> : <span className="text-sm text-muted">-</span>}</div>
                     <CellBar pct={folPct} background={CYAN_GRAD} />
@@ -1401,13 +1389,7 @@ function SmallGrowthList({ items }: { items: RisingNewcomer[] }) {
               <Link href={`/stats/streamer/${s.chzzk_channel_id}`}
                     className="group flex items-center gap-2 py-2">
                 <span className="w-4 shrink-0 text-xs tabular-nums text-muted">{i + 1}</span>
-                <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full bg-bg-hover">
-                  {s.channel_image_url && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy"
-                         className="h-full w-full object-cover" />
-                  )}
-                </span>
+                <StreamerAvatar src={s.channel_image_url} index={i} />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-semibold text-fg transition-colors group-hover:text-accent">
                     {s.channel_name}
@@ -1892,13 +1874,8 @@ function CategoryStreamerList({ category, onPick }:
                           </td>
                           <td className="py-3.5 align-top">
                             <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="group flex items-center gap-2">
-                              <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full bg-bg-hover"
-                                    style={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined}>
-                                {s.channel_image_url && (
-                                  // eslint-disable-next-line @next/next/no-img-element
-                                  <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="h-full w-full object-cover" />
-                                )}
-                              </span>
+                              <StreamerAvatar src={s.channel_image_url} index={i}
+                                      ringStyle={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined} />
                               <ChzzkMark />
                               <span className="truncate max-w-[150px] text-base font-semibold text-fg transition-colors group-hover:text-accent md:max-w-none">
                                 {s.channel_name}
@@ -2070,13 +2047,8 @@ function PeriodRankingTab() {
                       </td>
                       <td className="py-3.5 align-top">
                         <Link href={`/stats/streamer/${s.chzzk_channel_id}`} className="flex items-center gap-2 group">
-                          <span className="w-6 h-6 rounded-full overflow-hidden bg-bg-hover shrink-0"
-                                style={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined}>
-                            {s.channel_image_url && (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img src={s.channel_image_url} alt="" width={24} height={24} loading="lazy" className="w-full h-full object-cover" />
-                            )}
-                          </span>
+                          <StreamerAvatar src={s.channel_image_url} index={i}
+                                      ringStyle={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined} />
                           <ChzzkMark />
                           <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate max-w-[150px] md:max-w-none">
                             {s.channel_name || "(이름 없음)"}
@@ -2269,7 +2241,6 @@ export default function StatsPage() {
               <BarChart3 size={17} style={{ color: GREEN }} /> <GradText>치지직 통계</GradText>
             </span>
           </div>
-          <ThemeToggle />
         </div>
       </header>
 
