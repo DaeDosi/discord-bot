@@ -12,6 +12,7 @@ import os
 import time
 
 import singcup_audit
+import singcup_final
 import singcup_obs
 import singcup_split_api as split
 from fastapi import APIRouter, Header, HTTPException, Request, Response
@@ -183,6 +184,65 @@ async def main(request: Request, limit: int = 200):
         return out
     finally:
         singcup_obs.end()
+
+
+@router.get("/final-ranking")
+async def final_ranking(request: Request):
+    """비공식 인기점수 랭킹 **확정본**. 이벤트 종료 시점에 한 번 얼린 응답이다.
+
+    `/main`과 나눠 둔 이유가 요구의 핵심이다. 두 화면이 `/main` 하나를 공유하는데,
+    `/main`을 얼리면 **공식 예선 참가자 화면의 하트·조회수까지 굳는다.** 그쪽은
+    최신값을 계속 써야 하므로, 얼릴 응답만 별도 경로로 뺐다.
+
+    부수 효과로 전송 비용도 준다: 내용이 영원히 같아 `immutable` 캐시를 걸 수 있고,
+    조건부 요청은 항상 304로 끝난다(ETag가 다시 계산되지 않는다).
+
+    ── 확정본이 아직 없을 때 (fail-closed) ─────────────────────────────────
+    **실시간 값으로 물러서지 않는다.** 확정본을 못 만들었다고 실시간 랭킹을 대신
+    내보내면, 사용자가 "멈춰 달라"고 한 그 화면이 계속 갱신된다 — 게다가 실패가
+    정상 응답에 가려져 아무도 눈치채지 못한다. 그래서 **503 + `finalizing`**으로
+    명시하고, 화면은 '최종 집계 준비 중'을 보여준다.
+
+    동결이 꺼져 있을 때(`SINGCUP_RANKING_FREEZE_ENABLED=false`)만 `frozen: false`를
+    주고, 그때는 프론트가 기존 실시간 경로를 쓴다.
+    """
+    if not singcup_final.ranking_frozen():
+        return JSONResponse({"frozen": False, "reason": "freeze_disabled"})
+    entry = await singcup_final.load_entry()
+    if not entry:
+        # startup 확정이 일시적 DB 잠금으로 실패했을 수 있다. 그대로 두면 다음
+        # 재시작까지 영영 503이므로, 여기서 **한 번만** 재시도를 예약한다.
+        # 이 요청은 기다리지 않고 503을 반환한다 — 확정 계산은 참가자 전원을
+        # 조인하는 무거운 쿼리라 공개 GET을 붙잡으면 안 된다. 다음 요청이 200을 받는다.
+        singcup_final.schedule_finalize_if_needed(source="request")
+        return JSONResponse(
+            {"status": "finalizing", "frozen": True,
+             "detail": "최종 집계를 준비하고 있습니다."},
+            status_code=503,
+            headers={"Retry-After": str(singcup_final.RETRY_AFTER_SECONDS),
+                     # 프론트가 이 값으로 자동 재확인 간격을 정한다. 교차 출처라
+                     # 명시적으로 열어 주지 않으면 브라우저가 읽지 못하고, 그러면
+                     # 안전한 기본 간격으로 떨어진다(동작은 하되 서버 의도가 무시된다).
+                     "Access-Control-Expose-Headers": "Retry-After",
+                     "Cache-Control": "no-store"})
+
+    etag = entry["etag"]
+    headers = {
+        "ETag": etag,
+        # 확정본은 변하지 않는다. 재검증조차 필요 없다.
+        "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
+        "Vary": "Accept-Encoding",
+    }
+    if _etag_matches(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers=headers)
+    return Response(content=entry["body"], media_type="application/json",
+                    headers=headers)
+
+
+@router.get("/final-ranking/status")
+async def final_ranking_status():
+    """확정 여부·확정 시각 — 운영 점검용(무인증, 값은 메타데이터뿐)."""
+    return await singcup_final.status()
 
 
 @router.get("/observability")

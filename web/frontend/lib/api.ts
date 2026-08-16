@@ -86,6 +86,9 @@ export const SINGCUP_MAIN_TTL_MS = 60_000;
 
 export const singcupMainKey = (limit: number) => `singcup:main:${limit}`;
 
+// 확정본은 변하지 않는다. 세션 안에서 다시 받을 이유가 없으므로 사실상 무기한이다.
+export const SINGCUP_FINAL_TTL_MS = 24 * 60 * 60_000;
+
 // ── 분리 API (Shadow) ────────────────────────────────────────────────────────
 // 기본은 꺼져 있다. 켜지기 전까지 화면 동작은 기존 `/main` 그대로다.
 export const SPLIT_API_ENABLED =
@@ -432,6 +435,20 @@ export const api = {
           return r.json();
         }),
         opts),
+    /** 비공식 인기점수 랭킹 **확정본**. 이벤트 종료 시점에 얼린 응답이라 변하지 않는다.
+     *
+     *  `/main`과 나눠 둔 이유: 두 화면이 `/main`을 공유하는데 그걸 얼리면 공식 예선
+     *  참가자 화면의 하트·조회수까지 굳는다. 얼릴 응답만 별도 경로로 뺐다.
+     *
+     *  아직 확정본이 없으면 `{finalized:false}`가 온다 — 호출자는 기존 `/main`으로
+     *  물러선다. TTL이 긴 이유는 내용이 영원히 같기 때문이다(다시 받을 이유가 없다). */
+    finalRanking: () =>
+      sharedGet<import("./types").SingcupFinalRanking>(
+        "singcup:final-ranking", SINGCUP_FINAL_TTL_MS,
+        () => fetch(`${BASE}/api/singcup/final-ranking`).then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        })),
     streamerClips: (channelId: string) =>
       fetch(`${BASE}/api/singcup/streamers/${encodeURIComponent(channelId)}/clips`).then(r => r.json()) as Promise<import("./types").SingcupStreamerClips>,
 

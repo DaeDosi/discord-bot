@@ -1160,6 +1160,26 @@ async def init_db():
         # 정책은 유지된다. 이미 값이 1이면 아무것도 바꾸지 않는다.
         "UPDATE streamer_tags SET exclude_from_ranking = 1 "
         "WHERE name = '공식' AND exclude_from_ranking = 0",
+
+        # ── 싱드컵 비공식 인기점수 랭킹 동결 ────────────────────────────────
+        # 이벤트가 끝난 뒤에도 순위·하트·급상승이 계속 재계산돼, 이미 끝난 대회의
+        # 결과가 시간마다 바뀌어 보였다. 확정된 결과를 **응답 통째로** 한 번 얼려
+        # 두고 그 뒤로는 그것만 돌려준다.
+        #
+        # 왜 행 단위(`singcup_final_standings`)가 아니라 payload 한 덩어리인가:
+        #  · 원자성 — 한 행 UPSERT라 부분 저장이 구조적으로 불가능하다. 만들다
+        #    실패하면 아무것도 쓰이지 않고 이전 확정본이 그대로 남는다.
+        #  · 재시작·캐시 TTL과 무관 — 프로세스가 죽어도, 캐시가 비어도 같은 bytes다.
+        #  · ETag 고정 — 지문을 함께 저장하므로 조건부 요청이 항상 304로 끝난다.
+        #  · sweep가 원본 clip 지표를 계속 갱신해도 이 응답은 영향을 받지 않는다.
+        #    (수집 자체는 멈추지 않는다 — 공식 예선 참가자 화면은 최신값을 쓴다.)
+        """CREATE TABLE IF NOT EXISTS singcup_final_ranking (
+               event_id     TEXT    PRIMARY KEY,
+               payload      TEXT    NOT NULL,
+               etag         TEXT    NOT NULL,
+               finalized_at INTEGER NOT NULL,
+               source       TEXT    NOT NULL DEFAULT ''
+           )""",
     ]:
         try:
             await db.execute(sql)

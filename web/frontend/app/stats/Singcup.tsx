@@ -5,7 +5,7 @@ import {
   Trophy, ExternalLink, Play, Eye, Heart, Radio, X,
   Search, ArrowDown, ArrowUp, RefreshCw,
 } from "lucide-react";
-import { useSingcupMain } from "@/lib/useSingcupMain";
+import { useSingcupRanking } from "@/lib/useSingcupRanking";
 import type {
   SingcupHeartMover, SingcupMain, SingcupStreamer,
 } from "@/lib/types";
@@ -170,7 +170,7 @@ function MoversMeta({ baseAt, computedAt }: { baseAt?: string | null;
 }
 
 function HeartMovers({ movers, baseAt, computedAt, evaluatedAt, positiveCount,
-                      stale, collector }: {
+                      stale, collector, final }: {
   movers: SingcupHeartMover[];
   baseAt?: string | null;
   computedAt?: string | null;
@@ -180,6 +180,8 @@ function HeartMovers({ movers, baseAt, computedAt, evaluatedAt, positiveCount,
   positiveCount?: number;
   stale?: boolean;
   collector?: SingcupMain["collector"];
+  /** 확정본인가. true면 '계속 계산 중'으로 읽히는 표시를 전부 끈다. */
+  final?: boolean;
 }) {
   // 두 stale은 다른 것이다. `stale`(topHeartMovers1hStale)은 '이번 구간에 새 목록을
   // 계산하지 못해 직전 정상 집계를 재사용했다'는 뜻뿐이다 — 기준선 부재, 대표 클립
@@ -188,7 +190,9 @@ function HeartMovers({ movers, baseAt, computedAt, evaluatedAt, positiveCount,
   // (일부만 적으면 그 자체가 틀린 진단이 된다).
   // `collector.stale`은 수집기 전체가 마지막 성공 이후 오래됐다는 뜻이다.
   // 하나로 합치면 어느 쪽이 문제인지 알 수 없다.
-  const collectorStale = !!collector?.stale;
+  // 확정본에서는 두 stale이 모두 의미가 없다. 계산을 다시 하지 않으므로
+  // '이전 집계'도 '수집 지연'도 사실이 아니다 — 표시하면 거짓 설명이 된다.
+  const collectorStale = !final && !!collector?.stale;
   const lastOk = parseAt(collector?.lastSuccessAt);
   const evaluated = parseAt(evaluatedAt);
   const aboutAnHour = isAboutAnHour(gapMinutes(baseAt, computedAt));
@@ -199,8 +203,10 @@ function HeartMovers({ movers, baseAt, computedAt, evaluatedAt, positiveCount,
             '1시간'도 마찬가지로 실제 비교 간격이 그만큼일 때만 쓴다. */}
         <h2 className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-base font-extrabold">
           <Heart size={15} style={{ color: VERMILION }} />
-          {aboutAnHour ? "최근 약 1시간 하트 급상승" : "기준 시각 대비 하트 급상승"}
-          {stale && (
+          {final
+            ? "최종 집계 기준 하트 급상승"
+            : aboutAnHour ? "최근 약 1시간 하트 급상승" : "기준 시각 대비 하트 급상승"}
+          {!final && stale && (
             <span className="rounded px-1.5 py-0.5 text-[10px] font-bold"
                   style={{ background: `${GOLD}26`, color: GOLD }}
                   title="현재 구간에서 새 급상승 목록을 계산하지 못해 직전 정상 집계를 보여주고 있습니다. 다음 정상 집계가 완료되면 자동으로 갱신됩니다.">
@@ -220,7 +226,14 @@ function HeartMovers({ movers, baseAt, computedAt, evaluatedAt, positiveCount,
             둘을 구분하지 않으면 "21:59 결과가 23:05에도 그대로"가 계산 중단으로
             오해된다 — 실제로는 계속 계산했지만 조건을 만족한 후보가 없었을 뿐이다. */}
         <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[12px] text-muted">
-          {stale ? (
+          {final ? (
+            // 확정본 — 기준 시각만 적는다. '계산 시각'과 '비교 N분'은 지금도
+            // 계산하고 있다는 뜻으로 읽히므로 쓰지 않는다.
+            <span>
+              최종 집계 시점까지 대표 클립의 하트가 가장 많이 증가한 스트리머입니다.
+              이후의 하트 변화는 반영되지 않습니다.
+            </span>
+          ) : stale ? (
             <>
               <span>현재 조건을 충족한 새 후보가 없어 이전 완료 집계를 표시합니다.</span>
               <span className="tabular-nums">
@@ -295,6 +308,9 @@ function HeartMovers({ movers, baseAt, computedAt, evaluatedAt, positiveCount,
                    className="truncate text-[13px] font-bold text-fg hover:text-accent">
                   {m.channelName || "-"}
                 </a>
+                {/* 확정본에는 현재 방송 여부를 저장하지 않는다 — 얼린 LIVE를 그리면
+                    방송을 끝낸 사람이 영원히 LIVE로 남는다. 그래서 여기 값은
+                    확정본에서 항상 비어 있고 배지가 뜨지 않는다. */}
                 {m.live && (
                   <span className="shrink-0 rounded px-1 text-[9px] font-bold"
                         style={{ background: "rgba(255,77,77,0.15)", color: "#FF4D4D" }}>
@@ -357,6 +373,7 @@ function Row({ s, index }: { s: SingcupStreamer; index: number }) {
             {s.channelName || "-"}
           </a>
           {s.verifiedMark && <span style={{ color: GREEN }} title="인증 채널">✓</span>}
+          {/* 확정본에는 현재 방송 여부가 없다(위 급상승 카드와 같은 이유). */}
           {s.live && (
             <span className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[9px] font-bold"
                   style={{ background: "rgba(255,77,77,0.15)", color: "#FF4D4D" }}>
@@ -479,8 +496,11 @@ function Pager({ page, total, onChange, rangeFrom, rangeTo, totalRows }:
 }
 
 function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
-  // 데이터 구독·폴링 정책은 라이브 페이지와 공유한다(lib/useSingcupMain).
-  const { data, loading, refreshing, updatedAt, refresh } = useSingcupMain();
+  // 이 화면만 **확정본**을 쓴다. 이벤트가 끝났으므로 순위·하트·급상승을 얼린다.
+  // 공식 예선 참가자 화면은 계속 `useSingcupMain`(최신 지표)을 쓴다 — 둘을 같은
+  // 훅으로 되돌리면 참가자 화면의 하트·조회수까지 굳는다(lib/useSingcupRanking).
+  const { data, loading, final, finalizedAt, status, refresh, refreshing,
+          retry, retrying } = useSingcupRanking();
   const [sort, setSort] = useState<SortKey>("score");
   const [dir, setDir] = useState<SortDir>("desc");
   const [query, setQuery] = useState("");
@@ -563,6 +583,54 @@ function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
   const ev = data?.event;
   const ended = ev?.status === "ENDED";
 
+  // 확정본을 못 받은 상태 — **어느 쪽이든 실시간 값으로 대체하지 않는다.**
+  // 대체하면 사용자가 멈춰 달라고 한 화면이 계속 갱신되고, 게다가 실패가 정상
+  // 화면에 가려져 아무도 눈치채지 못한다.
+  //
+  // 두 상태를 나눠 말한다:
+  //   finalizing — 서버가 "준비 중"이라고 명시했다. 기다리면 된다.
+  //   error      — 장애다. 기다린다고 낫는다는 보장이 없으므로 재시도를 준다.
+  // 하나로 묶으면 진짜 장애가 "준비 중입니다"로 둔갑한다.
+  if (status === "finalizing" || status === "error") {
+    const isError = status === "error";
+    return (
+      <div className="space-y-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="flex items-center gap-2 text-xl font-extrabold tracking-tight md:text-2xl">
+            <Trophy size={20} style={{ color: GOLD }} /> 비공식 인기점수 랭킹
+          </h2>
+          <EventBadge />
+        </div>
+        <div className="card py-16 text-center">
+          <Trophy size={30} className="mx-auto mb-3 opacity-25" style={{ color: GOLD }} />
+          <p className="font-medium text-fg">
+            {isError ? "최종 집계를 불러오지 못했습니다." : "최종 집계를 준비하고 있습니다."}
+          </p>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
+            {isError
+              // 원인·엔드포인트·오류 내용은 적지 않는다(내부 정보가 새어 나간다).
+              ? "잠시 후 다시 시도해 주세요. 확정된 순위를 받지 못했을 때는 중간 수치를 최종 순위처럼 보여드리지 않습니다."
+              : "이벤트가 종료돼 순위는 최종 집계 결과로 고정됩니다. 준비가 끝나면 이 화면이 자동으로 다시 확인해 순위를 보여 드립니다. 준비 전에는 중간 수치를 최종 순위처럼 보여드리지 않습니다."}
+          </p>
+          <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+            {isError && (
+              // 이 버튼은 최종 집계만 다시 불러온다 — 상단의 전역 '새로고침'
+              // (실시간 경로 전용)과 역할이 다르므로 문구를 다르게 쓴다.
+              <button type="button" onClick={retry} disabled={retrying}
+                      className="btn-primary nb-tap text-sm disabled:opacity-60">
+                {retrying ? "다시 불러오는 중…" : "최종 집계 다시 불러오기"}
+              </button>
+            )}
+            <button type="button" onClick={onOfficial}
+                    className="btn-secondary nb-tap text-sm">
+              공식 예선 참가자 보기
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5">
       {/* 상단 — 제목/요약 ↔ 버튼 2개 */}
@@ -570,11 +638,13 @@ function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
         <div className="min-w-0 max-w-2xl">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="flex items-center gap-2 text-xl font-extrabold tracking-tight md:text-2xl">
-              <Trophy size={20} style={{ color: GOLD }} /> NexBot 비공식 인기점수 랭킹
+              <Trophy size={20} style={{ color: GOLD }} /> 비공식 인기점수 랭킹
             </h2>
             <EventBadge />
             {ev && <StatusChip status={ev.status} />}
-            {data?.collector.stale && !ended && <StaleBadge />}
+            {/* 확정본에는 '수집 지연' 배지를 달지 않는다 — 더 이상 수집을 기다리는
+                화면이 아니라서 '지연'이라는 말 자체가 틀린 설명이 된다. */}
+            {data?.collector?.stale && !ended && !final && <StaleBadge />}
           </div>
           <p className="mt-2 text-sm leading-relaxed text-muted">
             치지직 음악/노래 카테고리에서 <b className="text-fg">#싱드컵</b> 태그가 확인된 클립을
@@ -606,12 +676,24 @@ function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
             내용 폭(버튼 3개 = 456px)으로 고정돼 화면이 가로로 밀린다. */}
         <div className="flex flex-col items-start gap-2 sm:shrink-0 sm:items-end">
           <div className="text-[12px] leading-relaxed text-muted/80 sm:text-right">
-            <p title="#싱드컵 클립의 조회수·하트를 마지막으로 갱신한 시각입니다.">
-              싱드컵 집계{" "}
-              <span className="tabular-nums">
-                {fmtDateTime(data?.collector.lastSuccessAt ?? null)}
-              </span>
-            </p>
+            {/* 확정본에서는 '마지막으로 갱신한 시각'이 아니라 '최종 집계 기준 시각'이다.
+                수집기의 lastSuccessAt은 지금도 전진하므로 그대로 쓰면 아직 집계
+                중인 것처럼 읽힌다. */}
+            {final ? (
+              <p title="이 시각의 하트·조회수로 순위를 확정했습니다. 이후 변화는 반영되지 않습니다.">
+                최종 집계 기준{" "}
+                <span className="tabular-nums">
+                  {fmtDateTime(finalizedAt ? new Date(finalizedAt).toISOString() : null)}
+                </span>
+              </p>
+            ) : (
+              <p title="#싱드컵 클립의 조회수·하트를 마지막으로 갱신한 시각입니다.">
+                싱드컵 집계{" "}
+                <span className="tabular-nums">
+                  {fmtDateTime(data?.collector?.lastSuccessAt ?? null)}
+                </span>
+              </p>
+            )}
             {ev && (
               <p className="tabular-nums" title="이 기간에 올라온 클립만 집계합니다.">
                 수집 기간 {fmtRange(ev.startAt, ev.endAt)}
@@ -620,17 +702,17 @@ function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
           </div>
           {/* 모바일에서도 잘리지 않게 wrap */}
           <div className="flex flex-wrap items-center gap-2">
-            {/* 자동 갱신은 5분 주기다(응답이 참가자 전원이라 잦은 자동 호출은 그대로
-                전송 비용이 된다). 그 사이에 바로 최신을 보고 싶은 사람을 위해 수동
-                갱신을 둔다 — 이 버튼만 캐시를 건너뛴다. */}
-            <button onClick={refresh} disabled={refreshing}
-                    title={updatedAt
-                      ? `${fmtDateTime(new Date(updatedAt).toISOString())}에 받은 데이터입니다. 5분마다 자동으로 갱신됩니다.`
-                      : "데이터를 다시 받아옵니다."}
-                    className="btn-secondary flex items-center gap-1.5 text-sm disabled:opacity-60">
-              <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
-              새로고침
-            </button>
+            {/* 확정본에는 새로고침 버튼을 두지 않는다 — 눌러도 같은 값이 나오는데
+                버튼이 있으면 "다시 받으면 순위가 바뀔 수도 있다"는 인상을 준다.
+                동결이 꺼져 있을 때(기존 실시간 경로)는 예전 그대로 유지한다. */}
+            {!final && (
+              <button onClick={refresh} disabled={refreshing}
+                      title="데이터를 다시 받아옵니다. 평소에는 5분마다 자동으로 갱신됩니다."
+                      className="btn-secondary flex items-center gap-1.5 text-sm disabled:opacity-60">
+                <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
+                새로고침
+              </button>
+            )}
             <Link href="/stats/singcup/live"
                   className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-bold text-[#1a1400]"
                   style={{ background: GOLD }}>
@@ -644,7 +726,10 @@ function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
         <div className="rounded-xl border border-border px-3.5 py-2.5 text-sm text-fg">
           이벤트가 종료되었습니다.
           <span className="ml-1 text-muted">
-            최종 집계 {fmtDateTime(data?.collector.lastSuccessAt ?? null)}
+            최종 집계{" "}
+            {fmtDateTime(final && finalizedAt
+              ? new Date(finalizedAt).toISOString()
+              : data?.collector?.lastSuccessAt ?? null)}
           </span>
         </div>
       )}
@@ -657,7 +742,8 @@ function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
                      evaluatedAt={data.topHeartMovers1hEvaluatedAt}
                      positiveCount={data.topHeartMovers1hPositiveCount}
                      stale={data.topHeartMovers1hStale}
-                     collector={data.collector} />
+                     collector={data.collector}
+                     final={final} />
       )}
 
       {/* 요약 */}
@@ -672,9 +758,15 @@ function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
               baseAt={data?.summary.deltaBaseAt} />
         {/* 라이브는 늘고 줄기를 반복하므로 '증가분' 개념이 맞지 않는다.
             대신 '언제 확인한 값인지'를 보여준다 — 화면은 5분마다 새로 받지만 이 값은
-            전체 라이브 스캔 주기(기본 10분)에 묶여 있어 그 사이에는 바뀌지 않는다. */}
-        <Tile label="현재 라이브" value={nf(data?.summary.liveCount ?? 0)} unit="명"
-              foot={<LiveFreshness live={data?.live} />} />
+            전체 라이브 스캔 주기(기본 10분)에 묶여 있어 그 사이에는 바뀌지 않는다.
+
+            확정본에서는 이 타일을 아예 감춘다. '현재 라이브'는 랭킹 결과가 아니라
+            지금의 운영 상태라서 확정본에 담지 않았고(담으면 방송이 끝나도 계속 켜져
+            보인다), 담지 않은 값을 0으로 그리면 그것대로 거짓이 된다. */}
+        {!final && (
+          <Tile label="현재 라이브" value={nf(data?.summary?.liveCount ?? 0)} unit="명"
+                foot={<LiveFreshness live={data?.live} />} />
+        )}
       </div>
 
       {/* 컨트롤 — 좌: 참가자 검색 / 우: 정렬 + 오름·내림 전환 */}

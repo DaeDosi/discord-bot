@@ -617,7 +617,9 @@ export interface SingcupStreamer {
 export interface SingcupMain {
   event: { id: string; startAt: string; endAt: string; status: SingcupStatus };
   summary: {
-    taggedClipCount: number; streamerCount: number; liveCount: number;
+    taggedClipCount: number; streamerCount: number;
+    /** 현재 라이브 수 — 확정본에는 없다(운영 상태이지 랭킹 결과가 아니다). */
+    liveCount?: number;
     /** 1시간 전 대비 증가분 — 기준 시각 근처에 수집 회차가 없으면 null(0이 아니다) */
     taggedClipDelta: number | null; streamerDelta: number | null;
     deltaWindowMinutes: number;
@@ -651,7 +653,20 @@ export interface SingcupMain {
   };
   collector: { lastSuccessAt: string | null; stale: boolean };
   streamers: SingcupStreamer[];
+  /** 확정본이면 true. 화면은 '집계 종료'로 그리고 갱신 중 문구를 쓰지 않는다. */
+  rankingFinal?: boolean;
+  /** 확정 시각(epoch 초) — 화면의 '최종 집계 기준 시각'. */
+  rankingFinalizedAt?: number;
 }
+
+/** `/api/singcup/final-ranking` 응답.
+ *
+ *  확정본이 아직 없으면 `{finalized:false}`만 온다 — 그때는 호출자가 기존 `/main`
+ *  으로 물러선다(확정 전에 화면이 비지 않게 하기 위한 것이다). */
+export type SingcupFinalRanking =
+  | SingcupMain
+  | { finalized: false; reason: string };
+
 export interface SingcupClip {
   clipUid: string; clipTitle: string; clipThumbnailUrl: string;
   heartCount: number; viewCount: number; duration: number; createdAt: string;

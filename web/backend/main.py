@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -53,7 +54,26 @@ from singcup_sweep import start_sweep_worker
 from singcup_collector import ADMIN_SECRET, start_singcup_collector
 from singcup_retention import start_retention_worker
 
+# 이 파일의 import는 전부 위쪽 `sys.path.insert` 뒤에 와야 해서 E402가 난다.
+# 기존 줄들의 기존 오류는 이번 작업에서 건드리지 않고, 새로 들이는 이 한 줄만
+# 정확히 표시해 신규 유입을 0으로 유지한다(파일 전체 noqa는 쓰지 않는다).
+import singcup_final  # noqa: E402
+
 from database import close_db, get_db, init_db
+
+
+async def _ensure_final_ranking() -> None:
+    """이벤트가 끝났고 확정본이 없으면 한 번 만든다.
+
+    실패해도 서비스는 계속 떠야 한다 — 확정본이 없으면 프론트가 기존 `/main`
+    경로로 물러서므로 화면이 비지 않는다.
+    """
+    try:
+        res = await singcup_final.ensure_finalized(source="startup")
+        if res.get("created"):
+            logging.getLogger(__name__).info("[singcup-final] 확정본 생성 %s", res)
+    except Exception:                     # noqa: BLE001 — 기동을 막지 않는다
+        logging.getLogger(__name__).exception("[singcup-final] 확정본 생성 실패")
 
 
 @asynccontextmanager
@@ -84,6 +104,11 @@ async def lifespan(app: FastAPI):
     # 보존정책 유지보수 — 기본은 dry-run이라 아무것도 지우지 않는다.
     # 실제 삭제는 SINGCUP_SNAPSHOT_PRUNE_ENABLED=true + DRY_RUN=false 일 때만.
     asyncio.create_task(start_retention_worker())
+    # 비공식 인기점수 랭킹 확정본 — 이벤트가 끝났는데 확정본이 아직 없을 때만
+    # 한 번 만든다. 이미 있으면 아무것도 하지 않으므로 재시작마다 순위가 달라지지
+    # 않는다. **수집은 멈추지 않는다** — 얼리는 것은 랭킹 화면이 받는 응답 하나뿐이고,
+    # 공식 예선 참가자 화면은 계속 최신 지표를 쓴다.
+    asyncio.create_task(_ensure_final_ranking())
     yield
     # 종료 훅 — 미커밋 트랜잭션을 남긴 채 프로세스가 사라지면 같은 파일을 쓰는
     # 봇 프로세스가 그 잠금에 걸린다. 되돌린 뒤 연결을 닫는다.
