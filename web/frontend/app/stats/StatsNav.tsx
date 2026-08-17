@@ -1,20 +1,37 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
-import { BookOpen, ChevronDown, LineChart as LineIcon, ListOrdered, Gamepad2, Sprout, Radio, Users, Hash, SlidersHorizontal, Trophy } from "lucide-react";
+import {
+  BookOpen, ChevronDown, LineChart as LineIcon, ListOrdered, Gamepad2, Sprout,
+  Radio, Users, Hash, SlidersHorizontal, Trophy, Sparkles,
+  // 소형 스트리머 — 신규(Sprout)와 **다른 아이콘**을 쓴다. 두 메뉴가 나란히
+  // 놓이므로 같은 그림이면 어느 쪽인지 아이콘으로 구분되지 않는다.
+  Leaf as Seedling,
+} from "lucide-react";
 
 // /stats 좌측 메뉴. 탭은 URL이 아니라 state로 전환된다.
 // (route 기반 항목을 지원하던 분기는 /stats/network 제거와 함께 걷어냈다.)
 export type Tab =
-  | "overview" | "newcomers_analysis" | "period_analysis"
-  | "ranking" | "ranking_period" | "newcomers_ranking"
+  | "overview" | "newcomers_stats" | "small_stats" | "period_analysis"
+  | "ranking" | "ranking_period" | "newcomers_ranking" | "small_ranking"
   | "category" | "category_streamers" | "tags"
-  | "singcup";
+  | "singcup" | "bongnudo";
+
+/** 없어진 탭 키 → 지금 키. **북마크와 공유 링크를 깨뜨리지 않기 위한 것**이다.
+ *
+ *  `newcomers_analysis`는 신규·소형을 한 메뉴에 담고 세그먼티드 컨트롤로 나누던
+ *  옛 구조다. 두 그룹이 서로 독립된 축이라 메뉴 자체를 갈랐다. 옛 링크는
+ *  **신규 쪽으로** 보낸다 — 그 메뉴의 기본 선택이 신규였기 때문이다. */
+export const LEGACY_TAB_ALIASES: Record<string, Tab> = {
+  newcomers_analysis: "newcomers_stats",
+};
 
 export interface NavItem {
   key: Tab; label: string; icon: React.ReactNode; live?: boolean;
   /** 우측에 골드 'EVENT' 배지를 붙인다(기간 한정 이벤트 메뉴) */
   event?: boolean;
+  /** 아직 제공하지 않는 메뉴 — '준비 중' 배지를 붙인다. */
+  upcoming?: boolean;
 }
 
 // 기간 한정 이벤트 — 그룹에 넣지 않고 검색창과 '실시간 분석' 사이에 단독으로 둔다.
@@ -22,22 +39,32 @@ export const EVENT_ITEM: NavItem = {
   key: "singcup", label: "싱드컵", icon: <Trophy size={16} />, event: true,
 };
 
+/** 봉누도 — **싱드컵 위**에 둔다(요구). 아직 데이터가 없어 '준비 중'만 표시하며,
+ *  준비 중임을 배지로 먼저 알린다. 눌러 보고 나서야 알게 되면 그건 빈 화면이다. */
+export const UPCOMING_ITEM: NavItem = {
+  key: "bongnudo", label: "봉누도", icon: <Sparkles size={16} />, upcoming: true,
+};
+
 // 랭킹은 한 그룹으로 묶되 기준이 다르다는 것은 LIVE 표시로 구분한다.
 // 실시간 랭킹은 최신 수집 사이클 한 장의 동시 시청자 순위라 그 순간 방송 중이었는지에
 // 크게 좌우되고, 누적 랭킹은 기간 전체를 집계해 꾸준함이 반영된다.
 export const NAV_GROUPS: { header: string | null; items: NavItem[] }[] = [
-  { header: "실시간 분석", items: [
-    { key: "overview",           label: "전체 스트리머 분석", icon: <LineIcon size={16} />, live: true },
-    // 신규(첫 방송 60일 이내)와 소형(평균 시청자 10명 이하)을 한 메뉴로 통합.
-    // 두 그룹은 탭 안의 세그먼티드 컨트롤로 전환한다.
-    { key: "newcomers_analysis", label: "신규 & 초기 분석", icon: <Sprout size={16} />, live: true },
+  { header: "통계", items: [
+    { key: "overview",        label: "전체 스트리머 통계", icon: <LineIcon size={16} />, live: true },
+    // 신규(첫 방송 60일 이내)와 소형(최근 7일 평균 시청자 10명 이하)은 **서로 독립된
+    // 축**이고 교집합이 있는 게 정상이다. 예전에는 한 메뉴 안 세그먼티드 컨트롤로
+    // 전환했는데, 그러면 (1) 둘 중 하나를 URL로 공유할 수 없고 (2) 뒤로가기가
+    // 메뉴 밖으로 나가 버렸다. **정의는 그대로 두고 메뉴만 가른다.**
+    { key: "newcomers_stats", label: "신규 스트리머 통계", icon: <Sprout size={16} />, live: true },
+    { key: "small_stats",     label: "소형 스트리머 통계", icon: <Seedling size={16} />, live: true },
     // 실시간 한 장이 아니라 기간 누적이지만, '분석' 성격이 같아 같은 그룹에 둔다(LIVE 표시 없음)
-    { key: "period_analysis",    label: "기간별 상세 분석",   icon: <SlidersHorizontal size={16} /> },
+    { key: "period_analysis", label: "기간별 상세 분석",   icon: <SlidersHorizontal size={16} /> },
   ] },
   // 실시간/누적을 한 그룹으로 합치고, 실시간 기준인 항목에만 LIVE 표시를 붙인다
   { header: "랭킹", items: [
     { key: "ranking",           label: "전체 스트리머 랭킹", icon: <Radio size={16} />, live: true },
     { key: "newcomers_ranking", label: "신규 스트리머 랭킹", icon: <Sprout size={16} />, live: true },
+    { key: "small_ranking",     label: "소형 스트리머 랭킹", icon: <Seedling size={16} />, live: true },
     { key: "ranking_period",    label: "기간별 누적 랭킹",   icon: <ListOrdered size={16} /> },
   ] },
   { header: "카테고리", items: [
@@ -54,9 +81,19 @@ export const groupHeaderOf = (k: Tab): string | null =>
 export const ALL_TABS: Tab[] = [
   ...NAV_GROUPS.flatMap((g) => g.items.map((i) => i.key)),
   EVENT_ITEM.key,
+  UPCOMING_ITEM.key,
 ];
 export const isTab = (v: string | null): v is Tab =>
   !!v && (ALL_TABS as string[]).includes(v);
+
+/** `?tab=` 값을 지금 쓰는 키로 정규화한다. 모르는 값이면 null.
+ *  **옛 키를 그냥 버리면 공유된 링크가 조용히 첫 탭으로 떨어진다** — 사용자는
+ *  자기가 잘못된 주소를 받았다고 읽는다. */
+export const resolveTab = (v: string | null): Tab | null => {
+  if (!v) return null;
+  if (isTab(v)) return v;
+  return LEGACY_TAB_ALIASES[v] ?? null;
+};
 
 const GREEN = "#00FFA3";
 const GRAD  = `linear-gradient(135deg, ${GREEN}, #00C2FF)`;
@@ -120,6 +157,16 @@ export default function StatsNav({
             EVENT
           </span>
         )}
+        {t.upcoming && (
+          /* 준비 중임을 **누르기 전에** 알린다. 배지가 없으면 눌러 보고 나서야
+             알게 되고, 그 화면은 사용자에게 오류처럼 읽힌다.
+             색은 포인트가 아니라 muted다 — 아직 볼 것이 없는 메뉴를 강조하면
+             정작 지금 쓸 수 있는 메뉴가 밀린다. */
+          <span className="ml-auto shrink-0 rounded border border-border px-1.5 py-0.5
+                           text-[9px] font-bold tracking-wide text-muted">
+            준비 중
+          </span>
+        )}
       </button>
     );
   };
@@ -127,8 +174,13 @@ export default function StatsNav({
   return (
     <aside className="md:sticky md:top-[76px] md:self-start">
       {children}
-      {/* 스트리머 검색 ↔ 실시간 분석 사이에 단독 이벤트 메뉴 */}
-      <div className="mb-1">{renderItem(EVENT_ITEM)}</div>
+      {/* 스트리머 검색 ↔ 통계 사이에 단독 이벤트 메뉴.
+          **봉누도가 싱드컵 위**다(요구). 준비 중이라도 자리를 먼저 잡아 두면
+          나중에 항목이 끼어들며 메뉴가 재배치되지 않는다. */}
+      <div className="mb-1 flex flex-col gap-1">
+        {renderItem(UPCOMING_ITEM)}
+        {renderItem(EVENT_ITEM)}
+      </div>
       <nav className="flex flex-col gap-1">
         {NAV_GROUPS.map((g, gi) => {
           if (!g.header) return <div key={gi} className="mt-1">{g.items.map(renderItem)}</div>;

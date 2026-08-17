@@ -353,7 +353,7 @@ async def live_ranking(limit: int = 200):
     t24 = int(t24row["collected_at"]) if t24row else None
 
     rows = await (await db.execute(
-        """SELECT n.chzzk_channel_id, n.channel_name, n.concurrent_viewers,
+        f"""SELECT n.chzzk_channel_id, n.channel_name, n.concurrent_viewers,
                   n.category_name, n.open_date, n.follower_count, n.live_title, n.adult,
                   p.concurrent_viewers AS viewers_prev,
                   f.follower_count     AS follower_prev24h
@@ -363,18 +363,15 @@ async def live_ranking(limit: int = 200):
            LEFT JOIN rising_live_snapshots f
              ON f.chzzk_channel_id = n.chzzk_channel_id AND f.collected_at = ?
            WHERE n.collected_at = ?
-             -- 전체 스트리머 랭킹에서만 제외한다 (UI-R 요구 6).
-             -- 그룹 *이름*이 아니라 `streamer_tags.exclude_from_ranking` 속성으로
-             -- 판정하므로 그룹 이름을 바꿔도 정책이 유지된다. 활성 그룹만 보므로
-             -- 그룹을 비활성화하거나 멤버를 빼면 즉시 랭킹에 돌아온다.
-             -- **이 필터는 여기(live-ranking)에만 있다** — 검색·상세·신규 랭킹·
-             -- 싱드컵·수집·저장은 그대로다.
-             AND n.chzzk_channel_id NOT IN (
-                 SELECT a.streamer_channel_id
-                   FROM streamer_tag_assignments a
-                   JOIN streamer_tags t ON t.id = a.tag_id
-                  WHERE t.active = 1 AND t.exclude_from_ranking = 1
-             )
+             -- 랭킹 제외 정책. 그룹 *이름*이 아니라
+             -- `streamer_tags.exclude_from_ranking` 속성으로 판정하므로 그룹 이름을
+             -- 바꿔도 정책이 유지되고, 활성 그룹만 보므로 그룹을 비활성화하거나
+             -- 멤버를 빼면 즉시 랭킹에 돌아온다.
+             --
+             -- **SQL을 여기에 복사해 넣지 말 것.** 적용 화면이 셋으로 늘면서
+             -- 복사본끼리 갈라질 위험이 생겼다. 적용 범위는
+             -- `streamer_tags.RANKING_EXCLUSION_APPLIES_TO`가 갖는다.
+             AND {st.ranking_exclusion_clause("n.chzzk_channel_id")}
            ORDER BY n.concurrent_viewers DESC
            LIMIT ?""",
         (prev_ts if prev_ts is not None else -1, t24 if t24 is not None else -1, ts, limit)
@@ -402,6 +399,133 @@ async def live_ranking(limit: int = 200):
     # (`tags`는 이미 치지직 방송 태그가 쓰고 있다).
     await st.attach_tags(streamers)
     return {"collected_at": ts, "streamers": streamers}
+
+
+# ── 전역 헤더 검색 ───────────────────────────────────────────────────────────
+#: 입력 길이 상한. 이보다 긴 검색어는 LIKE 패턴만 커지고 결과는 나아지지 않는다.
+QUICK_SEARCH_MAX_LEN = 40
+#: 최대 결과 수. 헤더 드롭다운에 들어갈 수를 **서버가** 정한다.
+QUICK_SEARCH_MAX_RESULTS = 10
+
+
+def _like_escape(value: str) -> str:
+    """LIKE 와일드카드를 무력화한다. `%`만 넣으면 전체 스캔이 된다."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+@router.get("/quick-search")
+async def quick_search(q: str = "", limit: int = QUICK_SEARCH_MAX_RESULTS):
+    """전역 헤더 검색 — **우리가 수집한 공개 정보만** 로컬 DB에서 찾는다.
+
+    기존 `/search`와 **일부러 분리했다.** 그쪽은 치지직 외부 API를 호출하고
+    `rate_limit._HEAVY_MARKERS`에 들어 있어 분당 40회다. 전역 헤더는 사이트의 모든
+    페이지에 있으므로 같은 경로를 쓰면 정상 사용자가 몇 번 타이핑하는 것만으로
+    한도가 소진되고, 외부 API 부하도 페이지 수만큼 곱해진다.
+
+    이쪽은 외부 호출이 0이고 인덱스 조회 한 번이라 기본 버킷(분당 150)이면 충분하다.
+    **`_HEAVY_MARKERS`에 추가하지 말 것** — 그러면 위 문제로 되돌아간다.
+
+    반환은 공개 화면에 이미 보이는 값뿐이다(채널 id·이름·이미지·현재 방송 여부).
+    팔로워·내부 지표는 넣지 않는다 — 헤더 드롭다운이 쓰지 않고, 공개 응답에 실어
+    보낼 이유가 없다.
+    """
+    kw = (q or "").strip()
+    # 길이 제한. 1자 미만은 결과가 사실상 전체라 아예 돌려보내지 않는다.
+    if not kw or len(kw) > QUICK_SEARCH_MAX_LEN:
+        return {"results": [], "query": kw[:QUICK_SEARCH_MAX_LEN]}
+    limit = max(1, min(QUICK_SEARCH_MAX_RESULTS, limit))
+
+    db = await get_db()
+    ts = await _latest_run_ts()
+    pat = f"%{_like_escape(kw)}%"
+    # 지금 방송 중인 채널을 먼저, 그다음 최근에 본 채널 순.
+    # `rising_channel_stats`는 채널당 1행이라 목록이 중복되지 않는다.
+    rows = await (await db.execute(
+        """SELECT c.chzzk_channel_id, c.channel_name,
+                  (n.chzzk_channel_id IS NOT NULL) AS open_live,
+                  COALESCE(n.concurrent_viewers, 0) AS viewers,
+                  c.last_seen
+             FROM rising_channel_stats c
+             LEFT JOIN rising_live_snapshots n
+               ON n.chzzk_channel_id = c.chzzk_channel_id AND n.collected_at = ?
+            WHERE c.channel_name LIKE ? ESCAPE '\\'
+            ORDER BY open_live DESC, viewers DESC, c.last_seen DESC
+            LIMIT ?""",
+        (ts if ts is not None else -1, pat, limit)
+    )).fetchall()
+
+    return {
+        "query": kw,
+        "results": [{
+            "channel_id":        r["chzzk_channel_id"],
+            "channel_name":      r["channel_name"] or "",
+            "channel_image_url": latest_image(r["chzzk_channel_id"]),  # 메모리 맵
+            "open_live":         bool(r["open_live"]),
+            "concurrent_viewers": int(r["viewers"] or 0),
+        } for r in rows],
+        "limit": limit,
+        "maxQueryLength": QUICK_SEARCH_MAX_LEN,
+    }
+
+
+@router.get("/small-ranking")
+async def small_ranking(limit: int = 200):
+    """소형 스트리머 랭킹 — 최근 7일 평균 동시 시청자가 기준 이하인 채널의 실시간 순위.
+
+    **`/newcomers?group=small`과 축이 다르다.** 저쪽은 *분석* 화면이라 성장률·요약·
+    인사이트를 만들고 랭킹 제외를 적용하지 않는다. 이쪽은 *랭킹*이라
+     · 정렬이 동시 시청자 내림차순이고(전체 랭킹과 같은 기준),
+     · 공식 그룹 제외 정책이 적용된다(`RANKING_EXCLUSION_APPLIES_TO`).
+    두 화면이 같은 사람을 다르게 다루는 것이 정상이며, 그 이유가 이 차이다.
+
+    '소형'의 정의는 `_SMALL_AVG_MAX` **하나만** 쓴다 — 여기서 숫자를 다시 적으면
+    분석 화면과 랭킹의 명단이 조용히 갈라진다.
+
+    응답 형태는 `/live-ranking`과 같게 맞춘다(프론트 랭킹 표를 그대로 재사용한다).
+    """
+    limit = max(1, min(300, limit))
+    ts = await _latest_run_ts()
+    if ts is None:
+        return {"collected_at": None, "streamers": [], "criteria": {}}
+    db = await get_db()
+
+    # 최근 7일 평균은 롤업에서 온다 — 원본은 24시간만 남아 7일 평균을 낼 수 없다.
+    # 평균 계산 대상에서 제외 그룹을 미리 빼면 롤업 스캔이 줄어든다.
+    rows = await (await db.execute(
+        f"""SELECT n.chzzk_channel_id, n.channel_name, n.concurrent_viewers,
+                   n.category_name, n.open_date, n.follower_count, n.live_title,
+                   n.adult,
+                   CAST(SUM(h.sum_viewers) AS REAL) / NULLIF(SUM(h.snaps),0) AS avg7
+              FROM rising_live_snapshots n
+              JOIN rising_hourly_rollup h
+                ON h.chzzk_channel_id = n.chzzk_channel_id AND h.hour_ts >= ?
+             WHERE n.collected_at = ?
+               AND {st.ranking_exclusion_clause("n.chzzk_channel_id")}
+             GROUP BY n.chzzk_channel_id
+            HAVING avg7 IS NOT NULL AND avg7 <= ?
+             ORDER BY n.concurrent_viewers DESC
+             LIMIT ?""",
+        (ts - 7 * 86400, ts, _SMALL_AVG_MAX, limit)
+    )).fetchall()
+
+    streamers = [{
+        "rank": i + 1,
+        "chzzk_channel_id":   r["chzzk_channel_id"],
+        "channel_name":       r["channel_name"],
+        "channel_image_url":  latest_image(r["chzzk_channel_id"]),  # DB 아님 — 메모리 맵
+        "concurrent_viewers": r["concurrent_viewers"],
+        "avg_viewers":        round(r["avg7"] or 0, 1),
+        "category_name":      r["category_name"],
+        "open_date":          r["open_date"],
+        "follower_count":     r["follower_count"],
+        "live_title":         r["live_title"] or "",
+        "adult":              bool(r["adult"]),
+    } for i, r in enumerate(rows)]
+    await st.attach_tags(streamers)
+    return {"collected_at": ts, "streamers": streamers,
+            # 화면이 기준을 문장으로 적을 수 있게 서버 값을 함께 준다 —
+            # 프론트에 숫자를 복사해 두면 기준이 바뀔 때 설명만 옛날 값이 된다.
+            "criteria": {"small_avg_max": _SMALL_AVG_MAX, "window_days": 7}}
 
 
 # 카테고리 집계 시간창: live(현재 스냅샷) / 1h(1시간 평균) / 24h(24시간 평균)
@@ -1315,7 +1439,7 @@ async def ranking_period(range: str = "24h", sort: str = "viewership", limit: in
     # 롤업 기반 — 원본은 24시간만 남으므로 7d 집계는 롤업이 유일한 소스다.
     # 24h도 롤업으로 통일해 두 기간의 산출 방식이 갈리지 않게 한다.
     rows = await (await db.execute(
-        """SELECT chzzk_channel_id,
+        f"""SELECT chzzk_channel_id,
                   channel_name,
                   category_name,
                   MAX(hour_ts)        AS last_at,
@@ -1324,7 +1448,14 @@ async def ranking_period(range: str = "24h", sort: str = "viewership", limit: in
                   MAX(peak_viewers)   AS peak_v,
                   SUM(sum_viewers)    AS sum_v,
                   MAX(max_follower)   AS follower
-           FROM (SELECT * FROM rising_hourly_rollup WHERE hour_ts >= ? ORDER BY hour_ts)
+           FROM (SELECT * FROM rising_hourly_rollup
+                  WHERE hour_ts >= ?
+                    -- 기간별 누적 랭킹에도 같은 제외 정책이 적용된다.
+                    -- 예전에는 전체 랭킹에만 있어서, 공식 그룹 채널이 실시간
+                    -- 랭킹에서는 빠지고 기간 랭킹에는 남아 두 화면의 명단이
+                    -- 서로 달랐다. 조각은 공통 헬퍼에서만 만든다.
+                    AND {st.ranking_exclusion_clause("chzzk_channel_id")}
+                  ORDER BY hour_ts)
            GROUP BY chzzk_channel_id""",
         (since,)
     )).fetchall()

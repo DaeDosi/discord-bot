@@ -16,6 +16,22 @@ from datetime import timedelta
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _feature_on(monkeypatch):
+    """**이 파일은 날짜 축을 검사한다.**
+
+    SINGCUP-3에서 '비공식 인기점수 랭킹'이라는 **기능 축**이 하나 더 생겼고,
+    그 기본값이 꺼짐이라 `ranking_refresh_open`/`snapshot_refresh_open`은 평소에
+    False다. 두 축은 직교한다 — 여기서 검사하려는 것은 "종료 후에도 **날짜 때문에**
+    닫히지 않는다"이므로 기능 축을 켜 둔 상태에서 본다.
+
+    기능 축 자체(기본 꺼짐·되살리기·랭킹과 LIVE 분리)는
+    `tests/test_singcup_retirement.py`가 따로 고정한다.
+    """
+    monkeypatch.setenv("SINGCUP_UNOFFICIAL_RANKING_ENABLED", "true")
+
+
 # ── 게이트 자체 ─────────────────────────────────────────────────────────────
 
 def _times():

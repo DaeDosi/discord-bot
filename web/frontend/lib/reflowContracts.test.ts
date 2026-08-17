@@ -12,9 +12,23 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
 
-/** 홈으로 돌아가는 NexBot 브랜드 링크가 있는 파일 전부.
- *  헤더가 11곳에 복제돼 있어 한 곳만 고치면 나머지가 남는다. */
+/** 홈으로 돌아가는 NexBot 브랜드 링크가 **직접** 들어 있는 파일.
+ *
+ *  예전에는 여기에 공개 페이지 9곳이 더 있었다. 헤더가 그만큼 복제돼 있어서
+ *  로고 hit area 하나를 고치는 데 12파일을 만져야 했다. 이제 공개 페이지 헤더는
+ *  `components/SiteHeader` **하나**이고, 그 밖에 남은 브랜드 링크는 아래 셋뿐이다:
+ *   · SiteHeader        — 공개 페이지 공통 헤더
+ *   · Navbar            — 대시보드 전용(길드 스위처가 있어 축이 다르다)
+ *   · Footer            — 푸터
+ *  아래 `test("공개 페이지가 헤더를 다시 구현하지 않는다")`가 복제 재발을 막는다. */
 const BRAND_FILES = [
+  "components/SiteHeader.tsx",
+  "components/Navbar.tsx",
+  "components/Footer.tsx",
+];
+
+/** 공통 헤더를 쓰는 공개 페이지. 각자 `<header>`를 다시 만들면 안 된다. */
+const SHARED_HEADER_PAGES = [
   "app/about/page.tsx",
   "app/contact/page.tsx",
   "app/faq/page.tsx",
@@ -25,8 +39,6 @@ const BRAND_FILES = [
   "app/stats/singcup/live/page.tsx",
   "app/status/page.tsx",
   "app/terms/page.tsx",
-  "components/Navbar.tsx",
-  "components/Footer.tsx",
 ];
 
 // ── 공통 로고 hit area ──────────────────────────────────────────────────────
@@ -52,10 +64,21 @@ test("hit area는 포인터 종류와 무관하게 적용된다", () => {
     "로고 hit area가 coarse 포인터 전용 블록 안에 있다 — 데스크톱에서 적용되지 않는다");
 });
 
-test("브랜드 링크 11곳 전부가 공통 클래스를 쓴다", () => {
+test("브랜드 링크가 남아 있는 곳 전부가 공통 클래스를 쓴다", () => {
   for (const f of BRAND_FILES) {
     const s = read(f);
     assert.ok(/nb-brand-tap/.test(s), `${f}: 브랜드 링크에 공통 hit area가 없다`);
+  }
+});
+
+test("공개 페이지가 헤더를 다시 구현하지 않는다", () => {
+  // 복제가 재발하면 hit area·검색·로그인이 그 페이지에서만 조용히 뒤처진다.
+  for (const f of SHARED_HEADER_PAGES) {
+    const s = read(f);
+    assert.ok(s.includes("<SiteHeader"), `${f}: 공통 헤더를 쓰지 않는다`);
+    assert.ok(!/<header\b/.test(s), `${f}: 자체 <header>를 다시 만들었다`);
+    assert.ok(!/nb-brand-tap/.test(s),
+      `${f}: 브랜드 링크를 다시 구현했다 — 공통 헤더가 이미 갖고 있다`);
   }
 });
 
@@ -139,12 +162,26 @@ test("탭·내비의 가로 스크롤은 그 컴포넌트가 소유한다", () =
 // ── 고정 UI가 본문을 가리거나 넓히지 않는다 ─────────────────────────────────
 test("고정 지원 메뉴가 페이지 폭을 늘리지 않는다", () => {
   // 실측(vw 320): fixed 컨테이너가 right=332로 잡혀 페이지가 351px이 됐다.
+  // 폭 상한 계약은 그대로 유지한다.
   const s = read("components/SupportMenu.tsx");
-  const i = s.indexOf("fixed right-4");
-  assert.ok(i > -1, "지원 메뉴 고정 컨테이너가 사라졌다");
-  const block = s.slice(i, i + 200);
-  assert.ok(/max-w-\[calc\(100vw-2rem\)\]/.test(block),
+  assert.ok(/max-w-\[calc\(100vw-2rem\)\]/.test(s),
     "고정 메뉴가 뷰포트 폭을 넘지 않도록 제한되지 않는다");
+});
+
+test("고정 지원 메뉴가 스크롤바 영역으로 밀리지 않는다", () => {
+  // `position: fixed`의 `right`는 **스크롤바를 포함한** 초기 컨테이닝 블록 기준이라,
+  // 세로 스크롤바가 있는 페이지에서 오른쪽 끝이 보이는 영역 밖으로 나간다
+  // (실측 /privacy @390px 150%: innerWidth 287 · clientWidth 260 → 우측 8px 가림).
+  // `w-screen`(=100vw, 스크롤바 제외) 트랙 안에서 오른쪽 정렬해 해결한다.
+  const s = read("components/SupportMenu.tsx");
+  assert.ok(/fixed bottom-0 left-0 z-40 flex w-screen justify-end/.test(s),
+    "100vw 트랙 안에서 정렬하지 않는다 — right로 붙이면 스크롤바만큼 밀린다");
+  assert.ok(!/right: "calc\(1rem/.test(s), "right 기준 배치로 되돌아갔다");
+  assert.ok(/paddingRight: "calc\(1rem \+ env\(safe-area-inset-right/.test(s),
+    "안전 영역은 padding으로 확보한다");
+  // 화면 전체를 덮는 트랙이 클릭을 가로채면 안 된다.
+  assert.ok(s.includes("pointer-events-none"), "바깥 트랙이 클릭을 막는다");
+  assert.ok(s.includes("pointer-events-auto"), "메뉴 자체는 클릭 가능해야 한다");
 });
 
 // ── 기존 계약 회귀 방지 ─────────────────────────────────────────────────────

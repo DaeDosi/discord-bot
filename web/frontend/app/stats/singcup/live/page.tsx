@@ -1,12 +1,14 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
-  ArrowLeft, Bot, Trophy, ExternalLink, Play, Eye, Heart, Radio, RefreshCw,
+  ArrowLeft, Trophy, ExternalLink, Play, Eye, Heart, Radio, RefreshCw, Loader2,
 } from "lucide-react";
+import { api } from "@/lib/api";
 import { useSingcupMain } from "@/lib/useSingcupMain";
-import type { SingcupStreamer } from "@/lib/types";
+import type { SingcupStatusResponse, SingcupStreamer } from "@/lib/types";
 import Footer from "@/components/Footer";
+import SiteHeader from "@/components/SiteHeader";
 import {
   Disclaimer, EventBadge, GOLD, GREEN, StaleBadge, StatusChip,
   fmtDateTime, fmtRange, hideBrokenImage, nf,
@@ -197,11 +199,58 @@ function StreamerCard({ s }: { s: SingcupStreamer }) {
   );
 }
 
+/** 싱드컵 LIVE 기능이 내려갔을 때의 화면.
+ *
+ *  **데이터 API를 부르지 않는다.** 종료된 화면이 여전히 참가자 전원(약 850KB)을
+ *  받아 오면 비용만 나가고 보여 줄 것은 없다. 빈 화면처럼 보이지 않게 무엇이
+ *  끝났는지와 지금 볼 수 있는 곳을 적는다. */
+function LiveRetired({ notice }: { notice: string | null }) {
+  return (
+    <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-10 md:px-6">
+      <div className="card !p-6 text-center md:!p-10">
+        <Radio size={36} className="mx-auto mb-3 text-muted opacity-40" aria-hidden="true" />
+        <h1 className="text-lg font-extrabold tracking-tight">
+          {notice ?? "싱드컵 LIVE 화면 제공이 종료되었습니다."}
+        </h1>
+        <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
+          이벤트가 끝나 참가자 실시간 방송 목록을 더 이상 갱신하지 않습니다.
+          공식 예선 참가자 명단과 방송 여부는 통계의 싱드컵 메뉴에서 계속 확인하실 수
+          있습니다.
+        </p>
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          <Link href="/stats?tab=singcup" className="btn-primary nb-tap text-sm">
+            공식 예선 참가자 보기
+          </Link>
+          <Link href="/stats" className="btn-secondary nb-tap text-sm">통계로</Link>
+        </div>
+      </div>
+    </main>
+  );
+}
+
 export default function SingcupLivePage() {
+  // 기능이 살아 있는지 **서버에 묻는다.** 화면이 스스로 판단하면 다시 열었을 때
+  // 화면만 닫힌 채로 남는다.
+  const [gates, setGates] = useState<SingcupStatusResponse | null>(null);
+  const [gatesLoaded, setGatesLoaded] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.singcup.gates()
+      .then((d) => { if (alive) setGates(d); })
+      .catch(() => { if (alive) setGates(null); })
+      .finally(() => { if (alive) setGatesLoaded(true); });
+    return () => { alive = false; };
+  }, []);
+  const liveOpen = gates?.gates?.liveFeatureOpen === true;
+
   // 랭킹 탭과 **같은 공유 캐시**를 쓴다 — 두 화면을 오가도 데이터를 다시 받지 않는다.
   // (라이브 여부는 순위와 무관하므로 응답은 참가자 전원이어야 한다. 상위 N명만 받으면
   //  하위권 라이브가 통째로 빠진다 — 그래서 limit이 아니라 호출 횟수로 비용을 줄인다.)
-  const { data, loading, refreshing, updatedAt, refresh } = useSingcupMain();
+  //
+  // **기능이 열려 있을 때만 호출한다** — `enabled`가 없으면 종료된 화면도 850KB를
+  // 받아 온다.
+  const { data, loading, refreshing, updatedAt, refresh } =
+    useSingcupMain({ enabled: liveOpen });
   const [sort, setSort] = useState<SortKey>("viewers");
 
   const sorted = useMemo(() => {
@@ -218,27 +267,34 @@ export default function SingcupLivePage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-bg text-fg">
-      <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
-        <div className="flex w-full items-center justify-between px-4 md:px-6" style={{ height: 60 }}>
-          <div className="flex items-center gap-2.5">
-            <Link href="/" className="nb-brand-tap flex items-center gap-2 text-[15px] font-bold text-muted
-                                      transition-colors hover:text-fg">
-              <Bot size={18} className="text-accent" /> NexBot
+      {/* 공통 헤더 하나만 쓴다. '통계로 돌아가기'와 현재 위치는 breadcrumb에 담는다. */}
+      <SiteHeader
+        maxWidth="full"
+        breadcrumb={
+          <span className="flex min-w-0 items-center gap-2">
+            <Link href="/stats"
+                  className="nb-tap flex shrink-0 items-center gap-1.5 text-sm text-muted
+                             transition-colors hover:text-fg">
+              <ArrowLeft size={15} aria-hidden="true" /> 통계
             </Link>
-            <span className="text-border">/</span>
-            <Link href="/stats" className="flex items-center gap-1.5 text-sm text-muted
-                                           transition-colors hover:text-fg">
-              <ArrowLeft size={15} /> 통계
-            </Link>
-            <span className="text-border">/</span>
-            <span className="flex items-center gap-1.5 text-[15px] font-extrabold"
+            <span className="text-border" aria-hidden="true">/</span>
+            <span className="flex min-w-0 items-center gap-1.5 truncate text-[15px] font-extrabold"
                   style={{ color: GOLD }}>
-              <Radio size={16} /> 싱드컵 라이브
+              <Radio size={16} aria-hidden="true" /> 싱드컵 라이브
             </span>
-          </div>
-        </div>
-      </header>
+          </span>
+        } />
 
+      {/* 게이트를 아직 모르는 동안에는 **아무것도 단정하지 않는다.** 종료 화면을
+          먼저 보였다가 목록이 나타나면 화면이 깨진 것으로 읽힌다. */}
+      {!gatesLoaded ? (
+        <main className="flex flex-1 items-center justify-center py-24 text-muted"
+              aria-busy="true">
+          <Loader2 size={18} className="animate-spin" aria-hidden="true" />
+        </main>
+      ) : !liveOpen ? (
+        <LiveRetired notice={gates?.notices?.live ?? null} />
+      ) : (
       <main className="mx-auto w-full max-w-[1600px] flex-1 space-y-5 px-4 py-6 md:px-6">
         <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
           <div className="min-w-0 max-w-2xl">
@@ -354,6 +410,7 @@ export default function SingcupLivePage() {
 
         <Disclaimer />
       </main>
+      )}
       <Footer />
     </div>
   );

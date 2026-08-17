@@ -38,6 +38,8 @@ from singcup_clips import (
     run_backfill,
     snapshot_duplicate_report,
 )
+import singcup_piku as piku
+import singcup_qualifiers as sq
 from singcup_collector import (
     ADMIN_SECRET,
     MODES,
@@ -47,21 +49,99 @@ from singcup_collector import (
     load_status,
     prune_out_of_range,
 )
+from singcup_collector import (
+    applications_open as collector_applications_open,
+)
+from singcup_collector import (
+    live_feature_open as collector_live_feature_open,
+)
+# 게이트는 **함수로** 가져온다 — 값으로 읽으면 import 시점에 굳어 환경변수를
+# 바꿔도 재시작 전까지 반영되지 않는다.
+from singcup_collector import (
+    unofficial_ranking_open as collector_unofficial_ranking_open,
+)
 from singcup_sweep import recent_runs, run_sweep, sweep_status
 
 router = APIRouter(prefix="/api/singcup", tags=["singcup"])
 
 
+# ── 기능 종료 응답 ──────────────────────────────────────────────────────────
+#
+# 비공식 인기점수 랭킹과 싱드컵 LIVE는 **기능이 내려간** 상태다(기본값).
+# 오류(4xx/5xx)로 돌려주지 않는 이유: 이건 장애가 아니라 확정된 제품 상태이고,
+# 프런트가 `catch`로 받으면 "불러오지 못했습니다"라는 잘못된 문구가 나간다.
+# 200 + `retired: true`로 명시하고 **기록을 볼 곳**을 함께 알린다.
+#
+# 데이터는 지우지 않았다 — 확정본(`/final-ranking`)이 그대로 있고 원본 테이블도 남아 있다.
+
+_ARCHIVE_URL = "/api/singcup/final-ranking"
+
+#: 부문 키 — **`singcup_qualifiers`·`singcup_piku`와 같은 값**이다.
+#: 세 곳이 갈라지면 PIKU 매핑이 조용히 어긋나므로 여기서 한 번만 정의하고 가져다 쓴다.
+DIVISIONS: tuple[str, ...] = ("female_solo", "male_solo", "groups")
+DIVISION_LABELS: dict[str, str] = {
+    "female_solo": "여성 솔로",
+    "male_solo": "남성 솔로",
+    "groups": "그룹",
+}
+
+
+def _retired(feature: str, reason: str) -> JSONResponse:
+    return JSONResponse(status_code=200, content={
+        "retired": True,
+        "feature": feature,
+        "reason": reason,
+        # 프런트가 "기록 보기"를 그릴 수 있게 목적지를 응답에 담는다 —
+        # 화면에 URL을 하드코딩하면 경로가 바뀔 때 한쪽만 고쳐진다.
+        "archiveUrl": _ARCHIVE_URL,
+        # 소비처가 배열을 기대하므로 빈 배열을 함께 준다(형태 파괴 방지).
+        "streamers": [], "items": [], "rows": [],
+    })
+
+
+def _unofficial_retired_or_none():
+    """비공식 랭킹이 내려가 있으면 종료 응답, 살아 있으면 None."""
+    if collector_unofficial_ranking_open():
+        return None
+    return _retired("unofficial_ranking",
+                    "싱드컵 비공식 인기점수 랭킹 제공이 종료되었습니다.")
+
+
 @router.get("/rankings")
 async def rankings(limit: int = 200):
     """버프 순 랭킹. 수집이 실패해도 DB의 마지막 정상 데이터를 그대로 돌려준다."""
+    retired = _unofficial_retired_or_none()
+    if retired is not None:
+        return retired
     return await load_rankings(limit=limit)
 
 
 @router.get("/status")
 async def status():
-    """수집기 헬스체크 — Railway에서 네이버 API 접근이 되는지 확인할 때 쓴다."""
-    return await load_status()
+    """수집기 헬스체크 + **기능 게이트 현재 상태**.
+
+    게이트를 응답에 실어 보내는 이유: 화면이 "신청이 종료되었습니다"를 스스로
+    판단하면 서버가 다시 열렸을 때 화면만 닫힌 채로 남는다. 판정은 서버가 하고
+    화면은 그대로 그린다.
+    """
+    base = await load_status()
+    base["gates"] = {
+        "applicationsOpen": collector_applications_open(),
+        "unofficialRankingOpen": collector_unofficial_ranking_open(),
+        "liveFeatureOpen": collector_live_feature_open(),
+    }
+    # 닫힌 기능마다 화면에 그대로 쓸 문구를 함께 준다 — 프런트가 문구를 만들면
+    # 같은 규칙에 설명이 두 벌이 된다.
+    base["notices"] = {
+        "applications": None if base["gates"]["applicationsOpen"]
+                        else "싱드컵 신청이 종료되었습니다.",
+        "unofficialRanking": None if base["gates"]["unofficialRankingOpen"]
+                             else "싱드컵 비공식 인기점수 랭킹 제공이 종료되었습니다.",
+        "live": None if base["gates"]["liveFeatureOpen"]
+                else "싱드컵 LIVE 화면 제공이 종료되었습니다.",
+    }
+    base["archiveUrl"] = _ARCHIVE_URL
+    return base
 
 
 # 관리자 API는 공용 미들웨어(기본 150 req/60s)와 별도로 더 좁은 한도를 둔다.
@@ -161,6 +241,9 @@ async def main(request: Request, limit: int = 200):
     프론트의 폴링 주기를 늘리는 것과 별개의 방어선이다. 주기를 늘려도 사용자가 많으면
     호출은 다시 늘어나는데, 그때 실제로 나가는 bytes를 줄이는 건 이쪽이다.
     """
+    retired = _unofficial_retired_or_none()
+    if retired is not None:
+        return retired
     t0 = singcup_obs.begin()
     try:
         entry, source = await load_main_entry(limit=limit)
@@ -520,6 +603,10 @@ def _split_error(e: Exception):
 async def _split_call(fn, **kw):
     """분리 API 공통 처리.
 
+    **맨 앞에 기능 종료 검사가 있다.** 분리 API(`/summary`·`/rankings-page`·
+    `/search`·`/live`·`/movers`)는 전부 비공식 랭킹 화면의 부품이므로, 한 곳에서
+    막지 않으면 새 엔드포인트가 추가될 때마다 검사를 빠뜨리게 된다.
+
     **조회 경로에서 스냅샷을 만들지 않는다.** 스냅샷 생산은 랭킹 계산이 끝나는
     지점(recompute_ranking → publish_snapshot) 하나로 모여 있다. 조회가 생산자가
     되면 트래픽이 없을 때 생산이 멈추고, 재시작 직후 레지스트리가 영영 빌 수 있다.
@@ -528,6 +615,9 @@ async def _split_call(fn, **kw):
     (P1.5로 `/main` 계산 자체에서는 DB 쓰기가 사라졌지만, 조회를 생산자로 만들지
     않는다는 규칙은 위 이유로 그대로 유지한다.)
     """
+    retired = _unofficial_retired_or_none()
+    if retired is not None:
+        return retired
     _require_split_api()
     if split.latest() is None:
         return JSONResponse(status_code=503, content={
@@ -576,9 +666,183 @@ async def split_search(q: str = "", size: int | None = None, cursor: str | None 
 @router.get("/live")
 async def split_live(size: int | None = None, cursor: str | None = None,
                      snapshotVersion: str | None = None):
-    """방송 중인 참가자만. 실측 344명 전체는 gzip 약 89KB라 페이지로 나눈다."""
+    """방송 중인 참가자만. 실측 344명 전체는 gzip 약 89KB라 페이지로 나눈다.
+
+    **이 경로는 '싱드컵 LIVE' 기능 게이트를 따로 본다.** 비공식 랭킹과 축이 다르므로
+    한쪽만 되살릴 수 있어야 한다. 공식 예선 참가자 화면의 LIVE 배지는 여기가 아니라
+    `/qualifiers`가 서빙하며, 이 게이트와 무관하게 계속 동작한다.
+    """
+    if not collector_live_feature_open():
+        return _retired("singcup_live", "싱드컵 LIVE 화면 제공이 종료되었습니다.")
     return await _split_call(split.live, size=size, cursor=cursor,
                              snapshot_version=snapshotVersion)
+
+
+@router.get("/qualifiers")
+async def qualifiers(division: str | None = None):
+    """**공식 예선 참가자만** — 부문별 명단 + 대표 클립 썸네일 + 현재 라이브 여부.
+
+    이 엔드포인트가 따로 있는 이유는 하나다: **"LIVE 표시는 공식 예선 참가자에게만"을
+    서버에서 강제하기 위해서**다. `/main`을 필터링해 쓰면 응답에는 비참가자가 계속
+    들어 있어, 화면 한 줄만 바뀌면 정책이 조용히 풀린다. 여기서는 명단 밖 채널이
+    **구조적으로** 들어올 수 없다(참가자 id 집합에서 출발한다).
+
+    부가 효과로 응답이 작아진다 — `/main`은 참가자 전원 약 850KB인데 이쪽은
+    공식 명단(솔로 128 + 그룹 32팀)에 한정된다.
+
+    비공식 랭킹·LIVE 기능 게이트와 **무관하게 동작한다.** 공식 명단은 대회의 확정
+    산출물이라 기능 종료와 함께 감출 대상이 아니다.
+    """
+    div = division if division in DIVISIONS else None
+    keys = [div] if div else list(DIVISIONS)
+
+    # 라이브 여부·클립은 우리가 이미 수집해 둔 값에서만 읽는다(외부 호출 0).
+    ids = sq.channel_ids(div) if div else set(sq.ALL_CHANNEL_IDS)
+    live_map, clip_map = await _qualifier_side_data(ids)
+
+    def solo_row(r: dict) -> dict:
+        cid = r["channelId"]
+        clip = clip_map.get(cid) or {}
+        return {
+            "channelId": cid,
+            "announcedName": r["name"],
+            "officialOrder": r["order"],
+            "channelName": (live_map.get(cid) or {}).get("channelName")
+                           or clip.get("channelName") or r["name"],
+            "channelImageUrl": clip.get("channelImageUrl") or "",
+            "clipUid": clip.get("clipUid"),
+            "clipTitle": clip.get("clipTitle") or "",
+            "clipThumbnailUrl": clip.get("clipThumbnailUrl") or "",
+            # 공식 예선 참가자만 이 값을 받을 수 있다(위 주석).
+            "live": live_map.get(cid),
+        }
+
+    out: dict = {"divisions": {}, "counts": {}}
+    for k in keys:
+        if k == "groups":
+            rows = [{
+                "teamNumber": g["teamNumber"],
+                "groupEntryId": g["groupEntryId"],
+                "members": [solo_row(m) for m in g["members"]],
+            } for g in sq.QUALIFIERS["groups"]]
+        else:
+            rows = [solo_row(r) for r in sq.QUALIFIERS[k]]
+        out["divisions"][k] = rows
+        out["counts"][k] = len(rows)
+    out["divisionLabels"] = dict(DIVISION_LABELS)
+    # 공식 발표 명단이라는 것을 응답에서도 분명히 한다 — 프런트 문구가 이 값을 쓴다.
+    out["source"] = "CHZZK_OFFICIAL_ANNOUNCEMENT"
+    return out
+
+
+# ── PIKU 사용자 투표 순위 ───────────────────────────────────────────────────
+#
+# 공개 경로는 **순위와 표시용 최소 정보만** 돌려준다. 우승 비율·승률 숫자는
+# `singcup_piku.public_ranking()`이 정렬에만 쓰고 응답에서 버린다.
+# 관리 경로(매핑·수집·import)는 OWNER secret을 강제한다.
+
+
+@router.get("/piku/status")
+async def piku_status():
+    """공개 상태 — 부문별 마지막 정상 갱신 시각·출처·항목 수."""
+    return await piku.public_status()
+
+
+@router.get("/piku/ranking")
+async def piku_ranking(division: str | None = None,
+                       sort: str = piku.DEFAULT_SORT, limit: int = 0):
+    """공개 순위. `division`을 생략하면 세 부문을 모두 돌려준다.
+
+    **응답에 우승 비율·승률이 숫자로도 이름으로도 없다.** `sort`는 공개 토큰
+    (`primary`/`secondary`)이고 내부 컬럼명은 서버 밖으로 나가지 않는다.
+    정렬은 **서버가** 하며, 기준이 바뀌면 1위부터 다시 계산된다.
+    """
+    keys = [division] if division in piku.DIVISIONS else list(piku.DIVISIONS)
+    public_sort, _ = piku.resolve_sort(sort)
+    out = {"sort": public_sort, "divisions": {}}
+    for d in keys:
+        out["divisions"][d] = await piku.public_ranking(d, sort=public_sort,
+                                                        limit=limit)
+    out["sortOptions"] = [{"key": k, "label": piku.SORT_LABELS[k]}
+                          for k in piku.PUBLIC_SORTS]
+    out["autoCollectEnabled"] = piku.auto_collect_enabled()
+    return out
+
+
+# 관리 경로(매핑·수집·import)는 **`admin_router`에 있다** — Nexadmin의 다른 기능과
+# 같은 OWNER JWT를 쓰기 위해서다. 인증 방식이 화면마다 다르면 권한 검사가 갈라진다.
+
+
+def qualifier_candidates(division: str | None) -> list[dict]:
+    keys = [division] if division in DIVISIONS else list(DIVISIONS)
+    out: list[dict] = []
+    for k in keys:
+        if k == "groups":
+            for g in sq.QUALIFIERS["groups"]:
+                out.extend({"division": k, "channelId": m["channelId"],
+                            "name": m["name"], "team": g["teamNumber"]}
+                           for m in g["members"])
+        else:
+            out.extend({"division": k, "channelId": r["channelId"],
+                        "name": r["name"]} for r in sq.QUALIFIERS[k])
+    return out
+
+
+async def _qualifier_side_data(ids: set[str]) -> tuple[dict, dict]:
+    """참가자 id 집합에 대한 (라이브 정보, 대표 클립 정보).
+
+    **id 집합으로 좁혀서 조회한다.** 전체를 읽고 파이썬에서 거르면 응답이 작아져도
+    DB 부하는 그대로다.
+    """
+    from database import get_db
+    if not ids:
+        return {}, {}
+    db = await get_db()
+    marks = ",".join("?" * len(ids))
+    id_list = list(ids)
+
+    live: dict[str, dict] = {}
+    try:
+        ts_row = await (await db.execute(
+            "SELECT MAX(collected_at) t FROM rising_collect_runs WHERE ok=1")).fetchone()
+        ts = ts_row["t"] if ts_row else None
+        if ts is not None:
+            for r in await (await db.execute(
+                f"""SELECT chzzk_channel_id, channel_name, concurrent_viewers,
+                           category_name, live_title
+                      FROM rising_live_snapshots
+                     WHERE collected_at = ? AND chzzk_channel_id IN ({marks})""",
+                    (ts, *id_list))).fetchall():
+                live[r["chzzk_channel_id"]] = {
+                    "channelName": r["channel_name"],
+                    "concurrentViewers": int(r["concurrent_viewers"] or 0),
+                    "categoryName": r["category_name"] or "",
+                    "liveTitle": r["live_title"] or "",
+                }
+    except Exception:
+        pass        # 라이브 정보는 부가 값이다 — 없으면 배지만 빠지고 명단은 나온다
+
+    clips: dict[str, dict] = {}
+    try:
+        for r in await (await db.execute(
+            f"""SELECT s.owner_channel_id, s.channel_name, s.channel_image_url,
+                       c.clip_uid, c.title, c.thumbnail_url
+                  FROM singcup_streamers s
+                  LEFT JOIN singcup_clips c
+                    ON c.clip_uid = s.representative_clip_uid AND c.active = 1
+                 WHERE s.owner_channel_id IN ({marks})""",
+                tuple(id_list))).fetchall():
+            clips[r["owner_channel_id"]] = {
+                "channelName": r["channel_name"],
+                "channelImageUrl": r["channel_image_url"] or "",
+                "clipUid": r["clip_uid"],
+                "clipTitle": r["title"] or "",
+                "clipThumbnailUrl": r["thumbnail_url"] or "",
+            }
+    except Exception:
+        pass        # 클립도 마찬가지 — 명단 자체는 정적이라 항상 나와야 한다
+
+    return live, clips
 
 
 @router.get("/movers")

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Bot, ChevronLeft, CheckCircle, AlertCircle, Clock } from "lucide-react";
+import { ChevronLeft, CheckCircle, AlertCircle, Clock } from "lucide-react";
+import SiteHeader from "@/components/SiteHeader";
 import Footer from "@/components/Footer";
 
 export const metadata: Metadata = {
@@ -52,14 +53,7 @@ const banner = OVERALL_BANNERS[overall];
 export default function StatusPage() {
   return (
     <div className="min-h-screen bg-bg text-fg flex flex-col">
-      <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
-        <div className="max-w-3xl mx-auto px-5 flex items-center gap-3" style={{ height: 60 }}>
-          <Link href="/" className="nb-brand-tap flex items-center gap-2 font-bold text-[17px] text-fg">
-            <Bot size={20} className="text-accent" />
-            NexBot
-          </Link>
-        </div>
-      </header>
+      <SiteHeader maxWidth="3xl" />
 
       <main className="flex-1 max-w-3xl mx-auto w-full px-5 py-12">
         <Link

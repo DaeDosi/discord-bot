@@ -44,6 +44,8 @@ from routers.settings_router import router as settings_router
 from routers.singcup_router import router as singcup_router
 from routers.stats_router import router as stats_router
 from routers.verify_router import router as verify_router
+from routers.account_router import router as account_router
+from routers.account_router import support_router
 from singcup_clips import (
     start_backfill_worker,
     start_clip_collector,
@@ -186,6 +188,9 @@ app.include_router(singcup_router)
 # false면 두 endpoint가 503만 돌려주므로, 등록 자체는 조건 없이 해 둔다 —
 # 폐기된 relay_router처럼 import 시점 결합으로 기동을 죽이지 않기 위해서다.
 app.include_router(kr_poller_router)
+# 계정 설정·회원탈퇴 요청과 수정 요청 접수.
+app.include_router(account_router)
+app.include_router(support_router)
 
 
 @app.get("/auth/callback")

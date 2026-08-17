@@ -1138,10 +1138,16 @@ async def singcup_rep_clear(body: RepOverrideClear,
 
 class TagCreate(BaseModel):
     name: str
+    # 구형 4필드는 **기본값째로** 남겨 둔다 — 이름만 보내는 기존 클라이언트가
+    # 그대로 동작해야 한다. `colorStops`가 함께 오면 그쪽이 이긴다
+    # (`streamer_tags._style_for_write`).
     colorMode: str = "solid"
     colorStart: str = "#38BDF8"
     colorEnd: Optional[str] = None
     gradientDirection: str = "to-right"
+    # 신형 — `[{"color": "#rrggbb", "pos": 0..100}, ...]`. 값 검증은 라우터가 아니라
+    # `streamer_tags.clean_stops`가 한다(색 검증 지점이 둘로 갈라지면 안 된다).
+    colorStops: Optional[list] = None
     kind: str = "team"
     # 이 그룹의 멤버를 **전체 스트리머 랭킹에서만** 뺄지. 기본은 끔.
     excludeFromRanking: bool = False
@@ -1153,6 +1159,7 @@ class TagUpdate(BaseModel):
     colorStart: Optional[str] = None
     colorEnd: Optional[str] = None
     gradientDirection: Optional[str] = None
+    colorStops: Optional[list] = None
     active: Optional[bool] = None
     excludeFromRanking: Optional[bool] = None
 
@@ -1189,6 +1196,10 @@ async def streamer_tags_list(includeInactive: bool = False,
     return {"tags": await st.list_tags(include_inactive=includeInactive),
             "maxPerStreamer": st.MAX_TAGS_PER_STREAMER,
             "gradientDirections": list(st.GRADIENT_DIRECTIONS),
+            # 편집기가 "더 추가" 버튼을 언제 막을지 서버 값으로 정한다 —
+            # 프론트 상수로 두면 서버 상한과 조용히 갈라진다.
+            "maxColorStops": st.MAX_COLOR_STOPS,
+            "minColorStops": st.MIN_COLOR_STOPS,
             "version": st.version()}
 
 
@@ -1201,6 +1212,7 @@ async def streamer_tags_create(body: TagCreate,
             name=body.name, color_mode=body.colorMode,
             color_start=body.colorStart, color_end=body.colorEnd,
             gradient_direction=body.gradientDirection, kind=body.kind,
+            color_stops=body.colorStops,
             exclude_from_ranking=body.excludeFromRanking)}
     except st.TagError as e:
         raise _tag_400(e) from e
@@ -1220,6 +1232,7 @@ async def streamer_tags_update(tag_id: int, body: TagUpdate,
             tag_id, name=body.name, color_mode=body.colorMode,
             color_start=body.colorStart, color_end=body.colorEnd,
             gradient_direction=body.gradientDirection, active=body.active,
+            color_stops=body.colorStops,
             exclude_from_ranking=body.excludeFromRanking)}
     except st.TagError as e:
         raise _tag_400(e) from e
@@ -1254,6 +1267,9 @@ async def streamer_tags_assignments(tag_id: int,
                     "colorMode": tag["color_mode"], "colorStart": tag["color_start"],
                     "colorEnd": tag["color_end"],
                     "gradientDirection": tag["gradient_direction"],
+                    # 이 응답으로도 배지를 그리므로 신형 표현을 함께 준다 —
+                    # 빠지면 멤버 드로어의 배지만 2색으로 근사돼 목록과 달라 보인다.
+                    "colorStops": st.stops_of(tag),
                     "slug": tag["slug"], "kind": tag["kind"]},
             # 하위 호환 — 기존 키를 유지한다(이미 쓰는 코드가 있으면 깨지지 않게)
             "streamers": page["items"],
@@ -1319,3 +1335,119 @@ async def streamer_tags_member_reorder(tag_id: int, body: GroupMemberReorder,
         return {"ok": True, **await st.reorder_members(tag_id, body.channelIds)}
     except st.TagError as e:
         raise _tag_400(e) from e
+
+
+# ── PIKU 사용자 투표 순위 (관리) ────────────────────────────────────────────
+#
+# **OWNER JWT를 강제한다** — Nexadmin의 다른 기능과 같은 인증이다. 인증 방식이
+# 화면마다 다르면 권한 검사가 갈라지고, 어느 쪽이 진짜 관문인지 알 수 없게 된다.
+#
+# 이 경로들은 진단용이지만 **비율·승률 숫자는 여기서도 내보내지 않는다**
+# (`singcup_piku.admin_status()` 참고). 진단에 필요한 것은 건수와 매핑 현황이다.
+
+
+class PikuSources(BaseModel):
+    female_solo: Optional[str] = None
+    male_solo: Optional[str] = None
+    groups: Optional[str] = None
+
+
+class PikuMappingBody(BaseModel):
+    division: str
+    pikuName: str
+    channelId: Optional[str] = None
+    state: str = "confirmed"
+
+
+class PikuImportBody(BaseModel):
+    division: str
+    #: JSON 행 배열 또는 CSV 원문 중 하나. 둘 다 없으면 400.
+    rows: Optional[list] = None
+    csv: Optional[str] = None
+
+
+def _piku_400(exc: Exception) -> HTTPException:
+    """모듈이 만든 한국어 문구를 그대로 쓴다 — 라우터가 다시 쓰면 설명이 둘이 된다."""
+    kind = getattr(exc, "kind", "")
+    return HTTPException(status_code=400,
+                         detail=f"[{kind}] {exc}" if kind else str(exc))
+
+
+@router.get("/piku/status")
+async def piku_admin_status(user: dict = Depends(_require_owner)):
+    """부문 매핑·실행 이력·미매핑 목록."""
+    import singcup_piku as piku
+    return await piku.admin_status()
+
+
+@router.post("/piku/sources")
+async def piku_sources(body: PikuSources, user: dict = Depends(_require_owner)):
+    """부문 ↔ URL 매핑. **세 부문 전부** 필요하고 중복 URL은 거절된다.
+
+    세 URL의 부문 대응을 추측하지 않기 위한 화면이다 — 운영자가 직접 정한다.
+    """
+    import singcup_piku as piku
+    try:
+        return {"ok": True, "sources": await piku.set_sources(body.model_dump())}
+    except piku.PikuError as e:
+        raise _piku_400(e) from e
+
+
+@router.post("/piku/collect")
+async def piku_collect(division: str, user: dict = Depends(_require_owner)):
+    """수동 갱신 — **실제로 PIKU에 접속한다.**
+
+    자동 수집과 **같은 검증·같은 원자 교체**를 거친다. 실패하면 직전 정상 데이터가
+    그대로 남고, 실패 종류(403·429·challenge·파싱 실패)를 구분해 알려 준다.
+    """
+    import singcup_piku as piku
+    try:
+        return {"ok": True, **await piku.collect_division(division)}
+    except piku.PikuError as e:
+        raise _piku_400(e) from e
+
+
+@router.post("/piku/import")
+async def piku_import(body: PikuImportBody, user: dict = Depends(_require_owner)):
+    """수동 import(JSON/CSV) — **외부 접속 없이** 데이터를 넣는 대체 경로.
+
+    수집이 막혔을 때의 대안이자, 파서를 실제 응답으로 검증하는 수단이다.
+    """
+    import singcup_piku as piku
+    try:
+        raw = piku.parse_csv(body.csv) if body.csv else body.rows
+        if raw is None:
+            raise piku.PikuError("empty", "가져올 데이터가 없습니다.")
+        return {"ok": True, **await piku.import_rows(body.division, raw)}
+    except piku.PikuError as e:
+        raise _piku_400(e) from e
+
+
+@router.get("/piku/mappings")
+async def piku_mappings(division: Optional[str] = None,
+                        user: dict = Depends(_require_owner)):
+    """PIKU 이름 ↔ 공식 참가자 매핑과 **연결 후보 목록**.
+
+    후보를 함께 주는 이유: 관리 화면이 채널 id를 손으로 입력하게 하면 오타 하나로
+    엉뚱한 사람에게 붙는다. 그 오류는 화면에서 보이지 않는다.
+    """
+    import singcup_piku as piku
+
+    from routers.singcup_router import qualifier_candidates
+
+    return {"mappings": await piku.list_mappings(division),
+            "divisions": [{"key": d, "label": piku.DIVISION_LABELS[d]}
+                          for d in piku.DIVISIONS],
+            "candidates": qualifier_candidates(division)}
+
+
+@router.post("/piku/mappings")
+async def piku_set_mapping(body: PikuMappingBody,
+                           user: dict = Depends(_require_owner)):
+    """매핑 확정/해제. **자동 유사도 매칭은 없다** — 확정은 사람이 한다."""
+    import singcup_piku as piku
+    try:
+        return {"ok": True, **await piku.set_mapping(
+            body.division, body.pikuName, body.channelId, state=body.state)}
+    except piku.PikuError as e:
+        raise _piku_400(e) from e

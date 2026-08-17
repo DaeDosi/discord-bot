@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Bot, ChevronRight } from "lucide-react";
+import { ChevronRight } from "lucide-react";
+import SiteHeader from "@/components/SiteHeader";
 import Footer from "@/components/Footer";
 
 export const metadata: Metadata = {
@@ -182,14 +183,7 @@ export default function TermsPage() {
   return (
     <div className="min-h-screen bg-bg text-fg">
       {/* Header */}
-      <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
-        <div className="max-w-4xl mx-auto px-5 flex items-center" style={{ height: 60 }}>
-          <Link href="/" className="nb-brand-tap flex items-center gap-2 font-bold text-[17px] text-fg">
-            <Bot size={20} className="text-accent" />
-            NexBot
-          </Link>
-        </div>
-      </header>
+      <SiteHeader maxWidth="4xl" />
 
       <main className="max-w-4xl mx-auto px-5 py-12 pb-20">
         {/* Breadcrumb */}

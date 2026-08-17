@@ -1,5 +1,5 @@
 "use client";
-import type { StreamerTag } from "@/lib/types";
+import type { StreamerTag, TagColorStop } from "@/lib/types";
 
 /** 목록 행에서 한 번에 보여 줄 소속 그룹 수. 나머지는 `+N`으로 접는다.
  *  백엔드 `streamer_tags.LIST_VISIBLE_TAGS`와 같은 값을 유지할 것. */
@@ -112,30 +112,69 @@ const forLight = (hex: string) => targetLuminance(hex, LIGHT_MAX_LUM, "down");
  * `background-clip: text`를 지원하지 않는 환경에서는 `color` 폴백이 그대로 보인다
  * (그래서 `color`를 먼저 주고 그 위에 clip을 얹는다 — 순서를 바꾸면 폴백이 사라진다).
  */
+export function resolveStops(tag: StreamerTag): TagColorStop[] {
+  /* 색상 지점을 **한 곳에서만** 정한다. 배지·미리보기·편집기가 각자 구하면
+     같은 그룹이 화면마다 다른 색으로 보인다.
+
+     서버가 `colorStops`를 항상 채워 주지만 그것만 믿지 않는다 — 캐시된 옛
+     응답에는 없다. 없으면 구형 3필드에서 합성한다(서버의 `stops_from_legacy`와
+     같은 규칙). 값이 전부 이상하면 최소 1개는 남긴다: 색이 0개면 투명 배지다. */
+  const raw = tag.colorStops;
+  if (Array.isArray(raw) && raw.length > 0) {
+    const cleaned = raw
+      .filter((s) => s && HEX.test(String(s.color)))
+      .map((s, i, arr) => ({
+        color: String(s.color).toLowerCase(),
+        pos: Number.isFinite(s.pos)
+          ? Math.min(100, Math.max(0, Math.round(Number(s.pos))))
+          : (arr.length === 1 ? 0 : Math.round((i * 100) / (arr.length - 1))),
+      }))
+      .sort((a, b) => a.pos - b.pos);
+    if (cleaned.length > 0) return cleaned;
+  }
+  const start = safeColor(tag.colorStart, FALLBACK_START).toLowerCase();
+  if (tag.colorMode === "gradient" && tag.colorEnd) {
+    return [{ color: start, pos: 0 },
+            { color: safeColor(tag.colorEnd, FALLBACK_END).toLowerCase(), pos: 100 }];
+  }
+  return [{ color: start, pos: 0 }];
+}
+
+/** `linear-gradient(...)` 문자열 하나. `alpha`는 `#rrggbb`에 붙일 2자리 hex. */
+function gradientOf(stops: TagColorStop[], angle: string, alpha = "") {
+  return `linear-gradient(${angle}, ${
+    stops.map((s) => `${s.color}${alpha} ${s.pos}%`).join(", ")})`;
+}
+
 export function StreamerTagBadge({ tag, className = "" }: {
   tag: StreamerTag;
   className?: string;
 }) {
-  const start = safeColor(tag.colorStart, FALLBACK_START);
-  const isGradient = tag.colorMode === "gradient" && !!tag.colorEnd;
-  const end = isGradient ? safeColor(tag.colorEnd, FALLBACK_END) : start;
+  const stops = resolveStops(tag);
+  const start = stops[0].color;
+  // 색이 2개 이상이면 그라데이션이다 — `colorMode`를 다시 보지 않는다.
+  // 서버가 3색 이상을 구형 컬럼에서 2색으로 근사하므로, 그쪽을 신뢰하면
+  // 지점이 사라진다.
+  const isGradient = stops.length > 1;
   const angle = ANGLE[tag.gradientDirection] ?? ANGLE["to-right"];
 
   // 글자색은 테마마다 다르다(위 주석). CSS 변수 두 개로 내보내고 선택은 CSS가 한다.
+  // 지점마다 휘도를 보정한다 — 가운데 색이 어두우면 거기만 안 읽히기 때문이다.
   const fgDark = forDark(start), fgLight = forLight(start);
-  const endDark = forDark(end), endLight = forLight(end);
+  const darkStops = stops.map((s) => ({ ...s, color: forDark(s.color) }));
+  const lightStops = stops.map((s) => ({ ...s, color: forLight(s.color) }));
 
   const style = {
     // 배경은 아주 옅게(12%) — 태그가 목록에서 튀면 정작 이름이 안 읽힌다.
     background: isGradient
-      ? `linear-gradient(${angle}, ${start}1F, ${end}1F) padding-box`
+      ? `${gradientOf(stops, angle, "1F")} padding-box`
       : `${start}1F`,
     borderColor: `${start}59`,
     "--nb-tag-fg": fgDark,
     "--nb-tag-fg-l": fgLight,
     // 그라데이션 글자용 — 같은 이유로 테마별 두 벌
-    "--nb-tag-grad": `linear-gradient(${angle}, ${fgDark}, ${endDark})`,
-    "--nb-tag-grad-l": `linear-gradient(${angle}, ${fgLight}, ${endLight})`,
+    "--nb-tag-grad": gradientOf(darkStops, angle),
+    "--nb-tag-grad-l": gradientOf(lightStops, angle),
   } as React.CSSProperties;
 
   return (

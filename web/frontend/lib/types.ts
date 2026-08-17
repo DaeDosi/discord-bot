@@ -303,6 +303,206 @@ export interface RisingLiveRanking {
   streamers:    RisingStreamer[];
 }
 
+/** 전역 헤더 검색 결과 한 줄 — **공개 화면에 이미 보이는 값만** 온다.
+ *  (팔로워·내부 지표는 서버가 내려보내지 않는다.) */
+export interface QuickSearchItem {
+  channel_id:         string;
+  channel_name:       string;
+  channel_image_url:  string;
+  open_live:          boolean;
+  concurrent_viewers: number;
+}
+// ── 싱드컵 기능 종료 · 공식 예선 참가자 · PIKU ─────────────────────────────
+
+export type SingcupDivision = "female_solo" | "male_solo" | "groups";
+
+/** 종료된 기능의 응답. **오류가 아니라 상태다** — catch로 받으면 안 된다. */
+export interface SingcupRetired {
+  retired: true;
+  feature: string;
+  reason: string;
+  /** 과거 기록을 볼 수 있는 읽기 전용 경로. */
+  archiveUrl: string;
+}
+
+export interface SingcupGates {
+  applicationsOpen: boolean;
+  unofficialRankingOpen: boolean;
+  liveFeatureOpen: boolean;
+}
+export interface SingcupStatusResponse {
+  gates?: SingcupGates;
+  /** 닫힌 기능의 안내 문구 — **서버가 만든다**(프런트가 만들면 설명이 두 벌이 된다). */
+  notices?: { applications: string | null; unofficialRanking: string | null;
+              live: string | null };
+  archiveUrl?: string;
+  [k: string]: unknown;
+}
+
+/** 공식 예선 참가자 한 명. `live`는 **공식 참가자에게만** 올 수 있다(서버가 강제). */
+export interface QualifierRow {
+  channelId: string;
+  announcedName: string;
+  officialOrder: number;
+  channelName: string;
+  channelImageUrl: string;
+  clipUid: string | null;
+  clipTitle: string;
+  clipThumbnailUrl: string;
+  live: { channelName: string; concurrentViewers: number;
+          categoryName: string; liveTitle: string } | null;
+}
+export interface QualifierGroupRow {
+  teamNumber: number;
+  groupEntryId: string;
+  members: QualifierRow[];
+}
+export interface QualifiersResponse {
+  divisions: Record<string, QualifierRow[] | QualifierGroupRow[]>;
+  counts: Record<string, number>;
+  divisionLabels: Record<string, string>;
+  source: string;
+}
+
+/** PIKU 재계산 순위 한 줄. **우승 비율·승률 숫자는 오지 않는다.** */
+export interface PikuEntry {
+  rank: number;
+  channelId: string;
+  name: string;
+  thumbnailUrl: string;
+  /** PIKU 원본 순위 — 우리 순위와 **다른 값**이라 화면에서 섞지 않는다. */
+  sourceRank: number | null;
+}
+export interface PikuDivisionRanking {
+  division: string;
+  label: string;
+  sort: string;
+  sortLabel?: string;
+  entries: PikuEntry[];
+  available: boolean;
+  total?: number;
+  unmappedCount: number;
+  lastSuccessAt: number;
+  sourceUrl?: string;
+}
+export interface PikuRankingResponse {
+  sort: string;
+  divisions: Record<string, PikuDivisionRanking>;
+  sortOptions: { key: string; label: string }[];
+  autoCollectEnabled: boolean;
+}
+
+/** PIKU 관리 화면 타입 — **비율·승률 숫자는 여기에도 없다.** */
+export interface PikuSource {
+  division: string;
+  label: string;
+  url: string;
+  observedTitle: string;
+  enabled: boolean;
+  lastAttemptAt: number;
+  lastSuccessAt: number;
+  lastErrorKind: string;
+}
+export interface PikuRun {
+  division: string;
+  started_at: number;
+  finished_at: number;
+  ok: number;
+  http_status: number;
+  error_kind: string;
+  pages: number;
+  entries: number;
+  applied: number;
+  note: string;
+}
+export interface PikuMapping {
+  division: string;
+  pikuName: string;
+  channelId: string | null;
+  state: string;
+  updatedAt: number;
+}
+export interface PikuAdminStatus {
+  sources: PikuSource[];
+  autoCollectEnabled: boolean;
+  intervalMinutes: number;
+  maxPages: number;
+  userAgent: string;
+  runs: PikuRun[];
+  mappingCounts: Record<string, number>;
+  unmapped: PikuMapping[];
+}
+export interface PikuMappingsResponse {
+  mappings: PikuMapping[];
+  divisions: { key: string; label: string }[];
+  candidates: { division: string; channelId: string; name: string;
+                team?: number }[];
+}
+
+// ── 계정 설정 · 회원탈퇴 · 수정 요청 ───────────────────────────────────────
+
+export interface AccountDataClass {
+  label: string;
+  count: number;
+  /** `pending_policy`면 **삭제하지 않는다**(처리 방침 미확정). */
+  policy: string;
+  note: string;
+}
+export interface AccountMe {
+  user: { id: string; username: string; globalName: string; avatar: string };
+  data: {
+    classes: AccountDataClass[];
+    total: number;
+    notPersonal: { label: string; note: string }[];
+  };
+  deletion: {
+    enabled: boolean;
+    blockedClasses: string[];
+    lastRequest: { requestedAt: number; status: string } | null;
+  };
+}
+/** ⚠️ `ok: true`는 **접수 성공**이지 탈퇴 완료가 아니다.
+ *  완료는 `status === "completed"`뿐이다. */
+export interface AccountDeleteResult {
+  ok: boolean;
+  status: "completed" | "blocked_pending_policy";
+  deleted: Record<string, number>;
+  blocked: string[];
+  reason?: string;
+  nextStep?: string;
+}
+
+export interface CorrectionMeta {
+  categories: { key: string; label: string }[];
+  /** 길이 한도는 **서버가 준다** — 프런트 상수로 두면 조용히 갈라진다. */
+  limits: {
+    clipRef: number; description: number; descriptionMin: number;
+    desiredFix: number; evidenceUrl: number; email: number;
+  };
+  /** 접수 가능 여부. false면 **폼 대신 안내를 그린다** — 폼을 띄워 놓고
+   *  제출할 때 503을 주면 사용자는 자기 입력이 잘못된 줄 안다. */
+  accepting?: boolean;
+}
+
+export interface QuickSearchResponse {
+  query:           string;
+  results:         QuickSearchItem[];
+  limit?:          number;
+  maxQueryLength?: number;
+}
+
+/** 소형 스트리머 랭킹 한 줄. `RisingStreamer`와 호환되도록 맞추되
+ *  `avg_viewers`(최근 7일 평균)가 이 화면의 판단 근거라 별도로 온다. */
+export interface SmallRankingStreamer extends RisingStreamer {
+  avg_viewers: number;
+}
+export interface RisingSmallRanking {
+  collected_at: number | null;
+  streamers:    SmallRankingStreamer[];
+  /** 기준은 **서버가 준다** — 프론트에 숫자를 복사해 두면 설명만 옛날 값이 된다. */
+  criteria:     { small_avg_max?: number; window_days?: number };
+}
+
 export type CatRange = "live" | "1h" | "24h";
 export interface RisingCategory {
   category:         string;
@@ -908,16 +1108,27 @@ export type TagColorMode = "solid" | "gradient";
 export type TagGradientDirection =
   | "to-right" | "to-bottom-right" | "to-bottom" | "to-top-right";
 
+/** 그라데이션 색상 지점 하나. `pos`는 0~100(%) 정수다. */
+export interface TagColorStop {
+  color: string;                   // #RRGGBB
+  pos: number;                     // 0~100
+}
+
 /** 공개 화면이 받는 최소 필드. 운영 메타(active·시각)는 오지 않는다. */
 export interface StreamerTag {
   id: number;
   name: string;
   slug: string;
   kind: string;
+  /** 구형 표현 — 색이 3개 이상이면 **양 끝으로 근사된 값**이다.
+   *  새 코드는 `colorStops`를 쓸 것. 이 4필드는 하위 호환으로 남아 있다. */
   colorMode: TagColorMode;
   colorStart: string;              // #RRGGBB
   colorEnd: string | null;         // gradient일 때만
   gradientDirection: TagGradientDirection;
+  /** 신형 표현 — 서버가 구형 행에서도 합성해 주므로 **항상 존재한다**.
+   *  (그래도 옵셔널로 둔다: 캐시된 옛 응답이 남아 있을 수 있다.) */
+  colorStops?: TagColorStop[];
 }
 
 /** 관리 화면(OWNER)에서만 오는 확장 필드. */
@@ -934,6 +1145,9 @@ export interface StreamerTagListResponse {
   tags: StreamerTagAdmin[];
   maxPerStreamer: number;
   gradientDirections: TagGradientDirection[];
+  /** 색상 지점 개수 상한/하한 — **서버 값을 쓴다.** 프론트 상수로 두면 조용히 갈라진다. */
+  maxColorStops?: number;
+  minColorStops?: number;
   version: number;
 }
 

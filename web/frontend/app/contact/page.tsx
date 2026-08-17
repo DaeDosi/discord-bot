@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Bot, ChevronLeft, Mail, MessageSquare, Github } from "lucide-react";
+import { Mail, MessageSquare, Github } from "lucide-react";
+import SiteHeader from "@/components/SiteHeader";
 import Footer from "@/components/Footer";
 
 // 문의 경로 — 목적별로 권장 채널을 나눠 안내한다.
@@ -69,15 +70,9 @@ const DO_NOT_SEND = [
 export default function ContactPage() {
   return (
     <div className="min-h-screen bg-bg text-fg flex flex-col">
-      <header className="border-b border-border">
-        <div className="max-w-4xl mx-auto px-5 h-14 flex items-center gap-2.5">
-          <Link href="/" className="nb-brand-tap flex items-center gap-2 font-bold text-[15px] text-muted hover:text-fg transition-colors">
-            <ChevronLeft size={16} /> <Bot size={17} className="text-accent" /> NexBot
-          </Link>
-        </div>
-      </header>
+      <SiteHeader maxWidth="4xl" />
 
-      <main className="flex-1 w-full max-w-4xl mx-auto px-5 py-10 md:py-14">
+      <main className="flex-1 w-full max-w-4xl mx-auto px-5 py-10 md:py-14 break-words">
         <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">문의</h1>
         <p className="mt-3 text-sm md:text-base leading-relaxed text-muted">
           NexBot 서비스에 대한 문의는 아래 경로로 접수합니다. 내용에 따라 확인 방법이 달라

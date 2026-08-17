@@ -54,9 +54,14 @@ export function PointsMockup({ color = "#A855F7" }: { color?: string }) {
   ];
   return (
     <div className="bg-bg-card rounded-2xl border border-border p-5 shadow-xl w-full max-w-sm space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-xs font-bold text-muted uppercase tracking-widest">포인트 상점</p>
-        <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full"
+      {/* 좁은 폭에서는 배지가 아래로 접힌다. `flex-wrap`이 없으면 두 항목의 합이
+          카드의 min-content 하한이 되어, 부모가 `min-w-0`이어도 카드가 뷰포트보다
+          넓어진다(실측 390px @150%: 카드 301px vs 뷰포트 260px). */}
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <p className="min-w-0 text-xs font-bold text-muted uppercase tracking-widest">
+          포인트 상점
+        </p>
+        <span className="shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded-full"
               style={{ color, background: `${color}18` }}>
           1,250P 보유
         </span>

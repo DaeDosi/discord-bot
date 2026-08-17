@@ -1180,6 +1180,166 @@ async def init_db():
                finalized_at INTEGER NOT NULL,
                source       TEXT    NOT NULL DEFAULT ''
            )""",
+
+        # ── 소속 그룹 다중 색상 그라데이션 ─────────────────────────────────
+        # 기존 계약은 `color_mode`(solid|gradient) + `color_start` + `color_end`로
+        # **색이 최대 2개**였다. 3개 이상을 지원하려면 컬럼을 더 늘리는 대신
+        # 색상 지점 배열 하나를 JSON으로 둔다 — stop 수가 가변이라 컬럼으로는
+        # 표현이 안 되고, `color_stop_3` 같은 걸 붙이기 시작하면 상한이 스키마에
+        # 박힌다.
+        #
+        # **기존 3컬럼은 그대로 남긴다(제거·재해석 금지).** 이유:
+        #  · 하위 호환 — 이 컬럼을 읽는 기존 코드가 마이그레이션 후에도 똑같이 동작해야 한다.
+        #  · NULL이면 "구형 데이터"라는 뜻이고, 읽기 경로가 3컬럼에서 stop 배열을
+        #    합성한다. 그래서 **백필이 필요 없다**(백필은 곧 파괴적 UPDATE다).
+        # 쓰기 경로는 두 표현을 **항상 함께** 갱신한다(`streamer_tags._write_style`).
+        #
+        # 형식: '[{"color":"#rrggbb","pos":0-100}, ...]' — 길이 1~8, pos 오름차순.
+        # 검증은 `web/backend/streamer_tags.py` 한 곳에서만 한다(색은 인라인
+        # 스타일로 들어가므로 임의 문자열이 저장되면 그게 곧 주입 경로다).
+        "ALTER TABLE streamer_tags ADD COLUMN color_stops TEXT",
+
+        # ── PIKU 사용자 투표 순위 ───────────────────────────────────────────
+        #
+        # PIKU에는 공식 API가 없어 공개 랭킹 페이지를 읽는다. 그 값으로 **순위만**
+        # 화면에 내보내고, 근거가 되는 우승 비율·승률은 **DB 안에서 정렬에만** 쓴다
+        # (공개 API·화면에 숫자를 내보내지 않는다 — 재배포로 읽힐 수 있다).
+        #
+        # 테이블을 넷으로 나눈 이유:
+        #  · `piku_sources`      부문 ↔ URL 매핑(운영자가 정한다. 추측 금지)
+        #  · `piku_datasets`     **원자 교체 단위.** 한 부문의 한 번 수집 결과 전체.
+        #  · `piku_entries`      그 dataset에 속한 행들
+        #  · `piku_mappings`     PIKU 이름 ↔ 공식 참가자 channel_id(관리자 명시)
+        #  · `piku_collect_runs` 실행 이력 — **현재값과 분리**한다. 실패한 실행이
+        #                        현재값을 건드릴 수 없는 구조가 이 분리의 목적이다.
+        #
+        # 원자 교체: 새 dataset을 `building`으로 만들어 채우고, **모든 페이지가
+        # 정상일 때만** `active`로 승격한다. 일부 실패·빈 응답·파싱 오류·403·429·
+        # Cloudflare challenge는 승격하지 않으므로 직전 `active`가 그대로 남는다.
+        # "0이나 빈 목록으로 정상 데이터를 덮어쓰지 않는다"가 여기서 구조적으로 보장된다.
+        """CREATE TABLE IF NOT EXISTS piku_sources (
+               division        TEXT PRIMARY KEY,   -- female_solo|male_solo|groups
+               url             TEXT    NOT NULL,
+               -- 페이지에서 실제로 읽은 제목. 부문 매핑이 맞는지 사람이 확인하는 근거다
+               -- (세 URL의 부문 대응을 추측으로 정하지 않기 위한 값).
+               observed_title  TEXT    NOT NULL DEFAULT '',
+               enabled         INTEGER NOT NULL DEFAULT 1,
+               -- **시도와 성공을 분리해 기록한다.** 하나로 합치면 "마지막으로 성공한
+               -- 때"를 알 수 없어, 실패가 이어져도 화면이 최신인 것처럼 보인다.
+               last_attempt_at INTEGER NOT NULL DEFAULT 0,
+               last_success_at INTEGER NOT NULL DEFAULT 0,
+               last_error_kind TEXT    NOT NULL DEFAULT '',
+               updated_at      INTEGER NOT NULL DEFAULT 0
+           )""",
+        """CREATE TABLE IF NOT EXISTS piku_datasets (
+               id           INTEGER PRIMARY KEY AUTOINCREMENT,
+               division     TEXT    NOT NULL,
+               status       TEXT    NOT NULL DEFAULT 'building',  -- building|active|superseded
+               source       TEXT    NOT NULL DEFAULT '',          -- scrape|manual_import
+               source_url   TEXT    NOT NULL DEFAULT '',
+               pages        INTEGER NOT NULL DEFAULT 0,
+               entry_count  INTEGER NOT NULL DEFAULT 0,
+               created_at   INTEGER NOT NULL,
+               activated_at INTEGER NOT NULL DEFAULT 0
+           )""",
+        # 부문당 활성 dataset은 **하나뿐**이다. 애플리케이션 검사만 믿으면 두 수집이
+        # 겹칠 때 둘 다 활성이 된다(부분 unique 인덱스가 그걸 DB에서 막는다).
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_piku_datasets_one_active "
+        "ON piku_datasets(division) WHERE status='active'",
+        "CREATE INDEX IF NOT EXISTS idx_piku_datasets_div_status "
+        "ON piku_datasets(division, status, created_at DESC)",
+        """CREATE TABLE IF NOT EXISTS piku_entries (
+               dataset_id   INTEGER NOT NULL,
+               -- PIKU 페이지에 실린 원본 순위(있으면). 우리가 다시 계산한 순위와
+               -- **다른 값**이라 화면에서도 섞지 않는다.
+               source_rank  INTEGER,
+               name         TEXT    NOT NULL,
+               thumbnail_url TEXT   NOT NULL DEFAULT '',
+               -- 아래 둘은 **내부 정렬 전용**이다. 공개 응답에 넣지 말 것.
+               win_rate     REAL,      -- 우승 비율 0~100
+               match_rate   REAL,      -- 승률 0~100
+               PRIMARY KEY (dataset_id, name)
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_piku_entries_dataset "
+        "ON piku_entries(dataset_id, name)",
+        # 이름 매핑은 **관리자가 명시적으로** 한다. 문자열 유사도로 자동 확정하지
+        # 않는다 — 한 글자 차이로 다른 스트리머에게 붙으면 순위가 통째로 틀어진다.
+        """CREATE TABLE IF NOT EXISTS piku_mappings (
+               division    TEXT NOT NULL,
+               piku_name   TEXT NOT NULL,
+               channel_id  TEXT,                       -- NULL이면 미매핑
+               -- confirmed: 관리자가 확정 / suggested: 정확 일치 후보(미확정)
+               -- excluded: 공식 명단 밖이라 순위에서 뺀다
+               state       TEXT NOT NULL DEFAULT 'unmapped',
+               updated_at  INTEGER NOT NULL DEFAULT 0,
+               PRIMARY KEY (division, piku_name)
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_piku_mappings_channel "
+        "ON piku_mappings(channel_id)",
+        # 실행 이력 — 개인정보·응답 전문을 넣지 않는다. 상태·HTTP 코드·오류 종류만.
+        """CREATE TABLE IF NOT EXISTS piku_collect_runs (
+               id          INTEGER PRIMARY KEY AUTOINCREMENT,
+               division    TEXT    NOT NULL,
+               started_at  INTEGER NOT NULL,
+               finished_at INTEGER NOT NULL DEFAULT 0,
+               ok          INTEGER NOT NULL DEFAULT 0,
+               http_status INTEGER NOT NULL DEFAULT 0,
+               error_kind  TEXT    NOT NULL DEFAULT '',
+               pages       INTEGER NOT NULL DEFAULT 0,
+               entries     INTEGER NOT NULL DEFAULT 0,
+               applied     INTEGER NOT NULL DEFAULT 0,   -- dataset을 활성화했는가
+               note        TEXT    NOT NULL DEFAULT ''
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_piku_runs_div_time "
+        "ON piku_collect_runs(division, started_at DESC)",
+
+        # ── 회원탈퇴 요청 ───────────────────────────────────────────────────
+        #
+        # **요청을 기록하는 테이블이지 삭제를 수행하는 장치가 아니다.**
+        # 현재 공개된 개인정보처리방침은 삭제를 '이메일로만' 접수한다고 못박고 있어,
+        # 웹에서 즉시 지우면 공개한 방침과 실제 처리가 달라진다. 그래서 요청은
+        # 받아 두되 `status='blocked_pending_policy'`로 남기고 **아무것도 지우지
+        # 않는다**(`web/backend/account.py` 상단 주석 참고).
+        #
+        # 사유 원문을 길게 저장하지 않는다 — 접수 사실과 시각이 감사에 필요한 전부다.
+        """CREATE TABLE IF NOT EXISTS account_deletion_requests (
+               id              INTEGER PRIMARY KEY AUTOINCREMENT,
+               user_id         TEXT    NOT NULL,
+               username        TEXT    NOT NULL DEFAULT '',
+               requested_at    INTEGER NOT NULL,
+               status          TEXT    NOT NULL,
+               blocked_classes TEXT    NOT NULL DEFAULT '[]',
+               note            TEXT    NOT NULL DEFAULT ''
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_account_deletion_user "
+        "ON account_deletion_requests(user_id, requested_at DESC)",
+
+        # ── 수정 요청 (지원 메뉴) ───────────────────────────────────────────
+        #
+        # 클립 정보가 틀렸을 때 사용자가 알려 주는 통로. 공개 화면에는 처리 상태를
+        # 노출하지 않는다(내부 운영 정보다).
+        #
+        # **이메일은 선택 항목이고 로그에 출력하지 않는다.** 저장은 하되
+        # `support.py`가 로깅 대상에서 제외한다.
+        # 보관 기간은 **여기서 정하지 않는다** — 개인정보처리방침의 결정 사항이라
+        # 임의 문구를 만들지 않는다(운영자 확정 필요 항목으로 분리).
+        """CREATE TABLE IF NOT EXISTS correction_requests (
+               id           INTEGER PRIMARY KEY AUTOINCREMENT,
+               created_at   INTEGER NOT NULL,
+               category     TEXT    NOT NULL,
+               clip_ref     TEXT    NOT NULL DEFAULT '',
+               description  TEXT    NOT NULL,
+               desired_fix  TEXT    NOT NULL DEFAULT '',
+               evidence_url TEXT    NOT NULL DEFAULT '',
+               contact_email TEXT   NOT NULL DEFAULT '',
+               -- 중복 제출 차단용. 내용 지문 + 제출자 해시. 원문 IP를 담지 않는다.
+               dedupe_key   TEXT    NOT NULL DEFAULT '',
+               status       TEXT    NOT NULL DEFAULT 'received'
+           )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_correction_dedupe "
+        "ON correction_requests(dedupe_key) WHERE dedupe_key <> ''",
+        "CREATE INDEX IF NOT EXISTS idx_correction_time "
+        "ON correction_requests(created_at DESC)",
     ]:
         try:
             await db.execute(sql)

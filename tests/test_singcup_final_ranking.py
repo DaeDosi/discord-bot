@@ -79,13 +79,26 @@ class TestFreezeGate:
         # conftest가 END_AT을 2026-08-09로 고정해 두었다.
         assert sf.ranking_frozen() is True
 
-    def test_동결은_수집기_게이트와_별개다(self, sdb):
-        """전체 수집을 멈추는 방식으로 구현하면 이 테스트가 깨진다."""
+    def test_동결은_수집기_게이트와_별개다(self, sdb, monkeypatch):
+        """전체 수집을 멈추는 방식으로 구현하면 이 테스트가 깨진다.
+
+        SINGCUP-3의 **기능 종료 축**은 여기서 검사하는 대상이 아니다. 그쪽을 켜 둔
+        상태에서 "동결이 게이트를 닫지 않는다"를 본다 — 두 축이 직교하기 때문이다.
+        (기능 축 자체는 `tests/test_singcup_retirement.py`가 고정한다.)
+        """
         import singcup_collector as sco
+        monkeypatch.setenv("SINGCUP_UNOFFICIAL_RANKING_ENABLED", "true")
         # 얼려도 지표 갱신·스냅샷·순위 계산 게이트는 그대로 열려 있어야 한다.
         assert sco.metrics_refresh_open() is True
         assert sco.snapshot_refresh_open() is True
         assert sco.ranking_refresh_open() is True
+
+    def test_지표_갱신은_기능_종료와_무관하다(self, sdb, monkeypatch):
+        """스윕(지표 갱신)은 기능 종료에 묶지 않았다 — 스윕을 건드리지 말라는 요구다."""
+        import singcup_collector as sco
+        monkeypatch.delenv("SINGCUP_UNOFFICIAL_RANKING_ENABLED", raising=False)
+        assert sco.metrics_refresh_open() is True
+        assert sco.ranking_refresh_open() is False
 
     def test_동결_모듈은_게이트를_import하지_않는다(self):
         """수집 중단으로 확대되는 것을 소스 수준에서 막는다."""

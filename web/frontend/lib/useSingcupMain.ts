@@ -48,9 +48,17 @@ export type SingcupMainState = {
  *  - 다시 보이게 됐을 때는 마지막 수신이 60초를 넘겼을 때만 1회
  *  - 수동 새로고침은 캐시를 건너뛴다
  */
-export function useSingcupMain(): SingcupMainState {
+export function useSingcupMain(opts: {
+  /** 꺼져 있으면 **네트워크를 전혀 쓰지 않는다.** 기본값은 켜짐(기존 호출부 호환).
+   *
+   *  기능이 종료된 화면이 여전히 참가자 전원(약 850KB)을 받아 오면 비용만 나가고
+   *  보여 줄 것은 없다. 화면에서 `if (!open) return <Retired/>`로 막아도 훅은
+   *  이미 마운트된 뒤라 요청이 나간다 — 그래서 훅 안에서 막는다. */
+  enabled?: boolean;
+} = {}): SingcupMainState {
+  const enabled = opts.enabled !== false;
   const [data, setData] = useState<SingcupMain | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
   const [refreshing, setRefreshing] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   // 언마운트 뒤 setState를 막는 용도. StrictMode(개발)에서 effect가 두 번 도는 것을
@@ -58,6 +66,7 @@ export function useSingcupMain(): SingcupMainState {
   const alive = useRef(true);
 
   const load = useCallback(async (force = false) => {
+    if (!enabled) return;              // 요청 자체를 만들지 않는다
     if (force) setRefreshing(true);
     try {
       const d = await api.singcup.main(SINGCUP_MAIN_LIMIT, { force });
@@ -76,10 +85,16 @@ export function useSingcupMain(): SingcupMainState {
         setRefreshing(false);
       }
     }
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
     alive.current = true;
+    // 꺼져 있으면 타이머도 만들지 않는다. `load` 안에서만 막으면 5분마다 빈 호출이
+    // 도는 타이머가 남는다.
+    if (!enabled) {
+      setLoading(false);
+      return () => { alive.current = false; };
+    }
 
     // 재마운트 즉시 그리기 — 캐시가 신선하면 로딩 화면을 거치지 않는다.
     const cached = sharedPeek<SingcupMain>(KEY, SINGCUP_MAIN_TTL_MS);
@@ -108,7 +123,7 @@ export function useSingcupMain(): SingcupMainState {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [load]);
+  }, [load, enabled]);
 
   const refresh = useCallback(() => { void load(true); }, [load]);
 

@@ -13,26 +13,48 @@ const ROOT = join(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
 
 // ── 요구 1·2: 싱드컵 예선 참가자 설명과 버튼 위치 ─────────────────────────────
+//
+// 화면 파일이 `SingcupQualifiers.tsx` → `SingcupOfficial.tsx`로 바뀌었다
+// (SINGCUP-3에서 부문 분리·TOP 카드·PIKU 재계산 순위를 담아 다시 만들었다).
+// **문구 계약은 그대로 옮겨 왔다** — 파일 이름이 바뀌었다고 계약을 버리지 않는다.
+const OFFICIAL = "app/stats/SingcupOfficial.tsx";
+
 test("요구2: 두 문단의 원문이 글자 그대로 유지된다", () => {
-  const s = read("app/stats/SingcupQualifiers.tsx");
+  const s = read(OFFICIAL);
   assert.ok(s.includes("치지직이 공식 공지로 발표한 예선 참가자 명단입니다."));
   assert.ok(s.includes("공식 심사 결과나 순위가 아닙니다."));
 });
 
 test("요구2: 두 번째 문단은 들여쓰기가 아니라 의미 구조로 분리된다", () => {
-  const s = read("app/stats/SingcupQualifiers.tsx");
-  // 공백 들여쓰기(&nbsp; 등)가 아니라 테두리+아이콘을 가진 별도 블록이어야 한다.
+  const s = read(OFFICIAL);
+  // 공백 들여쓰기(&nbsp; 등)가 아니라 테두리를 가진 별도 블록이어야 한다.
   assert.ok(!s.includes("&nbsp;"), "공백 문자로 계층을 만들지 않는다");
   assert.ok(/border-l-2 border-border pl-3/.test(s), "구분선으로 하위 계층을 표시한다");
 });
 
-test("요구1: 비공식 인기점수 버튼은 하나뿐이고 상단 액션 영역에 있다", () => {
-  const s = read("app/stats/SingcupQualifiers.tsx");
-  const hits = s.match(/비공식 인기점수 랭킹 보기/g) ?? [];
-  assert.equal(hits.length, 1, "하단 중복 블록이 남아 있으면 안 된다");
-  // 상단 액션 영역(공식 공지 원문 보기와 같은 줄)에 있어야 한다.
-  const idxNotice = s.indexOf("공식 공지 원문 보기");
-  assert.ok(idxNotice > -1 && Math.abs(s.indexOf("비공식 인기점수 랭킹 보기") - idxNotice) < 900);
+test("요구1: 공식 공지 원문 링크가 상단 액션 영역에 있다", () => {
+  const s = read(OFFICIAL);
+  assert.equal((s.match(/공식 공지 원문 보기/g) ?? []).length, 1,
+    "중복 블록이 남아 있으면 안 된다");
+  assert.ok(s.includes("SINGCUP_QUALIFIERS.sourceUrl"), "출처는 정본에서 온다");
+});
+
+test("SINGCUP-3: 비공식 인기점수 랭킹으로 보내는 버튼은 제거됐다", () => {
+  // UI-P의 '비공식 인기점수 랭킹 보기' 버튼 계약을 **대체한다.**
+  // 그 기능이 종료됐으므로 버튼이 남아 있으면 종료 안내로 보내는 링크가 된다.
+  const s = read(OFFICIAL);
+  assert.ok(!s.includes("비공식 인기점수 랭킹 보기"),
+    "종료된 기능으로 보내는 버튼이 남아 있다");
+  // 대신 종료 안내 화면이 존재해야 한다(빈 화면으로 두지 않았다는 증거).
+  const sc = read("app/stats/Singcup.tsx");
+  assert.ok(sc.includes("function RankingRetired"));
+  assert.ok(sc.includes("제공 종료"));
+});
+
+test("SINGCUP-3: 예전 참가자 화면 파일은 남겨 두지 않았다", () => {
+  // 같은 자리를 두 벌로 두면 한쪽만 고쳐진다(이 저장소가 반복해서 겪은 문제다).
+  assert.throws(() => read("app/stats/SingcupQualifiers.tsx"),
+    "죽은 화면 파일이 남아 있다");
 });
 
 // ── 요구 3: 프로필 이미지 로딩 ───────────────────────────────────────────────
@@ -105,16 +127,18 @@ test("요구9: 라이트 모드의 흔적이 남아 있지 않다", () => {
 });
 
 // ── 요구 10: 지원 버튼 ───────────────────────────────────────────────────────
-test("요구10: 지원 메뉴는 정확히 세 항목이고 임의 URL을 만들지 않는다", () => {
+test("요구10: 지원 메뉴는 정확히 네 항목이고 임의 URL을 만들지 않는다", () => {
+  // ACCOUNT-SUPPORT에서 **수정 요청**이 추가돼 셋 → 넷이 됐다. 나머지 계약
+  // (임의 URL 금지·접근성)은 그대로다.
   const s = read("components/SupportMenu.tsx");
   // 주석에도 같은 단어가 나오므로, 표시 문구는 **JSX 텍스트 노드**만 센다.
   const body = s.slice(s.indexOf("return ("));
-  for (const label of ["문의하기", "서포트 서버", "공지 사항"]) {
+  for (const label of ["문의하기", "수정 요청", "서포트 서버", "공지 사항"]) {
     const shown = (body.match(new RegExp(`>\\s*${label}\\s*<|>${label}<|\\n\\s*${label}\\n`, "g")) ?? []);
     assert.ok(shown.length >= 1, `${label}이 메뉴에 없다`);
   }
-  // 항목은 정확히 세 개 — 링크 두 개(내부/외부) + 공지 블록 하나.
-  assert.equal((body.match(/className=\{itemCls\}/g) ?? []).length, 2);
+  // 항목은 정확히 네 개 — 링크 세 개(내부 2 + 외부 1) + 공지 블록 하나.
+  assert.equal((body.match(/className=\{itemCls\}/g) ?? []).length, 3);
   assert.equal((body.match(/Megaphone/g) ?? []).length, 1);
   // 외부 링크는 Footer와 같은 값 하나뿐이고, 새로 지어낸 도메인이 없어야 한다.
   const urls = s.match(/https?:\/\/[^\s"']+/g) ?? [];

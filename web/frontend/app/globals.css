@@ -337,7 +337,7 @@
 .nb-tag { color: var(--nb-tag-fg); }
 
 /* ── 싱드컵 공식 예선 참가자 카드의 하트·LIVE ─────────────────────────────
-   이 두 클래스는 `app/stats/SingcupQualifiers.tsx`에서만 쓴다. 다른 화면의 LIVE
+   이 두 클래스는 `app/stats/SingcupOfficial.tsx`에서만 쓴다. 다른 화면의 LIVE
    표현(통계 탭 배지·싱드컵 라이브 페이지·대시보드)은 별도 마크업이라 여기 값의
    영향을 받지 않는다 — **전역 LIVE 색을 바꾸려는 것이 아니다.**
 

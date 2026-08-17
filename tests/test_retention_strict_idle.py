@@ -42,6 +42,22 @@ def ranking_closed(monkeypatch):
     monkeypatch.setenv("SINGCUP_RANKING_REFRESH_ENABLED", "false")
 
 
+@pytest.fixture
+def ranking_open(monkeypatch):
+    """위의 반대 — **순위 갱신이 열려 있는 상태.**
+
+    SINGCUP-3에서 '비공식 인기점수 랭킹' 기능 축이 생겼고 기본값이 꺼짐이라,
+    아무것도 하지 않으면 `ranking_refresh_open()`이 False다. 그러면 최종 성적
+    저장의 차단이 풀려 **idle 회차가 집계를 한 번 돈다**(의도된 동작이다).
+
+    이 파일의 'idle은 무거운 집계를 돌지 않는다' 계약은 **그 축과 무관한** 것이라,
+    순위 갱신이 열린 상태에서 검사한다. 기능이 꺼졌을 때 최종 성적이 한 번 저장되고
+    그 뒤로는 멈춘다는 것은 아래 `test_기능_종료_후_최종성적은_한_번만_저장된다`가 본다.
+    """
+    monkeypatch.setenv("SINGCUP_UNOFFICIAL_RANKING_ENABLED", "true")
+    monkeypatch.delenv("SINGCUP_RANKING_REFRESH_ENABLED", raising=False)
+
+
 async def _add(owner, at, hearts=1, clip="c1", rank=1):
     c = await database.get_db()
     await c.execute(
@@ -106,7 +122,7 @@ def test_strict_idle_requires_both_flags(monkeypatch, enabled, dry, expected):
 
 
 # ── 2. idle 회차는 무거운 것을 하나도 하지 않는다 ──────────────────────────
-def test_idle_run_skips_every_expensive_stage(db, monkeypatch):
+def test_idle_run_skips_every_expensive_stage(db, monkeypatch, ranking_open):
     _idle_config(monkeypatch)
     calls = {"rollup": 0, "estimate": 0}
 
@@ -151,7 +167,7 @@ def test_idle_reports_no_rollup_or_prune_sections(db, monkeypatch):
     assert rep["deleted"] == 0
 
 
-def test_idle_does_not_scale_with_snapshot_rows(db, monkeypatch):
+def test_idle_does_not_scale_with_snapshot_rows(db, monkeypatch, ranking_open):
     """행 수가 늘어도 하는 일이 늘지 않는다 — 절대시간이 아니라 SQL로 검증한다."""
     _idle_config(monkeypatch)
 
@@ -186,6 +202,33 @@ def test_running_event_does_not_touch_final_standings(db, monkeypatch):
     assert rep["event_status"] == "RUNNING"
     assert rep["final_standings"] == {"attempted": False, "saved": 0}
     assert db(_count("singcup_final_standings")) == 0
+
+
+def test_기능_종료_후_최종성적은_한_번만_저장된다(db, monkeypatch):
+    """SINGCUP-3의 **의도된 부수 효과**를 명시적으로 고정한다.
+
+    비공식 인기점수 랭킹 기능이 내려가면 `ranking_refresh_open()`이 False가 되어
+    `save_final_standings`의 조기 반환 조건이 풀린다 — 즉 idle 회차가 최종 성적을
+    저장한다. 이건 기록을 굳히는 동작이고 UPSERT라 파괴적이지 않다.
+
+    중요한 것은 **한 번만** 일어난다는 것이다. `_final_standings_needed()`가
+    저장 후 False를 주므로 매 회차 참가자 수만큼 쓰기가 반복되지 않는다.
+    (기본 환경변수 그대로 검사한다 — 지금 운영 상태가 곧 이 상태다.)
+    """
+    _idle_config(monkeypatch)
+    monkeypatch.delenv("SINGCUP_UNOFFICIAL_RANKING_ENABLED", raising=False)
+    now = db(_seed_old(n=9, owners=3))
+    monkeypatch.setattr(sr, "event_status", lambda: "ENDED")
+
+    first = db(sr.run_retention(now, automatic=True))
+    assert first["final_standings"]["attempted"] is True
+    assert first["final_standings"]["saved"] == 3
+    assert db(_count("singcup_final_standings")) == 3
+
+    second = db(sr.run_retention(now, automatic=True))
+    assert second["final_standings"]["attempted"] is False, "매 회차 반복 저장한다"
+    assert second["final_standings"]["reason"] == "already_saved"
+    assert db(_count("singcup_final_standings")) == 3, "행이 늘어나면 안 된다"
 
 
 def test_ended_event_saves_final_standings_even_in_idle(db, monkeypatch, ranking_closed):
@@ -322,7 +365,7 @@ def test_admin_manual_run_still_returns_the_full_report(db, monkeypatch):
     assert rep["prune"]["deleted"] == 0
 
 
-def test_worker_stays_idle_while_an_admin_report_is_running(db, monkeypatch):
+def test_worker_stays_idle_while_an_admin_report_is_running(db, monkeypatch, ranking_open):
     """자동 워커와 관리자 실행이 겹쳐도 무거운 작업이 두 번 돌지 않는다.
 
     중복 방지는 락이 아니라 **경로 분리**로 이뤄진다 — 워커는 애초에 무거운 경로에

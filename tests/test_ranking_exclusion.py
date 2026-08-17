@@ -177,24 +177,110 @@ class TestAdminPayload:
             assert "excludeFromRanking" not in tag
 
 
+class TestPeriodRankingBehaviour:
+    """기간별 누적 랭킹의 **동작**을 본다 — 소스 문자열만 보면 절이 실제로 걸리는지 모른다."""
+
+    @staticmethod
+    async def _seed_rollup(cid: str, hour_ts: int, viewers: int):
+        import database
+        conn = await database.get_db()
+        await conn.execute(
+            "INSERT OR REPLACE INTO rising_hourly_rollup (chzzk_channel_id, hour_ts,"
+            " channel_name, category_name, snaps, sum_viewers, peak_viewers,"
+            " max_follower) VALUES (?,?,?,?,?,?,?,?)",
+            (cid, hour_ts, f"ch-{cid[:4]}", "게임", 6, viewers * 6, viewers, 100))
+        await conn.execute(
+            "INSERT OR REPLACE INTO rising_collect_runs (collected_at, ok)"
+            " VALUES (?, 1)", (hour_ts + 60,))
+        await conn.commit()
+
+    def test_제외_그룹_멤버가_기간_랭킹에서_빠지고_되돌아온다(self, tdb):
+        import time
+
+        import streamer_tags as st
+        from routers import rising_router as rr
+
+        keep, drop = "1" * 32, "2" * 32
+        now = int(time.time())
+        hour = (now // 3600) * 3600 - 3600
+
+        async def _go():
+            await self._seed_rollup(keep, hour, 50)
+            await self._seed_rollup(drop, hour, 900)
+            tag = await _mk_tag("공식", exclude=True)
+            await st.assign(drop, tag["id"])
+            rr._period_cache.clear()
+            excluded = await rr.ranking_period(range="24h", limit=100)
+            # 그룹을 내리면 즉시 되돌아와야 한다
+            await st.update_tag(tag["id"], active=False)
+            rr._period_cache.clear()
+            restored = await rr.ranking_period(range="24h", limit=100)
+            return excluded, restored
+
+        excluded, restored = tdb(_go())
+        ids_excluded = {s["chzzk_channel_id"] for s in excluded["streamers"]}
+        ids_restored = {s["chzzk_channel_id"] for s in restored["streamers"]}
+        assert keep in ids_excluded
+        assert drop not in ids_excluded, "제외 그룹 멤버가 기간 랭킹에 남아 있다"
+        assert drop in ids_restored, "그룹을 내리면 즉시 돌아와야 한다"
+
+
+def _router_src() -> str:
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parents[1] / "web" / "backend"
+            / "routers" / "rising_router.py").read_text(encoding="utf-8")
+
+
+def _endpoint(name: str) -> str:
+    return _router_src().split(f'@router.get("/{name}")')[1].split("@router.get")[0]
+
+
 class TestRankingQuery:
-    """랭킹 쿼리가 실제로 서브쿼리를 쓰는지 — 문자열 조립으로 되돌아가지 않게 고정한다."""
+    """랭킹 쿼리가 실제로 제외 절을 쓰는지 — 문자열 조립으로 되돌아가지 않게 고정한다.
 
-    def test_live_ranking이_제외_서브쿼리를_포함한다(self):
-        import pathlib
-        src = pathlib.Path(__file__).resolve().parents[1] / \
-            "web" / "backend" / "routers" / "rising_router.py"
-        s = src.read_text(encoding="utf-8")
-        head = s.split("@router.get(\"/live-ranking\")")[1].split("@router.get")[0]
-        assert "exclude_from_ranking = 1" in head
-        assert "streamer_tag_assignments" in head
-        assert "t.active = 1" in head
+    **SQL 텍스트가 아니라 공통 헬퍼 호출을 본다.** 적용 화면이 셋으로 늘면서
+    서브쿼리를 라우터마다 복사해 두면 복사본끼리 갈라지는 것이 실제 위험이 됐다.
+    조각을 만드는 지점은 `streamer_tags.ranking_exclusion_clause` 하나뿐이다.
+    """
 
-    def test_신규_랭킹에는_제외가_없다(self):
-        """요구 6은 전체 랭킹에만 적용한다 — 확대 해석을 코드로 막는다."""
-        import pathlib
-        src = pathlib.Path(__file__).resolve().parents[1] / \
-            "web" / "backend" / "routers" / "rising_router.py"
-        s = src.read_text(encoding="utf-8")
-        newcomers = s.split("@router.get(\"/newcomers\")")[1].split("@router.get")[0]
+    def test_live_ranking이_제외_절을_쓴다(self):
+        head = _endpoint("live-ranking")
+        assert "st.ranking_exclusion_clause(" in head
+        assert '"n.chzzk_channel_id"' in head
+        # 인라인 복사로 되돌아가지 않았는지도 함께 본다
+        assert "exclude_from_ranking = 1" not in head, "SQL을 복사해 넣지 말 것"
+
+    def test_기간별_누적_랭킹도_제외한다(self):
+        """예전에는 전체 랭킹에만 있어 두 화면의 명단이 서로 달랐다."""
+        head = _endpoint("ranking-period")
+        assert "st.ranking_exclusion_clause(" in head
+        assert "exclude_from_ranking = 1" not in head
+
+    def test_신규_통계에는_제외가_없다(self):
+        """찾기·분석 화면에는 적용하지 않는다 — 확대 해석을 코드로 막는다."""
+        newcomers = _endpoint("newcomers")
         assert "exclude_from_ranking" not in newcomers
+        assert "ranking_exclusion_clause" not in newcomers
+
+    def test_검색과_상세에는_제외가_없다(self):
+        """여기서 빼면 '검색해도 안 나온다'가 된다."""
+        for name in ("search", "category-streamers"):
+            body = _endpoint(name)
+            assert "ranking_exclusion_clause" not in body, name
+            assert "exclude_from_ranking" not in body, name
+
+    def test_적용_범위가_한_곳에_적혀_있다(self):
+        import streamer_tags as st
+        assert set(st.RANKING_EXCLUSION_APPLIES_TO) == {
+            "live-ranking", "ranking-period", "small-ranking"}
+
+    def test_컬럼_식별자만_통과한다(self):
+        """조각 조립 지점에 검증이 없으면 나중에 그게 주입 경로가 된다."""
+        import pytest
+        import streamer_tags as st
+
+        assert "n.chzzk_channel_id NOT IN" in \
+            st.ranking_exclusion_clause("n.chzzk_channel_id")
+        for bad in ("x); DROP TABLE t;--", "a b", "1", "", "a.b.c", "a-b"):
+            with pytest.raises(ValueError):
+                st.ranking_exclusion_clause(bad)

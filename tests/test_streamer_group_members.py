@@ -294,8 +294,14 @@ def test_existing_public_contract_untouched(tdb):
     row, public = tdb(_go())
     assert row["tags"] == ["종합게임", "노래"], "방송 태그가 덮어써졌다"
     assert [t["name"] for t in row["team_tags"]] == ["스텔라이브"]
+    # 이 테스트가 지키는 것은 "방송 태그(`tags`)를 덮어쓰지 않는다"와
+    # "운영 메타가 새지 않는다"이다. `colorStops`는 다중 그라데이션에서 더해진
+    # 표시용 필드라 목록에 포함된다(구형 4필드는 하위 호환으로 그대로 남아 있다).
     assert set(public[0]) == {"id", "name", "slug", "kind", "colorMode",
-                              "colorStart", "colorEnd", "gradientDirection"}
+                              "colorStart", "colorEnd", "gradientDirection",
+                              "colorStops"}
+    assert not ({"active", "createdAt", "updatedAt", "excludeFromRanking"}
+                & set(public[0]))
 
 
 def test_no_schema_change_needed(tdb):

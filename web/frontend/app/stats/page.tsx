@@ -5,6 +5,8 @@ import Link from "next/link";
 import {
   Bot, BarChart3, LineChart as LineIcon, ListOrdered, Gamepad2, Radio,
   TrendingUp, Loader2, Search, Circle, Sprout, ChevronDown, X,
+  // 소형 스트리머 — 신규(Sprout)와 다른 아이콘. StatsNav와 같은 것을 쓴다.
+  Leaf, Sparkles,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -12,6 +14,7 @@ import type {
   RisingStars, TimeRange, CatRange, RisingSearchResult, RisingNewcomers, RisingNewcomer,
   NewcomerCategory, NewcomerGroup, NewcomerInsights,
   RisingPeriodRanking, PeriodRange, PeriodSort, RisingCategoryStreamers,
+  RisingSmallRanking,
 } from "@/lib/types";
 import Footer from "@/components/Footer";
 import CategoryRankCards from "./CategoryRankCards";
@@ -21,7 +24,8 @@ import PeriodAnalysis from "./PeriodAnalysis";
 import Singcup from "./Singcup";
 import { ViewerDistribution, TrafficHeatmap, TitleKeywordRank } from "./OverviewViz";
 import { GoldenHourHeatmap, BlueOceanCards, TierDistribution, TitleKeywordCard, VacancyHours } from "./NewcomerInsightViz";
-import StatsNav, { isTab, type Tab } from "./StatsNav";
+import StatsNav, { resolveTab, type Tab } from "./StatsNav";
+import SiteHeader from "@/components/SiteHeader";
 import StreamerAvatar from "./StreamerAvatar";
 import { StreamerTagList } from "@/components/StreamerTag";
 import { CARD_BORDER, CARD_DARK } from "./cardStyle";
@@ -276,14 +280,24 @@ function Seg<T extends string>({ options, value, onChange, label }:
   return (
     <div className="flex items-center gap-1.5">
       {label && <span className="text-[11px] text-muted/60 shrink-0">{label}</span>}
-      <div className="flex items-center gap-0.5 rounded-lg border border-border
-                      bg-bg-hover/40 p-0.5">
+      {/* 터치 영역 계약(UI-S 재사용) — **시각 크기와 hit target을 분리한다.**
+          `text-xs px-2.5 py-1`은 그대로 두므로 데스크톱(fine) 모양은 픽셀 단위로
+          동일하다. `.nb-tap`은 `@media (pointer: coarse)`에서만 `min-height:44px`을
+          준다(실측 기준본: 29px 높이 → 44px).
+          · **세로만 키운다** — 폭은 이미 전부 44px 이상이라(최소 '2일' 44px)
+            가로로 늘리면 이웃과 hit area가 겹친다. UI-S가 경고한 바로 그 경우다.
+          · `.nb-tap-gap`이 같은 미디어에서 간격을 2px → 8px로 벌려 오탭을 막는다.
+          · `flex-wrap`이라 높이가 커져도 좁은 화면에서 가로로 넘치지 않는다
+            (가로 스크롤 소유권을 만들지 않는다 — 줄바꿈으로 해결한다). */}
+      <div className="nb-tap-gap flex flex-wrap items-center gap-0.5 rounded-lg
+                      border border-border bg-bg-hover/40 p-0.5">
         {options.map((o) => {
           const active = value === o.k;
           return (
             <button key={o.k} onClick={() => onChange(o.k)}
               aria-pressed={active}
-              className="text-xs px-2.5 py-1 rounded-md transition-colors"
+              className="nb-tap inline-flex items-center justify-center rounded-md
+                         px-2.5 py-1 text-xs transition-colors"
               style={{ background: active ? "rgba(0,255,163,0.12)" : "transparent",
                        boxShadow: active ? "inset 0 0 0 1px rgba(0,194,255,0.4)" : "none",
                        color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
@@ -476,29 +490,35 @@ function CategoryDonut() {
   );
 }
 
-// 통계 안내로 가는 짧은 링크.
+// 페이지 하단 고지.
 //
-// 예전에는 여기에 서비스 설명 본문이 통째로 들어 있었다. 같은 내용이 스트리머 상세
-// 하단에도 있어 두 곳이 겹쳤고, 화면 아래가 길어져 실제 지표보다 설명이 더 컸다.
-// 본문은 `/stats/guide` 한 곳으로 옮기고 여기서는 링크만 건다.
+// 예전에는 여기에 제목 + 설명 + '통계 안내 보기' 버튼을 가진 **카드**가 있었다.
+// 그 카드는 왼쪽 내비의 '통계 안내' 항목과 **같은 곳으로 가는 두 번째 진입점**이라
+// 중복이었다 — 화면 맨 아래에서 같은 링크를 다시 제안하는 셈이었다.
+// 카드(테두리·제목·버튼)는 걷어내고 **진입점은 왼쪽 내비 하나로 통일**한다.
 //
-// 이 섹션도 loading/error 분기 **밖**에 둔다 — 이 페이지는 데이터를 클라이언트에서
-// 받아오므로 서버 렌더링 HTML에는 로딩 스피너만 담긴다. 크롤러가 읽을 본문이 최소한
-// 하나는 초기 HTML에 있어야 한다.
+// **문구 전체를 지우지는 않는다.** 두 가지가 남아야 한다:
+//  · 법적 고지 — "비공식 서비스, 네이버·치지직과 제휴 관계 없음". 링크 중복과
+//    무관하게 표시 의무가 있는 문장이라 함께 지우면 안 된다.
+//  · 크롤러가 읽을 본문 — 이 페이지는 데이터를 클라이언트에서 받아오므로 서버
+//    렌더링 HTML에는 로딩 스피너만 담긴다. loading/error 분기 **밖**의 본문이
+//    최소 하나는 있어야 한다(루트 CLAUDE.md의 AdSense 항목과 같은 이유다).
+// 그래서 카드가 아니라 **각주 한 줄**로 남긴다. 위 카드와 달리 테두리·배경이
+// 없으므로 마지막 카드와의 사이에 끊긴 경계선이 생기지 않는다.
 function StatsAbout() {
   return (
-    <section className="mt-8 rounded-xl border border-border bg-bg-card/40 px-4 py-4">
-      <h2 className="text-base font-bold text-fg">치지직 통계 안내</h2>
-      <p className="mt-1.5 max-w-3xl text-sm leading-relaxed text-muted">
-        데이터를 어떻게 모으는지, 동시 시청자·뷰어십·카테고리·활동 잔디가 각각 무엇을
-        뜻하는지, 실제 치지직 화면과 값이 다를 수 있는 이유를 안내 페이지에 정리했습니다.
+    <section className="mt-8 border-t border-border/60 pt-4">
+      <p className="max-w-3xl text-xs leading-relaxed text-muted/80">
         NexBot은 치지직 공개 정보를 자체 수집·가공한 비공식 서비스로 네이버 및 치지직과
-        제휴 관계가 없습니다.
+        제휴 관계가 없으며, 실제 치지직 화면과 값이 다를 수 있습니다. 수집 방식과 지표
+        정의는{" "}
+        <Link href="/stats/guide"
+              className="font-semibold text-muted underline underline-offset-2
+                         transition-colors hover:text-fg">
+          통계 안내
+        </Link>
+        에서 확인하실 수 있습니다.
       </p>
-      <Link href="/stats/guide"
-            className="btn-secondary nb-tap mt-3 inline-flex text-sm">
-        통계 안내 보기
-      </Link>
     </section>
   );
 }
@@ -1174,39 +1194,11 @@ function NewcomerTable({ items, maxViewers, maxFollower }:
   );
 }
 
-// ── 신규 & 초기 스트리머 분석 ────────────────────────────────────────────────
-// '신규(첫 방송 60일 이내)'와 '소형(평균 시청자 10명 이하)'은 서로 독립된 축이라
-// 한 메뉴 안의 세그먼티드 컨트롤로 전환한다. 데이터는 그룹마다 다른 필터를 거친
-// 별도 응답이므로(newcomers?group=), 전환할 때 한 번만 받아서 캐시해 둔다.
-const NC_GROUP_TABS = [
-  { k: "new"   as NewcomerGroup, label: "신규 스트리머", hint: "첫 방송 60일 이내" },
-  { k: "small" as NewcomerGroup, label: "소형 스트리머", hint: "평균 시청자 10명 이하" },
-];
-
-// 패널/비활성 텍스트는 테마 변수를 쓴다 — 예전엔 bg-[#181A20]/text-gray-400 같은
-// 고정 다크 색이라 라이트 모드에서 이 컨트롤만 검은 패널로 남았다.
-// 활성 탭의 네온 그린 + 검은 글씨는 두 테마에서 모두 대비가 충분해 그대로 둔다.
-function NcGroupToggle({ value, onChange }:
-  { value: NewcomerGroup; onChange: (g: NewcomerGroup) => void }) {
-  return (
-    <div className="inline-flex gap-1 rounded-xl border border-border bg-bg-hover p-1">
-      {NC_GROUP_TABS.map((t) => {
-        const active = value === t.k;
-        return (
-          <button key={t.k} onClick={() => onChange(t.k)} aria-pressed={active}
-            className={`rounded-lg px-3 py-2 text-left text-sm transition-colors whitespace-nowrap ${
-              active ? "font-bold text-black" : "text-muted hover:text-fg"}`}
-            style={active ? { background: GREEN } : undefined}>
-            {t.label}
-            <span className={`ml-1.5 text-[11px] font-normal ${active ? "text-black/60" : "text-muted/70"}`}>
-              ({t.hint})
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
+// ── 신규 / 소형 스트리머 통계 ────────────────────────────────────────────────
+// 두 그룹은 서로 독립된 축이고 교집합이 있는 게 정상이다. 예전에는 한 메뉴 안의
+// 세그먼티드 컨트롤(`NcGroupToggle`)로 전환했는데, 메뉴를 가르면서 그 컨트롤은
+// 제거했다 — 메뉴와 토글이 같은 일을 두 방식으로 하면 어느 쪽이 현재 상태인지
+// URL과 화면이 어긋난다. **그룹 정의(60일 / 평균 10명 이하)는 바꾸지 않았다.**
 
 // 신입 평균 체급 기준선 + 체급 구간 분포 (Row 2 우측 40%)
 function BaselineCard({ ins, label }: { ins?: NewcomerInsights; label: string }) {
@@ -1318,51 +1310,81 @@ function SmallGrowthList({ items }: { items: RisingNewcomer[] }) {
   );
 }
 
-function NewcomersAnalysisTab({ initial, onRanking }:
-  { initial: RisingNewcomers; onRanking: () => void }) {
-  const [group, setGroup] = useState<NewcomerGroup>("new");
-  // group=new는 페이지 진입 시 이미 받아 둔 응답을 그대로 쓴다. small은 처음 누를 때만 받는다.
-  const [byGroup, setByGroup] = useState<Partial<Record<NewcomerGroup, RisingNewcomers>>>(
-    { new: initial });
-  const [loading, setLoading] = useState(false);
+/**
+ * 신규/소형 스트리머 **통계** 한 개 탭.
+ *
+ * 예전에는 두 그룹을 한 탭 안 세그먼티드 컨트롤로 전환했다. 두 그룹은 서로
+ * 독립된 축이고 교집합이 있는 게 정상인데, 한 메뉴에 묶여 있어서
+ *  (1) 둘 중 하나만 URL로 공유할 수 없었고
+ *  (2) 뒤로가기가 메뉴 밖으로 나갔으며
+ *  (3) 로딩·오류 상태가 두 그룹에 공유돼 한쪽 실패가 다른 쪽 화면을 덮었다.
+ * 이제 **메뉴가 갈리고 상태도 탭마다 따로** 산다. 그룹 정의는 바꾸지 않았다.
+ *
+ * `initial`은 페이지 진입 시 이미 받아 둔 `group=new` 응답이다. 소형은 그 탭을
+ * 처음 열 때 한 번만 받아 캐시한다(요청을 늘리지 않는다).
+ */
+function NewcomerStatsTab({ group, initial, onRanking }: {
+  group: NewcomerGroup;
+  initial?: RisingNewcomers | null;
+  onRanking: () => void;
+}) {
+  const isSmall = group === "small";
+  const [data, setData] = useState<RisingNewcomers | null>(initial ?? null);
+  const [loading, setLoading] = useState(!initial);
+  // 오류 상태도 탭마다 따로 산다 — 공유하면 한쪽 실패가 다른 탭을 덮는다.
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    if (byGroup[group]) return;
+    if (data) return;
     let alive = true;
-    setLoading(true);
+    setLoading(true); setErr(null);
     api.rising.newcomers(80, group)
-      .then((d) => { if (alive) setByGroup((p) => ({ ...p, [group]: d })); })
+      .then((d) => { if (alive) setData(d); })
+      .catch((e) => {
+        if (alive) setErr(e instanceof Error ? e.message : "데이터를 불러오지 못했습니다.");
+      })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [group, byGroup]);
+  }, [group, data]);
 
-  const data = byGroup[group];
-  const isSmall = group === "small";
-  const label = isSmall ? "소형" : "신입";
+  const title = isSmall ? "소형 스트리머 통계" : "신규 스트리머 통계";
+  const Icon = isSmall ? Leaf : Sprout;
 
   return (
     <div className="space-y-5">
-      {/* 상단 — 제목+설명글(좌) ↔ 토글(우)을 items-start로 마주보게 둔다.
-          설명글 폭을 max-w-2xl로 제한하는 게 핵심: 제한이 없으면 문장이 컨테이너 전체를
-          밀어내며 토글이 오른쪽 끝에 왜소하게 붙는다. */}
-      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
-        <div className="min-w-0 max-w-2xl">
-          <h2 className="flex items-center gap-2 text-xl font-extrabold tracking-tight md:text-2xl">
-            <Sprout size={20} style={{ color: GREEN }} /> 신규 &amp; 초기 스트리머 분석
-          </h2>
-          <p className="mt-2 text-sm leading-relaxed text-muted">
-            {isSmall
-              ? `방송 경력과 무관하게 최근 평균 동시 시청자 ${data?.criteria?.small_avg_max ?? 10}명 이하인 채널입니다.`
-              : `첫 방송 후 ${data?.criteria?.debut_max_days ?? 60}일 이내인 채널입니다. 첫 방송일은 치지직 채널 정보 기준이며, 아직 수집되지 않은 채널은 NexBot 최초 트랙킹 일자로 보완합니다.`}
-          </p>
-        </div>
-        <NcGroupToggle value={group} onChange={setGroup} />
+      <div className="min-w-0 max-w-2xl">
+        <h2 className="flex items-center gap-2 text-xl font-extrabold tracking-tight md:text-2xl">
+          <Icon size={20} style={{ color: GREEN }} /> {title}
+        </h2>
+        <p className="mt-2 text-sm leading-relaxed text-muted">
+          {isSmall
+            ? `방송 경력과 무관하게 최근 평균 동시 시청자 ${data?.criteria?.small_avg_max ?? 10}명 이하인 채널입니다.`
+            : `첫 방송 후 ${data?.criteria?.debut_max_days ?? 60}일 이내인 채널입니다. 첫 방송일은 치지직 채널 정보 기준이며, 아직 수집되지 않은 채널은 NexBot 최초 트랙킹 일자로 보완합니다.`}
+        </p>
+        {/* 두 메뉴가 서로를 배제하지 않는다는 것을 화면에서 밝힌다 —
+            메뉴가 갈리면서 "둘 중 하나"로 읽힐 여지가 생겼기 때문이다. */}
+        <p className="mt-1 text-xs leading-relaxed text-muted/70">
+          {isSmall
+            ? "신규 스트리머 통계와 기준이 다르며, 두 목록에 함께 나오는 채널이 있을 수 있습니다."
+            : "소형 스트리머 통계와 기준이 다르며, 두 목록에 함께 나오는 채널이 있을 수 있습니다."}
+        </p>
       </div>
 
-      {!data ? (
-        <div className="flex items-center justify-center gap-2 py-24 text-muted">
-          <Loader2 size={18} className="animate-spin" /> {label} 데이터를 불러오는 중...
+      {/* 상태 셋을 서로 구분한다: 로딩 / 오류 / 빈 데이터.
+          예전에는 셋 다 같은 자리에 "불러오는 중"만 보여 실패가 로딩으로 보였다. */}
+      {err ? (
+        <div role="alert" className="rounded-xl border border-red-500/40 bg-red-500/5 p-6">
+          <p className="text-sm font-semibold text-red-400">{title}를 불러오지 못했습니다.</p>
+          <p className="mt-1 text-xs text-muted">{err}</p>
         </div>
+      ) : loading && !data ? (
+        <div className="flex items-center justify-center gap-2 py-24 text-muted" aria-busy>
+          <Loader2 size={18} className="animate-spin" /> 불러오는 중...
+        </div>
+      ) : !data || data.streamers.length === 0 ? (
+        <p className="py-24 text-center text-sm text-muted">
+          지금 조건에 해당하는 방송이 없습니다.
+        </p>
       ) : (
         <div className={loading ? "opacity-60 transition-opacity" : "transition-opacity"}>
           {isSmall
@@ -1850,6 +1872,226 @@ const PERIOD_SORT_OPTS: { k: PeriodSort; label: string; unit: string; help: stri
   { k: "broadcast_hours", label: "방송 시간",   unit: "시간", help: "수집된 스냅샷으로 추정한 총 송출 시간. 꾸준함을 봅니다." },
 ];
 
+// ── 소형 스트리머 랭킹 ───────────────────────────────────────────────────────
+// **소형 스트리머 통계와 다른 화면이다.** 통계는 성장률·요약·인사이트를 보여 주고
+// 랭킹 제외를 적용하지 않는다. 이쪽은 순위라서 (1) 동시 시청자 내림차순이고
+// (2) 공식 그룹 제외가 적용된다. 두 화면이 같은 사람을 다르게 다루는 것이 정상이며,
+// 화면에도 그 이유를 적어 둔다.
+type SmallSort = "viewers" | "avg" | "duration";
+const SMALL_SORTS: { k: SmallSort; label: string }[] = [
+  { k: "viewers",  label: "현재 시청자" },
+  { k: "avg",      label: "7일 평균" },
+  { k: "duration", label: "방송 시간" },
+];
+
+function SmallRankingTab() {
+  const [data, setData] = useState<RisingSmallRanking | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [sort, setSort] = useState<SmallSort>("viewers");
+  const [limit, setLimit] = useState(50);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true); setErr(null);
+    api.rising.smallRanking(200)
+      .then((d) => { if (alive) setData(d); })
+      .catch((e) => {
+        if (alive) setErr(e instanceof Error ? e.message : "랭킹을 불러오지 못했습니다.");
+      })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, []);
+
+  const rows = useMemo(() => {
+    const a = (data?.streamers ?? []).map((s) => ({ ...s, dur: liveDuration(s.open_date) }));
+    if (sort === "avg") a.sort((x, y) => y.avg_viewers - x.avg_viewers);
+    else if (sort === "duration") a.sort((x, y) => y.dur.ms - x.dur.ms);
+    else a.sort((x, y) => y.concurrent_viewers - x.concurrent_viewers);
+    return a;
+  }, [data, sort]);
+
+  const cap = data?.criteria?.small_avg_max ?? 10;
+  const win = data?.criteria?.window_days ?? 7;
+  // 시청자 수가 한 자릿수라 '1위 대비 비율' 막대는 의미가 없다(2명이 5명의 40%로
+  // 보이는 식). 대신 기준값(cap) 대비로 그려 "소형 구간 안 어디쯤"을 읽게 한다.
+  const maxFollower = useMemo(
+    () => Math.max(1, ...rows.map((s) => s.follower_count)), [rows]);
+
+  return (
+    <div className="space-y-5">
+      <div className="min-w-0 max-w-2xl">
+        <h2 className="flex items-center gap-2 text-xl font-extrabold tracking-tight md:text-2xl">
+          <Leaf size={20} style={{ color: GREEN }} /> 소형 스트리머 랭킹
+        </h2>
+        <p className="mt-2 text-sm leading-relaxed text-muted">
+          최근 {win}일 평균 동시 시청자가 {cap}명 이하인 채널 중 지금 방송 중인 채널을
+          현재 시청자 순으로 보여 줍니다. 방송 경력은 보지 않습니다.
+        </p>
+        <p className="mt-1 text-xs leading-relaxed text-muted/70">
+          소형 스트리머 <b>통계</b>와 기준은 같지만, 랭킹에서는 운영진이 지정한
+          공식 그룹 채널이 제외됩니다.
+        </p>
+      </div>
+
+      {err ? (
+        <div role="alert" className="rounded-xl border border-red-500/40 bg-red-500/5 p-6">
+          <p className="text-sm font-semibold text-red-400">랭킹을 불러오지 못했습니다.</p>
+          <p className="mt-1 text-xs text-muted">{err}</p>
+        </div>
+      ) : loading ? (
+        <div className="flex items-center justify-center gap-2 py-24 text-muted" aria-busy>
+          <Loader2 size={18} className="animate-spin" /> 불러오는 중...
+        </div>
+      ) : rows.length === 0 ? (
+        <p className="py-24 text-center text-sm text-muted">
+          지금 방송 중인 소형 스트리머가 없습니다.
+        </p>
+      ) : (
+        <div className="card !p-4 md:!p-5">
+          {/* 터치에서는 시각 크기를 키우지 않고 히트 영역만 44px로 넓힌다(UI-S 계약).
+              `nb-tap-gap`은 넓어진 히트 영역끼리 겹치지 않도록 간격을 함께 벌린다. */}
+          <div className="nb-tap-gap mb-4 flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-xs text-muted">정렬 기준</span>
+            {SMALL_SORTS.map((o) => {
+              const active = sort === o.k;
+              return (
+                <button key={o.k} onClick={() => setSort(o.k)} aria-pressed={active}
+                  className="nb-tap inline-flex items-center justify-center rounded-lg border
+                             px-3 py-1.5 text-xs font-medium transition-colors"
+                  style={{ background: active ? "rgba(0,255,163,0.1)" : "transparent",
+                           borderColor: active ? "rgba(0,255,163,0.35)"
+                             : "rgb(var(--color-border-rgb))",
+                           color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
+                  {o.label}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[680px] text-sm">
+              <thead>
+                <tr className="border-b border-border text-xs text-muted">
+                  <th className="w-12 py-2 pl-2 text-left font-medium">#</th>
+                  <th className="py-2 text-left font-medium">스트리머</th>
+                  <th className="hidden px-6 py-2 text-left font-medium sm:table-cell">카테고리</th>
+                  <th className="px-6 py-2 text-right font-medium">현재 시청자</th>
+                  <th className="px-6 py-2 text-right font-medium">{win}일 평균</th>
+                  <th className="hidden px-6 py-2 text-right font-medium md:table-cell">방송시간</th>
+                  <th className="px-6 py-2 text-right font-medium">팔로워</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.slice(0, limit).map((s, i) => {
+                  const medal = MEDALS[i];
+                  const durPct = s.dur.ms > 0 ? Math.min(100, (s.dur.ms / DAY_MS) * 100) : 0;
+                  const folPct = s.follower_count > 0
+                    ? (s.follower_count / maxFollower) * 100 : 0;
+                  const avgPct = Math.min(100, (s.avg_viewers / Math.max(1, cap)) * 100);
+                  return (
+                    <tr key={s.chzzk_channel_id}
+                        className="border-b border-border transition-colors hover:bg-bg-hover/70">
+                      <td className="py-3.5 pl-2 align-middle text-sm tabular-nums">
+                        {medal
+                          ? <span className="font-extrabold" style={{ color: medal.color }}>#{i + 1}</span>
+                          : <span className="text-muted">{i + 1}</span>}
+                      </td>
+                      <td className="py-3.5 align-middle">
+                        <Link href={`/stats/streamer/${s.chzzk_channel_id}`}
+                              className="group flex items-center gap-2">
+                          <StreamerAvatar src={s.channel_image_url} index={i}
+                            ringStyle={medal ? { boxShadow: `0 0 0 2px ${medal.color}, 0 0 8px ${medal.color}66` } : undefined} />
+                          <ChzzkMark />
+                          <span className="max-w-[150px] truncate text-base font-semibold text-fg transition-colors group-hover:text-accent md:max-w-none">
+                            {s.channel_name}
+                          </span>
+                          <StreamerTagList tags={s.team_tags} />
+                        </Link>
+                      </td>
+                      <td className="hidden px-6 py-3.5 align-middle sm:table-cell">
+                        {s.category_name
+                          ? <span className="inline-block max-w-[150px] truncate rounded-full border border-border bg-bg-hover px-3 py-1 text-xs font-medium text-fg">{s.category_name}</span>
+                          : <span className="text-sm text-muted">-</span>}
+                      </td>
+                      <td className="px-6 py-3.5 align-middle" style={{ minWidth: 120 }}>
+                        <div className="text-right"><StatNum value={s.concurrent_viewers} unit="명" /></div>
+                      </td>
+                      <td className="px-6 py-3.5 align-middle" style={{ minWidth: 130 }}>
+                        <CellCol>
+                          <div className="text-right text-sm tabular-nums text-muted">
+                            {s.avg_viewers.toFixed(1)}명
+                          </div>
+                          {/* 기준값 대비 — 소형 구간(0~{cap}명) 안 어디쯤인지 */}
+                          <CellBar pct={avgPct} background={YELLOW_GRAD} />
+                        </CellCol>
+                      </td>
+                      <td className="hidden px-6 py-3.5 align-middle md:table-cell" style={{ minWidth: 128 }}>
+                        <CellCol>
+                          <div className="text-right text-sm tabular-nums text-muted">{s.dur.label}</div>
+                          <CellBar pct={durPct} background={PURPLE_GRAD} />
+                        </CellCol>
+                      </td>
+                      <td className="px-6 py-3.5 align-middle" style={{ minWidth: 130 }}>
+                        <CellCol>
+                          <div className="text-right">
+                            {s.follower_count > 0
+                              ? <StatNum value={s.follower_count} unit="명" />
+                              : <span className="text-sm text-muted">-</span>}
+                          </div>
+                          <CellBar pct={folPct} background={CYAN_GRAD} />
+                        </CellCol>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {rows.length > limit && (
+            <div className="pt-4 text-center">
+              <button onClick={() => setLimit((l) => l + 50)} className="btn-secondary text-sm">
+                더 보기 ({nf(rows.length - limit)}개 남음)
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 봉누도 (준비 중) ─────────────────────────────────────────────────────────
+// **데이터 API를 부르지 않는다.** 빈 화면이나 오류처럼 보이지 않도록 무엇을 준비
+// 중인지 적고, 지금 볼 수 있는 곳으로 안내한다. 서비스가 이미 시작된 것처럼
+// 보이게 하는 수치·순위·표는 두지 않는다.
+function BongnudoTab() {
+  return (
+    <div className="space-y-5">
+      <div className="min-w-0 max-w-2xl">
+        <h2 className="flex items-center gap-2 text-xl font-extrabold tracking-tight md:text-2xl">
+          <Sparkles size={20} className="text-muted" /> 봉누도
+          <span className="rounded border border-border px-1.5 py-0.5 text-[10px] font-bold text-muted">
+            준비 중
+          </span>
+        </h2>
+      </div>
+      <div className="card !p-6 text-center md:!p-10">
+        <Sparkles size={36} className="mx-auto mb-3 text-muted opacity-40" aria-hidden="true" />
+        <p className="font-medium text-fg">아직 공개하지 않은 메뉴입니다.</p>
+        <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
+          봉누도 관련 집계는 준비 중이며, 아직 수집하거나 표시하는 데이터가 없습니다.
+          공개되면 이 메뉴에서 바로 확인하실 수 있습니다.
+        </p>
+        <p className="mt-4 text-xs text-muted/70">
+          그동안은 왼쪽 메뉴의 스트리머 통계와 랭킹을 이용해 주세요.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function PeriodRankingTab() {
   const [range, setRange] = useState<PeriodRange>("24h");
   const [sort, setSort]   = useState<PeriodSort>("viewership");
@@ -2100,11 +2342,33 @@ export default function StatsPage() {
   // 그래야 다른 페이지(예: /stats/singcup/live)에서 '랭킹 보기'로 돌아왔을 때
   // 기본 탭(전체 스트리머 분석)이 아니라 원래 보던 탭으로 복귀한다.
   useEffect(() => {
-    const t = new URLSearchParams(window.location.search).get("tab");
-    if (isTab(t)) setTab(t);
+    const raw = new URLSearchParams(window.location.search).get("tab");
+    // 옛 키(`newcomers_analysis`)로 공유된 링크도 살린다 — 그냥 버리면 조용히
+    // 첫 탭으로 떨어져 사용자는 잘못된 주소를 받았다고 읽는다.
+    const t = resolveTab(raw);
+    if (!t) return;
+    setTab(t);
+    if (raw !== t) {
+      // 주소도 새 키로 바꿔 둔다(다시 공유하면 최신 링크가 나가게).
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", t);
+      window.history.replaceState(null, "", url.toString());
+    }
+  }, []);
+
+  // 뒤로가기/앞으로가기 지원 — 탭은 URL에 남지만 예전에는 `replaceState`만 써서
+  // 히스토리 항목이 쌓이지 않았고, 뒤로가기가 /stats 밖으로 나가 버렸다.
+  useEffect(() => {
+    const onPop = () => {
+      const t = resolveTab(new URLSearchParams(window.location.search).get("tab"));
+      setTab(t ?? "overview");
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
   }, []);
 
   const selectTab = (k: Tab) => {
+    if (k === tab) return;              // 같은 탭을 다시 눌러 히스토리를 늘리지 않는다
     setTab(k);
     const url = new URL(window.location.href);
     if (k === "overview") url.searchParams.delete("tab");
@@ -2113,7 +2377,9 @@ export default function StatsPage() {
     // 탭을 옮기면 그 상태는 더 이상 가리킬 화면이 없으므로 지운다. 싱드컵 탭으로
     // 들어올 때도 지워져 기본 화면(공식 명단)에서 시작한다.
     url.searchParams.delete("view");
-    window.history.replaceState(null, "", url.toString());
+    // **pushState다.** 탭 전환은 사용자가 되돌리고 싶어 하는 이동이다 —
+    // replaceState면 뒤로가기가 /stats를 통째로 벗어난다.
+    window.history.pushState(null, "", url.toString());
   };
   // '카테고리 분석' 표에서 행을 누르면 이 값이 정해지고 '카테고리별 스트리머' 탭으로 넘어간다
   const [pickedCat, setPickedCat] = useState<string | null>(null);
@@ -2140,42 +2406,25 @@ export default function StatsPage() {
 
   return (
     <div className="min-h-screen bg-bg text-fg flex flex-col">
-      <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
-        <div className="w-full px-4 md:px-6 flex items-center justify-between" style={{ height: 60 }}>
-          <div className="flex items-center gap-2.5">
-            <Link href="/" className="nb-brand-tap flex items-center gap-2 font-bold text-[15px] text-muted hover:text-fg transition-colors">
-              <Bot size={18} className="text-accent" /> NexBot
-            </Link>
-            <span className="text-border">/</span>
-            <span className="flex items-center gap-1.5 font-extrabold text-[16px]">
-              <BarChart3 size={17} style={{ color: GREEN }} /> <GradText>치지직 통계</GradText>
-            </span>
-          </div>
-        </div>
-      </header>
+      {/* 공통 헤더 하나만 쓴다. 현재 위치는 `breadcrumb`으로 넘긴다 —
+          예전에는 이 페이지만 브랜드 링크 마크업을 따로 갖고 있었다. */}
+      <SiteHeader
+        maxWidth="full"
+        breadcrumb={
+          <span className="flex items-center gap-1.5 text-[16px] font-extrabold">
+            <BarChart3 size={17} style={{ color: GREEN }} aria-hidden="true" />
+            <GradText>치지직 통계</GradText>
+          </span>
+        } />
 
       <main className="flex-1 w-full px-4 md:px-6 py-7 md:py-9">
         <div className="mb-6">
+          {/* Beta 배지는 **공통 헤더의 '치지직 통계' 메뉴 옆 하나뿐**이다.
+              예전에는 여기 제목 옆에도 있어 같은 화면에 Beta가 두 번 보였다.
+              (그 배지는 상속된 line-height 때문에 정사각형으로 눌려 보이는 문제도
+              있었는데, 출처를 하나로 모으면서 함께 사라졌다.) */}
           <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight leading-tight flex items-center gap-2 flex-wrap">
             <span>치지직 <GradText>방송</GradText> 통계</span>
-            {/* Beta 배지가 정사각형에 가깝게 보이던 원인은 **세로 padding이 아니라
-                상속된 line-height**였다. 실측(운영, 1920px): 40.9×49.5px, 비율 0.83.
-                이 span은 h1의 플렉스 아이템이라 block으로 승격되고, h1의
-                `leading-tight`(text-3xl 35.6px × 1.2 = 42.75px)를 그대로 물려받아
-                높이가 42.75 + padding 4.75 + border 2 ≈ 49.5px가 됐다.
-                padding은 2.4px에 불과했으므로 그걸 더 줄여도 해결되지 않는다.
-
-                그래서 `leading-none`으로 상속을 끊고, 대신 눌려 보이지 않게 세로
-                padding을 조금 준다. 높이 = 12(글자) + 6×2(py-1.5) + 2(border) ≈ 26px.
-                `inline-flex items-center`로 글자를 배지 안에서 세로 중앙에 두고,
-                `shrink-0`으로 좁은 화면에서 찌그러지지 않게 한다.
-                색·테두리는 그대로다. 캡슐(rounded-full)로 만들지 않는다 —
-                사이트의 다른 pill과 구별되지 않는다. */}
-            <span className="inline-flex shrink-0 items-center rounded-md border
-                             px-2 py-1.5 text-xs font-bold leading-none tracking-wide"
-                  style={{ color: GREEN, borderColor: "rgba(0,255,163,0.45)", background: "rgba(0,255,163,0.10)" }}>
-              Beta
-            </span>
           </h1>
           <div className="mt-2 flex items-end justify-between gap-3 flex-wrap">
             <p className="text-muted text-sm md:text-base">
@@ -2289,12 +2538,23 @@ export default function StatsPage() {
 
             {/* 우측 뷰 */}
             <div className="min-w-0">
+              {tab === "bongnudo"                      && <BongnudoTab />}
               {tab === "singcup"                       && <Singcup />}
               {tab === "overview"           && ov   && <OverviewTab ov={ov} stars={stars} />}
-              {tab === "newcomers_analysis" && news && <NewcomersAnalysisTab initial={news} onRanking={() => selectTab("newcomers_ranking")} />}
+              {/* 두 통계 탭은 **각자 자기 상태를 갖는다**. `key`로 강제 재마운트해
+                  한쪽에서 난 오류·스크롤 위치가 다른 쪽에 남지 않게 한다. */}
+              {tab === "newcomers_stats" && (
+                <NewcomerStatsTab key="new" group="new" initial={news}
+                                  onRanking={() => selectTab("newcomers_ranking")} />
+              )}
+              {tab === "small_stats" && (
+                <NewcomerStatsTab key="small" group="small"
+                                  onRanking={() => selectTab("small_ranking")} />
+              )}
               {tab === "period_analysis"              && <PeriodAnalysis />}
               {tab === "ranking"            && rank && <RankingTab rank={rank} />}
               {tab === "newcomers_ranking"  && news && <NewcomersRankingTab data={news} />}
+              {tab === "small_ranking"                && <SmallRankingTab />}
               {tab === "ranking_period"                && <PeriodRankingTab />}
               {tab === "category"           && cats && <CategoryTab cats={cats} onPick={pickCategory} />}
               {tab === "tags"                         && <TagSearch />}

@@ -356,6 +356,12 @@ def ranking_refresh_open(now: datetime | None = None) -> bool:
     """
     if not _gate_flag("SINGCUP_RANKING_REFRESH_ENABLED"):
         return False
+    # 비공식 랭킹 기능이 내려가 있으면 계산할 이유가 없다(소비처가 없다).
+    # **부수 효과 하나가 의도된 것이다**: 이 값이 False가 되면
+    # `singcup_retention.save_final_standings`의 조기 반환 조건이 풀려 최종 성적이
+    # 영구 테이블에 저장된다 — 기록을 굳히는 동작이고 UPSERT라 파괴적이지 않다.
+    if not unofficial_ranking_open(now):
+        return False
     return event_status(now) in ("LIVE", "ENDED")
 
 
@@ -367,7 +373,57 @@ def snapshot_refresh_open(now: datetime | None = None) -> bool:
     """
     if not _gate_flag("SINGCUP_SNAPSHOT_REFRESH_ENABLED"):
         return False
+    if not unofficial_ranking_open(now):
+        return False        # 소비처(비공식 랭킹)가 없으면 기준선을 만들 이유도 없다
     return event_status(now) in ("LIVE", "ENDED")
+
+
+# ── 기능 종료 게이트 (SINGCUP-3) ────────────────────────────────────────────
+#
+# 위 네 게이트는 **날짜**로 열고 닫힌다("이벤트가 끝났는가"). 아래 셋은 축이 다르다 —
+# **제품 결정으로 기능을 내린 것**이라 날짜와 무관하게 기본값이 꺼짐이다.
+#
+# 둘을 합치지 말 것. 날짜 게이트만으로는 "종료됐지만 지표는 계속 갱신"을 표현할 수
+# 없어 SINGCUP-1에서 넷으로 쪼갰고(위 주석), 반대로 기능 종료를 날짜로 흉내 내려면
+# `END_AT`을 건드려야 하는데 그건 참가 판정 창의 정의라 순위가 소급 변경된다.
+#
+# **되살리는 방법은 환경변수 하나다.** 코드를 되돌릴 필요가 없다.
+
+def applications_open(now: datetime | None = None) -> bool:
+    """싱드컵 **참가 신청**을 받는가.
+
+    기본 꺼짐. 되살리려면 `SINGCUP_APPLICATIONS_ENABLED=true` **그리고** 이벤트가
+    진행 중이어야 한다 — 종료된 이벤트에 신청을 받으면 명단이 소급 변경된다.
+    """
+    return _gate_flag("SINGCUP_APPLICATIONS_ENABLED", False) \
+        and event_status(now) == "LIVE"
+
+
+def unofficial_ranking_open(now: datetime | None = None) -> bool:
+    """**비공식 인기점수 랭킹**(실시간 갱신되는 그 화면)을 제공하는가.
+
+    기본 꺼짐. 이 값이 False면
+     · 랭킹·검색·급상승·라이브 목록 API가 '종료됨' 응답을 준다(오류가 아니다),
+     · 순위·스냅샷 자동 갱신이 멈춘다(아래 `ranking_refresh_open` 참고),
+     · 화면은 **확정본 기록**(`/api/singcup/final-ranking`)으로 안내한다.
+
+    **데이터는 지우지 않는다.** 확정본은 이미 얼려 뒀고(UI-P), 원본 테이블도
+    그대로 남는다 — 기능만 내린 것이지 기록을 없앤 것이 아니다.
+    """
+    return _gate_flag("SINGCUP_UNOFFICIAL_RANKING_ENABLED", False)
+
+
+def live_feature_open(now: datetime | None = None) -> bool:
+    """**싱드컵 LIVE**(참가자 실시간 방송 목록) 화면을 제공하는가.
+
+    기본 꺼짐. 이건 '비공식 랭킹'과 별개 축이다 — 랭킹을 되살리지 않고 라이브만
+    열거나 그 반대가 가능해야 한다.
+
+    **주의**: 이 게이트를 닫아도 공식 예선 참가자 화면의 LIVE 배지는 계속 나온다.
+    그쪽은 `/api/singcup/qualifiers`가 서빙하며, 요구가 "LIVE 표시는 공식 예선
+    참가자에게만"이지 "LIVE 표시를 없앤다"가 아니기 때문이다.
+    """
+    return _gate_flag("SINGCUP_LIVE_FEATURE_ENABLED", False)
 
 
 # ── HTTP ────────────────────────────────────────────────────────────────────

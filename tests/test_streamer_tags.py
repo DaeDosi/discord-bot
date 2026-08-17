@@ -419,8 +419,13 @@ def test_public_serialization_has_no_operational_fields(tdb):
         return (await st.tags_for_channel(CID_A))[0]
 
     pub = tdb(_go())
+    # `colorStops`는 다중 그라데이션(ADMIN-GROUP 3-1)에서 더해진 **표시용** 필드다.
+    # 운영 메타가 아니므로 이 목록에 들어간다. 구형 4필드는 하위 호환으로 남아 있다.
     assert set(pub) == {"id", "name", "slug", "kind", "colorMode",
-                        "colorStart", "colorEnd", "gradientDirection"}
+                        "colorStart", "colorEnd", "gradientDirection", "colorStops"}
+    # 진짜로 새면 안 되는 것들 — 이 검사가 이 테스트의 본체다.
+    assert not ({"active", "createdAt", "updatedAt", "excludeFromRanking",
+                 "assignedCount"} & set(pub))
 
 
 def test_tags_for_channels_is_one_query_shaped(tdb):

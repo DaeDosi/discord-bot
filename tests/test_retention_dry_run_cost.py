@@ -226,7 +226,13 @@ def test_final_standings_path_survives(db, monkeypatch):
 
 
 def test_final_standings_waits_while_ranking_still_refreshes(db, monkeypatch):
-    """반대로 순위가 아직 갱신 중이면 저장하지 않는다(SINGCUP-1)."""
+    """반대로 순위가 아직 갱신 중이면 저장하지 않는다(SINGCUP-1).
+
+    SINGCUP-3에서 '비공식 인기점수 랭킹' 기능 축이 생겨 기본값이 꺼짐이 됐다.
+    여기서 보려는 것은 **순위가 갱신 중일 때**의 동작이므로 그 축을 켜 둔다.
+    (기능이 꺼졌을 때 저장이 풀린다는 것은 별도 테스트가 고정한다.)
+    """
+    monkeypatch.setenv("SINGCUP_UNOFFICIAL_RANKING_ENABLED", "true")
     now = db(_seed_old(n=9, owners=3))
     monkeypatch.setattr(sr, "event_status", lambda: "ENDED")
     rep = db(sr.run_retention(now))

@@ -19,6 +19,11 @@ export default function robots(): MetadataRoute.Robots {
         "/verify",
         "/overlay/*",
         "/status",
+        // 설정은 로그인 게이트 뒤라 크롤러에게는 빈 화면이다(위 이유와 같다).
+        "/settings",
+        // 수정 요청은 **입력 폼 하나**다 — 게시자 콘텐츠가 아니라 처리 목적 화면이라
+        // 같은 정책의 대상이다.
+        "/support/*",
       ],
     },
     // 정적 페이지와 스트리머 페이지 사이트맵을 모두 알린다

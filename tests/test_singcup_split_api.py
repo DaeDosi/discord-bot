@@ -15,6 +15,20 @@ from fastapi.responses import JSONResponse
 import database
 
 
+@pytest.fixture(autouse=True)
+def _unofficial_feature_on(monkeypatch):
+    """**이 파일은 라우트 역학을 검사한다**(ETag/304·409·400·503·플래그 off).
+
+    SINGCUP-3에서 비공식 인기점수 랭킹 기능이 내려가 기본값이 '종료 응답'이 됐다.
+    여기서 보려는 것은 그 기능이 켜져 있을 때의 전송·페이지네이션 계약이므로
+    기능 축을 켠 상태에서 검사한다. 기능이 꺼졌을 때 종료 응답이 나가는지는
+    `tests/test_singcup_retirement.py`가 따로 고정한다.
+    """
+    monkeypatch.setenv("SINGCUP_UNOFFICIAL_RANKING_ENABLED", "true")
+    monkeypatch.setenv("SINGCUP_LIVE_FEATURE_ENABLED", "true")
+
+
+
 def _streamer(i, **over):
     s = {
         "rank": i + 1, "channelId": f"c{i:04d}", "channelName": f"참가자{i}",

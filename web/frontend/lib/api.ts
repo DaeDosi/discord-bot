@@ -190,6 +190,25 @@ async function request<T>(
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 export const api = {
+  // ── 계정 설정 · 회원탈퇴 ───────────────────────────────────────────────
+  account: {
+    me: () => request<import("./types").AccountMe>("/api/account/me"),
+    /** ⚠️ 반환의 `status`를 반드시 볼 것 — `ok: true`는 접수 성공이지
+     *  탈퇴 완료가 아니다(서버가 정책상 삭제를 막을 수 있다). */
+    requestDelete: (confirm: string, reason = "") =>
+      request<import("./types").AccountDeleteResult>("/api/account/delete", {
+        method: "POST", body: JSON.stringify({ confirm, reason }) }),
+  },
+  // ── 수정 요청 (지원 메뉴) ──────────────────────────────────────────────
+  support: {
+    correctionMeta: () =>
+      request<import("./types").CorrectionMeta>("/api/support/correction/meta"),
+    submitCorrection: (body: {
+      category: string; clipRef: string; description: string;
+      desiredFix?: string; evidenceUrl?: string; email?: string;
+    }) => request<{ ok: boolean; id: number }>("/api/support/correction", {
+      method: "POST", body: JSON.stringify(body) }),
+  },
   auth: {
     getLoginUrl:  ()   => request<{ url: string }>("/api/auth/login"),
     callback:     (code: string) =>
@@ -311,19 +330,50 @@ export const api = {
     streamerTagsList: (includeInactive = false) =>
       request<import("./types").StreamerTagListResponse>(
         `/api/admin/streamer-tags?includeInactive=${includeInactive ? "true" : "false"}`),
+    // 색상은 `colorStops`(신형)와 구형 3필드 **둘 다** 보낼 수 있다.
+    // 서버는 `colorStops`가 오면 그쪽을 쓰고, 어느 경로로 써도 두 표현을 함께
+    // 갱신한다. 새 화면은 `colorStops`만 보낸다.
     streamerTagCreate: (body: {
-      name: string; colorMode: string; colorStart: string;
-      colorEnd?: string | null; gradientDirection: string;
+      name: string; colorMode?: string; colorStart?: string;
+      colorEnd?: string | null; gradientDirection?: string;
+      colorStops?: import("./types").TagColorStop[];
+      excludeFromRanking?: boolean;
     }) =>
       request<{ ok: boolean; tag: import("./types").StreamerTagAdmin }>(
         "/api/admin/streamer-tags", { method: "POST", body: JSON.stringify(body) }),
     streamerTagUpdate: (tagId: number, body: {
       name?: string; colorMode?: string; colorStart?: string;
       colorEnd?: string | null; gradientDirection?: string; active?: boolean;
+      colorStops?: import("./types").TagColorStop[];
+      excludeFromRanking?: boolean;
     }) =>
       request<{ ok: boolean; tag: import("./types").StreamerTagAdmin }>(
         `/api/admin/streamer-tags/${tagId}`,
         { method: "PATCH", body: JSON.stringify(body) }),
+    // ── PIKU (OWNER 전용) ──────────────────────────────────────────────
+    // 공개 경로(`api.singcup.piku*`)와 달리 여기서만 부문 매핑·수집·import를 한다.
+    // 비율·승률 숫자는 **여기서도** 오지 않는다.
+    pikuStatus: () =>
+      request<import("./types").PikuAdminStatus>("/api/admin/piku/status"),
+    pikuSetSources: (body: Record<string, string>) =>
+      request<{ ok: boolean; sources: import("./types").PikuSource[] }>(
+        "/api/admin/piku/sources",
+        { method: "POST", body: JSON.stringify(body) }),
+    pikuCollect: (division: string) =>
+      request<{ ok: boolean; entries: number; pages: number }>(
+        `/api/admin/piku/collect?division=${encodeURIComponent(division)}`,
+        { method: "POST" }),
+    pikuImport: (body: { division: string; rows?: unknown[]; csv?: string }) =>
+      request<{ ok: boolean; entries: number }>(
+        "/api/admin/piku/import", { method: "POST", body: JSON.stringify(body) }),
+    pikuMappings: (division?: string) =>
+      request<import("./types").PikuMappingsResponse>(
+        `/api/admin/piku/mappings${division
+          ? `?division=${encodeURIComponent(division)}` : ""}`),
+    pikuSetMapping: (body: { division: string; pikuName: string;
+                             channelId?: string | null; state?: string }) =>
+      request<{ ok: boolean }>("/api/admin/piku/mappings",
+        { method: "POST", body: JSON.stringify(body) }),
     streamerTagSearch: (keyword: string) =>
       request<{ streamers: import("./types").StreamerTagSearchItem[] }>(
         `/api/admin/streamer-tags/search?keyword=${encodeURIComponent(keyword)}`),
@@ -421,6 +471,26 @@ export const api = {
 
   // 싱드컵 이벤트 — 네이버 라운지 수집 결과(백엔드가 정규화한 형태만 내려온다)
   singcup: {
+    // ── 기능 종료 상태 · 공식 예선 참가자 · PIKU ─────────────────────────
+    // 이 셋은 `/main`(참가자 전원 약 850KB)과 무관하게 **작고 독립적**이다.
+    // `sharedGet` 캐시를 태우지 않는다 — 상태는 관리자가 바꾼 직후를 봐야 한다.
+    gates: () =>
+      fetch(`${BASE}/api/singcup/status`)
+        .then(r => r.json()) as Promise<import("./types").SingcupStatusResponse>,
+    // 공식 예선 참가자 — **명단 밖 채널이 구조적으로 들어올 수 없다**(서버가 강제).
+    qualifiers: (division?: string) =>
+      fetch(`${BASE}/api/singcup/qualifiers${
+        division ? `?division=${encodeURIComponent(division)}` : ""}`)
+        .then(r => r.json()) as Promise<import("./types").QualifiersResponse>,
+    // PIKU 재계산 순위 — **응답에 우승 비율·승률 숫자가 없다.**
+    pikuRanking: (sort = "primary", division?: string, limit = 0) =>
+      fetch(`${BASE}/api/singcup/piku/ranking?sort=${encodeURIComponent(sort)}${
+        division ? `&division=${encodeURIComponent(division)}` : ""}${
+        limit ? `&limit=${limit}` : ""}`)
+        .then(r => r.json()) as Promise<import("./types").PikuRankingResponse>,
+    pikuStatus: () =>
+      fetch(`${BASE}/api/singcup/piku/status`).then(r => r.json()),
+
     // #싱드컵 태그 클립 — 메인/랭킹의 근거.
     // 응답이 커서(참가자 전원) 중복 호출 비용이 크다. 공유 캐시 + in-flight 합류를
     // 태워 "여러 컴포넌트가 동시에 불러도 네트워크는 1회"를 보장한다.
@@ -509,6 +579,22 @@ export const api = {
       fetch(`${BASE}/api/rising/ranking-period?range=${range}&sort=${sort}&limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingPeriodRanking>,
     categoryStreamers: (category: string) =>
       fetch(`${BASE}/api/rising/category-streamers?category=${encodeURIComponent(category)}`).then(r => r.json()) as Promise<import("./types").RisingCategoryStreamers>,
+    // 전역 헤더 검색 — **로컬 DB만** 본다(외부 치지직 호출 0).
+    // 기존 `search`는 외부 API를 호출하고 heavy 버킷(분당 40)이라 사이트 전역
+    // 헤더에서 쓰면 정상 사용자가 즉시 한도에 걸린다. 두 경로를 합치지 말 것.
+    quickSearch: (q: string) =>
+      fetch(`${BASE}/api/rising/quick-search?q=${encodeURIComponent(q)}`)
+        .then(async (r) => {
+          if (!r.ok) throw new Error(r.status === 429
+            ? "검색 요청이 너무 잦습니다. 잠시 후 다시 시도해 주세요."
+            : "검색에 실패했습니다.");
+          return r.json();
+        }) as Promise<import("./types").QuickSearchResponse>,
+    // 소형 스트리머 **랭킹** — `newcomers?group=small`(통계)과 축이 다르다.
+    // 이쪽만 공식 그룹 제외가 적용되고 동시 시청자 순으로 정렬된다.
+    smallRanking: (limit = 200) =>
+      fetch(`${BASE}/api/rising/small-ranking?limit=${limit}`)
+        .then(r => r.json()) as Promise<import("./types").RisingSmallRanking>,
     newcomers: (limit = 80, group: import("./types").NewcomerGroup = "new") =>
       fetch(`${BASE}/api/rising/newcomers?limit=${limit}&group=${group}`).then(r => r.json()) as Promise<import("./types").RisingNewcomers>,
     status: () =>

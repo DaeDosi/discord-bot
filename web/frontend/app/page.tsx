@@ -1,10 +1,9 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import Image from "next/image";
 import {
-  Bot, Shield, Gem, Radio, BadgeCheck,
-  LogOut, ChevronRight, ArrowRight, Megaphone, X,
+  Shield, Gem, Radio, BadgeCheck,
+  ArrowRight, Megaphone, X,
 } from "lucide-react";
 import {
   TerminalMockup, PointsMockup, ChzzkEmbedMockup, ChzzkFollowVerifyMockup,
@@ -14,6 +13,7 @@ const BOT_CLIENT_ID = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID || "YOUR_CLIENT_
 const INVITE_URL    = `https://discord.com/oauth2/authorize?client_id=${BOT_CLIENT_ID}&permissions=8&scope=bot%20applications.commands`;
 
 import Footer from "@/components/Footer";
+import SiteHeader from "@/components/SiteHeader";
 import { api } from "@/lib/api";
 import type { User } from "@/lib/types";
 
@@ -62,63 +62,9 @@ function useReveal() {
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
-function ProfileDropdown({ user }: { user: User }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  const logout = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("discord_user");
-    window.location.href = "/";
-  };
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-2 px-3 py-1.5 rounded-full
-                   hover:bg-bg-hover border border-transparent hover:border-border
-                   transition-all"
-      >
-        {user.avatar
-          ? <Image src={user.avatar} alt={user.username} width={28} height={28} className="rounded-full" />
-          : <div className="w-7 h-7 rounded-full bg-accent/20 flex items-center justify-center">
-              <Bot size={13} className="text-accent" />
-            </div>}
-        <span className="text-sm text-fg hidden sm:block">{user.global_name || user.username}</span>
-        <ChevronRight size={13} className={`text-muted transition-transform ${open ? "rotate-90" : ""}`} />
-      </button>
-
-      {open && (
-        <div className="absolute right-0 top-full mt-2 w-44 bg-bg-card border border-border rounded-xl
-                        shadow-2xl shadow-black/40 py-1.5 z-50 animate-fade-in">
-          <Link
-            href="/dashboard"
-            className="flex items-center gap-2.5 px-4 py-2.5 text-sm text-fg hover:bg-bg-hover transition-colors"
-            onClick={() => setOpen(false)}
-          >
-            <Bot size={14} className="text-accent" /> 대시보드
-          </Link>
-          <div className="h-px bg-border mx-3 my-1" />
-          <button
-            onClick={logout}
-            className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-danger hover:bg-danger/8 transition-colors"
-          >
-            <LogOut size={14} /> 로그아웃
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
+// 프로필 드롭다운은 `components/SiteHeader`의 `AuthArea`로 옮겼다.
+// 여기 남겨 두면 로그인 메뉴가 두 벌이 되어, 한쪽에만 '설정'을 추가하는 식으로
+// 조용히 갈라진다(예전 헤더 복제와 같은 문제다).
 
 // ── 공지 배너 ────────────────────────────────────────────────────────────────
 const DISMISSED_KEY = "dismissed_announcement";
@@ -261,37 +207,10 @@ export default function HomePage() {
       <AnnouncementBanner />
 
       {/* ── Navbar ── */}
-      <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
-        <div className="max-w-6xl mx-auto px-5 flex items-center justify-between" style={{ height: 60 }}>
-          <Link href="/" className="nb-brand-tap flex items-center gap-2 font-bold text-[17px] text-fg">
-            <Bot size={20} className="text-accent" />
-            NexBot
-          </Link>
-          <div className="flex items-center gap-3">
-            <Link
-              href="/stats"
-              className="hidden sm:flex items-center gap-1 text-sm font-medium text-muted hover:text-fg transition-colors mr-1"
-            >
-              <Radio size={14} style={{ color: "#00FFA3" }} /> 치지직 통계
-            </Link>
-            <Link
-              href="/guide"
-              className="hidden sm:block text-sm text-muted hover:text-fg transition-colors mr-1"
-            >
-              사용 방법
-            </Link>
-            {user
-              ? <ProfileDropdown user={user} />
-              : loginUrl
-                ? <a href={loginUrl}
-                     className="flex items-center gap-1.5 text-sm font-medium px-4 py-2
-                                bg-accent hover:bg-accent-hover text-white rounded-lg transition-colors">
-                    로그인 <ArrowRight size={13} />
-                  </a>
-                : null}
-          </div>
-        </div>
-      </header>
+      {/* 헤더는 `components/SiteHeader`가 유일한 구현이다. 예전에는 이 자리에
+          같은 마크업이 페이지마다 복제돼 있었다(로고 hit area 하나를 고치는 데
+          12파일을 만져야 했다). 로그인·프로필 상태도 그쪽이 스스로 읽는다. */}
+      <SiteHeader maxWidth="6xl" />
 
       {/* ── Hero ── */}
       <section

@@ -42,11 +42,24 @@ export default function GroupMembersDrawer({ group, onClose, onChanged }: {
   onChanged: () => void;
 }) {
   const [members, setMembers] = useState<GroupMember[]>([]);
-  const [total, setTotal] = useState(0);
+  /** 현재 목록(검색어가 있으면 그 결과)의 총 개수 — "더 보기" 판단용. */
+  const [listTotal, setListTotal] = useState(0);
+  /** **그룹 전체** 멤버 수. 헤더의 "멤버 N명"은 이 값이다.
+   *
+   *  예전에는 `total` 하나로 둘 다 표현했는데, 멤버 검색어가 걸린 상태에서
+   *  추가하면 헤더가 *걸러진 수*로 바뀌어 "멤버 수가 안 늘었다"로 보였다.
+   *  두 수는 축이 다르므로 끝까지 분리해서 들고 간다. */
+  const [groupTotal, setGroupTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** 지금 요청이 나가 있는 채널 id — **행마다** 잠근다.
+   *  전역 `busy` 하나로는 "어느 줄을 누른 건지"가 화면에 드러나지 않는다. */
+  const [pending, setPending] = useState<Set<string>>(new Set());
+  /** 중복 요청 차단용 **동기** 잠금. `busy`(state)는 다음 렌더에야 반영되므로
+   *  같은 tick에 두 번 눌린 클릭을 막지 못한다 — 실제로 중복 추가가 났다. */
+  const inFlight = useRef<Set<string>>(new Set());
 
   const [memberQ, setMemberQ] = useState("");
   const [addQ, setAddQ] = useState("");
@@ -95,7 +108,10 @@ export default function GroupMembersDrawer({ group, onClose, onChanged }: {
       const res = await api.admin.streamerTagMembers(group.id, {
         q: opts.q ?? undefined, limit: PAGE, offset });
       setMembers((prev) => (opts.append ? [...prev, ...res.items] : res.items));
-      setTotal(res.total);
+      setListTotal(res.total);
+      // 검색어가 없을 때의 total만이 **그룹 전체 수**다. 걸러진 수로 덮어쓰면
+      // 헤더가 검색할 때마다 줄어들어 멤버가 사라진 것처럼 보인다.
+      if (!opts.q) setGroupTotal(res.total);
       setHasMore(res.hasMore);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "멤버 목록을 불러오지 못했습니다.");
@@ -122,6 +138,76 @@ export default function GroupMembersDrawer({ group, onClose, onChanged }: {
       setErr(e instanceof Error ? e.message : "요청에 실패했습니다.");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const markPending = (id: string, on: boolean) =>
+    setPending((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id); else next.delete(id);
+      return next;
+    });
+
+  /** 검색 결과의 그 줄만 **서버가 방금 준 최종 태그 목록**으로 갈아 끼운다.
+   *
+   *  예전에는 `r.tags`가 검색 시점 그대로 얼어 있었고, "추가됨" 판정을 현재
+   *  페이지(`memberIds`, 최대 30명)로 보조했다. 그래서 멤버가 30명을 넘거나
+   *  멤버 검색어가 걸려 있으면 방금 추가한 사람이 어느 쪽에도 안 잡혀
+   *  버튼이 계속 "추가"로 남았다. 서버 응답을 그대로 받아 적으면 그 두 경우가
+   *  모두 사라진다 — 판정의 근거가 화면 상태가 아니라 서버가 되기 때문이다. */
+  const patchSearchRow = (channelId: string, tags: StreamerTag[]) =>
+    setAddResults((prev) => prev && prev.map(
+      (r) => (r.channelId === channelId ? { ...r, tags } : r)));
+
+  /** 멤버 추가 — 성공했을 때만 화면 상태를 바꾼다(낙관적 반영을 쓰지 않는다).
+   *
+   *  이 조작은 왕복이 짧고 실패가 드물지 않다(중복·권한). 낙관적으로 "추가됨"을
+   *  먼저 보여 주면 실패 시 되돌리는 순간 사용자는 자기가 뭘 잘못 눌렀다고 읽는다.
+   *  대신 **그 줄만** 진행 중으로 잠가 반응이 없다는 인상을 없앤다. */
+  const addMember = async (r: StreamerTagSearchItem) => {
+    const id = r.channelId;
+    // state가 아니라 ref로 막는다 — 같은 tick의 두 번째 클릭은 아직 리렌더 전이라
+    // `pending`으로는 걸러지지 않는다(실측된 중복 추가 경로).
+    if (inFlight.current.has(id)) return;
+    inFlight.current.add(id);
+    markPending(id, true);
+    setErr(null);
+    try {
+      const res = await api.admin.streamerTagAssign(id, group.id);
+      patchSearchRow(id, res.tags ?? []);
+      // 헤더 수는 **즉시** 올린다. 아래 load()가 확정하지만, 검색어가 걸려 있으면
+      // 그 응답이 그룹 전체 수를 담지 않으므로 여기서 반영해 두어야 한다.
+      setGroupTotal((n) => n + 1);
+      await load({ q: memberQ.trim().length >= 2 ? memberQ.trim() : undefined });
+      onChanged();
+    } catch (e) {
+      // 실패는 실패로 보여 준다 — 성공으로 꾸미지 않는다. 화면 상태를 아직
+      // 바꾸지 않았으므로 되돌릴 것도 없다(그게 낙관적 반영을 안 쓴 이유다).
+      setErr(e instanceof Error ? e.message : "멤버 추가에 실패했습니다.");
+    } finally {
+      inFlight.current.delete(id);
+      markPending(id, false);
+    }
+  };
+
+  /** 멤버 제거 — 제거하면 검색 결과의 그 줄은 다시 "추가"로 돌아가야 한다. */
+  const removeMember = async (m: GroupMember) => {
+    const id = m.channelId;
+    if (inFlight.current.has(id)) return;
+    inFlight.current.add(id);
+    markPending(id, true);
+    setErr(null);
+    try {
+      const res = await api.admin.streamerTagUnassign(id, group.id);
+      patchSearchRow(id, res.tags ?? []);
+      setGroupTotal((n) => Math.max(0, n - 1));
+      await load({ q: memberQ.trim().length >= 2 ? memberQ.trim() : undefined });
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "멤버 제거에 실패했습니다.");
+    } finally {
+      inFlight.current.delete(id);
+      markPending(id, false);
     }
   };
 
@@ -153,11 +239,27 @@ export default function GroupMembersDrawer({ group, onClose, onChanged }: {
   const move = (idx: number, delta: number) => {
     const j = idx + delta;
     if (j < 0 || j >= members.length) return;
+    const before = members;                 // 실패하면 여기로 되돌린다
     const next = [...members];
     [next[idx], next[j]] = [next[j], next[idx]];
     setMembers(next);                       // 낙관적 반영 — 응답 후 load가 확정한다
-    void run(() => api.admin.streamerTagMemberReorder(
-      group.id, next.map((m) => m.channelId)));
+    void (async () => {
+      if (busy) { setMembers(before); return; }
+      setBusy(true); setErr(null);
+      try {
+        await api.admin.streamerTagMemberReorder(
+          group.id, next.map((m) => m.channelId));
+        await load({ q: memberQ.trim().length >= 2 ? memberQ.trim() : undefined });
+        onChanged();
+      } catch (e) {
+        // **되돌린다.** 예전에는 실패해도 바뀐 순서가 화면에 남아, 새로고침 전까지
+        // 저장되지 않은 순서를 저장된 것으로 읽었다.
+        setMembers(before);
+        setErr(e instanceof Error ? e.message : "순서 변경에 실패했습니다.");
+      } finally {
+        setBusy(false);
+      }
+    })();
   };
 
   const nf = (n: number) => n.toLocaleString("ko-KR");
@@ -183,7 +285,13 @@ export default function GroupMembersDrawer({ group, onClose, onChanged }: {
               )}
             </h2>
             <p className="mt-1 text-xs text-muted">
-              멤버 <b className="text-fg tabular-nums">{nf(total)}</b>명
+              멤버 <b className="text-fg tabular-nums">{nf(groupTotal)}</b>명
+              {memberQ.trim() && listTotal !== groupTotal && (
+                /* 검색 중임을 밝힌다 — 아래 목록 수와 헤더 수가 달라 보이는 이유다 */
+                <span className="ml-1.5 text-muted/80">
+                  · 검색 결과 <span className="tabular-nums">{nf(listTotal)}</span>명
+                </span>
+              )}
             </p>
           </div>
           <button ref={closeRef} onClick={onClose} aria-label="닫기"
@@ -220,8 +328,12 @@ export default function GroupMembersDrawer({ group, onClose, onChanged }: {
             {addResults && addResults.length > 0 && (
               <ul className="flex flex-col gap-1.5">
                 {addResults.map((r) => {
-                  const already = memberIds.has(r.channelId)
-                    || r.tags.some((t) => t.id === group.id);
+                  // 판정 근거는 **서버가 준 이 채널의 태그 목록**이 우선이다.
+                  // `memberIds`는 현재 페이지(최대 30명)뿐이라 보조로만 쓴다 —
+                  // 이것만 보면 31번째부터는 추가해도 "추가" 그대로였다.
+                  const already = r.tags.some((t) => t.id === group.id)
+                    || memberIds.has(r.channelId);
+                  const isPending = pending.has(r.channelId);
                   return (
                     <li key={r.channelId}
                         className="flex min-w-0 items-center gap-2 rounded-lg border
@@ -231,15 +343,18 @@ export default function GroupMembersDrawer({ group, onClose, onChanged }: {
                         {r.channelName || "(이름 미상)"}
                       </span>
                       {already ? (
+                        /* 색만으로 상태를 말하지 않는다 — 글자로 적는다.
+                           `aria-disabled`가 아니라 텍스트라 스크린리더도 읽는다. */
                         <span className="shrink-0 rounded border border-border px-1.5 py-0.5
                                          text-[11px] font-bold text-muted">추가됨</span>
                       ) : (
-                        <button disabled={busy}
-                                onClick={() => void run(() =>
-                                  api.admin.streamerTagAssign(r.channelId, group.id))}
+                        <button disabled={isPending}
+                                aria-busy={isPending}
+                                aria-label={`${r.channelName ?? r.channelId}을(를) ${group.name}에 추가`}
+                                onClick={() => void addMember(r)}
                                 className="btn-secondary inline-flex shrink-0 items-center gap-1
                                            text-xs disabled:opacity-40">
-                          <Plus size={12} /> 추가
+                          <Plus size={12} /> {isPending ? "추가 중…" : "추가"}
                         </button>
                       )}
                     </li>
@@ -323,7 +438,7 @@ export default function GroupMembersDrawer({ group, onClose, onChanged }: {
               <button onClick={() => void load({ append: true,
                         q: memberQ.trim().length >= 2 ? memberQ.trim() : undefined })}
                       className="btn-secondary w-full text-sm">
-                더 보기 ({nf(members.length)} / {nf(total)})
+                더 보기 ({nf(members.length)} / {nf(listTotal)})
               </button>
             )}
           </section>
@@ -341,10 +456,12 @@ export default function GroupMembersDrawer({ group, onClose, onChanged }: {
               그룹과 스트리머의 연결만 끊습니다. 그룹 자체와 다른 멤버는 그대로입니다.
             </p>
             <div className="mt-2 flex items-center gap-2">
-              <button disabled={busy}
+              <button disabled={pending.has(confirmRemove.channelId)}
                       onClick={() => {
                         const t = confirmRemove; setConfirmRemove(null);
-                        void run(() => api.admin.streamerTagUnassign(t.channelId, group.id));
+                        // 제거도 추가와 **같은 경로**를 탄다 — 검색 결과의 그 줄이
+                        // 다시 "추가"로 돌아가야 하기 때문이다(`patchSearchRow`).
+                        void removeMember(t);
                       }}
                       className="btn-primary text-sm disabled:opacity-50">제거</button>
               <button onClick={() => setConfirmRemove(null)}

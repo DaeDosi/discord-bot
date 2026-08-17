@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { Bot, ChevronRight } from "lucide-react";
+import { ChevronRight } from "lucide-react";
+import SiteHeader from "@/components/SiteHeader";
 import Footer from "@/components/Footer";
 import type { Metadata } from "next";
 
@@ -200,9 +201,16 @@ const sections = [
             "브라우저 설정에서 쿠키를 비활성화할 수 있으나, 일부 서비스 기능이 제한될 수 있습니다.",
             "Google의 개인정보 처리 방식은 Google 개인정보처리방침(policies.google.com/privacy)에서 확인할 수 있습니다.",
           ].map((item) => (
+            /* 레이아웃 계약 — 두 칸의 역할이 다르다.
+               · 아이콘: `flex-shrink-0` (찌그러지면 화살표가 뭉개진다)
+               · 글: **여기만 줄어든다.** `min-w-0`이 없으면 플렉스 자식의
+                 `min-width:auto` 때문에 min-content 아래로 줄지 못하고,
+                 `policies.google.com/privacy` 같은 끊기지 않는 토큰이 그 폭을
+                 결정해 컨테이너를 밀어낸다(실측 320px에서 12px, 150%에서 72px 초과).
+               `break-words`는 그 토큰 자체를 끊어 준다 — 글자 크기는 그대로다. */
             <div key={item} className="flex items-start gap-2">
               <ChevronRight size={13} className="text-accent mt-0.5 flex-shrink-0" />
-              <span>{item}</span>
+              <span className="min-w-0 break-words">{item}</span>
             </div>
           ))}
         </div>
@@ -248,9 +256,14 @@ const sections = [
               desc: "특정 데이터의 삭제는 dnxodud5542@gmail.com 으로 요청해 주세요. 대상을 특정하기 위해 Discord 사용자 ID 또는 서버 ID가 필요할 수 있으며, 해당 식별자는 이메일로만 보내 주시기 바랍니다.",
             },
           ].map(({ title, desc }) => (
+            /* `break-words` — 본문에 문의용 이메일 주소가 그대로 들어 있고,
+               그건 한국어 줄바꿈 규칙으로 끊기지 않는 한 덩어리 토큰이다.
+               실측(390px @150%, 가용 폭 165px): 이 문단의 scrollWidth가 196px로
+               부모를 밀어내 페이지 전체가 260 → 287로 보고됐다.
+               글자 크기는 그대로 두고 토큰만 끊는다. */
             <div key={title} className="bg-bg rounded-xl border border-border p-4">
               <p className="text-fg font-medium text-sm mb-1">{title}</p>
-              <p className="text-sm">{desc}</p>
+              <p className="text-sm break-words">{desc}</p>
             </div>
           ))}
         </div>
@@ -292,16 +305,15 @@ export default function PrivacyPage() {
   return (
     <div className="min-h-screen bg-bg text-fg">
       {/* ── Navbar ── */}
-      <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
-        <div className="max-w-4xl mx-auto px-5 flex items-center" style={{ height: 60 }}>
-          <Link href="/" className="nb-brand-tap flex items-center gap-2 font-bold text-[17px] text-fg">
-            <Bot size={20} className="text-accent" />
-            NexBot
-          </Link>
-        </div>
-      </header>
+      <SiteHeader maxWidth="4xl" />
 
-      <main className="max-w-4xl mx-auto px-5 py-12 pb-20">
+        {/* `break-words`는 상속된다 — 이 문서 페이지들은 본문에 이메일 주소와
+            URL이 그대로 들어 있고, 그건 한국어 줄바꿈 규칙으로 끊기지 않는
+            토큰이라 좁은 폭에서 부모를 밀어낸다(실측 /privacy 390px @150%:
+            문단 scrollWidth 196px > 가용 165px → 페이지 260 → 287).
+            토큰 하나씩 쫓지 않고 본문 컨테이너에서 한 번에 건다.
+            글자 크기·문구는 그대로다. */}
+      <main className="max-w-4xl mx-auto px-5 py-12 pb-20 break-words">
         {/* 헤더 */}
         <div className="mb-10">
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full

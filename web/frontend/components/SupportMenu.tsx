@@ -2,7 +2,9 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ExternalLink, HelpCircle, Mail, Megaphone, MessageSquare, X } from "lucide-react";
+import {
+  ExternalLink, HelpCircle, Mail, Megaphone, MessageSquare, PencilLine, X,
+} from "lucide-react";
 
 import { api } from "@/lib/api";
 import { shouldShowSupportMenu } from "@/lib/supportMenu";
@@ -71,17 +73,28 @@ export default function SupportMenu() {
     "transition-colors hover:bg-bg-hover focus-visible:bg-bg-hover";
 
   return (
+    /* 배치 계약 — **`right`로 붙이지 않고 `100vw` 폭 트랙 안에서 오른쪽 정렬한다.**
+       `position: fixed`의 `right`는 **스크롤바를 포함한** 초기 컨테이닝 블록 기준이라,
+       세로 스크롤바가 있는 페이지에서 오른쪽 끝이 보이는 영역 밖으로 밀린다
+       (실측 /privacy @390px 150%: innerWidth 287 · clientWidth 260 → 버튼 우측 8px가
+       스크롤바 영역에 가려지고 `documentElement.scrollWidth`가 287로 보고됐다.
+       실제로 가로 스크롤이 되지는 않지만 표시와 측정이 모두 어긋났다).
+       `w-screen`(=100vw)은 스크롤바를 **제외한** 폭이라 그 안에서 정렬하면 둘 다 사라진다.
+       바깥 트랙은 `pointer-events-none`이라 화면 전체를 덮지 않는다. */
+    <div
+      className="pointer-events-none fixed bottom-0 left-0 z-40 flex w-screen justify-end"
+      style={{
+        paddingBottom: "calc(1rem + env(safe-area-inset-bottom, 0px))",
+        paddingRight: "calc(1rem + env(safe-area-inset-right, 0px))",
+      }}
+    >
     <div
       ref={rootRef}
       data-nb-support=""
-      /* 고정 요소라도 내용이 뷰포트보다 넓으면 페이지 스크롤 폭을 늘린다
-         (실측 320px: 컨테이너 right=332 → 페이지 sw 351). 좌우 여백 1rem씩을 뺀 값으로
-         상한을 두면 본문을 가리지도, 페이지를 넓히지도 않는다. */
-      className="fixed right-4 z-40 flex max-w-[calc(100vw-2rem)] flex-col items-end gap-2"
-      style={{
-        bottom: "calc(1rem + env(safe-area-inset-bottom, 0px))",
-        right: "calc(1rem + env(safe-area-inset-right, 0px))",
-      }}
+      /* 내용이 뷰포트보다 넓으면 페이지 스크롤 폭을 늘린다(실측 320px: 페이지 sw 351).
+         좌우 여백 1rem씩을 뺀 값으로 상한을 둔다. */
+      className="pointer-events-auto flex max-w-[calc(100vw-2rem)] flex-col
+                 items-end gap-2"
     >
       {open && (
         <div
@@ -94,6 +107,15 @@ export default function SupportMenu() {
           <Link href="/contact" className={itemCls} onClick={() => setOpen(false)}>
             <Mail size={16} className="shrink-0 text-muted" aria-hidden="true" />
             문의하기
+          </Link>
+
+          {/* 수정 요청 — 일반 문의와 **다른 통로**다. 이쪽은 클립 주소·분류·근거를
+              받아 정정 대상을 특정할 수 있게 하고, 문의하기는 자유 문의다.
+              하나로 합치면 정정 요청이 자유 문의에 섞여 대상 특정이 안 된다. */}
+          <Link href="/support/correction" className={itemCls}
+                onClick={() => setOpen(false)}>
+            <PencilLine size={16} className="shrink-0 text-muted" aria-hidden="true" />
+            수정 요청
           </Link>
 
           <a href={SUPPORT_DISCORD} target="_blank" rel="noopener noreferrer"
@@ -132,6 +154,7 @@ export default function SupportMenu() {
       >
         {open ? <X size={20} aria-hidden="true" /> : <HelpCircle size={22} aria-hidden="true" />}
       </button>
+    </div>
     </div>
   );
 }

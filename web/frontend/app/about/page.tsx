@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Bot, ChevronLeft } from "lucide-react";
+import SiteHeader from "@/components/SiteHeader";
 import Footer from "@/components/Footer";
 
 // 서비스 소개 — 운영 주체·데이터 출처·비공식성을 한곳에서 밝힌다.
@@ -42,15 +42,9 @@ const SERVICES: { title: string; body: string }[] = [
 export default function AboutPage() {
   return (
     <div className="min-h-screen bg-bg text-fg flex flex-col">
-      <header className="border-b border-border">
-        <div className="max-w-4xl mx-auto px-5 h-14 flex items-center gap-2.5">
-          <Link href="/" className="nb-brand-tap flex items-center gap-2 font-bold text-[15px] text-muted hover:text-fg transition-colors">
-            <ChevronLeft size={16} /> <Bot size={17} className="text-accent" /> NexBot
-          </Link>
-        </div>
-      </header>
+      <SiteHeader maxWidth="4xl" />
 
-      <main className="flex-1 w-full max-w-4xl mx-auto px-5 py-10 md:py-14">
+      <main className="flex-1 w-full max-w-4xl mx-auto px-5 py-10 md:py-14 break-words">
         <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">서비스 소개</h1>
         <p className="mt-3 text-sm md:text-base leading-relaxed text-muted">
           NexBot은 치지직(CHZZK)에서 방송하는 스트리머와 시청자가 방송의 흐름을 숫자로

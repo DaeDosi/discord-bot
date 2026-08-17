@@ -5,6 +5,7 @@ import {
   Shield, Heart, Gem, Radio, BadgeCheck,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import SiteHeader from "@/components/SiteHeader";
 import Footer from "@/components/Footer";
 import {
   TerminalMockup, PointsMockup, ChzzkEmbedMockup, ChzzkFollowVerifyMockup,
@@ -125,14 +126,7 @@ export default function GuidePage() {
   return (
     <div className="min-h-screen bg-bg text-fg">
       {/* Header */}
-      <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
-        <div className="max-w-6xl mx-auto px-5 flex items-center" style={{ height: 60 }}>
-          <Link href="/" className="nb-brand-tap flex items-center gap-2 font-bold text-[17px] text-fg">
-            <Bot size={20} className="text-accent" />
-            NexBot
-          </Link>
-        </div>
-      </header>
+      <SiteHeader maxWidth="6xl" />
 
       <main className="max-w-6xl mx-auto px-5 py-12 pb-24">
         {/* Breadcrumb */}
@@ -199,7 +193,12 @@ export default function GuidePage() {
                 key={title}
                 className={`flex flex-col ${flip ? "lg:flex-row-reverse" : "lg:flex-row"} items-center gap-10 lg:gap-16`}
               >
-                <div className="flex-1 max-w-lg">
+                {/* 두 칸 모두 `min-w-0`이 필요하다. 플렉스 자식의 기본
+                    `min-width:auto`는 **min-content 아래로 줄어들지 못하게** 하므로,
+                    목업 카드의 min-content(실측 301px)가 그대로 컨테이너 폭이 되어
+                    260px(390px @150%) 뷰포트를 20px 밀어냈다.
+                    `max-w-lg`/`max-w-sm`은 상한일 뿐 하한을 낮추지 못한다. */}
+                <div className="flex-1 min-w-0 max-w-lg">
                   <div className="flex items-center gap-3 mb-4">
                     <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: bg }}>
                       {icon}
@@ -223,7 +222,7 @@ export default function GuidePage() {
                   </p>
                 </div>
 
-                <div className="flex-1 flex justify-center lg:justify-end">
+                <div className="flex-1 min-w-0 flex w-full justify-center lg:justify-end">
                   {mockup}
                 </div>
               </div>

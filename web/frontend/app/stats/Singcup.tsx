@@ -5,14 +5,18 @@ import {
   Trophy, ExternalLink, Play, Eye, Heart, Radio, X,
   Search, ArrowDown, ArrowUp, RefreshCw,
 } from "lucide-react";
+import { api } from "@/lib/api";
 import { useSingcupRanking } from "@/lib/useSingcupRanking";
 import type {
-  SingcupHeartMover, SingcupMain, SingcupStreamer,
+  SingcupHeartMover, SingcupMain, SingcupStatusResponse, SingcupStreamer,
 } from "@/lib/types";
 import {
   applySingcupView, readSingcupView, type SingcupView,
 } from "@/lib/singcupView";
-import SingcupQualifiers from "./SingcupQualifiers";
+// 공식 예선 참가자 화면은 부문 분리·TOP 카드·PIKU 재계산 순위를 담은
+// `SingcupOfficial`로 옮겼다. 예전 `SingcupQualifiers`(검색형 단일 목록)는
+// 같은 자리를 두 벌로 만들지 않기 위해 더 쓰지 않는다.
+import SingcupOfficial from "./SingcupOfficial";
 import {
   Delta, Disclaimer, EventBadge, GOLD, GREEN, MEDAL, RankDelta, SCORE_GRAD, ScoreFormula,
   ScoreText, StaleBadge, StatusChip, VERMILION, fmtDateTime, fmtRange, hideBrokenImage, nf,
@@ -658,7 +662,7 @@ function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
             <b className="text-fg">공식 심사 결과와 다를 수 있습니다.</b> 치지직이 발표한 예선 참가자
             명단은{" "}
             {/* 골드를 글자 색으로 쓰지 않는다 — 라이트 테마 흰 배경에서 대비가
-                1.4:1까지 떨어져 읽히지 않는다(SingcupQualifiers의 ON_GOLD 주석). */}
+                1.4:1까지 떨어져 읽히지 않는다(UI-P의 ON_GOLD 주석). */}
             <button type="button" onClick={onOfficial}
                     className="font-bold text-fg underline underline-offset-2 hover:opacity-80">
               공식 예선 참가자
@@ -898,8 +902,50 @@ function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
 // 둘을 `?view=`로 나눠 두면 어느 쪽을 보고 있었는지가 공유 링크와 새로고침에
 // 그대로 남는다. 해석 규칙(특히 예전 `?sort=` 링크 호환)은 렌더링 없이 검증할 수
 // 있도록 `lib/singcupView`에 순수 함수로 빼 뒀다.
+/** 비공식 인기점수 랭킹이 내려갔을 때 보여 줄 **읽기 전용 기록** 안내.
+ *
+ *  빈 화면이나 오류로 보이지 않게 (1) 무엇이 끝났는지, (2) 데이터가 남아 있다는 것,
+ *  (3) 지금 볼 수 있는 곳을 적는다. 문구는 **서버가 준 것**을 그대로 쓴다 —
+ *  여기서 다시 쓰면 같은 규칙에 설명이 두 벌이 된다. */
+function RankingRetired({ notice, onOfficial }: {
+  notice: string | null; onOfficial: () => void;
+}) {
+  return (
+    <div className="space-y-5">
+      <div className="min-w-0 max-w-2xl">
+        <h2 className="flex flex-wrap items-center gap-2 text-xl font-extrabold
+                       tracking-tight md:text-2xl">
+          <Trophy size={20} style={{ color: GOLD }} aria-hidden="true" />
+          싱드컵 비공식 인기점수 랭킹
+          <span className="rounded border border-border px-1.5 py-0.5 text-[10px]
+                           font-bold text-muted">제공 종료</span>
+        </h2>
+      </div>
+      <div className="card !p-6 text-center md:!p-10">
+        <Trophy size={36} className="mx-auto mb-3 text-muted opacity-40"
+                aria-hidden="true" />
+        <p className="font-medium text-fg">
+          {notice ?? "싱드컵 비공식 인기점수 랭킹 제공이 종료되었습니다."}
+        </p>
+        <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
+          이벤트가 끝나 실시간 갱신을 중단했습니다. 그동안 집계한 기록은
+          지우지 않았고, 종료 시점에 확정된 순위를 그대로 보관하고 있습니다.
+        </p>
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          <button onClick={onOfficial} className="btn-primary nb-tap text-sm">
+            공식 예선 참가자 보기
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Singcup() {
   const [view, setView] = useState<SingcupView>("official");
+  // 무엇이 열려 있는지는 **서버가 정한다.** 화면이 스스로 판단하면 서버에서 다시
+  // 열었을 때 화면만 닫힌 채로 남는다.
+  const [gates, setGates] = useState<SingcupStatusResponse | null>(null);
 
   // 서버 렌더 결과와 어긋나지 않도록 주소는 effect에서만 읽는다.
   useEffect(() => {
@@ -913,6 +959,14 @@ export default function Singcup() {
     }
   }, []);
 
+  useEffect(() => {
+    let alive = true;
+    api.singcup.gates()
+      .then((d) => { if (alive) setGates(d); })
+      .catch(() => { if (alive) setGates(null); });
+    return () => { alive = false; };
+  }, []);
+
   const selectView = useCallback((v: SingcupView) => {
     setView(v);
     const url = new URL(window.location.href);
@@ -920,10 +974,18 @@ export default function Singcup() {
     window.history.replaceState(null, "", url.toString());
   }, []);
 
+  // 상태를 아직 모르는 동안에는 **닫힌 것으로 본다.** 반대로 두면 종료된 기능이
+  // 잠깐 보였다가 사라져, 사용자는 화면이 깨진 것으로 읽는다.
+  const rankingOpen = gates?.gates?.unofficialRankingOpen === true;
+
   // `movers`(하트 급상승)는 랭킹 화면 위쪽 카드라 별도 화면이 아니다. 링크를 살려
   // 두되 렌더는 랭킹 하나로 모은다 — 같은 것을 두 벌로 만들면 반드시 갈라진다.
   if (view === "official") {
-    return <SingcupQualifiers onRanking={() => selectView("ranking")} />;
+    return <SingcupOfficial />;
+  }
+  if (!rankingOpen) {
+    return <RankingRetired notice={gates?.notices?.unofficialRanking ?? null}
+                           onOfficial={() => selectView("official")} />;
   }
   return <SingcupRanking onOfficial={() => selectView("official")} />;
 }

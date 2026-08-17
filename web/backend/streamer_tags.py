@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 import unicodedata
@@ -41,6 +42,13 @@ GRADIENT_DIRECTIONS: tuple[str, ...] = (
 )
 
 COLOR_MODES: tuple[str, ...] = ("solid", "gradient")
+
+#: 색상 지점(stop) 개수 상한. 화면에서 구분되지 않는 수를 저장 단계에서 막는다 —
+#: 배지는 폭이 10rem이라 8개를 넘으면 사람 눈에 띠가 아니라 얼룩으로 보이고,
+#: 응답 바이트도 목록 행마다 반복된다. 하한이 1인 이유는 "색이 하나도 없는 태그"가
+#: 곧 투명 배지이기 때문이다(요구: 최소 1개는 항상 남는다).
+MAX_COLOR_STOPS = 8
+MIN_COLOR_STOPS = 1
 
 #: 지금은 팀 하나뿐이지만 컬럼을 열어 둔다(향후 '소속사', '프로젝트' 등).
 KINDS: tuple[str, ...] = ("team",)
@@ -133,6 +141,118 @@ def clean_style(color_mode: object, color_start: object,
             "color_end": end, "gradient_direction": direction}
 
 
+def clean_stops(value: object) -> list[dict]:
+    """색상 지점 배열을 검증한다 — **다중 그라데이션의 단일 진입점**.
+
+    받는 형태는 `[{"color": "#rrggbb", "pos": 0..100}, ...]`이고 `pos`는 생략 가능하다.
+    생략되면 **균등 분배**한다(1개는 0, 2개는 0/100, 3개는 0/50/100 …).
+
+    규칙과 그 이유:
+    · 개수 1~`MAX_COLOR_STOPS` — 0개는 투명 배지이고, 상한은 화면·바이트 문제다.
+    · 색은 `#RRGGBB`만 — `clean_color`와 같은 규칙을 쓴다. 색이 인라인 스타일로
+      들어가므로 여기서 느슨해지면 그게 곧 주입 경로다.
+    · `pos`는 0~100 정수. **오름차순으로 정렬해 저장한다**(거부하지 않는다) —
+      운영자가 지점을 끌어 순서를 바꾸는 것이 정상 조작이고, 그때마다 400을 던지면
+      드래그 UI를 만들 수 없다. 다만 **동률은 유지**한다(hard stop 표현이 가능해야 한다).
+    · 정렬은 **안정 정렬**이라 같은 pos끼리는 보낸 순서가 유지된다.
+    """
+    if not isinstance(value, (list, tuple)):
+        raise TagError("색상 지점은 배열이어야 합니다.")
+    if len(value) < MIN_COLOR_STOPS:
+        raise TagError("색상은 최소 1개가 필요합니다.")
+    if len(value) > MAX_COLOR_STOPS:
+        raise TagError(f"색상 지점은 최대 {MAX_COLOR_STOPS}개까지 지정할 수 있습니다.")
+
+    raw: list[tuple[str, int | None]] = []
+    for i, item in enumerate(value):
+        if isinstance(item, str):          # 색 문자열만 온 경우도 받아 준다
+            raw.append((clean_color(item, field=f"{i + 1}번째 색상"), None))
+            continue
+        if not isinstance(item, dict):
+            raise TagError(f"{i + 1}번째 색상 지점의 형식이 올바르지 않습니다.")
+        color = clean_color(item.get("color"), field=f"{i + 1}번째 색상")
+        pos = item.get("pos", item.get("position"))
+        if pos is None:
+            raw.append((color, None))
+            continue
+        # bool은 int의 하위 타입이라 먼저 걸러낸다(True가 1로 통과하면 안 된다).
+        if isinstance(pos, bool) or not isinstance(pos, (int, float)):
+            raise TagError(f"{i + 1}번째 색상 위치는 숫자여야 합니다.")
+        p = int(round(float(pos)))
+        if not (0 <= p <= 100):
+            raise TagError(f"{i + 1}번째 색상 위치는 0~100 사이여야 합니다.")
+        raw.append((color, p))
+
+    n = len(raw)
+    out: list[dict] = []
+    for i, (color, pos) in enumerate(raw):
+        if pos is None:
+            pos = 0 if n == 1 else round(i * 100 / (n - 1))
+        out.append({"color": color, "pos": pos})
+    # 안정 정렬 — 동률(hard stop)은 보낸 순서를 지킨다.
+    out.sort(key=lambda s: s["pos"])
+    return out
+
+
+def stops_from_legacy(row) -> list[dict]:
+    """구형 3컬럼(`color_mode`/`color_start`/`color_end`)에서 stop 배열을 합성한다.
+
+    **백필하지 않고 읽을 때 합성하는 이유**: 백필은 파괴적 UPDATE이고, 실패하면
+    되돌릴 원본이 없다. 반면 합성은 몇 번을 해도 같은 값이고, 구형 행을 한 번도
+    수정하지 않은 채로 새 화면이 정확히 예전과 같은 색을 그린다.
+    """
+    start = row["color_start"] if _HEX_RE.match(str(row["color_start"] or "")) \
+        else "#38bdf8"
+    end = row["color_end"] if row["color_end"] and _HEX_RE.match(str(row["color_end"])) \
+        else None
+    if row["color_mode"] == "gradient" and end:
+        return [{"color": start.lower(), "pos": 0}, {"color": end.lower(), "pos": 100}]
+    return [{"color": start.lower(), "pos": 0}]
+
+
+def stops_of(row) -> list[dict]:
+    """행의 색상 지점 — 신형 JSON이 있으면 그것, 없으면 구형에서 합성.
+
+    저장된 JSON이 깨져 있어도 **화면을 깨뜨리지 않는다** — 구형 합성으로 떨어진다.
+    (색은 장식이라 여기서 500을 내는 것이 더 나쁘다.)
+    """
+    raw = row["color_stops"] if "color_stops" in row.keys() else None
+    if raw:
+        try:
+            parsed = clean_stops(json.loads(raw))
+            if parsed:
+                return parsed
+        except (TagError, ValueError, TypeError):
+            pass
+    return stops_from_legacy(row)
+
+
+def legacy_from_stops(stops: list[dict], gradient_direction: str) -> dict:
+    """stop 배열 → 구형 3컬럼. **쓰기 경로는 두 표현을 항상 함께 갱신한다.**
+
+    이 컬럼들을 아직 읽는 코드(관리 응답의 `colorMode` 등)가 마이그레이션 후에도
+    똑같이 동작해야 하기 때문이다. 3개 이상이면 구형 표현은 양 끝만 담게 되는데,
+    그게 구형 소비처가 표현할 수 있는 최선이고 **신형 소비처는 JSON을 본다**.
+    """
+    if len(stops) <= 1:
+        return {"color_mode": "solid", "color_start": stops[0]["color"],
+                "color_end": None, "gradient_direction": gradient_direction}
+    return {"color_mode": "gradient", "color_start": stops[0]["color"],
+            "color_end": stops[-1]["color"], "gradient_direction": gradient_direction}
+
+
+def clean_style_v2(color_stops: object, gradient_direction: object) -> dict:
+    """신형 입력(stop 배열 + 방향)을 검증해 **DB 컬럼 한 세트**로 만든다."""
+    stops = clean_stops(color_stops)
+    direction = gradient_direction if isinstance(gradient_direction, str) else ""
+    direction = direction.strip().lower() or GRADIENT_DIRECTIONS[0]
+    if direction not in GRADIENT_DIRECTIONS:
+        raise TagError("그라데이션 방향이 올바르지 않습니다.")
+    out = legacy_from_stops(stops, direction)
+    out["color_stops"] = json.dumps(stops, separators=(",", ":"))
+    return out
+
+
 def clean_kind(value: object) -> str:
     v = value if isinstance(value, str) else "team"
     v = (v or "team").strip().lower()
@@ -181,10 +301,15 @@ def _public(row) -> dict:
         "name": row["name"],
         "slug": row["slug"],
         "kind": row["kind"],
+        # 구형 3필드는 **계속 내보낸다.** 이걸 읽는 소비처가 마이그레이션 후에도
+        # 정확히 같은 색을 그려야 한다(3색 이상이면 양 끝으로 근사된다).
         "colorMode": row["color_mode"],
         "colorStart": row["color_start"],
         "colorEnd": row["color_end"],
         "gradientDirection": row["gradient_direction"],
+        # 신형 — 화면은 이걸 먼저 본다. 구형 행에서도 합성되므로 **항상 존재한다**
+        # (프론트에 "없을 수도 있음" 분기를 만들지 않기 위해서다).
+        "colorStops": stops_of(row),
     }
 
 
@@ -224,7 +349,11 @@ async def tags_for_channels(channel_ids) -> dict[str, list[dict]]:
         rows = await (await db.execute(
             f"""SELECT a.streamer_channel_id AS cid, a.display_order,
                        t.id, t.name, t.slug, t.kind, t.color_mode,
-                       t.color_start, t.color_end, t.gradient_direction
+                       t.color_start, t.color_end, t.gradient_direction,
+                       -- **빼면 안 된다.** `_public`이 이 컬럼으로 stop 배열을 만든다.
+                       -- 없으면 조용히 구형 합성으로 떨어져 3색 그룹이 목록에서만
+                       -- 2색으로 보인다(관리 화면과 색이 달라진다).
+                       t.color_stops
                   FROM streamer_tag_assignments a
                   JOIN streamer_tags t ON t.id = a.tag_id
                  WHERE a.streamer_channel_id IN ({marks})
@@ -288,11 +417,54 @@ async def get_tag(tag_id: int):
 
 # ── 쓰기 ────────────────────────────────────────────────────────────────────
 
-async def create_tag(*, name, color_mode, color_start, color_end,
-                     gradient_direction, kind="team",
+def _style_for_write(*, color_stops, color_mode, color_start, color_end,
+                     gradient_direction, current=None) -> dict:
+    """입력이 신형(stop 배열)이든 구형(3필드)이든 **컬럼 한 세트**로 정규화한다.
+
+    `color_stops`가 오면 그쪽이 이긴다 — 두 표현이 동시에 오면 사용자가 방금 조작한
+    것은 새 편집기 쪽이고, 구형 필드는 폼이 습관적으로 함께 보낸 잔재이기 때문이다.
+    구형 입력만 오면 예전 검증(`clean_style`)을 그대로 통과시킨 뒤 **동등한 stop
+    배열을 함께 써 준다** — 그래야 두 표현이 갈라지지 않는다.
+    """
+    if color_stops is not None:
+        direction = gradient_direction
+        if direction is None and current is not None:
+            direction = current["gradient_direction"]
+        return clean_style_v2(color_stops, direction)
+    if color_mode is None and color_start is None and color_end is None \
+            and gradient_direction is None:
+        return {}
+    # **방향만 바꾸는 경우 기존 stop 배열을 보존한다.** 여기서 구형 3컬럼으로
+    # 재구성하면 3색 이상이던 그룹이 방향을 한 번 바꾼 것만으로 2색으로 잘린다
+    # (구형 컬럼은 양 끝만 담기 때문이다) — 조용한 데이터 손실이라 가장 나쁘다.
+    if current is not None and gradient_direction is not None \
+            and color_mode is None and color_start is None and color_end is None:
+        return clean_style_v2(stops_of(current), gradient_direction)
+    if current is not None:
+        color_mode = color_mode if color_mode is not None else current["color_mode"]
+        color_start = color_start if color_start is not None else current["color_start"]
+        color_end = color_end if color_end is not None else current["color_end"]
+        gradient_direction = (gradient_direction if gradient_direction is not None
+                              else current["gradient_direction"])
+    style = clean_style(color_mode, color_start, color_end, gradient_direction)
+    stops = ([{"color": style["color_start"], "pos": 0},
+              {"color": style["color_end"], "pos": 100}]
+             if style["color_mode"] == "gradient" and style["color_end"]
+             else [{"color": style["color_start"], "pos": 0}])
+    style["color_stops"] = json.dumps(stops, separators=(",", ":"))
+    return style
+
+
+async def create_tag(*, name, color_mode=None, color_start=None, color_end=None,
+                     gradient_direction=None, kind="team",
+                     color_stops=None,
                      exclude_from_ranking: bool = False) -> dict:
     clean = clean_name(name)
-    style = clean_style(color_mode, color_start, color_end, gradient_direction)
+    style = _style_for_write(color_stops=color_stops, color_mode=color_mode,
+                             color_start=color_start, color_end=color_end,
+                             gradient_direction=gradient_direction)
+    if not style:
+        raise TagError("색상을 입력해 주세요.")
     k = clean_kind(kind)
     slug = slugify(clean)
     now = int(time.time())
@@ -301,11 +473,11 @@ async def create_tag(*, name, color_mode, color_start, color_end,
         cur = await db.execute(
             """INSERT INTO streamer_tags
                    (name, slug, kind, color_mode, color_start, color_end,
-                    gradient_direction, active, exclude_from_ranking,
+                    gradient_direction, color_stops, active, exclude_from_ranking,
                     created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,1,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,1,?,?,?)""",
             (clean, slug, k, style["color_mode"], style["color_start"],
-             style["color_end"], style["gradient_direction"],
+             style["color_end"], style["gradient_direction"], style["color_stops"],
              1 if exclude_from_ranking else 0, now, now))
         await db.commit()
     except Exception as e:
@@ -321,7 +493,7 @@ async def create_tag(*, name, color_mode, color_start, color_end,
 
 async def update_tag(tag_id: int, *, name=None, color_mode=None, color_start=None,
                      color_end=None, gradient_direction=None, active=None,
-                     exclude_from_ranking=None) -> dict:
+                     color_stops=None, exclude_from_ranking=None) -> dict:
     row = await get_tag(tag_id)
     if row is None:
         raise TagError("존재하지 않는 태그입니다.")
@@ -330,15 +502,10 @@ async def update_tag(tag_id: int, *, name=None, color_mode=None, color_start=Non
         clean = clean_name(name)
         fields["name"] = clean
         fields["slug"] = slugify(clean)
-    if color_mode is not None or color_start is not None \
-            or color_end is not None or gradient_direction is not None:
-        # 일부만 온 경우 나머지는 기존 값으로 채워 넣고 **한 세트로** 검증한다.
-        fields.update(clean_style(
-            color_mode if color_mode is not None else row["color_mode"],
-            color_start if color_start is not None else row["color_start"],
-            color_end if color_end is not None else row["color_end"],
-            gradient_direction if gradient_direction is not None
-            else row["gradient_direction"]))
+    # 일부만 온 경우 나머지는 기존 값으로 채워 넣고 **한 세트로** 검증한다.
+    fields.update(_style_for_write(
+        color_stops=color_stops, color_mode=color_mode, color_start=color_start,
+        color_end=color_end, gradient_direction=gradient_direction, current=row))
     if active is not None:
         fields["active"] = 1 if active else 0
     if exclude_from_ranking is not None:
@@ -593,7 +760,7 @@ RANKING_EXCLUSION_SQL = """
       JOIN streamer_tags t ON t.id = a.tag_id
      WHERE t.active = 1 AND t.exclude_from_ranking = 1
 """
-"""전체 스트리머 랭킹에서 뺄 채널을 뽑는 서브쿼리.
+"""랭킹에서 뺄 채널을 뽑는 서브쿼리.
 
 **쿼리 안에서 직접 쓰라고 문자열로 둔다.** 파이썬으로 목록을 만들어 `NOT IN (?,?,…)`을
 조립하면 (1) 목록이 길어질수록 바인딩이 늘고 (2) 조회와 랭킹 쿼리 사이에 값이 바뀌는
@@ -605,6 +772,41 @@ RANKING_EXCLUSION_SQL = """
  · 여러 그룹에 속하면 **하나라도 제외 그룹이면 제외**된다(EXISTS 의미).
  · 그룹 **이름**을 보지 않으므로 이름을 바꿔도 정책이 유지된다.
 """
+
+
+def ranking_exclusion_clause(column: str) -> str:
+    """`<column> NOT IN (제외 대상)` 절을 만든다 — **랭킹 쿼리는 이 함수만 쓴다.**
+
+    예전에는 서브쿼리를 라우터에 그대로 복사해 넣었다. 그 상태에서 적용 범위를
+    넓히자(기간별 누적 랭킹) 곧바로 드러난 문제가 있다: 한쪽만 고치면 두 랭킹이
+    **서로 다른 명단**을 쓰게 되고, 그 차이는 화면을 나란히 놓기 전까지 보이지 않는다.
+    그래서 SQL 조각을 만드는 지점을 하나로 모은다.
+
+    `column`은 **호출자가 코드에 적어 넣는 컬럼 이름**이다(사용자 입력이 아니다).
+    그래도 식별자 형태만 통과시킨다 — 문자열 조립 지점에 검증이 없으면, 나중에
+    누군가 여기에 변수를 넘기는 순간 그게 주입 경로가 된다.
+    """
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", column):
+        raise ValueError(f"잘못된 컬럼 식별자: {column!r}")
+    return f"{column} NOT IN ({RANKING_EXCLUSION_SQL})"
+
+
+#: 이 정책이 적용되는 화면. **여기 없는 화면은 제외하지 않는다.**
+#:
+#: 적용: 순위 경쟁을 보여 주는 화면 — 플랫폼이 직접 운영하는 채널이 상위를 차지하면
+#:       그 순위가 커뮤니티의 실제 판도를 나타내지 못한다.
+#: 미적용: 찾기·확인·분석 화면 — 여기서 빼면 "검색해도 안 나온다"가 된다.
+#:         (검색·스트리머 상세·신규/소형 스트리머 **통계**·싱드컵·수집·저장)
+#:
+#: 소형 스트리머 **랭킹**을 적용 쪽에 넣은 이유: 이름 그대로 랭킹이고, 정책의 목적이
+#: "플랫폼 운영 채널을 순위 경쟁에서 뺀다"이므로 전체·기간별과 갈라 둘 근거가 없다.
+#: 반면 소형/신규 스트리머 **통계**(분석 화면)는 기존 신규 카빙아웃과 같은 이유로
+#: 적용하지 않는다 — 그쪽은 "누가 있나"를 보는 화면이다.
+RANKING_EXCLUSION_APPLIES_TO: tuple[str, ...] = (
+    "live-ranking",       # 전체 스트리머 랭킹
+    "ranking-period",     # 기간별 누적 랭킹
+    "small-ranking",      # 소형 스트리머 랭킹
+)
 
 
 async def excluded_channel_ids() -> set[str]:

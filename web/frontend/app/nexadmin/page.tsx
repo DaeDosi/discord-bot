@@ -9,6 +9,7 @@ import {
 import SingcupRepPanel from "./SingcupRepPanel";
 import SingcupClipMetricsPanel from "./SingcupClipMetricsPanel";
 import StreamerTagsPanel from "./StreamerTagsPanel";
+import PikuPanel from "./PikuPanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -703,7 +704,7 @@ export default function AdminPage() {
   const [loading, setLoading]         = useState(true);
   const [showAdd, setShowAdd]         = useState(false);
   const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow" | "announcement" | "singcup-rep"
-                                      | "streamer-tags">("guilds");
+                                      | "streamer-tags" | "piku">("guilds");
   const [refreshing, setRefreshing]   = useState(false);
   const [selectedVerif, setSelectedVerif] = useState<VerifUser | null>(null);
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null);
@@ -851,6 +852,8 @@ export default function AdminPage() {
     { key: "announcement", label: "공지 관리" },
     { key: "singcup-rep", label: "싱드컵 대표 클립" },
     { key: "streamer-tags", label: "스트리머 소속 그룹" },
+    // PIKU 사용자 투표 순위 — 부문 매핑·수집·이름 매핑을 한 곳에서 한다.
+    { key: "piku", label: "PIKU 순위" },
   ] as const;
 
   return (
@@ -1137,6 +1140,8 @@ export default function AdminPage() {
         {/* 스트리머 소속 그룹 — 치지직 **방송 태그**와 다른 개념이다(운영자가 만든다).
             내부 식별자(streamer-tags·team_tags)는 그대로 두고 화면 문구만 '소속 그룹'이다. */}
         {activeTab === "streamer-tags" && <StreamerTagsPanel />}
+
+        {activeTab === "piku" && <PikuPanel />}
 
       </main>
     </div>

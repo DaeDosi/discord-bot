@@ -17,7 +17,7 @@ const code = (p: string) =>
 
 // ── 요구 1: 제목 ────────────────────────────────────────────────────────────
 test("요구1: 'NexBot 비공식 인기점수 랭킹'이 어디에도 남지 않는다", () => {
-  for (const f of ["app/stats/Singcup.tsx", "app/stats/SingcupQualifiers.tsx",
+  for (const f of ["app/stats/Singcup.tsx", "app/stats/SingcupOfficial.tsx",
                    "app/stats/singcup/live/page.tsx", "app/stats/page.tsx",
                    "app/layout.tsx", "app/sitemap.ts"]) {
     assert.ok(!read(f).includes("NexBot 비공식 인기점수 랭킹"), `${f}에 옛 제목이 있다`);
@@ -45,9 +45,15 @@ test("요구2: 랭킹 화면은 확정본 훅을 쓴다", () => {
     "랭킹 화면이 /main 훅으로 되돌아갔다 — 참가자 화면까지 얼어붙는다");
 });
 
-test("요구2: 공식 예선 참가자 화면은 최신 지표(/main)를 계속 쓴다", () => {
-  const s = read("app/stats/SingcupQualifiers.tsx");
-  assert.ok(s.includes("useSingcupMain"), "참가자 화면까지 확정본으로 바꾸면 안 된다");
+test("요구2: 공식 예선 참가자 화면은 확정본이 아니라 최신 상태를 쓴다", () => {
+  // UI-P 시점에는 `/main`(참가자 전원)이 유일한 최신 소스라 그것을 썼다.
+  // SINGCUP-3에서 **공식 참가자 전용 엔드포인트**가 생겼고, 그쪽은
+  //  · 명단 밖 채널을 구조적으로 담을 수 없어 LIVE 노출 정책을 서버가 강제하고
+  //  · 응답이 훨씬 작다(참가자 전원 약 850KB → 공식 명단만).
+  // 계약의 뜻("참가자 화면을 확정본으로 얼리지 않는다")은 그대로다.
+  const s = read("app/stats/SingcupOfficial.tsx");
+  assert.ok(s.includes("api.singcup.qualifiers("), "최신 상태를 받아야 한다");
+  assert.ok(!s.includes("useSingcupRanking"), "참가자 화면을 확정본으로 얼리면 안 된다");
 });
 
 test("요구2: 확정본에서는 갱신 중으로 읽히는 표시를 끈다", () => {
@@ -98,7 +104,7 @@ test("요구3: 적용 범위는 공식 예선 참가자 카드뿐이다", () => 
                    "app/stats/page.tsx"]) {
     assert.ok(!read(f).includes("nb-live-badge"), `${f}가 이 클래스를 쓰면 범위가 넓어진다`);
   }
-  assert.ok(read("app/stats/SingcupQualifiers.tsx").includes("nb-live-badge"));
+  assert.ok(read("app/stats/SingcupOfficial.tsx").includes("nb-live-badge"));
 });
 
 // ── 요구 4: 통계 안내 페이지 ────────────────────────────────────────────────
