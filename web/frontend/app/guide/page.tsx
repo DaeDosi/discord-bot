@@ -6,7 +6,6 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import SiteHeader from "@/components/SiteHeader";
-import Footer from "@/components/Footer";
 import {
   TerminalMockup, PointsMockup, ChzzkEmbedMockup, ChzzkFollowVerifyMockup,
   LevelingMockup,
@@ -243,7 +242,6 @@ export default function GuidePage() {
         </div>
       </main>
 
-      <Footer />
     </div>
   );
 }

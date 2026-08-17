@@ -814,3 +814,133 @@ async def excluded_channel_ids() -> set[str]:
     db = await get_db()
     rows = await (await db.execute(RANKING_EXCLUSION_SQL)).fetchall()
     return {r["streamer_channel_id"] for r in rows}
+
+
+# ── 그룹 분석(공개) ─────────────────────────────────────────────────────────
+#
+# **랭킹 제외 계약과 무관하다.** `exclude_from_ranking`은 *전체·기간별·소형 랭킹*
+# 에서 그 그룹 멤버를 빼는 정책이지, 그룹 자체를 숨기는 뜻이 아니다. 공식 그룹도
+# 그룹 분석에서는 보여야 한다 — 여기서 그 플래그로 거르면 "공식 그룹을 볼 수 없는"
+# 전혀 다른 정책이 조용히 생긴다. 그래서 이 아래 어디에서도 그 컬럼을 읽지 않는다.
+
+#: 그룹 분석 한 화면이 돌려주는 멤버 수 상한(응답 폭주 방지).
+GROUP_MEMBER_MAX = 300
+
+#: 그룹 목록 상한.
+GROUP_LIST_MAX = 200
+
+#: 그룹 분석 응답 캐시 TTL(초). 무효화는 `version()`이 맡는다.
+GROUP_CACHE_TTL = 60
+
+_group_cache: dict = {}
+
+
+def reset_group_cache() -> None:
+    """테스트·진단용."""
+    _group_cache.clear()
+
+
+async def group_list() -> list[dict]:
+    """분석 대상 그룹 목록 — **활성이고 멤버가 1명 이상인** 그룹만.
+
+    멤버 수는 그룹마다 따로 세지 않고 한 번의 `GROUP BY`로 얻는다. 그룹 수만큼
+    쿼리를 돌리면 그게 N+1이고, 그룹이 늘수록 선형으로 느려진다.
+    """
+    key = ("list", version())
+    hit = _group_cache.get(key)
+    if hit is not None and time.time() - hit[0] < GROUP_CACHE_TTL:
+        return hit[1]
+
+    db = await get_db()
+    rows = await (await db.execute(
+        """SELECT t.*, COUNT(a.streamer_channel_id) AS member_count
+             FROM streamer_tags t
+             JOIN streamer_tag_assignments a ON a.tag_id = t.id
+            WHERE t.active = 1
+            GROUP BY t.id
+           HAVING member_count > 0
+            ORDER BY member_count DESC, t.name
+            LIMIT ?""", (GROUP_LIST_MAX,))).fetchall()
+    out = [{**_public(r), "memberCount": int(r["member_count"])} for r in rows]
+    _group_cache[key] = (time.time(), out)
+    return out
+
+
+async def group_detail(tag_id: int) -> dict | None:
+    """한 그룹의 멤버와 현재 방송 상태.
+
+    쿼리는 **두 번뿐이다**: 그룹 1행, 멤버+최신 스냅샷 조인 1회. 멤버마다 라이브를
+    조회하면 멤버 수만큼 왕복이 생긴다(그게 이 화면에서 가장 쉬운 실수다).
+
+    `live`는 가장 최근 성공한 수집 회차 하나만 본다 — 회차를 섞으면 합계가 서로
+    다른 시각의 값을 더한 숫자가 돼 "지금 동시 시청자"라는 의미가 깨진다.
+    """
+    tid = int(tag_id)
+    key = ("detail", tid, version())
+    hit = _group_cache.get(key)
+    if hit is not None and time.time() - hit[0] < GROUP_CACHE_TTL:
+        return hit[1]
+
+    db = await get_db()
+    tag = await (await db.execute(
+        "SELECT * FROM streamer_tags WHERE id = ? AND active = 1",
+        (tid,))).fetchone()
+    if tag is None:
+        return None
+
+    ts_row = await (await db.execute(
+        "SELECT MAX(collected_at) t FROM rising_collect_runs WHERE ok = 1")).fetchone()
+    ts = ts_row["t"] if ts_row else None
+
+    rows = await (await db.execute(
+        """SELECT a.streamer_channel_id AS cid, a.display_order,
+                  COALESCE(s.channel_name, c.channel_name, '') AS channel_name,
+                  s.concurrent_viewers, s.category_name, s.live_title,
+                  -- 팔로워는 스냅샷에만 있다(`rising_channel_stats`에는 없다).
+                  s.open_date, s.follower_count
+             FROM streamer_tag_assignments a
+             LEFT JOIN rising_channel_stats c
+                    ON c.chzzk_channel_id = a.streamer_channel_id
+             LEFT JOIN rising_live_snapshots s
+                    ON s.chzzk_channel_id = a.streamer_channel_id
+                   AND s.collected_at = ?
+            WHERE a.tag_id = ?
+            ORDER BY a.display_order, a.streamer_channel_id
+            LIMIT ?""", (ts, tid, GROUP_MEMBER_MAX))).fetchall()
+
+    members = []
+    for r in rows:
+        viewers = r["concurrent_viewers"]
+        members.append({
+            "channelId": r["cid"],
+            "channelName": r["channel_name"] or r["cid"][:8],
+            "channelImageUrl": _channel_image(r["cid"]),
+            "displayOrder": int(r["display_order"]),
+            # `live=False`와 `concurrentViewers=0`은 다르다 — 전자는 방송 자체가
+            # 없는 것이고 후자는 켜져 있는데 시청자가 0인 것이다.
+            "live": viewers is not None,
+            "concurrentViewers": int(viewers or 0),
+            "categoryName": r["category_name"] or "",
+            "liveTitle": r["live_title"] or "",
+            "openDate": r["open_date"] or "",
+            "followerCount": int(r["follower_count"] or 0),
+        })
+
+    # 그룹 내 순위는 **현재 시청자 내림차순**이다. 방송하지 않는 멤버는 순위를
+    # 받지 않는다(0명으로 줄 세우면 꺼져 있는 사람이 켜져 있는 사람과 섞인다).
+    live_sorted = sorted((m for m in members if m["live"]),
+                         key=lambda m: -m["concurrentViewers"])
+    for i, m in enumerate(live_sorted):
+        m["groupRank"] = i + 1
+
+    out = {
+        "group": _public(tag),
+        "memberCount": len(members),
+        "liveCount": len(live_sorted),
+        "totalViewers": sum(m["concurrentViewers"] for m in live_sorted),
+        "collectedAt": int(ts) if ts is not None else None,
+        "members": members,
+        "truncated": len(members) >= GROUP_MEMBER_MAX,
+    }
+    _group_cache[key] = (time.time(), out)
+    return out

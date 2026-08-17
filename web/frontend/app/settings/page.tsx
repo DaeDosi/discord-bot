@@ -16,7 +16,6 @@ import Image from "next/image";
 import {
   AlertTriangle, Check, Loader2, LogOut, Shield, Trash2, UserRound,
 } from "lucide-react";
-import Footer from "@/components/Footer";
 import SiteHeader from "@/components/SiteHeader";
 import { api } from "@/lib/api";
 import type { AccountMe, AccountDeleteResult } from "@/lib/types";
@@ -306,7 +305,6 @@ export default function SettingsPage() {
         ) : null}
       </main>
 
-      <Footer />
     </div>
   );
 }

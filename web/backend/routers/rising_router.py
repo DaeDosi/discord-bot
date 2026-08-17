@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import streamer_tags as st
 from chzzk_channel_history import get_channel_history
-from fastapi import APIRouter, Query, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from rising_collector import _fetch_channel_meta, latest_image
 
 from database import get_db
@@ -466,6 +466,27 @@ async def quick_search(q: str = "", limit: int = QUICK_SEARCH_MAX_RESULTS):
         "limit": limit,
         "maxQueryLength": QUICK_SEARCH_MAX_LEN,
     }
+
+
+@router.get("/groups")
+async def groups():
+    """그룹 분석 — 분석 가능한 그룹 목록(활성 + 멤버 1명 이상).
+
+    **`excludeFromRanking`을 여기서 거르지 않는다.** 그 플래그는 전체·기간별·소형
+    *랭킹*에서 멤버를 빼는 정책이고, 그룹을 화면에서 숨기라는 뜻이 아니다.
+    공식 그룹도 그룹 분석에서는 보여야 한다.
+    """
+    return {"groups": await st.group_list()}
+
+
+@router.get("/groups/{group_id}")
+async def group_detail(group_id: int):
+    """한 그룹의 멤버와 현재 방송 상태. 쿼리는 2회 고정(멤버 수와 무관)."""
+    out = await st.group_detail(group_id)
+    if out is None:
+        # 비활성·삭제된 그룹은 목록에서 사라지므로 직접 URL만 여기로 온다.
+        raise HTTPException(status_code=404, detail="그룹을 찾을 수 없습니다.")
+    return out
 
 
 @router.get("/small-ranking")

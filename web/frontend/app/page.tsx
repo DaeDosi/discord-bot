@@ -12,7 +12,6 @@ import {
 const BOT_CLIENT_ID = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID || "YOUR_CLIENT_ID";
 const INVITE_URL    = `https://discord.com/oauth2/authorize?client_id=${BOT_CLIENT_ID}&permissions=8&scope=bot%20applications.commands`;
 
-import Footer from "@/components/Footer";
 import SiteHeader from "@/components/SiteHeader";
 import { api } from "@/lib/api";
 import type { User } from "@/lib/types";
@@ -385,7 +384,6 @@ export default function HomePage() {
         ))}
       </section>
 
-      <Footer />
     </div>
   );
 }

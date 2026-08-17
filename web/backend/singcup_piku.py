@@ -549,11 +549,47 @@ async def collect_division(division: str, *, client=None) -> dict:
             await client.aclose()
 
 
+async def preview_rows(division: str, raw: Any) -> dict:
+    """**저장하지 않고** 검증만 한다(dry-run).
+
+    수집이든 수동 import든, 먼저 이걸로 형태를 확인한 뒤 반영한다. 활성 dataset을
+    건드리지 않으므로 실패해도 마지막 정상 데이터가 그대로 남는다.
+
+    응답에 **우승 비율·승률 숫자를 담지 않는다.** 미리보기라는 이유로 내부값을
+    화면에 흘리면 "공개 화면에 비율을 쓰지 않는다"는 계약이 관리 화면에서 깨진다.
+    검증에 필요한 것은 "몇 건이 통과했고 무엇이 걸렸는가"이지 값 자체가 아니다.
+    """
+    if division not in DIVISIONS:
+        raise PikuError("bad_division", "알 수 없는 부문입니다.")
+    rows = validate_rows(normalize_rows(raw))
+    known = {q["name"] for q in qualifier_names(division)}
+    names = [r["name"] for r in rows]
+    return {
+        "division": division,
+        "entries": len(rows),
+        "applied": False,
+        # 이름만 돌려준다 — 매핑이 붙을지 미리 보는 것이 목적이다.
+        "matched": sorted(n for n in names if n in known),
+        "unmatched": sorted(n for n in names if n not in known),
+        "duplicates": sorted({n for n in names if names.count(n) > 1}),
+    }
+
+
+def qualifier_names(division: str) -> list[dict]:
+    """이 부문 공식 참가자 이름 — preview가 매칭 여부를 미리 보여 줄 때 쓴다."""
+    import singcup_qualifiers as sq
+    if division == "groups":
+        return [{"name": m["name"]} for g in sq.QUALIFIERS["groups"]
+                for m in g["members"]]
+    return [{"name": q["name"]} for q in sq.QUALIFIERS.get(division, [])]
+
+
 async def import_rows(division: str, raw: Any) -> dict:
     """관리자 수동 import — 수집과 **같은 검증·같은 원자 교체**를 거친다.
 
     외부 접속 없이 데이터를 넣는 경로다. 수집이 막혀 있을 때의 대체 수단이자,
     파서를 실제 응답으로 검증하는 수단이기도 하다.
+    반영 전에 `preview_rows`로 먼저 확인할 수 있다.
     """
     if division not in DIVISIONS:
         raise PikuError("bad_division", "알 수 없는 부문입니다.")

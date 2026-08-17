@@ -7,7 +7,6 @@ import {
 import { api } from "@/lib/api";
 import { useSingcupMain } from "@/lib/useSingcupMain";
 import type { SingcupStatusResponse, SingcupStreamer } from "@/lib/types";
-import Footer from "@/components/Footer";
 import SiteHeader from "@/components/SiteHeader";
 import {
   Disclaimer, EventBadge, GOLD, GREEN, StaleBadge, StatusChip,
@@ -267,23 +266,9 @@ export default function SingcupLivePage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-bg text-fg">
-      {/* 공통 헤더 하나만 쓴다. '통계로 돌아가기'와 현재 위치는 breadcrumb에 담는다. */}
-      <SiteHeader
-        maxWidth="full"
-        breadcrumb={
-          <span className="flex min-w-0 items-center gap-2">
-            <Link href="/stats"
-                  className="nb-tap flex shrink-0 items-center gap-1.5 text-sm text-muted
-                             transition-colors hover:text-fg">
-              <ArrowLeft size={15} aria-hidden="true" /> 통계
-            </Link>
-            <span className="text-border" aria-hidden="true">/</span>
-            <span className="flex min-w-0 items-center gap-1.5 truncate text-[15px] font-extrabold"
-                  style={{ color: GOLD }}>
-              <Radio size={16} aria-hidden="true" /> 싱드컵 라이브
-            </span>
-          </span>
-        } />
+      {/* 공통 헤더 하나만 쓴다. 현재 위치 표시는 헤더 왼쪽(브랜드 옆)에
+          상시로 있으므로 breadcrumb을 따로 넘기지 않는다. */}
+      <SiteHeader maxWidth="full" />
 
       {/* 게이트를 아직 모르는 동안에는 **아무것도 단정하지 않는다.** 종료 화면을
           먼저 보였다가 목록이 나타나면 화면이 깨진 것으로 읽힌다. */}
@@ -411,7 +396,6 @@ export default function SingcupLivePage() {
         <Disclaimer />
       </main>
       )}
-      <Footer />
     </div>
   );
 }

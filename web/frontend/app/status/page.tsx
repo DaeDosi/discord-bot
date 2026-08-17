@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ChevronLeft, CheckCircle, AlertCircle, Clock } from "lucide-react";
 import SiteHeader from "@/components/SiteHeader";
-import Footer from "@/components/Footer";
 
 export const metadata: Metadata = {
   title: "서버 상태 — NexBot",
@@ -122,7 +121,6 @@ export default function StatusPage() {
         )}
       </main>
 
-      <Footer />
     </div>
   );
 }

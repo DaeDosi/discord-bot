@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 import SiteHeader from "@/components/SiteHeader";
-import Footer from "@/components/Footer";
 
 export const metadata: Metadata = {
   title: "이용약관 — NexBot",
@@ -263,7 +262,6 @@ export default function TermsPage() {
         </div>
       </main>
 
-      <Footer />
     </div>
   );
 }

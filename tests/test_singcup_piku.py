@@ -725,3 +725,68 @@ class TestPublicSortTokens:
         assert "_sorted_entries(mapped, column)" in src
         # 응답 조립이 정렬 **뒤에** 온다(정렬 결과의 순서를 그대로 rank로 쓴다)
         assert src.index("_sorted_entries") < src.index('"rank": i + 1')
+
+
+class TestPreviewDryRun:
+    """반영 전 검증(dry-run) — **저장하지 않고** 형태만 본다."""
+
+    def test_preview는_아무것도_저장하지_않는다(self, pdb):
+        import singcup_piku as piku
+
+        async def _go():
+            before = await piku.active_dataset("female_solo")
+            out = await piku.preview_rows("female_solo", [
+                {"name": "고다요", "winRate": 62.5, "matchRate": 51.0},
+                {"name": "린시", "winRate": 40.0, "matchRate": 33.0},
+            ])
+            after = await piku.active_dataset("female_solo")
+            return out, before, after
+
+        out, before, after = pdb(_go())
+        assert out["applied"] is False
+        assert out["entries"] == 2
+        assert before == after, "미리보기가 활성 dataset을 바꿨다"
+
+    def test_preview_응답에_비율_숫자가_없다(self, pdb):
+        import json
+
+        import singcup_piku as piku
+
+        async def _go():
+            return await piku.preview_rows("female_solo", [
+                {"name": "고다요", "winRate": 62.5, "matchRate": 51.0}])
+
+        blob = json.dumps(pdb(_go()), ensure_ascii=False)
+        for bad in ("winRate", "matchRate", "win_rate", "match_rate",
+                    "62.5", "51.0"):
+            assert bad not in blob, f"미리보기가 내부값 {bad}를 흘렸다"
+
+    def test_매칭_여부를_미리_보여_준다(self, pdb):
+        import singcup_piku as piku
+
+        async def _go():
+            return await piku.preview_rows("female_solo", [
+                {"name": "고다요", "winRate": 1, "matchRate": 1},
+                {"name": "존재하지않는참가자", "winRate": 1, "matchRate": 1},
+            ])
+
+        out = pdb(_go())
+        assert "고다요" in out["matched"]
+        assert "존재하지않는참가자" in out["unmatched"]
+
+    def test_형식이_틀리면_반영_전에_막힌다(self, pdb):
+        import singcup_piku as piku
+
+        async def _go():
+            return await piku.preview_rows("female_solo", [{"nope": 1}])
+
+        with pytest.raises(piku.PikuError):
+            pdb(_go())
+
+    def test_preview는_외부를_부르지_않는다(self):
+        import inspect
+
+        import singcup_piku as piku
+        src = inspect.getsource(piku.preview_rows)
+        for bad in ("httpx", "AsyncClient", "_fetch_page", "collect_division"):
+            assert bad not in src, f"미리보기가 {bad}를 쓴다"

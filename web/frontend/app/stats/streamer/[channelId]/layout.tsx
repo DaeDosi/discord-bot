@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { fetchStreamerMeta, shouldNoIndex } from "@/lib/streamerMeta";
-import Footer from "@/components/Footer";
 
 // 스트리머별 분석 페이지의 서버 사이드 레이어.
 //
@@ -99,7 +98,6 @@ export default async function StreamerLayout(
           </Link>
         </div>
       </section>
-      <Footer />
     </div>
   );
 }

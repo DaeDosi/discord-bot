@@ -16,10 +16,16 @@ import type {
   RisingPeriodRanking, PeriodRange, PeriodSort, RisingCategoryStreamers,
   RisingSmallRanking,
 } from "@/lib/types";
-import Footer from "@/components/Footer";
 import CategoryRankCards from "./CategoryRankCards";
 import RankingCharts from "./RankingCharts";
 import TagSearch from "./TagSearch";
+import GroupAnalysis from "./GroupAnalysis";
+import { liveDuration } from "./singcupShared";
+
+/** 헤더 햄버거의 `aria-controls`가 가리키는 좌측 메뉴 컨테이너 id. */
+const STATS_NAV_ID = "nb-stats-nav";
+/** sidebar 펼침/접힘 사용자 선택. 값은 "1"(펼침)/"0"(접힘). */
+const STATS_NAV_STORAGE = "nb:statsNavOpen";
 import PeriodAnalysis from "./PeriodAnalysis";
 import Singcup from "./Singcup";
 import { ViewerDistribution, TrafficHeatmap, TitleKeywordRank } from "./OverviewViz";
@@ -119,18 +125,7 @@ function Delta({ pct }: { pct: number | null | undefined }) {
   );
 }
 
-// 방송시간(KST 문자열 → 경과) 계산
-function liveDuration(openDate: string): { ms: number; label: string } {
-  if (!openDate) return { ms: -1, label: "-" };
-  const iso = openDate.replace(" ", "T") + "+09:00";
-  const start = new Date(iso).getTime();
-  if (isNaN(start)) return { ms: -1, label: "-" };
-  const ms = Date.now() - start;
-  if (ms < 0) return { ms: -1, label: "-" };
-  const h = Math.floor(ms / 3600000);
-  const m = Math.floor((ms % 3600000) / 60000);
-  return { ms, label: h > 0 ? `${h}시간 ${m}분` : `${m}분` };
-}
+// 방송시간 계산은 `singcupShared`의 `liveDuration`을 쓴다(복사본 금지).
 
 // KPI 증감: 절대 변화량 + 변동률 (예: ▲ 12,340명(+2.5%))
 function KpiDelta({ pct, cur, unit }: { pct?: number | null; cur?: number; unit?: string }) {
@@ -2271,7 +2266,7 @@ function CategoryTab({ cats, onPick }: { cats: RisingCategories; onPick: (c: str
         <h3 className="section-title mb-1">카테고리(게임)별 현황</h3>
         <p className="text-xs text-muted mb-4">
           방송당 평균 = 시청자 ÷ 방송 수. 값이 높을수록 방송 대비 시청 유입(블루오션)이 큽니다.
-          행을 클릭하면 '카테고리별 스트리머' 탭에서 해당 카테고리로 방송 중인 목록을 조회합니다.
+          행을 클릭하면 &lsquo;카테고리별 스트리머&rsquo; 탭에서 해당 카테고리로 방송 중인 목록을 조회합니다.
         </p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[620px]">
@@ -2335,6 +2330,29 @@ export default function StatsPage() {
   const [news, setNews]   = useState<RisingNewcomers | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(false);
+  /* ── 좌측 통계 sidebar 접힘 상태 ──────────────────────────────────────
+     헤더 햄버거가 이 상태를 토글한다(상태 소유권은 **이 페이지 하나**다).
+
+     · 데스크톱: 기본 펼침. 접으면 그리드가 1열이 돼 **본문이 빈 sidebar 폭을
+       차지하지 않는다**(`md:grid-cols-[240px_1fr]`을 조건부로 뺀다).
+     · 모바일: 원래 세로로 쌓이므로 접으면 sidebar가 사라지고, 펼치면 drawer처럼
+       본문 위에 올라온다.
+
+     초기값을 `true`로 두고 마운트 후 localStorage를 읽는다 — 서버 렌더와 첫
+     클라이언트 렌더가 반드시 같아야 하므로 저장값을 초기 state에 넣지 않는다
+     (넣으면 hydration mismatch가 난다). */
+  const [navOpen, setNavOpen] = useState(true);
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(STATS_NAV_STORAGE);
+      if (v === "0") setNavOpen(false);
+    } catch { /* 시크릿 모드 등 — 기본값(펼침)을 그대로 쓴다 */ }
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem(STATS_NAV_STORAGE, navOpen ? "1" : "0"); }
+    catch { /* 저장 실패는 화면 동작에 영향을 주지 않는다 */ }
+  }, [navOpen]);
+
   // 그룹 접힘 상태는 StatsNav가 소유한다. 여기서는 활성 탭만 관리.
   const [tab, setTab] = useState<Tab>("overview");
 
@@ -2406,30 +2424,28 @@ export default function StatsPage() {
 
   return (
     <div className="min-h-screen bg-bg text-fg flex flex-col">
-      {/* 공통 헤더 하나만 쓴다. 현재 위치는 `breadcrumb`으로 넘긴다 —
-          예전에는 이 페이지만 브랜드 링크 마크업을 따로 갖고 있었다. */}
+      {/* 공통 헤더 하나만 쓴다. `치지직 통계`는 이제 헤더 왼쪽 브랜드 옆에
+          상시로 있으므로 여기서 breadcrumb으로 또 넘기지 않는다(중복 제거).
+          햄버거는 이 페이지의 **좌측 통계 sidebar**를 접고 편다. */}
       <SiteHeader
         maxWidth="full"
-        breadcrumb={
-          <span className="flex items-center gap-1.5 text-[16px] font-extrabold">
-            <BarChart3 size={17} style={{ color: GREEN }} aria-hidden="true" />
-            <GradText>치지직 통계</GradText>
-          </span>
-        } />
+        statsNav={{ open: navOpen, onToggle: () => setNavOpen((o) => !o),
+                    controlsId: STATS_NAV_ID }} />
 
       <main className="flex-1 w-full px-4 md:px-6 py-7 md:py-9">
-        <div className="mb-6">
-          {/* Beta 배지는 **공통 헤더의 '치지직 통계' 메뉴 옆 하나뿐**이다.
-              예전에는 여기 제목 옆에도 있어 같은 화면에 Beta가 두 번 보였다.
-              (그 배지는 상속된 line-height 때문에 정사각형으로 눌려 보이는 문제도
-              있었는데, 출처를 하나로 모으면서 함께 사라졌다.) */}
-          <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight leading-tight flex items-center gap-2 flex-wrap">
-            <span>치지직 <GradText>방송</GradText> 통계</span>
-          </h1>
-          <div className="mt-2 flex items-end justify-between gap-3 flex-wrap">
-            <p className="text-muted text-sm md:text-base">
-              치지직 라이브 방송의 시청자·카테고리 트렌드를 실시간으로 분석합니다.
-            </p>
+        <div className="mb-4">
+          {/* 큰 제목과 설명 문단을 **본문에서 걷어냈다.** 같은 내용을 헤더의
+              `치지직 통계` 메뉴와 좌측 sidebar가 이미 말하고 있어, 화면 상단
+              4분의 1이 중복 문구에 쓰이고 실제 데이터가 접힘선 밑으로 밀렸다.
+
+              다만 문서에는 h1이 있어야 한다(스크린리더의 페이지 제목이자
+              heading 순서의 시작). 그래서 **시각적으로만** 숨긴다.
+              `<title>`/metadata는 layout이 따로 들고 있으므로 SEO에는 영향이 없다.
+
+              Beta 배지도 공통 헤더 한 곳뿐이다 — 예전에는 여기 제목 옆에도 있어
+              같은 화면에 두 번 보였다. */}
+          <h1 className="sr-only">치지직 방송 통계</h1>
+          <div className="flex items-end justify-end gap-3 flex-wrap">
             {/* 싱드컵 탭에는 '싱드컵 집계'가 그 화면 우측 상단에 따로 있다. 수집기가
                 다른 두 시각(라이브 스냅샷 / 싱드컵 클립)이 같은 자리에 겹쳐 보이면
                 어느 쪽이 맞는지 알 수 없으므로, 싱드컵 탭에서는 이쪽을 숨긴다. */}
@@ -2530,11 +2546,17 @@ export default function StatsPage() {
              아이콘 16 + 배지 ≈38이 먼저 자리를 잡아 라벨에 약 100px만 남았다.
              240px면 같은 계산에서 라벨에 약 130px이 남아 가장 긴 라벨도 여유가 생긴다.
              글꼴이 더 넓은 PC를 위한 최종 안전망은 StatsNav의 라벨 truncate다. */
-          <div className="grid grid-cols-1 md:grid-cols-[240px_1fr] gap-5 md:gap-7">
-            {/* 좌측 메뉴 */}
-            <StatsNav active={tab} onSelect={selectTab}>
-              <StreamerSearch />
-            </StatsNav>
+          <div className={`grid grid-cols-1 gap-5 md:gap-7 ${
+            navOpen ? "md:grid-cols-[240px_1fr]" : "md:grid-cols-1"}`}>
+            {/* 좌측 메뉴 — 접으면 **DOM에서 빠진다.** `hidden`으로만 감추면
+                그리드 열이 남아 본문이 240px을 못 쓴다. */}
+            {navOpen && (
+              <div id={STATS_NAV_ID}>
+                <StatsNav active={tab} onSelect={selectTab}>
+                  <StreamerSearch />
+                </StatsNav>
+              </div>
+            )}
 
             {/* 우측 뷰 */}
             <div className="min-w-0">
@@ -2558,6 +2580,7 @@ export default function StatsPage() {
               {tab === "ranking_period"                && <PeriodRankingTab />}
               {tab === "category"           && cats && <CategoryTab cats={cats} onPick={pickCategory} />}
               {tab === "tags"                         && <TagSearch />}
+              {tab === "group"                        && <GroupAnalysis />}
               {tab === "category_streamers"          && (
                 <CategoryStreamerList category={pickedCat} onPick={setPickedCat} />
               )}
@@ -2571,7 +2594,6 @@ export default function StatsPage() {
         <StatsAbout />
       </main>
 
-      <Footer />
     </div>
   );
 }

@@ -30,9 +30,64 @@
     -webkit-font-smoothing: antialiased;
     transition: background-color 0.25s ease, color 0.25s ease;
   }
-  ::-webkit-scrollbar { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-track { background: rgb(var(--color-bg-rgb)); }
-  ::-webkit-scrollbar-thumb { background: rgb(var(--color-border-rgb)); border-radius: 3px; }
+  /* ── 전역 scrollbar ───────────────────────────────────────────────────
+     기존 6px thumb는 `--color-border`와 거의 같은 값이라 어두운 배경에서
+     **트랙과 구분되지 않았다.** 폭도 좁아 마우스로 잡기 어려웠다.
+
+     그래서 (1) 트랙을 배경보다 한 단계 어둡게 깔아 홈이 보이게 하고,
+     (2) thumb를 배경 대비가 나는 밝기로 올리고, (3) 잡을 수 있는 10px로 넓혔다.
+     10px은 Windows 기본(약 17px)보다 얇지만 콘텐츠를 덜 밀고, 6px처럼
+     '보이지만 못 잡는' 크기는 벗어난다.
+
+     화살표 버튼은 만들지 않는다 — `::-webkit-scrollbar-button`으로 흉내 내면
+     클릭해도 스크롤되지 않는 가짜 버튼이 된다. OS·브라우저가 주는 것만 쓴다.
+
+     `scrollbar-gutter`는 두지 않는다. 안정적인 자리 확보는 매력적이지만
+     현재 레이아웃(전역 헤더가 `100vw` 기준으로 중앙 정렬)에서 문서 폭이
+     바뀌어 헤더 중심이 어긋난다. 스크롤바를 숨기지도 않는다 — 숨기면
+     콘텐츠가 더 있다는 유일한 신호가 사라진다. */
+  :root {
+    --nb-scroll-track: rgb(var(--color-bg-rgb));
+    --nb-scroll-thumb: color-mix(in srgb, rgb(var(--color-fg-rgb)) 22%,
+                                 rgb(var(--color-bg-rgb)));
+    --nb-scroll-thumb-hover: color-mix(in srgb, rgb(var(--color-fg-rgb)) 36%,
+                                       rgb(var(--color-bg-rgb)));
+    --nb-scroll-thumb-active: color-mix(in srgb, rgb(var(--color-fg-rgb)) 50%,
+                                        rgb(var(--color-bg-rgb)));
+  }
+
+  /* Firefox — 폭 키워드와 색만 지원한다(둥글기는 브라우저가 정한다). */
+  html {
+    scrollbar-width: thin;
+    scrollbar-color: var(--nb-scroll-thumb) var(--nb-scroll-track);
+  }
+
+  /* Chromium/WebKit — 문서와 독립 스크롤 컨테이너에 **같은 규칙**을 준다.
+     선택자를 `html`로 좁히면 `overflow-y: auto` 패널만 기본 스크롤바가 돼
+     한 화면에 두 가지 모양이 섞인다. */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: var(--nb-scroll-track); }
+  ::-webkit-scrollbar-thumb {
+    background: var(--nb-scroll-thumb);
+    border-radius: 999px;
+    /* 투명 테두리 + `background-clip`으로 트랙과 thumb 사이 여백을 만든다.
+       margin으로는 만들 수 없는 간격이다. */
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--nb-scroll-thumb-hover);
+                                    background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:active { background: var(--nb-scroll-thumb-active);
+                                     background-clip: content-box; }
+  ::-webkit-scrollbar-corner { background: var(--nb-scroll-track); }
+
+  /* overlay scrollbar(모바일·macOS 기본) 환경에서는 폭이 0이라 위 규칙이
+     콘텐츠를 가리지 않는다. 별도 패딩을 넣으면 오히려 그쪽에서 빈 띠가 생긴다. */
+  @supports (overflow: overlay) {
+    @media (pointer: coarse) {
+      ::-webkit-scrollbar { width: 0; height: 0; }
+    }
+  }
 
   /* ── 키보드 포커스 계약 ────────────────────────────────────────────────
      여태 이 저장소에는 버튼·링크용 focus 규칙이 없었고 브라우저 기본

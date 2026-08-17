@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import Footer from "@/components/Footer";
 
 // 통계 안내 페이지.
 //
@@ -171,7 +170,6 @@ export default function StatsGuidePage() {
           </Link>
         </div>
       </main>
-      <Footer />
     </div>
   );
 }

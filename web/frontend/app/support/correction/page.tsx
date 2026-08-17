@@ -14,7 +14,6 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { AlertCircle, Check, Loader2, PencilLine } from "lucide-react";
-import Footer from "@/components/Footer";
 import SiteHeader from "@/components/SiteHeader";
 import { api } from "@/lib/api";
 import type { CorrectionMeta } from "@/lib/types";
@@ -231,7 +230,6 @@ export default function CorrectionPage() {
         )}
       </main>
 
-      <Footer />
     </div>
   );
 }

@@ -138,6 +138,21 @@ export default function SupportMenu() {
                 : notice ?? "현재 등록된 공지가 없습니다."}
             </p>
           </div>
+
+          {/* 법적 고지 — **공통 Footer를 걷어내면서 이 링크들의 유일한 상시 경로가
+              여기가 됐다.** 페이지 자체는 그대로 있고, 도달 경로만 옮겼다.
+              지우면 약관·개인정보처리방침에 사이트 어디서도 갈 수 없게 된다. */}
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 border-t border-border
+                          px-3 pb-1 pt-2.5">
+            {[["/terms", "이용약관"], ["/privacy", "개인정보처리방침"],
+              ["/privacy#section-6", "쿠키 정책"]].map(([href, label]) => (
+              <Link key={href} href={href} onClick={() => setOpen(false)}
+                    className="text-[12px] text-muted underline-offset-2 hover:text-fg
+                               hover:underline">
+                {label}
+              </Link>
+            ))}
+          </div>
         </div>
       )}
 

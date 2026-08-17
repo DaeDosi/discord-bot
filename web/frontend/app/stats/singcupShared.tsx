@@ -141,3 +141,25 @@ export function RankDelta({ value, isNew }: { value: number | null; isNew: boole
     </span>
   );
 }
+
+/** 방송시간(KST 문자열 → 경과).
+ *
+ *  `/stats`의 랭킹 탭과 그룹 분석이 함께 쓴다. 복사본을 두면 한쪽만 고쳐져
+ *  같은 방송이 화면마다 다른 시간으로 보인다. */
+export function liveDuration(openDate: string | null | undefined):
+    { ms: number; label: string } {
+  if (!openDate) return { ms: -1, label: "-" };
+  const iso = openDate.replace(" ", "T") + "+09:00";
+  const start = new Date(iso).getTime();
+  if (isNaN(start)) return { ms: -1, label: "-" };
+  const ms = Date.now() - start;
+  if (ms < 0) return { ms: -1, label: "-" };
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  return { ms, label: h > 0 ? `${h}시간 ${m}분` : `${m}분` };
+}
+
+/** epoch(초) → "8월 17일 오후 09:11". `fmtDateTime`은 ISO 문자열용이라 따로 둔다. */
+export const fmtEpoch = (sec: number | null | undefined) =>
+  sec ? new Date(sec * 1000).toLocaleString("ko-KR", {
+    month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";

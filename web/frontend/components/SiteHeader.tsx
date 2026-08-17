@@ -6,12 +6,13 @@
  * 페이지에 각자 복제돼 있어서, 한 곳을 고치면 나머지 열 곳이 남았다(UI-S 회차에
  * 로고 hit area 하나를 고치는 데 12파일을 만져야 했던 이유다).
  *
- * 레이아웃 계약 — 한 줄이고, **줄어드는 칸은 검색뿐이다**:
- *   [☰] [로고] [검색 — flex-1 min-w-0] [메뉴(lg+)] [로그인]
- * · 로고·햄버거·로그인은 `shrink-0`이라 절대 찌그러지지 않는다.
- * · 검색만 `min-w-0`으로 줄어든다 → 320px과 150% 확대에서도 가로 overflow가 없다.
- * · 브랜드 텍스트는 `sm` 미만에서 `sr-only`로 내린다. 접근 가능한 이름("NexBot")은
- *   그대로 남고 hit area(`.nb-brand-tap`, 44×44)도 유지된다.
+ * 레이아웃 계약 — **3영역 grid**다:
+ *   [☰ NexBot 치지직통계Beta] [검색] [사용 방법 · 로그인/프로필]
+ * · 좌우를 `1fr`로 같게 잡아야 가운데가 "남은 공간의 중심"이 아니라
+ *   **viewport의 중심**에 온다(실측: 전 뷰포트 offCenter 0).
+ * · `md` 미만에서는 `auto 1fr auto`로 바꾸고 검색을 접는다 — 260px에서 세 칸을
+ *   모두 펼치면 좌우가 0px까지 눌려 브랜드와 로그인이 겹쳤다.
+ * · 그 폭에서는 로그인 글자도 감추고 아이콘만 남긴다(hit area 44×44는 유지).
  *
  * 접근성 계약:
  * · 햄버거 `aria-expanded`/`aria-controls`, ESC 닫기, 닫을 때 버튼으로 포커스 복귀
@@ -24,37 +25,33 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import {
   Bot, Menu, X, Search, Radio, Loader2, ArrowRight, LogOut, ChevronRight,
+  Sparkles, Trophy, ListOrdered, Gamepad2,
   BookOpen, MessageCircleQuestion, Settings,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { QuickSearchItem, User } from "@/lib/types";
 
-/** 햄버거 안에 들어가는 보조 메뉴. 헤더 막대에는 자리가 없고, 여기 모아 두면
- *  좁은 화면에서도 같은 항목에 도달할 수 있다. */
+/** 햄버거 drawer 내용 — **통계 sidebar와 같은 메뉴**다.
+ *
+ *  sidebar가 있는 `/stats`에서는 햄버거가 그 sidebar를 접고 펴고, sidebar가 없는
+ *  페이지(홈·수정 요청 등)에서는 같은 목록을 여기 drawer로 보여 준다. 두 곳의
+ *  항목이 다르면 "PC에서 본 메뉴가 폰에 없다"가 되므로 `/stats` 좌측 메뉴의
+ *  최상위 묶음(봉누도·싱드컵·통계·랭킹·카테고리·통계 안내)을 그대로 따른다. */
 const DRAWER_LINKS: { href: string; label: string; icon: React.ReactNode }[] = [
-  { href: "/stats",       label: "치지직 통계",   icon: <Radio size={16} /> },
-  { href: "/stats/guide", label: "통계 안내",     icon: <BookOpen size={16} /> },
-  { href: "/guide",       label: "사용 방법",     icon: <BookOpen size={16} /> },
-  { href: "/faq",         label: "자주 묻는 질문", icon: <MessageCircleQuestion size={16} /> },
-  { href: "/about",       label: "서비스 소개",   icon: <Bot size={16} /> },
-  { href: "/status",      label: "서버 상태",     icon: <Radio size={16} /> },
+  { href: "/stats?tab=bongnudo",  label: "봉누도",       icon: <Sparkles size={16} /> },
+  { href: "/stats?tab=singcup",   label: "싱드컵",       icon: <Trophy size={16} /> },
+  { href: "/stats?tab=overview",  label: "통계",         icon: <Radio size={16} /> },
+  { href: "/stats?tab=ranking",   label: "랭킹",         icon: <ListOrdered size={16} /> },
+  { href: "/stats?tab=category",  label: "카테고리",     icon: <Gamepad2 size={16} /> },
+  { href: "/stats/guide",         label: "통계 안내",     icon: <BookOpen size={16} /> },
 ];
 
-/** 헤더 막대에 직접 노출하는 메뉴. `치지직 통계` **오른쪽**에 Beta 배지가 붙는다
- *  — 페이지 제목 옆의 배지와 중복되지 않도록 출처를 여기 하나로 모았다. */
+/** 헤더 오른쪽 끝의 보조 링크. 서비스 배지는 여기 두지 않는다(왼쪽 브랜드 옆 한 곳). */
 function HeaderNav() {
+  // `치지직 통계 Beta`는 **왼쪽 브랜드 옆 한 곳**에만 둔다. 예전에는 여기에도
+  // 같은 링크가 있어 한 헤더에 배지가 두 번 나왔다.
   return (
-    <nav aria-label="주요 메뉴" className="hidden items-center gap-1 lg:flex">
-      <Link href="/stats"
-            className="nb-tap inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2
-                       text-sm font-medium text-muted transition-colors hover:text-fg">
-        <Radio size={14} style={{ color: "#00FFA3" }} aria-hidden="true" />
-        치지직 통계
-        <span className="rounded border border-accent/40 px-1 py-px text-[10px]
-                         font-bold leading-none text-accent">
-          Beta
-        </span>
-      </Link>
+    <nav aria-label="주요 메뉴" className="hidden items-center gap-1 md:flex">
       <Link href="/guide"
             className="nb-tap inline-flex items-center rounded-lg px-2.5 py-2 text-sm
                        text-muted transition-colors hover:text-fg">
@@ -63,8 +60,6 @@ function HeaderNav() {
     </nav>
   );
 }
-
-// ── 전역 검색 ───────────────────────────────────────────────────────────────
 
 function GlobalSearch({ compact = false }: { compact?: boolean }) {
   const router = useRouter();
@@ -128,7 +123,7 @@ function GlobalSearch({ compact = false }: { compact?: boolean }) {
 
   return (
     <div ref={boxRef}
-         className={`relative min-w-0 flex-1 ${compact ? "" : "max-w-md"}`}>
+         className={`relative w-full min-w-0 ${compact ? "" : "max-w-[520px]"}`}>
       <div className="relative">
         <Search size={15} aria-hidden="true"
                 className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
@@ -148,15 +143,17 @@ function GlobalSearch({ compact = false }: { compact?: boolean }) {
           aria-controls={listId}
           aria-autocomplete="list"
           aria-activedescendant={active >= 0 ? `${listId}-${active}` : undefined}
-          className="w-full min-w-0 rounded-lg border border-border bg-bg py-2 pl-9 pr-3
+          /* 양 끝이 완전히 둥근 capsule. `rounded-lg`(8px)로는 참고 이미지의
+             pill 느낌이 나지 않는다 — 높이의 절반 이상이어야 한다. */
+          className="w-full min-w-0 rounded-full border border-border bg-bg py-2 pl-10 pr-4
                      text-sm text-fg placeholder-muted transition-colors
                      focus:border-accent focus:outline-none"
         />
       </div>
 
       {showPanel && (
-        <div className="absolute left-0 right-0 top-full z-[60] mt-1 max-h-80 overflow-y-auto
-                        rounded-xl border border-border bg-bg-card py-1.5 shadow-xl">
+        <div className="absolute left-0 right-0 top-full z-[60] mt-1.5 max-h-80 overflow-y-auto
+                        rounded-2xl border border-border bg-bg-card py-1.5 shadow-xl">
           {/* 세 상태를 서로 구분한다: 로딩 / 오류 / 결과 없음.
               하나로 뭉치면 실패가 로딩으로 보인다. */}
           {loading ? (
@@ -248,12 +245,17 @@ function AuthArea() {
     // 로그인 URL을 아직 못 받았어도 **자리를 비우지 않는다.** 비워 두면 응답이
     // 도착하는 순간 헤더가 흔들린다(레이아웃 시프트).
     return (
+      /* 아주 좁은 폭(390@150% = 실폭 260px)에서는 글자를 감추고 아이콘만 남긴다.
+         이 버튼이 92px을 버티면 왼쪽 워드마크와 겹쳤다(실측). `aria-label`을 항상
+         두어 스크린리더에서는 어느 폭에서든 "로그인"으로 읽힌다. */
       <a href={loginUrl ?? "/login"}
          aria-disabled={!loginUrl}
-         className="nb-tap inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-accent
-                    px-3 py-2 text-sm font-medium text-white transition-colors
-                    hover:bg-accent-hover sm:px-4">
-        로그인 <ArrowRight size={13} aria-hidden="true" />
+         aria-label="로그인"
+         className="nb-tap-icon inline-flex shrink-0 items-center justify-center gap-1.5
+                    rounded-lg bg-accent px-2.5 py-2 text-sm font-medium text-white
+                    transition-colors hover:bg-accent-hover xs:px-3 sm:px-4">
+        <span className="hidden xs:inline">로그인</span>
+        <ArrowRight size={15} aria-hidden="true" />
       </a>
     );
   }
@@ -316,16 +318,24 @@ const INNER: Record<string, string> = {
   "3xl": "mx-auto w-full max-w-3xl px-4 sm:px-5",
 };
 
-export default function SiteHeader({ breadcrumb, maxWidth = "full" }: {
-  /** 로고 오른쪽에 붙는 현재 위치 표시(예: `/stats`의 "치지직 통계"). */
-  breadcrumb?: React.ReactNode;
+export default function SiteHeader({ maxWidth = "full", statsNav }: {
   /** 본문 폭에 맞춘다. 그 페이지 `<main>`의 `max-w-*`와 같은 값을 넘길 것. */
   maxWidth?: "full" | "6xl" | "4xl" | "3xl";
+  /** 통계 sidebar를 가진 페이지가 **자기 상태를 넘겨주는** 통로.
+   *
+   *  햄버거는 어느 페이지에서나 "통계 내비게이션"을 연다는 뜻을 유지한다.
+   *  다만 sidebar가 이미 화면에 있는 `/stats`에서는 그 sidebar를 접고 펴고,
+   *  sidebar가 없는 페이지에서는 같은 메뉴를 drawer로 띄운다. 같은 버튼이
+   *  페이지마다 **다른 것**을 열지 않게 하려고 상태 소유권을 하나로 모았다. */
+  statsNav?: { open: boolean; onToggle: () => void; controlsId: string };
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  /** 좁은 화면에서 검색창을 펼쳤는지. `md` 이상에서는 항상 펼쳐져 있다. */
+  const [searchOpen, setSearchOpen] = useState(false);
   const drawerRef = useRef<HTMLDivElement>(null);
   const burgerRef = useRef<HTMLButtonElement>(null);
   const drawerId = useId();
+  const searchId = useId();
 
   // ESC 닫기 + 포커스 순환 + 닫을 때 햄버거로 복귀.
   useEffect(() => {
@@ -355,49 +365,103 @@ export default function SiteHeader({ breadcrumb, maxWidth = "full" }: {
 
   const inner = INNER[maxWidth] ?? INNER.full;
 
+  // sidebar를 가진 페이지면 그 sidebar를, 아니면 통계 메뉴 drawer를 제어한다.
+  const usesSidebar = Boolean(statsNav);
+  const burgerExpanded = usesSidebar ? statsNav!.open : menuOpen;
+  const burgerControls = usesSidebar ? statsNav!.controlsId : drawerId;
+  const onBurger = usesSidebar ? statsNav!.onToggle : () => setMenuOpen((o) => !o);
+  const burgerLabel = usesSidebar
+    ? (statsNav!.open ? "통계 메뉴 접기" : "통계 메뉴 펼치기")
+    : (menuOpen ? "통계 메뉴 닫기" : "통계 메뉴 열기");
+
   return (
     <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
-      {/* 최소 높이만 정하고 고정하지 않는다 — 확대(150%)에서 글자가 커져도
+      {/* **3영역 grid다.** 좌우를 `1fr`로 같게 잡아야 가운데 칸이 남은 공간의
+          중심이 아니라 **viewport의 중심**에 온다. flex + `flex-1` 검색창으로는
+          좌우 폭이 다른 순간 검색창 중심이 그 차이의 절반만큼 밀린다(실측으로
+          이미지3에서 확인된 문제다).
+
+          최소 높이만 정하고 고정하지 않는다 — 확대(150%)에서 글자가 커져도
           내용이 잘리지 않고 헤더가 함께 자란다. */}
-      <div className={`nb-tap-gap flex min-h-[60px] items-center gap-2 py-2 ${inner}`}>
-        <button ref={burgerRef} type="button"
-                onClick={() => setMenuOpen((o) => !o)}
-                aria-expanded={menuOpen}
-                aria-controls={drawerId}
-                aria-label={menuOpen ? "메뉴 닫기" : "메뉴 열기"}
-                className="nb-tap-icon inline-flex h-11 w-11 shrink-0 items-center justify-center
-                           rounded-lg text-muted transition-colors hover:bg-bg-hover hover:text-fg">
-          {menuOpen ? <X size={20} aria-hidden="true" /> : <Menu size={20} aria-hidden="true" />}
-        </button>
+      <div className={`nb-tap-gap grid min-h-[60px] grid-cols-[auto_1fr_auto]
+                       items-center gap-2 py-2 md:grid-cols-[1fr_auto_1fr] ${inner}`}>
+        {/* ── 왼쪽: 햄버거 · NexBot · 치지직 통계 Beta ── */}
+        {/* `overflow-hidden`이 있어야 자식이 셀 밖으로 삐져나가지 않는다.
+            390@150%(실폭 260px)에서 워드마크가 오른쪽 묶음과 겹쳤던 자리다. */}
+        <div className="flex min-w-0 items-center gap-1 overflow-hidden">
+          <button ref={burgerRef} type="button"
+                  onClick={onBurger}
+                  aria-expanded={burgerExpanded}
+                  aria-controls={burgerControls}
+                  aria-label={burgerLabel}
+                  className="nb-tap-icon inline-flex h-11 w-11 shrink-0 items-center
+                             justify-center rounded-lg text-muted transition-colors
+                             hover:bg-bg-hover hover:text-fg">
+            {burgerExpanded
+              ? <X size={20} aria-hidden="true" />
+              : <Menu size={20} aria-hidden="true" />}
+          </button>
 
-        <Link href="/"
-              className="nb-brand-tap shrink-0 gap-2 font-bold text-[17px] text-fg">
-          <Bot size={20} className="text-accent" aria-hidden="true" />
-          {/* 좁은 화면에서는 글자를 감추되 **이름은 남긴다** — 링크의 접근 가능한
-              이름이 사라지면 스크린리더에 "링크"로만 읽힌다. */}
-          <span className="ml-1.5 hidden sm:inline">NexBot</span>
-          <span className="sr-only sm:hidden">NexBot</span>
-        </Link>
+          {/* 로봇 아이콘을 두지 않는다 — 워드마크 하나로 브랜드를 말한다.
+              (아이콘 + 텍스트 + 두 번째 아이콘이 겹치면 왼쪽이 시끄러워진다) */}
+          {/* `shrink-0`을 주지 않는다 — 260px 같은 폭에서 이 링크가 버티면
+              오른쪽 묶음과 겹친다. `nb-brand-tap`의 min-width 44px가 하한이라
+              읽을 수 없을 만큼 줄지는 않는다. */}
+          <Link href="/"
+                className="nb-brand-tap min-w-0 px-1 font-bold text-[17px] text-fg">
+            <span className="truncate">NexBot</span>
+          </Link>
 
-        {breadcrumb && (
-          <span className="hidden min-w-0 shrink items-center gap-2 md:flex">
-            <span className="text-border" aria-hidden="true">/</span>
-            <span className="min-w-0 truncate">{breadcrumb}</span>
-          </span>
-        )}
+          {/* `/` 구분자와 신호 아이콘 없이, 워드마크 바로 오른쪽에 붙인다.
+              배지는 **이 한 곳에만** 있다(HeaderNav의 중복은 제거했다). */}
+          <Link href="/stats"
+                className="nb-tap ml-1 hidden min-w-0 items-center gap-1.5 rounded-lg
+                           px-2 py-2 text-sm font-medium text-muted transition-colors
+                           hover:text-fg sm:inline-flex">
+            <span className="min-w-0 truncate">치지직 통계</span>
+            <span className="shrink-0 rounded border border-accent/40 px-1 py-px
+                             text-[10px] font-bold leading-none text-accent">
+              Beta
+            </span>
+          </Link>
+        </div>
 
-        {/* 가운데 — **유일하게 줄어드는 칸**이다 */}
-        <GlobalSearch />
+        {/* ── 가운데: 전역 검색(viewport 중앙) ──
+            320/390에서는 좌우 `1fr`이 0px까지 눌려 브랜드·로그인과 검색창이
+            겹쳤다(실측: 320px에서 검색 263px, 남는 폭 57px). 그래서 좁은 화면은
+            **접을 수 있는 검색**으로 바꾼다 — 기본은 접힘, 아이콘을 누르면
+            헤더 아래 한 줄이 열린다. `md` 이상에서는 늘 펼쳐진 채 중앙 정렬이다. */}
+        <div className="hidden min-w-0 justify-center md:flex">
+          <GlobalSearch />
+        </div>
+        <span className="md:hidden" aria-hidden="true" />
 
-        <HeaderNav />
-
-        {/* 실제 오른쪽 끝 */}
-        <AuthArea />
+        {/* ── 오른쪽: 사용 방법 · 로그인/프로필 (맨 오른쪽 정렬) ── */}
+        <div className="flex min-w-0 items-center justify-end gap-1 overflow-hidden">
+          <button type="button" onClick={() => setSearchOpen((o) => !o)}
+                  aria-expanded={searchOpen} aria-controls={searchId}
+                  aria-label={searchOpen ? "검색 닫기" : "스트리머 검색 열기"}
+                  className="nb-tap-icon inline-flex h-11 w-11 shrink-0 items-center
+                             justify-center rounded-lg text-muted transition-colors
+                             hover:bg-bg-hover hover:text-fg md:hidden">
+            {searchOpen
+              ? <X size={18} aria-hidden="true" />
+              : <Search size={18} aria-hidden="true" />}
+          </button>
+          <HeaderNav />
+          <AuthArea />
+        </div>
       </div>
 
+      {/* 좁은 화면 전용 검색 줄 — 열렸을 때만 자리를 차지한다. */}
+      {searchOpen && (
+        <div id={searchId} className={`pb-2 md:hidden ${inner}`}>
+          <GlobalSearch />
+        </div>
+      )}
       {/* 보조 메뉴 — 모바일에서는 drawer, 데스크톱에서도 같은 목록을 쓴다.
           목록을 화면 크기별로 다르게 두면 "PC에서 본 항목이 폰에 없다"가 된다. */}
-      {menuOpen && (
+      {!usesSidebar && menuOpen && (
         <>
           <div className="fixed inset-0 top-0 z-40 bg-black/50"
                onMouseDown={() => setMenuOpen(false)} aria-hidden="true" />

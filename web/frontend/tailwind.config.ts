@@ -9,6 +9,10 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      // 320px 미만은 없다시피 하지만, 390px을 150% 확대하면 **실폭 260px**이 된다.
+      // 그 구간에서만 헤더 라벨을 접어야 해서 기본 브레이크포인트(sm=640)로는
+      // 표현할 수 없는 단계가 하나 필요했다.
+      screens: { xs: "380px" },
       colors: {
         // CSS variable colors — RGB channel format supports /opacity modifiers
         bg: {

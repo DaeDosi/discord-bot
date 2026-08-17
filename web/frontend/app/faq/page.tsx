@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 import SiteHeader from "@/components/SiteHeader";
-import Footer from "@/components/Footer";
 
 export const metadata: Metadata = {
   title: "자주 묻는 질문 — NexBot 디스코드 봇 & 치지직 통계",
@@ -99,7 +98,6 @@ export default function FaqPage() {
         </div>
       </main>
 
-      <Footer />
     </div>
   );
 }

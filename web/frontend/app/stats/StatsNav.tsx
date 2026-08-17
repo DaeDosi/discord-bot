@@ -3,7 +3,7 @@ import { useState } from "react";
 import Link from "next/link";
 import {
   BookOpen, ChevronDown, LineChart as LineIcon, ListOrdered, Gamepad2, Sprout,
-  Radio, Users, Hash, SlidersHorizontal, Trophy, Sparkles,
+  Radio, Users, Hash, SlidersHorizontal, Trophy, Sparkles, Boxes,
   // 소형 스트리머 — 신규(Sprout)와 **다른 아이콘**을 쓴다. 두 메뉴가 나란히
   // 놓이므로 같은 그림이면 어느 쪽인지 아이콘으로 구분되지 않는다.
   Leaf as Seedling,
@@ -14,7 +14,7 @@ import {
 export type Tab =
   | "overview" | "newcomers_stats" | "small_stats" | "period_analysis"
   | "ranking" | "ranking_period" | "newcomers_ranking" | "small_ranking"
-  | "category" | "category_streamers" | "tags"
+  | "category" | "category_streamers" | "group" | "tags"
   | "singcup" | "bongnudo";
 
 /** 없어진 탭 키 → 지금 키. **북마크와 공유 링크를 깨뜨리지 않기 위한 것**이다.
@@ -70,6 +70,9 @@ export const NAV_GROUPS: { header: string | null; items: NavItem[] }[] = [
   { header: "카테고리", items: [
     { key: "category",            label: "카테고리 분석",     icon: <Gamepad2 size={16} /> },
     { key: "category_streamers",  label: "카테고리별 스트리머", icon: <Users size={16} /> },
+    // 그룹 분석은 카테고리별 스트리머와 태그 검색 **사이**다 — 앞은 '카테고리로
+    // 묶어 보기', 뒤는 '태그로 찾기'이고 그룹은 그 중간 단위다.
+    { key: "group",               label: "그룹 분석",         icon: <Boxes size={16} /> },
     { key: "tags",                label: "태그 검색",         icon: <Hash size={16} /> },
   ] },
 ];

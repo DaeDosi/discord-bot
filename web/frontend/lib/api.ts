@@ -366,6 +366,12 @@ export const api = {
     pikuImport: (body: { division: string; rows?: unknown[]; csv?: string }) =>
       request<{ ok: boolean; entries: number }>(
         "/api/admin/piku/import", { method: "POST", body: JSON.stringify(body) }),
+    /** 반영 전 검증(dry-run) — 활성 dataset을 건드리지 않는다.
+     *  응답에 우승 비율·승률 숫자는 없다(이름과 건수만). */
+    pikuPreview: (body: { division: string; rows?: unknown[]; csv?: string }) =>
+      request<{ ok: boolean; entries: number; applied: false;
+                matched: string[]; unmatched: string[]; duplicates: string[] }>(
+        "/api/admin/piku/preview", { method: "POST", body: JSON.stringify(body) }),
     pikuMappings: (division?: string) =>
       request<import("./types").PikuMappingsResponse>(
         `/api/admin/piku/mappings${division
@@ -595,6 +601,17 @@ export const api = {
     smallRanking: (limit = 200) =>
       fetch(`${BASE}/api/rising/small-ranking?limit=${limit}`)
         .then(r => r.json()) as Promise<import("./types").RisingSmallRanking>,
+    // 그룹 분석 — **랭킹 제외 정책과 무관하다.** 공식 그룹도 여기서는 보인다.
+    groups: () =>
+      fetch(`${BASE}/api/rising/groups`)
+        .then(r => r.json()) as Promise<import("./types").GroupListResponse>,
+    groupDetail: (id: number) =>
+      fetch(`${BASE}/api/rising/groups/${id}`).then(async (r) => {
+        if (!r.ok) throw new Error(r.status === 404
+          ? "그룹을 찾을 수 없습니다."
+          : "그룹 정보를 불러오지 못했습니다.");
+        return r.json();
+      }) as Promise<import("./types").GroupDetail>,
     newcomers: (limit = 80, group: import("./types").NewcomerGroup = "new") =>
       fetch(`${BASE}/api/rising/newcomers?limit=${limit}&group=${group}`).then(r => r.json()) as Promise<import("./types").RisingNewcomers>,
     status: () =>

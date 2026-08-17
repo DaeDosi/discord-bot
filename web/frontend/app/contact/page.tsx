@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Mail, MessageSquare, Github } from "lucide-react";
 import SiteHeader from "@/components/SiteHeader";
-import Footer from "@/components/Footer";
 
 // 문의 경로 — 목적별로 권장 채널을 나눠 안내한다.
 // 정적 서버 컴포넌트라 초기 HTML에 그대로 담긴다(폼·클라이언트 호출 없음).
@@ -151,7 +150,6 @@ export default function ContactPage() {
         </p>
       </main>
 
-      <Footer />
     </div>
   );
 }

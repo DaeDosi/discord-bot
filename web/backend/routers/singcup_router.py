@@ -713,6 +713,8 @@ async def qualifiers(division: str | None = None):
             "clipUid": clip.get("clipUid"),
             "clipTitle": clip.get("clipTitle") or "",
             "clipThumbnailUrl": clip.get("clipThumbnailUrl") or "",
+            # 운영자가 대표 클립을 직접 지정했는지 — 화면에서 자동 선정과 구분한다.
+            "clipIsOverride": bool(clip.get("isOverride")),
             # 공식 예선 참가자만 이 값을 받을 수 있다(위 주석).
             "live": live_map.get(cid),
         }
@@ -819,28 +821,64 @@ async def _qualifier_side_data(ids: set[str]) -> tuple[dict, dict]:
                     "categoryName": r["category_name"] or "",
                     "liveTitle": r["live_title"] or "",
                 }
-    except Exception:
-        pass        # 라이브 정보는 부가 값이다 — 없으면 배지만 빠지고 명단은 나온다
+    except Exception as e:      # noqa: BLE001
+        # 라이브 정보는 부가 값이다 — 없으면 배지만 빠지고 명단은 나온다.
+        # 다만 **무엇이 실패했는지는 남긴다**(아래 클립 쪽 주석 참고).
+        print(f"[singcup] qualifier live join failed: {type(e).__name__}: {e}",
+              flush=True)
 
     clips: dict[str, dict] = {}
     try:
+        # `singcup_streamers`의 키는 **`channel_id`**다(`owner_channel_id`는
+        # `singcup_clips`/`singcup_snapshots` 쪽 이름). 예전에 이 이름을 잘못 써서
+        # SQLite가 `no such column`을 던졌고, 아래 except가 그걸 삼켜 **참가자
+        # 전원의 프로필·클립이 조용히 빈 값**이 됐다. 이름을 섞지 말 것.
+        #
+        # override를 LEFT JOIN으로 먼저 붙이고 `COALESCE`로 우선순위를 준다 —
+        # 운영자가 지정한 대표 클립이 자동 선정보다 앞선다. `cleared_at IS NULL`이
+        # 활성 조건이다(해제는 행 삭제가 아니라 시각 기록이다).
+        # 프로필 fallback(`f`)은 **파생 테이블 한 번**으로 만든다. 참가자마다
+        # 따로 조회하면 N+1이 된다. 대표 클립이 없는 참가자도 얼굴은 나와야 하므로
+        # 그 채널의 아무 클립에 실려 온 프로필 URL을 예비로 쓴다.
         for r in await (await db.execute(
-            f"""SELECT s.owner_channel_id, s.channel_name, s.channel_image_url,
-                       c.clip_uid, c.title, c.thumbnail_url
+            f"""SELECT s.channel_id, s.channel_name,
+                       COALESCE(NULLIF(s.channel_image_url, ''), f.img, '')
+                           AS channel_image_url,
+                       c.clip_uid, c.clip_title, c.thumbnail_image_url,
+                       o.override_clip_uid IS NOT NULL AS is_override
                   FROM singcup_streamers s
+                  LEFT JOIN singcup_representative_overrides o
+                    ON o.owner_channel_id = s.channel_id
+                   AND o.event_id = s.event_id
+                   AND o.cleared_at IS NULL
                   LEFT JOIN singcup_clips c
-                    ON c.clip_uid = s.representative_clip_uid AND c.active = 1
-                 WHERE s.owner_channel_id IN ({marks})""",
-                tuple(id_list))).fetchall():
-            clips[r["owner_channel_id"]] = {
+                    ON c.clip_uid = COALESCE(o.override_clip_uid,
+                                             s.representative_clip_uid)
+                   AND c.active = 1
+                  LEFT JOIN (SELECT owner_channel_id,
+                                    MAX(owner_channel_image_url) img
+                               FROM singcup_clips
+                              WHERE owner_channel_image_url <> ''
+                                AND owner_channel_id IN ({marks})
+                              GROUP BY owner_channel_id) f
+                    ON f.owner_channel_id = s.channel_id
+                 WHERE s.channel_id IN ({marks})""",
+                (*id_list, *id_list))).fetchall():
+            clips[r["channel_id"]] = {
                 "channelName": r["channel_name"],
                 "channelImageUrl": r["channel_image_url"] or "",
                 "clipUid": r["clip_uid"],
-                "clipTitle": r["title"] or "",
-                "clipThumbnailUrl": r["thumbnail_url"] or "",
+                # 컬럼명은 `clip_title`/`thumbnail_image_url`이다. 예전 코드가
+                # `title`/`thumbnail_url`로 읽어 이 조인이 통째로 죽어 있었다.
+                "clipTitle": r["clip_title"] or "",
+                "clipThumbnailUrl": r["thumbnail_image_url"] or "",
+                "isOverride": bool(r["is_override"]),
             }
-    except Exception:
-        pass        # 클립도 마찬가지 — 명단 자체는 정적이라 항상 나와야 한다
+    except Exception as e:      # noqa: BLE001
+        # 명단 자체는 정적이라 항상 나와야 하므로 삼키되, **조용히 삼키지는 않는다.**
+        # 이 침묵이 위 컬럼명 오류를 오래 숨겼다.
+        print(f"[singcup] qualifier clip join failed: {type(e).__name__}: {e}",
+              flush=True)
 
     return live, clips
 

@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import SiteHeader from "@/components/SiteHeader";
-import Footer from "@/components/Footer";
 
 // 서비스 소개 — 운영 주체·데이터 출처·비공식성을 한곳에서 밝힌다.
 // 전부 정적 서버 컴포넌트라 초기 HTML에 그대로 담긴다(클라이언트 호출 없음).
@@ -142,7 +141,6 @@ export default function AboutPage() {
         </div>
       </main>
 
-      <Footer />
     </div>
   );
 }

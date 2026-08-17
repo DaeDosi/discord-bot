@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle, Check, Download, Link2, Loader2, RefreshCw, Upload, X,
+  Eye,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -53,6 +54,9 @@ export default function PikuPanel() {
   const [urls, setUrls] = useState<Record<string, string>>({});
   const [importDiv, setImportDiv] = useState<string>("female_solo");
   const [importText, setImportText] = useState("");
+  const [preview, setPreview] = useState<
+    { entries: number; matched: string[]; unmatched: string[];
+      duplicates: string[] } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
@@ -93,14 +97,35 @@ export default function PikuPanel() {
     run(`collect:${d}`, () => api.admin.pikuCollect(d),
         `${LABELS[d]} 수집을 완료했습니다.`);
 
-  const doImport = () => {
+  const importBody = () => {
     const text = importText.trim();
-    if (!text) { setMsg({ ok: false, text: "가져올 데이터를 붙여 넣어 주세요." }); return; }
+    if (!text) return null;
     const isJson = text.startsWith("[") || text.startsWith("{");
-    return run("import", () => api.admin.pikuImport(
-      isJson ? { division: importDiv, rows: JSON.parse(text) }
-             : { division: importDiv, csv: text }),
+    return isJson ? { division: importDiv, rows: JSON.parse(text) }
+                  : { division: importDiv, csv: text };
+  };
+
+  const doImport = () => {
+    const body = importBody();
+    if (!body) { setMsg({ ok: false, text: "가져올 데이터를 붙여 넣어 주세요." }); return; }
+    return run("import", () => api.admin.pikuImport(body),
       `${LABELS[importDiv]} 데이터를 반영했습니다.`);
+  };
+
+  /* 반영 **전에** 형태만 본다. 활성 dataset을 건드리지 않으므로 형식이 틀려도
+     마지막 정상 데이터가 그대로 남는다. */
+  const doPreview = async () => {
+    const body = importBody();
+    if (!body) { setMsg({ ok: false, text: "확인할 데이터를 붙여 넣어 주세요." }); return; }
+    if (busy) return;
+    setBusy("preview"); setMsg(null); setPreview(null);
+    try {
+      const r = await api.admin.pikuPreview(body);
+      setPreview(r);
+      setMsg({ ok: true, text: `${r.entries}건을 확인했습니다. 아직 반영하지 않았습니다.` });
+    } catch (e) {
+      setMsg({ ok: false, text: errText(e) });
+    } finally { setBusy(null); }
   };
 
   const setMapping = (m: PikuMapping, channelId: string | null) =>
@@ -237,6 +262,14 @@ export default function PikuPanel() {
                   ))}
                 </select>
               </label>
+              {/* 확인이 먼저, 반영이 나중이다 — 순서를 그대로 배치에 둔다. */}
+              <button onClick={() => void doPreview()} disabled={!!busy}
+                      className="btn-secondary nb-tap inline-flex items-center gap-1.5 text-sm
+                                 disabled:opacity-40">
+                {busy === "preview" ? <Loader2 size={13} className="animate-spin" />
+                  : <Eye size={13} />}
+                먼저 확인
+              </button>
               <button onClick={() => void doImport()} disabled={!!busy}
                       className="btn-secondary nb-tap inline-flex items-center gap-1.5 text-sm
                                  disabled:opacity-40">
@@ -251,6 +284,30 @@ export default function PikuPanel() {
                       placeholder={'name,winRate,matchRate\n고다요,62.5,51.0'}
                       className="w-full rounded-lg border border-border bg-bg px-2.5 py-2
                                  font-mono text-xs" />
+
+            {/* 미리보기 결과 — **숫자(비율·승률)는 담지 않는다.** 확인에 필요한 것은
+                "몇 건이 통과했고 누가 매칭되지 않았는가"이지 값 자체가 아니다. */}
+            {preview && (
+              <div className="rounded-lg border border-border bg-bg-card/60 p-3 text-xs">
+                <p className="font-medium text-fg">
+                  {preview.entries}건 확인됨 —{" "}
+                  <span className="text-amber-400">아직 반영하지 않았습니다.</span>
+                </p>
+                <dl className="mt-2 grid gap-1 sm:grid-cols-3">
+                  {([["참가자와 일치", preview.matched],
+                     ["일치하지 않음", preview.unmatched],
+                     ["중복된 이름", preview.duplicates]] as const).map(([label, list]) => (
+                    <div key={label} className="min-w-0">
+                      <dt className="text-muted">{label} ({list.length})</dt>
+                      <dd className="mt-0.5 break-words text-fg">
+                        {list.length ? list.slice(0, 8).join(", ") : "-"}
+                        {list.length > 8 ? ` 외 ${list.length - 8}` : ""}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            )}
           </section>
 
           {/* ── 3) 이름 매핑 ── */}

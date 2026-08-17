@@ -14,12 +14,20 @@ const H = () => read("components/SiteHeader.tsx");
 
 // ── 구조 ────────────────────────────────────────────────────────────────────
 
-test("한 줄 안에서 줄어드는 칸은 검색뿐이다", () => {
+test("좁은 폭에서 헤더 항목이 서로 겹치지 않는다", () => {
   const s = H();
-  // 로고·햄버거·로그인이 shrink하면 44px 계약이 깨지고 글자가 찌그러진다.
-  assert.ok(/nb-brand-tap shrink-0/.test(s), "브랜드는 shrink-0");
-  assert.ok(/h-11 w-11 shrink-0/.test(s), "햄버거는 고정 크기");
-  assert.ok(s.includes("min-w-0 flex-1"), "검색만 줄어든다");
+  // 예전 계약은 "브랜드·햄버거·로그인은 shrink-0"이었다. 3영역 grid로 바꾸면서
+  // 그대로 두었더니 390@150%(실폭 260px)에서 워드마크와 로그인이 실제로 겹쳤다.
+  // 그래서 **버티는 것은 44px 터치 하한뿐**이고, 그 위로는 줄어들 수 있어야 한다.
+  assert.ok(/h-11 w-11 shrink-0/.test(s), "햄버거는 44×44 고정");
+  assert.ok(/nb-brand-tap min-w-0/.test(s), "워드마크는 44px까지 줄어든다");
+  assert.ok(!/nb-brand-tap shrink-0/.test(s), "워드마크가 버티면 겹친다");
+  assert.ok((s.match(/overflow-hidden/g) ?? []).length >= 2,
+    "좌우 묶음이 셀 밖으로 나가지 않아야 한다");
+  assert.ok(s.includes('<span className="hidden xs:inline">로그인</span>'),
+    "아주 좁은 폭에서는 로그인 글자를 접는다");
+  assert.ok(s.includes('aria-label="로그인"'),
+    "글자를 접어도 접근 가능한 이름은 남아야 한다");
 });
 
 test("헤더 높이를 고정하지 않는다(확대에서 글자가 잘리지 않게)", () => {
@@ -29,28 +37,77 @@ test("헤더 높이를 고정하지 않는다(확대에서 글자가 잘리지 �
     "고정 height는 150% 확대에서 내용을 잘라낸다");
 });
 
-test("브랜드 링크는 좁은 화면에서도 접근 가능한 이름을 잃지 않는다", () => {
+test("브랜드는 아이콘 없이 워드마크 하나로 표시된다", () => {
   const s = H();
   assert.ok(s.includes("nb-brand-tap"), "44px hit area 유지");
-  assert.ok(/hidden sm:inline">NexBot</.test(s), "넓은 화면에서는 글자를 보여 준다");
-  assert.ok(/sr-only sm:hidden">NexBot</.test(s),
-    "좁은 화면에서 글자를 감추더라도 이름은 남아야 한다");
+  // 예전에는 좁은 화면에서 글자를 `sr-only`로 내리고 로봇 아이콘만 남겼다.
+  // 이제 아이콘을 없앴으므로 **어느 폭에서도 글자가 그대로 보인다**.
+  assert.ok(s.includes('<span className="truncate">NexBot</span>'),
+    "워드마크 텍스트가 항상 보여야 한다");
+  assert.ok(!/<Bot size=\{20\}/.test(s),
+    "브랜드 옆 로봇 아이콘은 제거됐다");
+});
+
+test("브랜드 옆에 치지직 통계 Beta가 붙고 구분자·신호 아이콘이 없다", () => {
+  const s = H();
+  const bar = s.slice(s.indexOf("grid-cols-[1fr_auto_1fr]"));
+  assert.ok(bar.includes("치지직 통계"), "브랜드 옆에 현재 서비스명이 있어야 한다");
+  assert.ok(!/<span className="text-border" aria-hidden="true">\/<\/span>/.test(s),
+    "`/` 구분자는 제거됐다");
+  assert.ok(!/<Radio size=\{14\}/.test(s), "신호 아이콘은 제거됐다");
+  // 주석에도 "Beta"라는 낱말이 나오므로 **렌더되는 코드만** 센다.
+  const code = s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  assert.equal((code.match(/Beta/g) ?? []).length, 1, "Beta 배지 출처는 하나뿐이다");
+});
+
+test("헤더는 3영역 grid라 검색이 viewport 중앙에 온다", () => {
+  const s = H();
+  // flex + flex-1로는 좌우 폭이 다른 순간 검색창 중심이 그 차이의 절반만큼 밀린다.
+  assert.ok(s.includes("grid-cols-[1fr_auto_1fr]"),
+    "좌우를 같은 1fr로 잡아야 가운데가 화면 중앙이다");
+  assert.ok(/justify-end/.test(s), "오른쪽 묶음은 끝에 붙는다");
+});
+
+test("검색창은 완전히 둥근 capsule이다", () => {
+  const s = H();
+  assert.ok(/rounded-full border border-border bg-bg/.test(s),
+    "rounded-lg(8px)로는 pill 형태가 되지 않는다");
 });
 
 // ── 햄버거 ──────────────────────────────────────────────────────────────────
 
 test("햄버거에 열림 상태와 대상이 노출된다", () => {
   const s = H();
-  assert.ok(s.includes("aria-expanded={menuOpen}"));
-  assert.ok(s.includes("aria-controls={drawerId}"));
-  assert.ok(/aria-label=\{menuOpen \? "메뉴 닫기" : "메뉴 열기"\}/.test(s),
+  assert.ok(s.includes("aria-expanded={burgerExpanded}"));
+  assert.ok(s.includes("aria-controls={burgerControls}"));
+  assert.ok(s.includes("aria-label={burgerLabel}"),
     "상태에 따라 이름이 바뀌어야 한다");
+  // 라벨은 어느 분기에서도 "통계 메뉴"를 말한다 — 같은 버튼이 페이지마다
+  // 다른 것을 여는 것처럼 읽히면 안 된다.
+  assert.ok(s.includes("통계 메뉴 접기") && s.includes("통계 메뉴 펼치기"));
+  assert.ok(s.includes("통계 메뉴 닫기") && s.includes("통계 메뉴 열기"));
+});
+
+test("햄버거의 대상은 sidebar 유무로만 갈린다", () => {
+  const s = H();
+  assert.ok(s.includes("const usesSidebar = Boolean(statsNav)"),
+    "상태 소유권이 하나로 모여 있어야 한다");
+  assert.ok(/burgerExpanded = usesSidebar \? statsNav!\.open : menuOpen/.test(s));
+  assert.ok(s.includes("{!usesSidebar && menuOpen && ("),
+    "sidebar가 있는 페이지에서는 drawer가 뜨지 않는다");
 });
 
 test("아이콘이 열림/닫힘에 따라 바뀐다", () => {
   const s = H();
-  assert.ok(/menuOpen \? <X size=\{20\}/.test(s),
+  assert.ok(/burgerExpanded\s*\?\s*<X size=\{20\}/.test(s),
     "열렸는데 햄버거 그대로면 닫는 방법이 보이지 않는다");
+});
+
+test("drawer 목록이 통계 sidebar와 같은 묶음이다", () => {
+  const s = H();
+  for (const label of ["봉누도", "싱드컵", "통계", "랭킹", "카테고리", "통계 안내"]) {
+    assert.ok(s.includes(`label: "${label}"`), `drawer에 ${label}가 없다`);
+  }
 });
 
 test("드로어가 ESC로 닫히고 포커스가 순환하며 버튼으로 복귀한다", () => {

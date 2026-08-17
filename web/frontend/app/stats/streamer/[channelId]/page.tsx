@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import SiteHeader from "@/components/SiteHeader";
 import { useParams } from "next/navigation";
 import {
   Bot, BarChart3, ArrowLeft, ExternalLink, Loader2, Radio, Heart, Clock, Users, TrendingUp,
@@ -301,21 +302,17 @@ export default function StreamerPage() {
 
   return (
     <div className="flex-1 flex flex-col">
-      <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
-        <div className="w-full px-4 md:px-6 flex items-center justify-between" style={{ height: 60 }}>
-          <div className="flex items-center gap-2.5">
-            <Link href="/stats" className="flex items-center gap-1.5 text-sm text-muted hover:text-fg transition-colors">
-              <ArrowLeft size={16} /> 통계
-            </Link>
-            <span className="text-border">/</span>
-            <span className="flex items-center gap-1.5 font-extrabold text-[15px]" style={{ color: GREEN }}>
-              <BarChart3 size={16} /> 스트리머 분석
-            </span>
-          </div>
-        </div>
-      </header>
+      {/* 헤더는 `components/SiteHeader` 하나뿐이다. 이 페이지는 자체 헤더 막대를
+          갖고 있었는데(높이 60px 고정 + 자체 브랜드 마크업), 공통 헤더가 바뀔 때마다
+          여기만 남는 문제가 있었다. 돌아가기 링크는 본문 상단으로 옮겼다. */}
+      <SiteHeader maxWidth="full" />
 
       <main className="flex-1 w-full max-w-[1600px] mx-auto px-4 md:px-6 py-6 space-y-5">
+        <Link href="/stats"
+              className="nb-tap inline-flex items-center gap-1.5 text-sm text-muted
+                         transition-colors hover:text-fg">
+          <ArrowLeft size={16} aria-hidden="true" /> 통계로 돌아가기
+        </Link>
         {loading ? (
           <div className="flex items-center justify-center gap-2 text-muted py-24">
             <Loader2 size={18} className="animate-spin" /> 불러오는 중...

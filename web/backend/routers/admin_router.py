@@ -1423,6 +1423,23 @@ async def piku_import(body: PikuImportBody, user: dict = Depends(_require_owner)
         raise _piku_400(e) from e
 
 
+@router.post("/piku/preview")
+async def piku_preview(body: PikuImportBody, user: dict = Depends(_require_owner)):
+    """**저장하지 않는 검증**(dry-run) — 반영 전에 형태를 먼저 본다.
+
+    활성 dataset을 건드리지 않으므로 실패해도 마지막 정상 데이터가 남는다.
+    응답에 우승 비율·승률 숫자는 담지 않는다(관리 화면에서도 값은 쓰지 않는다).
+    """
+    import singcup_piku as piku
+    try:
+        raw = piku.parse_csv(body.csv) if body.csv else body.rows
+        if raw is None:
+            raise piku.PikuError("empty", "확인할 데이터가 없습니다.")
+        return {"ok": True, **await piku.preview_rows(body.division, raw)}
+    except piku.PikuError as e:
+        raise _piku_400(e) from e
+
+
 @router.get("/piku/mappings")
 async def piku_mappings(division: Optional[str] = None,
                         user: dict = Depends(_require_owner)):

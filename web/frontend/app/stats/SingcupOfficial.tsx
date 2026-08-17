@@ -74,18 +74,25 @@ function TopCard({ row, rank, teamNumber }: {
   const live = row.live;
   const clipUrl = row.clipUid ? `https://chzzk.naver.com/clips/${row.clipUid}` : null;
   const href = live ? `https://chzzk.naver.com/live/${row.channelId}` : clipUrl;
+  // **`없음`과 `못 불러옴`은 다른 상태다.** 전자는 대표 클립이 정말 없는 것이고,
+  // 후자는 URL은 있는데 이미지 요청이 실패한 것이다. 둘을 같은 문구로 뭉치면
+  // 수집 장애가 "원래 없는 것"으로 보여 신고조차 들어오지 않는다.
+  const [thumbFailed, setThumbFailed] = useState(false);
 
   const thumb = (
     <>
-      {row.clipThumbnailUrl ? (
+      {row.clipThumbnailUrl && !thumbFailed ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={row.clipThumbnailUrl} alt="" loading="lazy" onError={hideBrokenImage}
+        <img src={row.clipThumbnailUrl} alt="" loading="lazy"
+             onError={() => setThumbFailed(true)}
              className="h-full w-full object-cover transition-transform
                         group-hover:scale-105" />
       ) : (
-        // 썸네일이 없을 때 빈 검은 박스를 두지 않는다 — 무엇이 없는지 적는다.
-        <span className="flex h-full w-full items-center justify-center text-[11px]
-                         text-muted">클립 없음</span>
+        // 빈 검은 박스를 두지 않는다 — 무엇이 없는지 적는다.
+        <span className="flex h-full w-full items-center justify-center px-2
+                         text-center text-[11px] text-muted">
+          {thumbFailed ? "썸네일을 불러오지 못했습니다" : "클립 없음"}
+        </span>
       )}
       {/* LIVE 배지 — **공식 예선 참가자에게만** 나온다(서버가 그것만 내려준다).
           `.nb-live-badge`는 UI-P에서 이 카드 전용으로 만든 클래스다(색 대비와

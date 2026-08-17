@@ -349,6 +349,8 @@ export interface QualifierRow {
   clipUid: string | null;
   clipTitle: string;
   clipThumbnailUrl: string;
+  /** 운영자가 대표 클립을 직접 지정했는지(자동 선정과 구분) */
+  clipIsOverride?: boolean;
   live: { channelName: string; concurrentViewers: number;
           categoryName: string; liveTitle: string } | null;
 }
@@ -1192,4 +1194,40 @@ export interface GroupMemberPage {
   limit: number;
   offset: number;
   hasMore: boolean;
+}
+
+/* ── 그룹 분석 ─────────────────────────────────────────────────────────────
+ * 랭킹 제외(`excludeFromRanking`)는 **운영 전용 필드라 여기 없다.** 그룹 분석은
+ * 그 정책과 독립이며 공식 그룹도 그대로 보인다. */
+export interface GroupSummary extends StreamerTag {
+  memberCount: number;
+}
+export interface GroupListResponse {
+  groups: GroupSummary[];
+}
+/** 그룹 분석 화면의 멤버. Nexadmin 관리 목록의 `GroupMember`와 **다른 타입**이다
+ *  — 저쪽은 편집용(이름이 null일 수 있다), 이쪽은 공개 통계용이다. */
+export interface GroupAnalysisMember {
+  channelId: string;
+  channelName: string;
+  channelImageUrl: string;
+  displayOrder: number;
+  /** 방송 중인지 — `concurrentViewers === 0`과 다른 상태다. */
+  live: boolean;
+  concurrentViewers: number;
+  categoryName: string;
+  liveTitle: string;
+  openDate: string;
+  followerCount: number;
+  /** 그룹 내 순위. 방송하지 않는 멤버는 받지 않는다. */
+  groupRank?: number;
+}
+export interface GroupDetail {
+  group: StreamerTag;
+  memberCount: number;
+  liveCount: number;
+  totalViewers: number;
+  collectedAt: number | null;
+  members: GroupAnalysisMember[];
+  truncated: boolean;
 }
