@@ -236,33 +236,15 @@ def _image(value: Any) -> str:
 
 
 # ── 상태 저장 ───────────────────────────────────────────────────────────────
-async def _ensure_tables() -> None:
-    """Collector 전용 테이블. append-only 원칙대로 `IF NOT EXISTS`만 쓴다."""
-    db = await get_db()
-    await db.execute(
-        """CREATE TABLE IF NOT EXISTS piku_collector_state (
-               division        TEXT PRIMARY KEY,
-               last_result     TEXT    NOT NULL DEFAULT '',
-               last_error_kind TEXT    NOT NULL DEFAULT '',
-               last_at         INTEGER NOT NULL DEFAULT 0,
-               row_count       INTEGER NOT NULL DEFAULT 0,
-               draft_id        INTEGER
-           )""")
-    # 그룹의 전체 팀원 문자열. `piku_entries`에는 대표자만 들어가므로 원본을
-    # 여기에 남긴다 — 운영자가 공식 명단과 대조할 때 필요하다.
-    await db.execute(
-        """CREATE TABLE IF NOT EXISTS piku_collector_teams (
-               division     TEXT NOT NULL,
-               piku_name    TEXT NOT NULL,
-               team_members TEXT NOT NULL DEFAULT '',
-               PRIMARY KEY (division, piku_name)
-           )""")
-    await db.commit()
-
-
+# `piku_collector_state` · `piku_collector_teams` · `piku_collector_tokens`는
+# **`database/db.py`의 기동 migration이 만든다.** 이 모듈에는 DDL이 없다.
+#
+# 예전에는 여기서 필요할 때 `CREATE TABLE IF NOT EXISTS`를 돌렸다. 그래서 조회
+# 요청 하나(관리 화면을 여는 것)가 운영 SQLite에 DDL을 냈고, 토큰 테이블은 첫
+# 발급 요청 전까지 존재하지 않았다. 되살리지 말 것 — 새 테이블이 필요하면
+# `_PIKU_COLLECTOR_TABLES`에 추가한다.
 async def debug_counts() -> dict:
     """DB write가 있었는지 비교하기 위한 행 수 스냅샷(테스트용)."""
-    await _ensure_tables()
     db = await get_db()
     out = {}
     for t in ("piku_datasets", "piku_entries", "piku_collector_state"):
@@ -313,7 +295,6 @@ async def _store_draft(division: str, rows: list[dict], *,
     문자열은 `piku_entries`에 넣을 자리가 없으므로 옆 테이블에 보관한다 —
     공개 연결은 대표자만 쓰지만, 운영자가 대조하려면 원본이 남아 있어야 한다.
     """
-    await _ensure_tables()
     old = await _draft_id(division)
     if old is not None:
         await piku._discard(old)
@@ -353,7 +334,6 @@ async def _store_draft(division: str, rows: list[dict], *,
 
 
 async def _draft_id(division: str) -> int | None:
-    await _ensure_tables()
     db = await get_db()
     cur = await db.execute(
         "SELECT draft_id FROM piku_collector_state WHERE division=?", (division,))
@@ -377,7 +357,6 @@ async def publish_drafts() -> dict:
     하나라도 없거나 실패하면 아무것도 바꾸지 않는다 — "여성만 새 데이터"인 화면은
     사용자가 그 사실을 알 수 없어서 가장 위험하다. 자동으로 부르지 않는다.
     """
-    await _ensure_tables()
     drafts: dict[str, int] = {}
     for d in DIVISIONS:
         did = await _draft_id(d)
@@ -442,7 +421,6 @@ async def record_client_failure(division: str, kind: str) -> dict:
     """
     if division not in DIVISIONS:
         raise PikuError("bad_division", "알 수 없는 부문입니다.")
-    await _ensure_tables()
     db = await get_db()
     now = int(time.time())
     await db.execute(
@@ -460,7 +438,6 @@ async def record_client_failure(division: str, kind: str) -> dict:
 
 async def status() -> dict:
     """관리 화면용 상태. **비율값과 원문은 담지 않는다.**"""
-    await _ensure_tables()
     db = await get_db()
     rows = {r["division"]: dict(r) for r in await (await db.execute(
         "SELECT * FROM piku_collector_state")).fetchall()}
@@ -523,25 +500,11 @@ def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-async def _ensure_token_table() -> None:
-    db = await get_db()
-    await db.execute(
-        """CREATE TABLE IF NOT EXISTS piku_collector_tokens (
-               token_hash TEXT PRIMARY KEY,
-               division   TEXT    NOT NULL,
-               expires_at INTEGER NOT NULL,
-               used_at    INTEGER NOT NULL DEFAULT 0,
-               created_at INTEGER NOT NULL
-           )""")
-    await db.commit()
-
-
 async def issue_token(division: str) -> dict:
     """수집 토큰 발급. **원문은 이 반환값에서 딱 한 번만 나온다.**"""
     if division not in DIVISIONS:
         raise PikuError("bad_division", "알 수 없는 부문입니다.")
     import secrets
-    await _ensure_token_table()
     raw = secrets.token_urlsafe(32)
     now = int(time.time())
     db = await get_db()
@@ -560,7 +523,6 @@ async def consume_token(raw: str, division: str) -> None:
     """토큰을 **한 번만** 통과시킨다. 만료·재사용·부문 불일치는 전부 거부."""
     if not raw or not isinstance(raw, str):
         raise PikuError("bad_token", "수집 토큰이 없습니다.")
-    await _ensure_token_table()
     db = await get_db()
     now = int(time.time())
     # 조건부 UPDATE의 rowcount로 소비를 판정한다 — SELECT 후 UPDATE로 나누면
@@ -576,7 +538,6 @@ async def consume_token(raw: str, division: str) -> None:
 
 async def purge_expired_tokens() -> int:
     """만료 토큰 정리. 남겨 둘 이유가 없다."""
-    await _ensure_token_table()
     db = await get_db()
     cur = await db.execute(
         "DELETE FROM piku_collector_tokens WHERE expires_at < ?",
@@ -646,7 +607,6 @@ async def _draft_rows(division: str) -> list[dict]:
 
 
 async def _team_strings(division: str) -> dict[str, str]:
-    await _ensure_tables()
     db = await get_db()
     return {r[0]: r[1] for r in await (await db.execute(
         "SELECT piku_name, team_members FROM piku_collector_teams"

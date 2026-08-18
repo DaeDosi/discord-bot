@@ -73,7 +73,7 @@ async def close_db():
 # 조용히 지나간다 — 그 상태로 서비스가 뜨면 "테이블이 없는데 정상 기동한" 것처럼
 # 보인다. 그래서 이 기능의 스키마만 여기로 분리해 **엄격하게** 실행한다.
 #
-# 실행 단위는 7개다: 테이블 3 · 초기 행 2 · 컬럼 2.
+# 실행 단위는 11개다: 테이블 3 · 초기 행 2 · 컬럼 2 · Collector 테이블 3 · 인덱스 1.
 _PIKU_TABLES = (
     # 싱드컵 스윕(`singcup_collect_lock`)과 같은 방식이다: 단일 행 + 조건부
     # UPDATE의 rowcount로 소유권을 정한다. 메모리 플래그로 두면 다중 replica·
@@ -127,6 +127,51 @@ _PIKU_ENTRY_COLUMNS = (
     ("artist_name", "TEXT NOT NULL DEFAULT ''"),
 )
 
+# ── 브라우저 Collector ──────────────────────────────────────────────────────
+# 이 세 테이블은 원래 `singcup_piku_collector`가 **필요할 때** 만들었다. 그래서
+# Nexadmin의 Collector 탭을 여는 것만으로(조회 요청 하나로) 운영 SQLite에 DDL이
+# 나갔다 — 조회가 read-only가 아니었고, 스윕이 도는 동안의 lock 경합에 쓰기를
+# 하나 더 얹었으며, 토큰 테이블은 첫 발급 요청 전까지 존재하지도 않았다.
+# 스키마는 기동 시 한 번 준비하고, 요청은 데이터만 다룬다.
+#
+# 여기에 **초기 행을 넣지 않는다.** 위 단일 행 테이블들과 달리 이 셋은 전부
+# 운영 중 쌓이는 데이터이므로 빈 채로 시작해야 한다.
+#
+# append-only 원칙 그대로 **되돌려도 테이블은 남는다.** Collector 코드를 revert
+# 하면 이 셋을 읽는 코드가 없어질 뿐, DB에서 사라지지는 않는다(DROP 하지 않는다).
+# 행이 0이면 용량도 사실상 0이고, 다시 배포하면 그대로 이어 쓴다.
+_PIKU_COLLECTOR_TABLES = (
+    # 부문별 마지막 수집 결과. 실패도 실패로 남긴다(성공으로 위장하지 않는다).
+    """CREATE TABLE IF NOT EXISTS piku_collector_state (
+           division        TEXT PRIMARY KEY,
+           last_result     TEXT    NOT NULL DEFAULT '',
+           last_error_kind TEXT    NOT NULL DEFAULT '',
+           last_at         INTEGER NOT NULL DEFAULT 0,
+           row_count       INTEGER NOT NULL DEFAULT 0,
+           draft_id        INTEGER
+       )""",
+    # 그룹의 전체 팀원 문자열. `piku_entries`에는 대표자만 들어가므로 원본을
+    # 여기에 남긴다 — 운영자가 공식 명단과 대조할 때 필요하다.
+    """CREATE TABLE IF NOT EXISTS piku_collector_teams (
+           division     TEXT NOT NULL,
+           piku_name    TEXT NOT NULL,
+           team_members TEXT NOT NULL DEFAULT '',
+           PRIMARY KEY (division, piku_name)
+       )""",
+    # 수집 토큰. **원문은 저장하지 않는다** — sha256 해시만 둔다.
+    """CREATE TABLE IF NOT EXISTS piku_collector_tokens (
+           token_hash TEXT PRIMARY KEY,
+           division   TEXT    NOT NULL,
+           expires_at INTEGER NOT NULL,
+           used_at    INTEGER NOT NULL DEFAULT 0,
+           created_at INTEGER NOT NULL
+       )""",
+    # 만료 토큰 정리가 `expires_at`으로만 훑는다. 나머지 조회는 PRIMARY KEY
+    # (또는 그 왼쪽 접두사)로 닿으므로 추가 인덱스를 두지 않는다.
+    """CREATE INDEX IF NOT EXISTS idx_piku_collector_tokens_expires
+           ON piku_collector_tokens (expires_at)""",
+)
+
 
 async def _table_columns(db, table: str) -> set[str]:
     """`PRAGMA table_info`로 현재 컬럼 집합을 읽는다.
@@ -148,7 +193,7 @@ async def _migrate_piku_and_qualifier_schema(db) -> None:
     없는 채로 "정상 기동한 것처럼" 진행되는 편이 훨씬 나쁘다.
 
     재실행 안전성은 예외 무시가 아니라 구문 자체로 얻는다:
-      · 테이블   `CREATE TABLE IF NOT EXISTS`
+      · 테이블·인덱스  `CREATE ... IF NOT EXISTS`
       · 초기 행  `INSERT OR IGNORE`
       · 컬럼     `PRAGMA table_info`로 먼저 조회해 **없을 때만** `ALTER`
 
@@ -161,6 +206,8 @@ async def _migrate_piku_and_qualifier_schema(db) -> None:
     committed = False
     try:
         for sql in _PIKU_TABLES:
+            await db.execute(sql)
+        for sql in _PIKU_COLLECTOR_TABLES:
             await db.execute(sql)
         for sql in _PIKU_SEED_ROWS:
             await db.execute(sql)
