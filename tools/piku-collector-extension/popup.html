@@ -23,8 +23,40 @@
   .ok { border-color: #1f6f4a !important; color: #7ee2b8; }
   .bad { border-color: #7a2630 !important; color: #ff9aa5; }
   .note { font-size: 11.5px; color: #6f7987; }
+  h2 { margin: 0 0 6px; font-size: 12.5px; color: #97a1b0;
+       text-transform: none; letter-spacing: .01em; }
+  hr { margin: 14px 0; border: 0; border-top: 1px solid #2a313b; }
+  /* 상태는 색만으로 구분하지 않는다 — 아이콘 글리프와 문장을 함께 쓴다. */
+  #devstate { padding: 8px 10px; border: 1px solid #2a313b; border-radius: 8px;
+              background: #171b21; }
+  #devstate.on  { border-color: #1f6f4a; color: #7ee2b8; }
+  #devstate.off { border-color: #5a4a12; color: #e8c765; }
+  #devstate.err { border-color: #7a2630; color: #ff9aa5; }
+  code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+         color: #ebeff6; }
 </style>
 <h1>PIKU 랭킹 수집</h1>
+
+<!-- ── 장치 등록(AUTO-1) ───────────────────────────────────────────────────
+     등록해 두면 토큰을 매번 붙여 넣지 않아도 된다. 등록하지 않아도 아래 수동
+     경로는 그대로 쓸 수 있다 — 자동화는 **선택**이지 대체가 아니다. -->
+<section id="devbox" aria-labelledby="devh">
+  <h2 id="devh">장치 등록</h2>
+  <div id="devstate" role="status" aria-live="polite">확인 중…</div>
+  <div id="devunreg">
+    <label for="pcode">등록 코드 (Nexadmin에서 발급)</label>
+    <input id="pcode" type="text" autocomplete="off" spellcheck="false"
+           inputmode="latin" placeholder="예: ABCD2345" maxlength="12">
+    <button id="pair">이 브라우저를 장치로 등록</button>
+  </div>
+  <div id="devreg" hidden>
+    <button id="gettok" class="secondary">이 부문 토큰 자동으로 받기</button>
+    <button id="forget" class="secondary">이 브라우저의 등록 해제</button>
+    <p class="note">등록 해제는 <b>이 브라우저에서만</b> 지웁니다.
+      서버 쪽 폐기는 Nexadmin에서 별도로 해야 합니다.</p>
+  </div>
+</section>
+<hr>
 <p>PIKU 랭킹 페이지를 연 상태에서 실행하세요. 이미 화면에 표시된 표만 읽습니다.</p>
 <label for="tok">수집 토큰 (Nexadmin에서 발급)</label>
 <input id="tok" type="password" autocomplete="off" spellcheck="false"
@@ -35,4 +67,5 @@
 <button id="check" class="secondary">읽기만 하고 확인</button>
 <div id="out" role="status" aria-live="polite">대기 중</div>
 <p class="note">쿠키·로그인 정보·원문 HTML은 보내지 않습니다. 정규화된 행만 전송합니다.</p>
+<script src="device.js"></script>
 <script src="popup.js"></script>

@@ -1621,3 +1621,139 @@ async def piku_collector_publish_preview(user: dict = Depends(_require_owner)):
     """공개하면 무엇이 바뀌는지. **DB write 0건.**"""
     import singcup_piku_collector as col
     return await col.publish_preview()
+
+
+# ── AUTO-1: 자동 수집 장치 ─────────────────────────────────────────────────
+#
+# 인증이 두 종류로 갈린다. 헷갈리면 위험하므로 여기 적어 둔다.
+#
+#  · **운영자(OWNER JWT)** — 장치 등록 시작·목록·폐기·모드 변경. 사람이 Nexadmin에
+#    로그인해서 하는 일이다.
+#  · **장치(OWNER JWT 없음)** — pairing·challenge·token. 확장은 OWNER JWT를 갖지
+#    않는다(가지면 그게 곧 장기 자격 증명이다). 대신 1회용 pairing code와, 등록
+#    뒤에는 **개인키 서명**으로 자신을 증명한다.
+#
+# 무인증 경로 셋이 각각 무엇으로 보호되는지:
+#   pair      → 1회용·만료되는 pairing code(운영자가 방금 발급한 것)
+#   challenge → 지문(추측 불가) + 장치 active 여부. challenge 자체는 secret이 아니다.
+#   token     → **개인키 서명.** 이것이 실질 인증이다.
+def _device_400(exc: Exception) -> HTTPException:
+    code = getattr(exc, "code", "")
+    return HTTPException(status_code=400,
+                         detail=f"[{code}] {exc}" if code else str(exc))
+
+
+class DeviceRegisterBody(BaseModel):
+    name: str
+
+
+class DeviceIdBody(BaseModel):
+    deviceId: int
+
+
+class DeviceModeBody(BaseModel):
+    mode: str
+
+
+class DevicePairBody(BaseModel):
+    pairingCode: str
+    publicKey: str
+
+
+class DeviceChallengeBody(BaseModel):
+    fingerprint: str
+    division: str
+    automation: bool = False
+
+
+class DeviceTokenBody(BaseModel):
+    challengeId: str
+    signature: str
+
+
+@router.get("/piku/collector/devices")
+async def piku_devices_list(user: dict = Depends(_require_owner)):
+    """장치 목록 + 모드 요약. **pairing code·공개키 원문은 실리지 않는다.**"""
+    import singcup_piku_devices as dev
+    return {"ok": True, "devices": await dev.list_devices(), **await dev.status()}
+
+
+@router.post("/piku/collector/devices")
+async def piku_devices_register(body: DeviceRegisterBody,
+                                user: dict = Depends(_require_owner)):
+    """등록 1단계 — **pairing code 원문은 이 응답에서 한 번만** 나온다."""
+    import singcup_piku_devices as dev
+    try:
+        return {"ok": True, **await dev.register_start(body.name)}
+    except dev.DeviceError as e:
+        raise _device_400(e) from e
+
+
+@router.post("/piku/collector/devices/revoke")
+async def piku_devices_revoke(body: DeviceIdBody,
+                              user: dict = Depends(_require_owner)):
+    """장치 폐기. 이미 나가 있던 challenge도 그 자리에서 무효가 된다."""
+    import singcup_piku_devices as dev
+    try:
+        return {"ok": True, **await dev.revoke(body.deviceId)}
+    except dev.DeviceError as e:
+        raise _device_400(e) from e
+
+
+@router.post("/piku/collector/mode")
+async def piku_collector_set_mode(body: DeviceModeBody,
+                                  user: dict = Depends(_require_owner)):
+    """MANUAL / AUTO_COLLECT / AUTO_PUBLISH.
+
+    **AUTO-1 시점에는 스케줄러도 자동 공개도 아직 없다.** 모드를 자동으로 바꿔도
+    저절로 도는 것은 없고 값만 기록된다. 그 사실을 응답에 그대로 적는다 —
+    "켰는데 아무 일도 안 일어난다"를 장애로 오해하지 않게.
+    """
+    import singcup_piku_devices as dev
+    try:
+        mode = await dev.set_mode(body.mode)
+    except dev.DeviceError as e:
+        raise _device_400(e) from e
+    return {"ok": True, "mode": mode,
+            "schedulerImplemented": False, "autoPublishImplemented": False,
+            "note": "AUTO-2(스케줄러)·AUTO-3(자동 공개)이 아직 없어 "
+                    "자동 실행은 일어나지 않습니다."}
+
+
+@router.post("/piku/collector/device/pair")
+async def piku_device_pair(body: DevicePairBody):
+    """등록 2단계 — 확장이 만든 **공개키만** 받는다(OWNER JWT 없이).
+
+    자격 증명은 방금 운영자가 발급한 1회용 pairing code다.
+    """
+    import singcup_piku_devices as dev
+    try:
+        return {"ok": True,
+                **await dev.register_finish(body.pairingCode, body.publicKey)}
+    except dev.DeviceError as e:
+        raise _device_400(e) from e
+
+
+@router.post("/piku/collector/device/challenge")
+async def piku_device_challenge(body: DeviceChallengeBody):
+    """서명할 nonce를 준다. 지문으로 장치를 찾고 active가 아니면 거절한다."""
+    import singcup_piku_devices as dev
+    row = await dev.device_by_fingerprint(body.fingerprint)
+    if not row:
+        raise HTTPException(status_code=400, detail="[no_device] 장치를 찾을 수 없습니다.")
+    try:
+        return {"ok": True, **await dev.challenge_issue(
+            row["id"], body.division, automation=body.automation)}
+    except dev.DeviceError as e:
+        raise _device_400(e) from e
+
+
+@router.post("/piku/collector/device/token")
+async def piku_device_token(body: DeviceTokenBody):
+    """서명을 검증하고 **기존 구조의** 10분·1회용·부문 고정 토큰을 발급한다."""
+    import singcup_piku_devices as dev
+    try:
+        return {"ok": True,
+                **await dev.challenge_redeem(body.challengeId, body.signature)}
+    except dev.DeviceError as e:
+        raise _device_400(e) from e

@@ -404,6 +404,30 @@ export const api = {
                 expected: number; applied: false; hasActive: boolean }>(
         "/api/admin/piku/collector/preview",
         { method: "POST", body: JSON.stringify(body) }),
+    /* ── AUTO-1: 자동 수집 장치 ────────────────────────────────────────
+     * **여기에 개인키·pairing code·토큰이 오가지 않는다.** 등록 코드 원문은
+     * `pikuDeviceRegister`의 응답에서 딱 한 번 나오고, 그 뒤 목록에는 지문만
+     * 남는다. 서명과 토큰 수령은 확장이 직접 하며 대시보드를 거치지 않는다. */
+    pikuDevices: () =>
+      request<import("./types").PikuDevicesResponse>(
+        "/api/admin/piku/collector/devices"),
+    /** 등록 1단계. `pairingCode`는 **이 응답에서 한 번만** 나온다. */
+    pikuDeviceRegister: (name: string) =>
+      request<{ ok: boolean; deviceId: number; name: string; status: string;
+                pairingCode: string; expiresAt: number; ttlSeconds: number }>(
+        "/api/admin/piku/collector/devices",
+        { method: "POST", body: JSON.stringify({ name }) }),
+    /** 장치 폐기. 이미 나가 있던 challenge도 그 자리에서 무효가 된다. */
+    pikuDeviceRevoke: (deviceId: number) =>
+      request<{ ok: boolean; deviceId: number; status: string; revokedAt: number }>(
+        "/api/admin/piku/collector/devices/revoke",
+        { method: "POST", body: JSON.stringify({ deviceId }) }),
+    /** MANUAL / AUTO_COLLECT / AUTO_PUBLISH. 기본은 MANUAL이다. */
+    pikuCollectorSetMode: (mode: string) =>
+      request<{ ok: boolean; mode: string; schedulerImplemented: boolean;
+                autoPublishImplemented: boolean; note: string }>(
+        "/api/admin/piku/collector/mode",
+        { method: "POST", body: JSON.stringify({ mode }) }),
     /** 세 부문 draft를 **한 번에** 공개한다. 하나라도 없으면 아무것도 안 바뀐다. */
     pikuCollectorPublish: () =>
       request<{ ok: boolean; published: boolean; rows: Record<string, number> }>(

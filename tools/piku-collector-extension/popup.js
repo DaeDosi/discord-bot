@@ -134,3 +134,97 @@ $("run").addEventListener("click", async () => {
     $("run").disabled = false;
   }
 });
+
+/* ── 장치 등록(AUTO-1) ─────────────────────────────────────────────────────
+ * 여기서 하는 일은 "토큰을 자동으로 받아 오는 것"까지다. **자동 실행은 아직 없다**
+ * — 1시간 스케줄러는 AUTO-2다. 그래서 화면에도 "자동 수집은 아직 동작하지
+ * 않습니다"라고 적어 둔다. 켰는데 아무 일도 안 일어나는 것을 장애로 오해하지
+ * 않게 하려는 것이다.
+ *
+ * 등록하지 않아도 위쪽 수동 경로는 그대로 쓸 수 있다 — 자동화는 선택이다.
+ */
+function devShow(kind, text) {
+  const el = $("devstate");
+  el.className = kind;                    // on / off / err / ""
+  // 색만으로 상태를 전하지 않는다 — 글리프와 문장을 함께 둔다.
+  const mark = kind === "on" ? "✔ " : kind === "err" ? "✖ "
+    : kind === "off" ? "⚠ " : "";
+  el.textContent = mark + text;
+}
+
+async function refreshDevice() {
+  try {
+    const d = await loadDevice();
+    if (d.base) $("base").value = d.base;
+    const registered = !!d.fingerprint;
+    $("devunreg").hidden = registered;
+    $("devreg").hidden = !registered;
+    if (registered) {
+      devShow("on", `등록됨 · ${d.deviceName || "이름 없음"}\n지문 ${d.fingerprint}\n`
+        + "Nexadmin의 지문과 같은지 확인하세요.\n"
+        + "자동 수집(1시간 주기)은 아직 동작하지 않습니다 — 다음 단계에서 추가됩니다.");
+    } else {
+      devShow("off", "등록되지 않음 — 수동 토큰 경로만 쓸 수 있습니다.");
+    }
+  } catch (e) {
+    devShow("err", e.message || String(e));
+  }
+}
+
+$("pair").addEventListener("click", async () => {
+  const code = $("pcode").value.trim().toUpperCase();
+  const base = $("base").value.trim();
+  if (!code) { devShow("err", "등록 코드를 입력해 주세요."); return; }
+  $("pair").disabled = true;
+  devShow("", "등록 중…");
+  try {
+    const r = await pair(base, code);
+    $("pcode").value = "";               // 1회용이므로 지운다
+    await refreshDevice();
+    devShow("on", `등록됐습니다 · ${r.name}\n지문 ${r.fingerprint}\n`
+      + "Nexadmin 목록의 지문과 같은지 눈으로 대조하세요.");
+  } catch (e) {
+    devShow("err", e.message || String(e));
+  } finally {
+    $("pair").disabled = false;
+  }
+});
+
+$("forget").addEventListener("click", async () => {
+  $("forget").disabled = true;
+  try {
+    await forgetDevice();
+    await refreshDevice();
+    devShow("off", "이 브라우저의 등록을 지웠습니다.\n"
+      + "서버 쪽 폐기는 Nexadmin에서 별도로 해 주세요 — 지금은 서버가 이 키를 "
+      + "아직 유효하다고 봅니다.");
+  } catch (e) {
+    devShow("err", e.message || String(e));
+  } finally {
+    $("forget").disabled = false;
+  }
+});
+
+/** 등록된 장치로 **현재 탭 부문의** 토큰을 받아 입력란에 채운다.
+ *  받은 토큰은 저장하지 않는다 — 이 입력란은 전송 후 비워진다. */
+$("gettok").addEventListener("click", async () => {
+  $("gettok").disabled = true;
+  devShow("", "부문 확인 중…");
+  try {
+    const r = await readTable();
+    if (!r.ok) { devShow("err", `${r.message}\n(종류: ${r.kind})`); return; }
+    const division = r.payload.division;
+    devShow("", `${division} 토큰 요청 중…`);
+    const t = await fetchCollectorToken($("base").value.trim(), division,
+                                        { automation: false });
+    $("tok").value = t.token;
+    devShow("on", `${division} 토큰을 받았습니다(약 ${Math.round(t.ttlSeconds / 60)}분, 1회용).\n`
+      + "위의 '이 페이지 읽어 보내기'를 눌러 주세요.");
+  } catch (e) {
+    devShow("err", e.message || String(e));
+  } finally {
+    $("gettok").disabled = false;
+  }
+});
+
+refreshDevice();

@@ -515,7 +515,8 @@ def _ext(name: str) -> str:
 
 def test_extension_has_no_secret():
     """번들에 secret·토큰 기본값이 없어야 한다."""
-    for f in ("manifest.json", "popup.html", "popup.js", "collect.js"):
+    for f in ("manifest.json", "popup.html", "popup.js", "collect.js",
+              "device.js"):
         s = _ext(f)
         for bad in ("SINGCUP_ADMIN_SECRET", "JWT_SECRET", "OWNER_ID",
                     "Bearer ", "api_key", "apiKey"):

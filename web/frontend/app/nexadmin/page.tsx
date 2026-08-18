@@ -11,6 +11,7 @@ import SingcupClipMetricsPanel from "./SingcupClipMetricsPanel";
 import StreamerTagsPanel from "./StreamerTagsPanel";
 import PikuPanel from "./PikuPanel";
 import PikuCollectorPanel from "./PikuCollectorPanel";
+import PikuDevicePanel from "./PikuDevicePanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -706,7 +707,8 @@ export default function AdminPage() {
   const [showAdd, setShowAdd]         = useState(false);
   const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow" | "announcement" | "singcup-rep"
                                       | "streamer-tags" | "piku"
-                                      | "piku_collector">("guilds");
+                                      | "piku_collector"
+                                      | "piku_devices">("guilds");
   const [refreshing, setRefreshing]   = useState(false);
   const [selectedVerif, setSelectedVerif] = useState<VerifUser | null>(null);
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null);
@@ -858,6 +860,9 @@ export default function AdminPage() {
     { key: "piku", label: "PIKU 순위" },
     // 수집 경로가 서버 → 브라우저로 바뀌어 관리 화면도 나뉜다.
     { key: "piku_collector", label: "PIKU 수집(브라우저)" },
+    // AUTO-1. 수집 탭과 나눈 이유: 수집은 매번 하는 일이고 장치 등록은
+    // 처음 한 번 하는 일이다. 한 화면에 붙이면 자주 쓰는 버튼이 밀린다.
+    { key: "piku_devices", label: "PIKU 자동화 장치" },
   ] as const;
 
   return (
@@ -1147,6 +1152,7 @@ export default function AdminPage() {
 
         {activeTab === "piku" && <PikuPanel />}
         {activeTab === "piku_collector" && <PikuCollectorPanel />}
+        {activeTab === "piku_devices" && <PikuDevicePanel />}
 
       </main>
     </div>

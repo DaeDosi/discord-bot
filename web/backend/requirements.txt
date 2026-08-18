@@ -5,3 +5,7 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 httpx>=0.27.0
 python-jose[cryptography]>=3.3.0
+# AUTO-1: 자동 수집 장치의 P-256 서명 검증에 직접 쓴다.
+# 예전에도 python-jose[cryptography]로 딸려 들어왔지만, 이제 우리 코드가
+# `cryptography`를 직접 import하므로 전이 의존에 기대지 않고 명시한다.
+cryptography>=42.0.0

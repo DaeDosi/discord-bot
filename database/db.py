@@ -170,6 +170,53 @@ _PIKU_COLLECTOR_TABLES = (
     # (또는 그 왼쪽 접두사)로 닿으므로 추가 인덱스를 두지 않는다.
     """CREATE INDEX IF NOT EXISTS idx_piku_collector_tokens_expires
            ON piku_collector_tokens (expires_at)""",
+    # ── AUTO-1: 자동 수집 장치 ────────────────────────────────────────────
+    # **개인키는 여기에 오지 않는다.** 확장이 만든 P-256 키는 비추출형이라
+    # 브라우저 밖으로 나올 수 없고 서버는 공개키(SPKI)와 그 지문만 가진다.
+    # 그래서 이 테이블이 통째로 새어도 남의 장치를 흉내 낼 수 없다.
+    """CREATE TABLE IF NOT EXISTS piku_collector_devices (
+           id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+           name               TEXT    NOT NULL,
+           status             TEXT    NOT NULL DEFAULT 'pending',
+           -- **원문이 아니라 sha256 해시다.** 등록 코드는 발급 응답에서 한 번만
+           -- 나오고 DB에는 해시만 남는다 — 이 테이블이 새어도 코드를 되살릴 수 없다.
+           pairing_code_hash  TEXT,
+           pairing_expires_at INTEGER NOT NULL DEFAULT 0,
+           public_key         TEXT,
+           fingerprint        TEXT,
+           created_at         INTEGER NOT NULL,
+           registered_at      INTEGER NOT NULL DEFAULT 0,
+           revoked_at         INTEGER NOT NULL DEFAULT 0,
+           last_seen_at       INTEGER NOT NULL DEFAULT 0,
+           last_success_at    INTEGER NOT NULL DEFAULT 0,
+           last_failure_at    INTEGER NOT NULL DEFAULT 0,
+           last_failure_kind  TEXT    NOT NULL DEFAULT ''
+       )""",
+    # 같은 공개키로 두 장치를 만들지 못하게 한다 — 설정 파일을 복사해 붙여도
+    # 두 번째 장치가 되지 않는다. revoke된 것까지 포함해 막는다(재등록은 새 키로).
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_piku_devices_fingerprint
+           ON piku_collector_devices (fingerprint)
+           WHERE fingerprint IS NOT NULL""",
+    # challenge. nonce는 secret이 아니지만 **한 번만** 소비돼야 한다.
+    """CREATE TABLE IF NOT EXISTS piku_collector_challenges (
+           id         TEXT    PRIMARY KEY,
+           device_id  INTEGER NOT NULL,
+           division   TEXT    NOT NULL,
+           nonce      TEXT    NOT NULL,
+           expires_at INTEGER NOT NULL,
+           used_at    INTEGER NOT NULL DEFAULT 0,
+           created_at INTEGER NOT NULL
+       )""",
+    """CREATE INDEX IF NOT EXISTS idx_piku_challenges_expires
+           ON piku_collector_challenges (expires_at)""",
+    # 자동화 설정. 지금은 `mode` 하나뿐이지만 AUTO-2·AUTO-3이 주기·임계값을
+    # 여기에 더한다. **행이 없으면 MANUAL**이다 — 기본값을 DB에 심지 않는다.
+    # 비어 있는 상태와 가장 안전한 상태가 같은 뜻이어야 하기 때문이다.
+    """CREATE TABLE IF NOT EXISTS piku_collector_settings (
+           key        TEXT PRIMARY KEY,
+           value      TEXT NOT NULL,
+           updated_at INTEGER NOT NULL
+       )""",
 )
 
 

@@ -1334,3 +1334,41 @@ export interface PikuPublishPreview {
   blockers: string[];
   publishReady: boolean;
 }
+
+/* ── AUTO-1: 자동 수집 장치 ──────────────────────────────────────────────
+ * 목록에는 **비밀이 없다** — pairing code와 공개키 원문은 서버가 내려 주지
+ * 않는다. `fingerprint`는 공개키 해시라 화면에 그대로 띄워도 된다(오히려 확장
+ * 화면과 눈으로 대조하라고 있는 값이다). */
+export type PikuDeviceStatus = "pending" | "active" | "revoked";
+
+export interface PikuDevice {
+  id: number;
+  name: string;
+  status: PikuDeviceStatus;
+  fingerprint: string;
+  createdAt: number;
+  registeredAt: number;
+  revokedAt: number;
+  lastSeenAt: number;
+  lastSuccessAt: number;
+  lastFailureAt: number;
+  lastFailureKind: string;
+}
+
+export type PikuCollectorMode = "MANUAL" | "AUTO_COLLECT" | "AUTO_PUBLISH";
+
+export interface PikuDevicesResponse {
+  ok: boolean;
+  devices: PikuDevice[];
+  mode: PikuCollectorMode;
+  modes: PikuCollectorMode[];
+  deviceCount: number;
+  activeCount: number;
+  pendingCount: number;
+  revokedCount: number;
+  pairingTtlSeconds: number;
+  challengeTtlSeconds: number;
+  /** AUTO-2·AUTO-3이 아직 없다는 사실을 화면이 그대로 말할 수 있게 서버가 준다. */
+  schedulerImplemented: boolean;
+  autoPublishImplemented: boolean;
+}
