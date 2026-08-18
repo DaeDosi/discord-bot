@@ -30,36 +30,51 @@
     -webkit-font-smoothing: antialiased;
     transition: background-color 0.25s ease, color 0.25s ease;
   }
-  /* ── 3영역 셸 (Header / sidebar / main) ────────────────────────────────
-     Header는 고정, 그 아래 두 칸이 **각자** 스크롤한다. 예전에는 문서 전체가
-     하나로 스크롤해서, 좌측 메뉴를 보려고 내리면 본문도 같이 내려갔고 본문을
-     끝까지 읽으면 메뉴가 화면 밖으로 사라졌다.
+  /* ── 셸 (Header / sidebar / main) ──────────────────────────────────────
+     **스크롤 소유권: 본문은 window가 갖는다.**
 
-     높이를 `--nb-header-h` 하나로 계산한다. 헤더가 확대(150%)에서 자라도 이
-     값만 바뀌므로 두 칸이 알아서 따라간다 — 숫자를 여러 곳에 복사하면 확대할
+     한동안 본문에도 자체 `overflow-y: auto`를 줘서 헤더·메뉴·본문 셋이 각자
+     스크롤했다. 그러면 브라우저 오른쪽의 진짜 스크롤바가 사라지고 본문 안쪽에
+     또 하나가 생겨, 페이지가 얼마나 남았는지 읽을 수 없고 휠이 어느 칸에
+     들어가는지도 커서 위치에 좌우된다. 치지직처럼 헤더와 본문이 하나의 페이지
+     흐름으로 이어지는 편이 낫다.
+
+     지금 계약:
+       · Header — `sticky top-0` (문서 흐름 안에서 붙는다)
+       · Sidebar — 데스크톱에서만 `sticky`로 헤더 아래에 붙고 **자기만** 스크롤
+       · Main — 자체 스크롤 컨테이너가 아니다. window가 스크롤한다.
+
+     높이 계산은 `--nb-header-h` 하나로 한다. 헤더가 확대(150%)에서 자라도 이
+     값만 바뀌므로 sidebar가 알아서 따라간다 — 숫자를 여러 곳에 복사하면 확대할
      때마다 어긋난다.
 
      `100svh`를 쓰는 이유: 모바일 주소창이 접혔다 펴질 때 `vh`는 값이 변해
      그 자체가 스크롤 점프를 만든다. `svh`는 가장 작은 뷰포트 기준이라 고정이다. */
   :root { --nb-header-h: 60px; }
 
-  /* 셸을 쓰는 페이지에서만 문서 스크롤을 끈다(`html`을 전역으로 잠그면 셸이
-     없는 페이지가 스크롤을 잃는다). */
-  .nb-shell {
-    height: 100svh;
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    overflow: hidden;
+  /* 셸은 이제 높이를 잡지 않는다. `height: 100svh` + `overflow: hidden`을 두면
+     문서가 스크롤을 잃어 위 계약이 성립하지 않는다. */
+  .nb-shell { display: block; }
+  /* `align-items: flex-start`가 핵심이다 — 기본값(stretch)이면 aside가 본문
+     높이만큼 늘어나 sticky가 걸릴 여지가 사라진다(늘 화면보다 크므로 붙지 않는다). */
+  .nb-shell-body { min-width: 0; display: flex; align-items: flex-start; }
+  /* 본문에는 overflow를 주지 않는다. 여기에 `auto`가 붙는 순간 window 스크롤바와
+     본문 스크롤바가 동시에 생겨 이중 스크롤이 된다. */
+  .nb-shell-main { min-width: 0; flex: 1 1 auto; }
+
+  /* ── LNB 스크롤 ────────────────────────────────────────────────────────
+     휠·터치·키보드로는 계속 스크롤되지만 **스크롤바만 보이지 않는다.**
+     `overflow: hidden`으로 막으면 안 된다 — 메뉴가 길어졌을 때 아래 항목에
+     닿을 방법이 사라지고, 키보드 포커스가 보이지 않는 영역으로 들어간다. */
+  .nb-shell-nav {
+    min-width: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scrollbar-width: none;             /* Firefox */
+    -ms-overflow-style: none;          /* 구형 Edge */
   }
-  /* 두 칸 모두 `min-height: 0`이 있어야 grid 안에서 실제로 줄어들고 스크롤이
-     생긴다. 이게 없으면 자식 높이만큼 늘어나 문서가 다시 하나로 스크롤한다. */
-  .nb-shell-body { min-height: 0; min-width: 0; display: flex; }
-  .nb-shell-nav,
-  .nb-shell-main { min-height: 0; min-width: 0; overflow-y: auto; }
-  /* 가로는 각 칸이 스스로 책임진다 — 셸에서 `overflow-x: hidden`으로 덮으면
-     안쪽의 진짜 overflow가 보이지 않게 될 뿐 고쳐지지 않는다. */
-  .nb-shell-nav { overflow-x: hidden; overscroll-behavior: contain; }
-  .nb-shell-main { overscroll-behavior: contain; }
+  .nb-shell-nav::-webkit-scrollbar { display: none; }   /* Chromium/WebKit */
 
   /* ── 전역 scrollbar ───────────────────────────────────────────────────
      기존 6px thumb는 `--color-border`와 거의 같은 값이라 어두운 배경에서

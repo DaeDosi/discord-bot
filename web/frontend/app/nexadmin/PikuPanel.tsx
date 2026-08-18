@@ -13,8 +13,8 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import {
-  AlertTriangle, Check, Download, Link2, Loader2, RefreshCw, Upload, X,
-  Eye,
+  AlertTriangle, Check, Download, Link2, Loader2, RefreshCw, ShieldAlert,
+  Upload, X, Eye,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -27,6 +27,11 @@ const LABELS: Record<string, string> = {
 };
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** PIKU가 **우리를 거부한** 실패인가. 이때는 재시도가 아니라 중단이 정답이다.
+ *  서버는 `kind`를 문구에 담아 내려주므로 그 문구로 판정한다(우회 수단은 없다). */
+const isForbidden = (text: string) =>
+  /403|forbidden|접근을 거부|접근 거부/i.test(text);
 const fmt = (unix: number) =>
   unix ? new Date(unix * 1000).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }) : "-";
 
@@ -51,6 +56,8 @@ export default function PikuPanel() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  /** PIKU가 403으로 거부한 뒤인가. 이 동안 수집 버튼을 잠근다. */
+  const [blocked, setBlocked] = useState(false);
   const [urls, setUrls] = useState<Record<string, string>>({});
   const [importDiv, setImportDiv] = useState<string>("female_solo");
   const [importText, setImportText] = useState("");
@@ -81,10 +88,15 @@ export default function PikuPanel() {
     try {
       await fn();
       setMsg({ ok: true, text: okText });
+      setBlocked(false);
       await load();
     } catch (e) {
       // 실패는 실패로 보여 준다 — 성공으로 꾸미지 않는다.
-      setMsg({ ok: false, text: errText(e) });
+      const text = errText(e);
+      setMsg({ ok: false, text });
+      // 403은 "잠시 후 다시"로 풀리는 실패가 아니다. 상대가 우리를 거부한 것이라
+      // 반복하면 차단만 굳는다. 그래서 이 화면에서 **수집 버튼 자체를 잠근다.**
+      if (isForbidden(text)) setBlocked(true);
     } finally {
       setBusy(null);
     }
@@ -196,6 +208,24 @@ export default function PikuPanel() {
         </div>
       )}
 
+      {/* PIKU가 403으로 거부한 뒤의 안내. **우회 방법은 적지 않는다** —
+          여기서 알려 줘야 할 것은 "무엇이 막혔고, 지금 뭘 할 수 있는가"뿐이다. */}
+      {blocked && (
+        <div role="alert" className="rounded-xl border border-red-500/40
+                                     bg-red-500/8 px-4 py-3">
+          <p className="flex items-center gap-1.5 text-sm font-semibold text-red-300">
+            <ShieldAlert size={15} aria-hidden="true" />
+            PIKU 서버가 수집 서버의 접근을 거부했습니다(403).
+          </p>
+          <ul className="mt-1.5 space-y-0.5 text-[13px] leading-relaxed text-muted">
+            <li>· 실패한 확인은 <b className="text-fg">저장·반영되지 않았습니다.</b> 기존 데이터는 그대로입니다.</li>
+            <li>· 자동 수집은 계속 <b className="text-fg">꺼진 상태</b>입니다.</li>
+            <li>· <b className="text-fg">반복 시도하지 마세요.</b> 거부가 굳어질 수 있어 아래 수집 버튼을 잠갔습니다.</li>
+            <li>· 대신 아래 <b className="text-fg">수동 JSON/CSV 가져오기</b>로 넣을 수 있습니다.</li>
+          </ul>
+        </div>
+      )}
+
       {err && <p role="alert" className="text-sm text-red-400">{err}</p>}
       {msg && (
         <p role="status"
@@ -235,7 +265,7 @@ export default function PikuPanel() {
                            style={{ minWidth: 220 }} />
                     {/* 확인이 먼저, 반영이 나중 — 순서를 배치에도 둔다. */}
                     <button onClick={() => void previewLive(d)}
-                            disabled={!!busy || !s?.url}
+                            disabled={!!busy || !s?.url || blocked}
                             className="btn-secondary nb-tap inline-flex shrink-0 items-center
                                        gap-1 text-xs disabled:opacity-40"
                             title={s?.url ? "저장하지 않고 응답만 확인합니다"
@@ -246,7 +276,7 @@ export default function PikuPanel() {
                       먼저 확인
                     </button>
                     <button onClick={() => void collect(d)}
-                            disabled={!!busy || !s?.url}
+                            disabled={!!busy || !s?.url || blocked}
                             className="btn-secondary nb-tap inline-flex shrink-0 items-center
                                        gap-1 text-xs disabled:opacity-40"
                             title={s?.url ? "지금 PIKU에 접속해 갱신합니다"
@@ -282,7 +312,7 @@ export default function PikuPanel() {
               </p>
             )}
             <button onClick={() => void collectAll()}
-                    disabled={!!busy}
+                    disabled={!!busy || blocked}
                     className="btn-secondary nb-tap inline-flex items-center gap-1.5
                                text-sm disabled:opacity-40"
                     title="세 부문을 모두 수집합니다. 하나라도 실패하면 아무것도 반영하지 않습니다.">

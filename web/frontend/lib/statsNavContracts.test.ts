@@ -15,16 +15,22 @@ const PAGE = () => read("app/stats/page.tsx");
 
 // ── 명칭 ────────────────────────────────────────────────────────────────────
 
-test("'전체 스트리머 분석'이 '전체 스트리머 통계'로 바뀐다", () => {
+test("'분석'이라는 옛 이름을 쓰지 않고 통계 그룹에 있다", () => {
+  // UI-V에서 라벨이 짧아졌다(`전체 스트리머 통계` → `전체 스트리머`). 그룹 제목이
+  // 바로 위에서 문맥을 주므로 접미사를 반복하지 않는다. 여기서 지키는 것은
+  // **옛 이름('분석')이 되살아나지 않는 것**과 **소속 그룹**이다.
   const s = NAV();
-  assert.ok(s.includes('label: "전체 스트리머 통계"'));
   assert.ok(!s.includes('label: "전체 스트리머 분석"'));
+  const stats = s.split('header: "통계"')[1].split("] }")[0];
+  assert.ok(stats.includes('key: "overview"'));
+  assert.ok(stats.includes('label: "전체 스트리머"'));
 });
 
 test("통합 메뉴가 두 독립 메뉴로 갈린다", () => {
   const s = NAV();
-  assert.ok(s.includes('label: "신규 스트리머 통계"'));
-  assert.ok(s.includes('label: "소형 스트리머 통계"'));
+  const stats = s.split('header: "통계"')[1].split("] }")[0];
+  assert.ok(stats.includes('key: "newcomers_stats"'));
+  assert.ok(stats.includes('key: "small_stats"'));
   assert.ok(!s.includes('label: "신규 & 초기 분석"'),
     "통합 메뉴가 남아 있으면 URL 공유와 뒤로가기가 예전 문제로 되돌아간다");
 });
@@ -117,7 +123,8 @@ test("소형 스트리머 랭킹 메뉴가 랭킹 그룹에 있다", () => {
   const s = NAV();
   const rank = s.split('header: "랭킹"')[1].split("] }")[0];
   assert.ok(rank.includes('key: "small_ranking"'));
-  assert.ok(rank.includes('label: "소형 스트리머 랭킹"'));
+  // 라벨은 짧아졌지만(`소형 스트리머`) **랭킹 그룹 소속**이 이 테스트의 요지다.
+  assert.ok(rank.includes('label: "소형 스트리머"'));
 });
 
 test("소형 랭킹은 전용 API를 쓴다(통계 응답을 재활용하지 않는다)", () => {

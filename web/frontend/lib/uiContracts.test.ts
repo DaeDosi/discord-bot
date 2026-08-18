@@ -39,16 +39,17 @@ test("요구1: 공식 공지 원문 링크가 상단 액션 영역에 있다", (
   assert.ok(s.includes("SINGCUP_QUALIFIERS.sourceUrl"), "출처는 정본에서 온다");
 });
 
-test("SINGCUP-3: 비공식 인기점수 랭킹으로 보내는 버튼은 제거됐다", () => {
-  // UI-P의 '비공식 인기점수 랭킹 보기' 버튼 계약을 **대체한다.**
-  // 그 기능이 종료됐으므로 버튼이 남아 있으면 종료 안내로 보내는 링크가 된다.
+test("SINGCUP-3(UI-V 정정): 비공식 인기점수로 가는 버튼이 다시 있다", () => {
+  // **이전 계약을 뒤집는다.** 종료된 것은 *수집*이지 화면이 아니었다. 버튼을
+  // 없앴더니 확정까지 마친 순위(서버에 그대로 있다)를 볼 방법이 사라졌다.
+  // 지금은 입구를 두고, 그 화면이 확정본을 읽기 전용으로 보여 준다.
   const s = read(OFFICIAL);
-  assert.ok(!s.includes("비공식 인기점수 랭킹 보기"),
-    "종료된 기능으로 보내는 버튼이 남아 있다");
-  // 대신 종료 안내 화면이 존재해야 한다(빈 화면으로 두지 않았다는 증거).
+  assert.ok(s.includes("비공식 인기점수 보기"), "진입 경로가 있어야 한다");
   const sc = read("app/stats/Singcup.tsx");
-  assert.ok(sc.includes("function RankingRetired"));
-  assert.ok(sc.includes("제공 종료"));
+  assert.ok(!sc.includes("function RankingRetired"),
+    "안내문 한 장으로 화면을 대체하지 않는다");
+  assert.ok(sc.includes("수집 종료 · 최종 집계"),
+    "무엇이 끝났는지는 배너로 밝힌다");
 });
 
 test("SINGCUP-3: 예전 참가자 화면 파일은 남겨 두지 않았다", () => {

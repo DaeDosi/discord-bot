@@ -530,8 +530,15 @@ export default function SiteHeader({ maxWidth = "full", statsNav }: {
         </div>
         <span className="md:hidden" aria-hidden="true" />
 
-        {/* ── 오른쪽: 사용 방법 · 로그인/프로필 (맨 오른쪽 정렬) ── */}
-        <div className="flex min-w-0 items-center justify-end gap-1 overflow-hidden">
+        {/* ── 오른쪽: 사용 방법 · 로그인/프로필 (맨 오른쪽 정렬) ──
+            **여기에는 `overflow-hidden`을 두지 않는다.** 있으면 이 칸이 스크롤
+            컨테이너가 되고, 프로필 메뉴(absolute)가 칸 아래로 삐져나가는 순간
+            "스크롤 가능한 넘침 영역"이 생긴다. 메뉴를 열며 첫 항목으로 포커스를
+            옮기면 브라우저가 그 항목을 보이게 하려고 **이 칸을 안쪽으로 스크롤**해,
+            프로필 버튼이 헤더 위로 밀려 올라갔다(실측: top 11 → -55, 헤더는 0~72 고정).
+            가로 넘침은 자식들의 `min-w-0`/`truncate`가 막는다 — 잘라서 감추는 대신
+            넘칠 일 자체를 없앤다. */}
+        <div className="flex min-w-0 items-center justify-end gap-1">
           <button type="button" onClick={() => setSearchOpen((o) => !o)}
                   aria-expanded={searchOpen} aria-controls={searchId}
                   aria-label={searchOpen ? "검색 닫기" : "스트리머 검색 열기"}

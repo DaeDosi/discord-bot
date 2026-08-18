@@ -96,9 +96,23 @@ test("thumb가 둥글고 hover·active 상태를 갖는다", () => {
 
 test("scrollbar를 숨기거나 가짜 화살표를 만들지 않는다", () => {
   const s = code(CSS());
-  // 숨기면 콘텐츠가 더 있다는 유일한 신호가 사라진다.
-  assert.ok(!/::-webkit-scrollbar\s*\{\s*display:\s*none/.test(s));
-  assert.ok(!s.includes("-ms-overflow-style: none"));
+  // 본문·문서 스크롤바를 숨기면 콘텐츠가 더 있다는 유일한 신호가 사라진다.
+  // **예외는 LNB 하나뿐**이다(UI-V 요구) — 거기는 메뉴 항목이 신호 역할을 하고,
+  // 좁은 기둥에 스크롤바가 생기면 이름이 밀려 잘린다. 스크롤 자체는 살아 있다.
+  // 숨김 규칙이 나오는 줄마다 그 줄이 LNB 선택자인지 확인한다.
+  for (const line of s.split("\n")) {
+    if (/::-webkit-scrollbar\s*\{\s*display:\s*none/.test(line)) {
+      assert.ok(line.includes(".nb-shell-nav"),
+        `LNB 밖에서 스크롤바를 숨긴다: ${line.trim()}`);
+    }
+  }
+  // `-ms-overflow-style: none`은 블록 안에 있으므로 직전 선택자를 되짚는다.
+  let i = s.indexOf("-ms-overflow-style: none");
+  while (i !== -1) {
+    assert.ok(s.lastIndexOf(".nb-shell-nav", i) > s.lastIndexOf("}", i),
+      "LNB 블록 밖에서 -ms-overflow-style을 끄고 있다");
+    i = s.indexOf("-ms-overflow-style: none", i + 1);
+  }
   // 클릭해도 스크롤되지 않는 가짜 버튼을 만들지 않는다.
   assert.ok(!s.includes("::-webkit-scrollbar-button"));
 });

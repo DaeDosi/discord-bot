@@ -909,10 +909,12 @@ function HelpTip({ children }: { children: React.ReactNode }) {
         onMouseLeave={() => setHover(false)}
         onFocus={() => setHover(true)}
         onBlur={() => setHover(false)}
-        className="w-4 h-4 rounded-full border border-border bg-bg-hover text-muted
-                   text-[10px] font-bold leading-none flex items-center justify-center
-                   cursor-help select-none transition-colors hover:text-fg
-                   focus:outline-none focus:border-accent">?</button>
+        /* `nb-tap-icon`은 터치 입력에서만 44px 영역을 준다 — 원의 시각 크기(16px)는
+           그대로 두고 누를 수 있는 범위만 넓힌다. */
+        className="nb-tap-icon w-4 h-4 rounded-full border border-border bg-bg-hover
+                   text-muted text-[10px] font-bold leading-none flex items-center
+                   justify-center cursor-help select-none transition-colors
+                   hover:text-fg focus:outline-none focus:border-accent">?</button>
 
       {/* body 포털 + position:fixed — 테이블의 overflow-x-auto 클리핑과
           카드/헤더가 만드는 stacking context를 모두 벗어난다. */}
@@ -2374,9 +2376,12 @@ export default function StatsPage() {
   const empty = !ov || ov.collected_at === null;
 
   return (
-    /* **3영역 셸.** Header는 고정이고 그 아래 좌측 메뉴와 본문이 각자 스크롤한다
-       (`.nb-shell`은 globals.css). 예전에는 문서 전체가 하나로 스크롤해서, 메뉴를
-       보려고 내리면 본문이 같이 내려갔고 본문을 끝까지 읽으면 메뉴가 사라졌다. */
+    /* **스크롤 소유권은 window에 있다.** Header는 `sticky top-0`, 좌측 메뉴는
+       데스크톱에서만 헤더 아래에 sticky로 붙어 자기만 스크롤하고, 본문은 자체
+       스크롤 컨테이너가 아니다(`.nb-shell*`은 globals.css).
+
+       본문에 `overflow-y: auto`를 주면 브라우저 오른쪽의 진짜 스크롤바가 사라지고
+       본문 안쪽에 또 하나가 생긴다 — 페이지가 얼마나 남았는지 읽을 수 없다. */
     <div className="nb-shell bg-bg text-fg">
       {/* 공통 헤더 하나만 쓴다. `치지직 통계`는 이제 헤더 왼쪽 브랜드 옆에
           상시로 있으므로 여기서 breadcrumb으로 또 넘기지 않는다(중복 제거).
@@ -2400,12 +2405,16 @@ export default function StatsPage() {
             <button type="button" aria-label="메뉴 닫기"
                     onClick={() => setNavOpen(false)}
                     className="fixed inset-0 z-30 bg-black/50 md:hidden" />
+            {/* 모바일은 `fixed` drawer, 데스크톱은 헤더 아래 `sticky` 기둥이다.
+                sticky는 높이를 스스로 제한해야 걸린다 — `max-h`가 없으면 메뉴가
+                화면보다 길어지는 순간 아래쪽 항목에 닿을 방법이 사라진다. */}
             <aside id={STATS_NAV_ID}
                    className="nb-shell-nav fixed inset-y-0 left-0 z-40 w-[86vw]
                               max-w-[300px] border-r border-border bg-bg px-4 pb-8
-                              pt-4 md:static md:z-auto md:w-[240px] md:max-w-none
-                              md:shrink-0 md:bg-transparent md:pl-4 md:pr-3"
-                   style={{ paddingTop: undefined }}>
+                              pt-4 md:sticky md:inset-y-auto md:top-[var(--nb-header-h)]
+                              md:z-auto md:max-h-[calc(100svh-var(--nb-header-h))]
+                              md:w-[248px] md:max-w-none md:shrink-0
+                              md:border-r-0 md:bg-transparent md:pb-6 md:pl-4 md:pr-3">
               <StatsNav active={tab} onSelect={selectTab} />
             </aside>
           </>
@@ -2499,7 +2508,7 @@ export default function StatsPage() {
               잠시 후 새로고침하면 대부분 복구됩니다.
             </p>
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-              <button onClick={() => location.reload()} className="btn-secondary text-sm">새로고침</button>
+              <button onClick={() => location.reload()} className="btn-secondary nb-tap text-sm">새로고침</button>
               <Link href="/status" className="btn-secondary text-sm">서버 상태 확인</Link>
               <Link href="/contact" className="btn-secondary text-sm">문제 신고</Link>
             </div>
@@ -2513,7 +2522,7 @@ export default function StatsPage() {
               수집이 잠시 멈췄던 경우 첫 집계까지 시간이 걸릴 수 있습니다.
             </p>
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-              <button onClick={() => location.reload()} className="btn-secondary text-sm">새로고침</button>
+              <button onClick={() => location.reload()} className="btn-secondary nb-tap text-sm">새로고침</button>
               <Link href="/status" className="btn-secondary text-sm">서버 상태 확인</Link>
               <Link href="/about" className="btn-secondary text-sm">서비스 소개</Link>
             </div>

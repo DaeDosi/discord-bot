@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Trophy, ExternalLink, Play, Eye, Heart, Radio, X,
-  Search, ArrowDown, ArrowUp, RefreshCw,
+  Search, ArrowDown, ArrowUp, RefreshCw, Archive,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useSingcupRanking } from "@/lib/useSingcupRanking";
@@ -499,7 +499,12 @@ function Pager({ page, total, onChange, rangeFrom, rangeTo, totalRows }:
   );
 }
 
-function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
+function SingcupRanking({ onOfficial, collectionNotice }: {
+  onOfficial: () => void;
+  /** 서버가 준 '수집 종료' 문구. 여기서 다시 쓰지 않는다 — 같은 규칙에 설명이
+   *  두 벌이 되면 서버에서 문구를 바꿔도 화면이 따라오지 않는다. */
+  collectionNotice?: string | null;
+}) {
   // 이 화면만 **확정본**을 쓴다. 이벤트가 끝났으므로 순위·하트·급상승을 얼린다.
   // 공식 예선 참가자 화면은 계속 `useSingcupMain`(최신 지표)을 쓴다 — 둘을 같은
   // 훅으로 되돌리면 참가자 화면의 하트·조회수까지 굳는다(lib/useSingcupRanking).
@@ -637,6 +642,22 @@ function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
 
   return (
     <div className="space-y-5">
+      {/* 확정본을 보고 있다는 사실을 **목록 위**에서 한 번 밝힌다. 배지만으로는
+          "지금도 갱신되는 순위"로 읽히고, 그러면 값이 안 변하는 것이 고장으로
+          보인다. 문구는 서버가 준 것을 그대로 쓴다. */}
+      {final && (
+        <div className="rounded-xl border border-border bg-bg-card px-4 py-3">
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-semibold text-fg">
+            <Archive size={15} className="shrink-0 text-muted" aria-hidden="true" />
+            수집 종료 · 최종 집계
+          </p>
+          <p className="mt-1 text-[13px] leading-relaxed text-muted">
+            {collectionNotice ?? "싱드컵 비공식 인기점수 집계가 종료되었습니다."}{" "}
+            이 순위는 마지막 정상 집계 기준이며, 이후의 조회수·하트 변화는
+            반영되지 않습니다. 기록은 지우지 않고 그대로 보관합니다.
+          </p>
+        </div>
+      )}
       {/* 상단 — 제목/요약 ↔ 버튼 2개 */}
       <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
         <div className="min-w-0 max-w-2xl">
@@ -794,12 +815,14 @@ function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 sm:ml-auto sm:justify-end">
+        {/* `nb-tap-gap`/`nb-tap`: 터치 입력에서만 44px로 키운다. 이 정렬 줄은
+            기능 게이트 뒤에 가려져 있던 동안 손대지 못했던 자리다. */}
+        <div className="nb-tap-gap flex flex-wrap items-center gap-2 sm:ml-auto sm:justify-end">
           {SORTS.map((s) => {
             const on = sort === s.k;
             return (
               <button key={s.k} onClick={() => pickSort(s.k, dir)}
-                className="rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
+                className="nb-tap rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
                 style={{ background: on ? `${GOLD}1a` : "transparent",
                          borderColor: on ? `${GOLD}59` : "rgb(var(--color-border-rgb))",
                          color: on ? GOLD : "rgb(var(--color-muted-rgb))" }}>
@@ -812,8 +835,8 @@ function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
             title={dir === "desc" ? "내림차순 (높은 순) — 누르면 오름차순"
                                   : "오름차순 (낮은 순) — 누르면 내림차순"}
             aria-label={dir === "desc" ? "내림차순 정렬 중" : "오름차순 정렬 중"}
-            className="flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs
-                       font-medium transition-colors"
+            className="nb-tap flex items-center gap-1 rounded-lg border px-3 py-1.5
+                       text-xs font-medium transition-colors"
             style={{ background: `${GOLD}1a`, borderColor: `${GOLD}59`, color: GOLD }}>
             {dir === "desc" ? <ArrowDown size={13} /> : <ArrowUp size={13} />}
             {dir === "desc" ? "높은 순" : "낮은 순"}
@@ -902,45 +925,6 @@ function SingcupRanking({ onOfficial }: { onOfficial: () => void }) {
 // 둘을 `?view=`로 나눠 두면 어느 쪽을 보고 있었는지가 공유 링크와 새로고침에
 // 그대로 남는다. 해석 규칙(특히 예전 `?sort=` 링크 호환)은 렌더링 없이 검증할 수
 // 있도록 `lib/singcupView`에 순수 함수로 빼 뒀다.
-/** 비공식 인기점수 랭킹이 내려갔을 때 보여 줄 **읽기 전용 기록** 안내.
- *
- *  빈 화면이나 오류로 보이지 않게 (1) 무엇이 끝났는지, (2) 데이터가 남아 있다는 것,
- *  (3) 지금 볼 수 있는 곳을 적는다. 문구는 **서버가 준 것**을 그대로 쓴다 —
- *  여기서 다시 쓰면 같은 규칙에 설명이 두 벌이 된다. */
-function RankingRetired({ notice, onOfficial }: {
-  notice: string | null; onOfficial: () => void;
-}) {
-  return (
-    <div className="space-y-5">
-      <div className="min-w-0 max-w-2xl">
-        <h2 className="flex flex-wrap items-center gap-2 text-xl font-extrabold
-                       tracking-tight md:text-2xl">
-          <Trophy size={20} style={{ color: GOLD }} aria-hidden="true" />
-          싱드컵 비공식 인기점수 랭킹
-          <span className="rounded border border-border px-1.5 py-0.5 text-[10px]
-                           font-bold text-muted">제공 종료</span>
-        </h2>
-      </div>
-      <div className="card !p-6 text-center md:!p-10">
-        <Trophy size={36} className="mx-auto mb-3 text-muted opacity-40"
-                aria-hidden="true" />
-        <p className="font-medium text-fg">
-          {notice ?? "싱드컵 비공식 인기점수 랭킹 제공이 종료되었습니다."}
-        </p>
-        <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
-          이벤트가 끝나 실시간 갱신을 중단했습니다. 그동안 집계한 기록은
-          지우지 않았고, 종료 시점에 확정된 순위를 그대로 보관하고 있습니다.
-        </p>
-        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-          <button onClick={onOfficial} className="btn-primary nb-tap text-sm">
-            공식 예선 참가자 보기
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function Singcup() {
   const [view, setView] = useState<SingcupView>("official");
   // 무엇이 열려 있는지는 **서버가 정한다.** 화면이 스스로 판단하면 서버에서 다시
@@ -974,18 +958,20 @@ export default function Singcup() {
     window.history.replaceState(null, "", url.toString());
   }, []);
 
-  // 상태를 아직 모르는 동안에는 **닫힌 것으로 본다.** 반대로 두면 종료된 기능이
-  // 잠깐 보였다가 사라져, 사용자는 화면이 깨진 것으로 읽는다.
-  const rankingOpen = gates?.gates?.unofficialRankingOpen === true;
+  /* `unofficialRankingOpen: false`는 **수집이 끝났다**는 뜻이지 "화면을 치운다"는
+     뜻이 아니다. 예전에는 이 값으로 랭킹 화면을 통째로 안내문 한 장으로 바꿔서,
+     그동안 집계해 확정까지 마친 순위를 볼 방법이 사라졌다(데이터는 서버에 그대로
+     있었다 — `/final-ranking`이 `finalized: true`로 응답한다). 지금은 화면을 열어
+     두고 **확정본을 읽기 전용으로** 보여 준다.
 
-  // `movers`(하트 급상승)는 랭킹 화면 위쪽 카드라 별도 화면이 아니다. 링크를 살려
-  // 두되 렌더는 랭킹 하나로 모은다 — 같은 것을 두 벌로 만들면 반드시 갈라진다.
+     "아직 확정본이 없다 / 불러오지 못했다"는 `SingcupRanking`이 자기 상태
+     (`finalizing`·`error`)로 이미 구분해 안내하므로 여기서 또 나누지 않는다.
+
+     `movers`(하트 급상승)는 랭킹 화면 위쪽 카드라 별도 화면이 아니다. 링크를 살려
+     두되 렌더는 랭킹 하나로 모은다 — 같은 것을 두 벌로 만들면 반드시 갈라진다. */
   if (view === "official") {
-    return <SingcupOfficial />;
+    return <SingcupOfficial onRanking={() => selectView("ranking")} />;
   }
-  if (!rankingOpen) {
-    return <RankingRetired notice={gates?.notices?.unofficialRanking ?? null}
-                           onOfficial={() => selectView("official")} />;
-  }
-  return <SingcupRanking onOfficial={() => selectView("official")} />;
+  return <SingcupRanking onOfficial={() => selectView("official")}
+                         collectionNotice={gates?.notices?.unofficialRanking ?? null} />;
 }

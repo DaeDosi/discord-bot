@@ -179,8 +179,9 @@ function BarPanel({ rows, onPick, deltaName }:
               키울 수 없다** — 대신 `nb-tap`으로 터치 히트 영역만 넓힌다.
               행끼리 세로로 붙어 있어 영역이 겹치지 않도록 부모가 간격을 갖는다. */}
           <button type="button" onClick={() => onPick(r.chzzk_channel_id)}
-            className="nb-tap w-[64px] shrink-0 truncate text-left text-xs font-semibold text-fg
-                       transition-colors hover:text-accent sm:w-[88px] md:w-[104px]">
+            className="nb-tap w-[56px] shrink-0 truncate text-left text-xs font-semibold
+                       text-fg transition-colors hover:text-accent xs:w-[64px]
+                       sm:w-[88px] md:w-[104px]">
             {r.channel_name}
           </button>
 
@@ -196,11 +197,12 @@ function BarPanel({ rows, onPick, deltaName }:
               폭은 '고정'이어야 한다 — min-width로 두면 1위처럼 여섯 자리(128,400명)인
               행만 이 칸이 넓어지고, 그만큼 flex-1인 막대 트랙이 짧아져 1위 막대만
               안쪽에서 끝난다. 칸을 고정하면 모든 행의 막대 길이 기준이 같아진다. */}
-          {/* 기준 폭을 112 → 92px로 낮춘다. 112px은 390@150%(실폭 260px)에서
-              막대 트랙과 합쳐 부모를 밀어 문서가 가로로 넘쳤다(실측 36px).
-              칸이 '고정'이어야 하는 이유(모든 행의 막대 기준을 같게)는 그대로다 —
-              값을 지우거나 숨기지 않고 폭만 줄인다. */}
-          <div className="flex w-[92px] shrink-0 items-center justify-end gap-1.5
+          {/* 기준 폭 92 → 76px. 92px도 390@150%(실폭 260px)에서는 여전히 넘쳤다
+              (실측 39px). 예전에는 셸의 `overflow: hidden`이 그 넘침을 **가리고
+              있어서** 측정에 잡히지 않았는데, 본문 스크롤을 window로 넘기며 그
+              은폐를 걷어내자 드러났다. 칸이 '고정'이어야 하는 이유(모든 행의 막대
+              기준을 같게)는 그대로다 — 값을 지우거나 숨기지 않고 폭만 줄인다. */}
+          <div className="flex w-[76px] shrink-0 items-center justify-end gap-1
                           tabular-nums xs:w-[112px] xs:gap-2 sm:w-[150px] sm:gap-3
                           md:w-[176px] md:gap-4">
             <span className="flex-1 whitespace-nowrap text-right text-[11px] font-semibold
@@ -212,7 +214,8 @@ function BarPanel({ rows, onPick, deltaName }:
                 : r.deltaPct === 0 ? "0.0%"
                 : `${r.deltaPct > 0 ? "▲" : "▼"} ${Math.abs(r.deltaPct).toFixed(1)}%`}
             </span>
-            <span className="w-[50px] shrink-0 whitespace-nowrap text-right text-[11px]
+            <span className="w-[42px] shrink-0 whitespace-nowrap text-right text-[11px]
+                             xs:w-[50px]
                              font-extrabold text-fg xs:w-[60px] xs:text-[12px]
                              sm:w-[72px] sm:text-sm md:w-[86px] md:text-[15px]">
               {nf(r.concurrent_viewers)}명
@@ -716,9 +719,14 @@ export default function RankingCharts({ rows, y, deltaName = "변동률" }:
         </button>
 
         {/* 터치에서는 시각 크기를 키우지 않고 히트 영역만 44px로 넓힌다.
-            `nb-tap-gap`이 넓어진 영역끼리의 간격도 함께 벌린다. */}
+            `nb-tap-gap`이 넓어진 영역끼리의 간격도 함께 벌린다.
+
+            **`shrink-0`을 두지 않는다.** `flex-wrap`과 같이 쓰면 이 칸이
+            max-content(버튼 두 개를 한 줄에 놓은 폭)로 고정돼 **안쪽 줄바꿈이
+            영영 일어나지 않는다** — 390@150%(실폭 260px)에서 259px로 버티며
+            문서를 가로로 밀었다. 줄어들 수 있어야 wrap이 실제로 동작한다. */}
         {open && (
-          <div className="nb-tap-gap flex shrink-0 flex-wrap items-center gap-1.5">
+          <div className="nb-tap-gap flex min-w-0 flex-wrap items-center gap-1.5">
             <button type="button" onClick={() => setMode("bar")}
               aria-pressed={mode === "bar"}
               className="nb-tap inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"

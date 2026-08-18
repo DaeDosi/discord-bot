@@ -17,39 +17,60 @@ const NAV = () => read("app/stats/StatsNav.tsx");
 const CSS = () => read("app/globals.css");
 const OFFICIAL = () => read("app/stats/SingcupOfficial.tsx");
 
-// ── 1) 3영역 독립 스크롤 ────────────────────────────────────────────────────
+// ── 1) 스크롤 소유권 (UI-V에서 계약이 바뀌었다) ─────────────────────────────
+//
+// **본문은 window가 스크롤한다.** 예전에는 헤더/메뉴/본문 셋이 각자 스크롤했는데,
+// 그러면 브라우저 오른쪽의 진짜 스크롤바가 사라지고 본문 안쪽에 또 하나가 생겨
+// 페이지가 얼마나 남았는지 읽을 수 없었다. 지금은 sidebar만 자기 스크롤을 갖는다.
 
 test("셸이 헤더 높이를 변수로 계산한다", () => {
   const css = CSS();
   assert.ok(css.includes("--nb-header-h"), "헤더 높이 변수가 있어야 한다");
-  const shell = css.slice(css.indexOf(".nb-shell {"));
-  assert.ok(shell.slice(0, 220).includes("height: 100svh"),
-    "vh가 아니라 svh — 모바일 주소창이 접힐 때 값이 변하면 스크롤이 튄다");
-  assert.ok(HEADER().includes('setProperty(\n      "--nb-header-h"')
-    || HEADER().includes('"--nb-header-h"'),
+  assert.ok(HEADER().includes('"--nb-header-h"'),
     "헤더가 자기 실제 높이를 알려야 확대에서도 맞는다");
 });
 
-test("두 칸이 각자 스크롤하고 min-height가 0이다", () => {
-  const css = CSS();
-  for (const sel of [".nb-shell-body", ".nb-shell-nav", ".nb-shell-main"]) {
-    assert.ok(css.includes(sel), `${sel}가 없다`);
-  }
-  // min-height:0이 없으면 grid 안에서 자식 높이만큼 늘어나 스크롤이 안 생긴다.
-  const pair = css.slice(css.indexOf(".nb-shell-nav,"));
-  assert.ok(pair.slice(0, 200).includes("min-height: 0"));
-  assert.ok(pair.slice(0, 200).includes("overflow-y: auto"));
+test("셸이 문서 스크롤을 빼앗지 않는다", () => {
+  const css = code(CSS());
+  const shell = css.slice(css.indexOf(".nb-shell {"), css.indexOf(".nb-shell-body"));
+  assert.ok(!shell.includes("height: 100svh"),
+    "셸이 화면 높이를 고정하면 문서가 스크롤을 잃는다");
+  assert.ok(!shell.includes("overflow: hidden"),
+    "셸의 overflow:hidden은 window 스크롤을 없앤다");
+});
+
+test("본문은 자체 스크롤 컨테이너가 아니다", () => {
+  const css = code(CSS());
+  const main = css.slice(css.indexOf(".nb-shell-main {"));
+  const block = main.slice(0, main.indexOf("}"));
+  assert.ok(!/overflow/.test(block),
+    "본문에 overflow를 주면 window 스크롤바와 이중이 된다");
+});
+
+test("sidebar만 자기 스크롤을 갖고 스크롤바는 숨긴다", () => {
+  const css = code(CSS());
+  const nav = css.slice(css.indexOf(".nb-shell-nav {"));
+  const block = nav.slice(0, nav.indexOf("}"));
+  assert.ok(block.includes("overflow-y: auto"), "메뉴는 스스로 스크롤해야 한다");
+  assert.ok(block.includes("scrollbar-width: none"), "Firefox에서 스크롤바를 숨긴다");
+  assert.ok(!/overflow(-y)?: hidden/.test(block),
+    "overflow:hidden으로 막으면 아래 항목에 닿을 방법이 사라진다");
+  assert.ok(css.includes(".nb-shell-nav::-webkit-scrollbar { display: none; }"),
+    "Chromium/WebKit에서도 스크롤바만 숨긴다");
+});
+
+test("전역 스크롤바는 숨기지 않는다(본문 스크롤의 유일한 신호다)", () => {
+  const css = code(CSS());
+  // `::-webkit-scrollbar { width: 10px }` 같은 전역 규칙이 살아 있어야 한다.
+  assert.ok(/::-webkit-scrollbar \{ width: 10px/.test(css));
+  assert.ok(css.includes("scrollbar-color: var(--nb-scroll-thumb)"),
+    "트랙·thumb 대비를 팔레트에서 준다");
 });
 
 test("본문의 가로 overflow를 숨겨 은폐하지 않는다", () => {
   const css = code(CSS());
-  // `.nb-shell`의 `overflow: hidden`은 **세로 이중 스크롤**을 막는 것이다.
-  // 본문의 가로는 각 화면이 스스로 책임진다 — 여기서 덮으면 진짜 overflow가
-  // 보이지 않게 될 뿐 고쳐지지 않는다.
-  const main = css.slice(css.indexOf(".nb-shell-main { overscroll"));
-  assert.ok(!main.slice(0, 120).includes("overflow-x"));
-  // 반대로 메뉴 칸은 가로로 넘칠 일이 없어 잘라도 된다(넘치면 그게 버그다).
-  assert.ok(css.includes(".nb-shell-nav { overflow-x: hidden;"));
+  const main = css.slice(css.indexOf(".nb-shell-main {"));
+  assert.ok(!main.slice(0, main.indexOf("}")).includes("overflow-x"));
 });
 
 test("stats 페이지가 셸을 쓰고 sidebar가 본문의 형제다", () => {
@@ -253,9 +274,17 @@ test("히트맵이 고정 640px로 부모를 밀지 않는다", () => {
 });
 
 test("랭킹 차트 고정폭이 좁은 화면에서 줄어든다", () => {
+  // 값 자체(92px)를 고정하지 않는다 — 지켜야 할 것은 **기본 폭이 xs 이상보다
+  // 좁고, 넓어지면 원래 폭으로 돌아온다**는 관계다. 92px도 390@150%(260px)에서는
+  // 여전히 넘쳤고(실측 39px) 지금은 76px이다.
   const s = read("app/stats/RankingCharts.tsx");
-  assert.ok(s.includes("w-[92px]"), "112px은 260px 화면에서 부모를 밀었다");
+  const base = s.match(/w-\[(\d+)px\] shrink-0 items-center justify-end/);
+  assert.ok(base, "지표 칸의 기본 폭을 찾지 못했다");
+  assert.ok(Number(base![1]) <= 92, `기본 폭이 너무 넓다: ${base![1]}px`);
   assert.ok(s.includes("xs:w-[112px]"), "넓어지면 원래 폭으로 돌아온다");
+  // 토글 묶음은 줄어들 수 있어야 wrap이 실제로 동작한다.
+  assert.ok(!s.includes("nb-tap-gap flex shrink-0 flex-wrap"),
+    "shrink-0 + flex-wrap은 max-content로 굳어 줄바꿈이 일어나지 않는다");
 });
 
 test("스트리머 상세의 탭과 기간 토글이 줄바꿈된다", () => {

@@ -1,8 +1,7 @@
 "use client";
-import { useState } from "react";
 import Link from "next/link";
 import {
-  BookOpen, ChevronDown, LineChart as LineIcon, ListOrdered, Gamepad2, Sprout,
+  BookOpen, LineChart as LineIcon, ListOrdered, Gamepad2, Sprout,
   Radio, Users, Hash, SlidersHorizontal, Trophy, Sparkles, Boxes,
   // 소형 스트리머 — 신규(Sprout)와 **다른 아이콘**을 쓴다. 두 메뉴가 나란히
   // 놓이므로 같은 그림이면 어느 쪽인지 아이콘으로 구분되지 않는다.
@@ -48,24 +47,28 @@ export const UPCOMING_ITEM: NavItem = {
 // 랭킹은 한 그룹으로 묶되 기준이 다르다는 것은 LIVE 표시로 구분한다.
 // 실시간 랭킹은 최신 수집 사이클 한 장의 동시 시청자 순위라 그 순간 방송 중이었는지에
 // 크게 좌우되고, 누적 랭킹은 기간 전체를 집계해 꾸준함이 반영된다.
+/* 라벨에서 `통계`·`랭킹` 접미사를 뺐다. 그룹 제목이 바로 위에서 문맥을 주므로
+   "통계 > 전체 스트리머 통계"는 같은 말을 두 번 하는 것이고, 그 길이 때문에
+   240px 컬럼에서 이름이 잘렸다(`전체 스트리머 통…`). 짧은 이름은 잘리지 않는다 —
+   말줄임을 CSS로 감추는 대신 애초에 넘치지 않게 만든다. */
 export const NAV_GROUPS: { header: string | null; items: NavItem[] }[] = [
   { header: "통계", items: [
-    { key: "overview",        label: "전체 스트리머 통계", icon: <LineIcon size={16} />, live: true },
+    { key: "overview",        label: "전체 스트리머", icon: <LineIcon size={16} />, live: true },
     // 신규(첫 방송 60일 이내)와 소형(최근 7일 평균 시청자 10명 이하)은 **서로 독립된
     // 축**이고 교집합이 있는 게 정상이다. 예전에는 한 메뉴 안 세그먼티드 컨트롤로
     // 전환했는데, 그러면 (1) 둘 중 하나를 URL로 공유할 수 없고 (2) 뒤로가기가
     // 메뉴 밖으로 나가 버렸다. **정의는 그대로 두고 메뉴만 가른다.**
-    { key: "newcomers_stats", label: "신규 스트리머 통계", icon: <Sprout size={16} />, live: true },
-    { key: "small_stats",     label: "소형 스트리머 통계", icon: <Seedling size={16} />, live: true },
+    { key: "newcomers_stats", label: "신규 스트리머", icon: <Sprout size={16} />, live: true },
+    { key: "small_stats",     label: "소형 스트리머", icon: <Seedling size={16} />, live: true },
     // 실시간 한 장이 아니라 기간 누적이지만, '분석' 성격이 같아 같은 그룹에 둔다(LIVE 표시 없음)
-    { key: "period_analysis", label: "기간별 상세 분석",   icon: <SlidersHorizontal size={16} /> },
+    { key: "period_analysis", label: "기간별 상세",   icon: <SlidersHorizontal size={16} /> },
   ] },
   // 실시간/누적을 한 그룹으로 합치고, 실시간 기준인 항목에만 LIVE 표시를 붙인다
   { header: "랭킹", items: [
-    { key: "ranking",           label: "전체 스트리머 랭킹", icon: <Radio size={16} />, live: true },
-    { key: "newcomers_ranking", label: "신규 스트리머 랭킹", icon: <Sprout size={16} />, live: true },
-    { key: "small_ranking",     label: "소형 스트리머 랭킹", icon: <Seedling size={16} />, live: true },
-    { key: "ranking_period",    label: "기간별 누적 랭킹",   icon: <ListOrdered size={16} /> },
+    { key: "ranking",           label: "전체 스트리머", icon: <Radio size={16} />, live: true },
+    { key: "newcomers_ranking", label: "신규 스트리머", icon: <Sprout size={16} />, live: true },
+    { key: "small_ranking",     label: "소형 스트리머", icon: <Seedling size={16} />, live: true },
+    { key: "ranking_period",    label: "기간별 누적",   icon: <ListOrdered size={16} /> },
   ] },
   { header: "카테고리", items: [
     { key: "category",            label: "카테고리 분석",     icon: <Gamepad2 size={16} /> },
@@ -110,42 +113,37 @@ export default function StatsNav({
   onSelect: (k: Tab) => void;
   /** 메뉴 위에 놓을 요소 (스트리머 검색 등) */
 }) {
-  const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
-    const h = groupHeaderOf(active); return new Set(h ? [h] : []);
-  });
-  const toggleGroup = (h: string) =>
-    setOpenGroups((p) => { const n = new Set(p); if (n.has(h)) n.delete(h); else n.add(h); return n; });
-
   const renderItem = (t: NavItem) => {
     const isActive = active === t.key;
     // 이벤트 메뉴는 활성 스타일을 그대로 쓰되 포인트 색만 골드로 바꾼다.
     const point = t.event ? GOLD : GREEN;
     return (
       <button key={t.key} onClick={() => onSelect(t.key)}
-        className="relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors w-full border overflow-hidden"
+        aria-current={isActive ? "page" : undefined}
+        className="nb-lnb-item relative flex w-full items-center gap-2 rounded-lg
+                   border px-2.5 py-2 text-left transition-colors"
         style={{
           background: isActive ? (t.event ? "rgba(250,204,21,0.10)" : "rgba(0,255,163,0.08)") : "transparent",
           borderColor: isActive ? (t.event ? "rgba(250,204,21,0.40)" : "rgba(0,194,255,0.35)") : "transparent",
         }}>
+        {/* 활성 표시 막대. 위아래를 `inset-y-1.5`로 들여 두면 버튼의 둥근 모서리와
+            부딪히지 않으므로 `overflow-hidden` 없이도 깔끔하다 — 그 `overflow-hidden`이
+            예전에 라벨을 잘라 말줄임을 만들던 장본인이다. */}
         {isActive && (
-          <span className="absolute left-0 top-0 bottom-0 w-1 rounded-r"
+          <span aria-hidden="true"
+                className="absolute inset-y-1.5 left-0 w-[3px] rounded-full"
                 style={{ background: t.event ? GOLD : GRAD }} />
         )}
-        {/* ── 레이아웃 계약 — 세 칸의 역할이 서로 다르다. 하나라도 빠지면 배지가 잘린다 ──
+        {/* ── 레이아웃 계약 ──
             · 아이콘: 고정 폭 · shrink 금지
-            · 라벨:   min-width:0 + truncate — **여기가 유일하게 줄어드는 칸**이다
-            · 배지:   shrink-0 (아래 t.live / t.event 분기)
-            예전에는 라벨이 `whitespace-nowrap`이고 min-width가 auto(플렉스 기본값)라
-            **절대 줄어들지 않았다.** 그래서 아이콘+라벨+배지 합이 210px 컬럼을 넘기는
-            순간 `ml-auto` 배지가 오른쪽 밖으로 밀려났고, 버튼의 `overflow-hidden`이
-            그걸 잘라냈다. 한글 라벨의 실제 폭은 그 PC가 고른 글꼴에 좌우되므로
-            같은 화면 크기라도 PC마다 결과가 달랐다(그래서 재현이 어려웠다).
-            `overflow-hidden`은 활성 표시 막대(`w-1`)의 둥근 모서리에 필요하므로 남긴다 —
-            대신 라벨이 줄어들어 넘칠 일 자체를 없앤다. */}
+            · 라벨:   **줄이지 않는다.** truncate도 title도 없다. 라벨을 짧게
+                      만들었으므로(위 NAV_GROUPS) 248px 컬럼에서 넘칠 일이 없다.
+            · 배지:   shrink-0
+            말줄임을 되살리지 말 것 — 메뉴 이름이 잘리면 그 메뉴가 무엇인지
+            읽을 수 없고, 그건 CSS로 감출 문제가 아니라 이름 길이의 문제다. */}
         <span className="flex shrink-0 items-center"
               style={{ color: isActive ? point : "rgb(var(--color-muted-rgb))" }}>{t.icon}</span>
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold"
-              title={t.label}
+        <span className="min-w-0 flex-1 whitespace-nowrap text-[13px] font-semibold"
               style={{ color: isActive ? point : undefined }}>{t.label}</span>
         {t.live && (
           <span className="ml-auto flex shrink-0 items-center gap-1" title="실시간 기준">
@@ -188,22 +186,27 @@ export default function StatsNav({
         {renderItem(UPCOMING_ITEM)}
         {renderItem(EVENT_ITEM)}
       </div>
-      <div className="flex flex-col gap-1">
+      {/* ── 정적 섹션 ────────────────────────────────────────────────────
+          접기/펼치기를 없앴다. 메뉴가 12개뿐이라 접을 이유가 없는데도 토글이
+          있으면 (1) 원하는 항목이 지금 보이는지 매번 확인해야 하고, (2) 열려
+          있는 그룹이 세션마다 달라 같은 자리에 다른 메뉴가 온다. 정적 목록은
+          위치가 고정돼 근육 기억이 생긴다.
+
+          그룹 제목은 구분선 **아래**에 둔다 — 선이 앞 그룹의 끝을 닫고, 제목이
+          다음 묶음을 연다. 제목 자체는 조작 요소가 아니므로 버튼이 아니다. */}
+      <div className="flex flex-col">
         {NAV_GROUPS.map((g, gi) => {
-          if (!g.header) return <div key={gi} className="mt-1">{g.items.map(renderItem)}</div>;
-          const open = openGroups.has(g.header);
+          if (!g.header) return <div key={gi} className="mt-1 flex flex-col gap-1">{g.items.map(renderItem)}</div>;
           return (
-            <div key={gi} className={gi > 0 ? "mt-1" : ""}>
-              {/* nb-tap: 터치 입력에서만 44px로. 이 그룹 헤더들은 세로로 4px 간격이라
-                  손가락으로는 옆 그룹을 누르기 쉬웠다(데스크톱은 현행 유지). */}
-              <button onClick={() => toggleGroup(g.header!)}
-                className="nb-tap w-full flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-sm font-bold text-fg hover:bg-bg-hover transition-colors">
-                <ChevronDown size={15} className="transition-transform text-muted"
-                             style={{ transform: open ? "none" : "rotate(-90deg)" }} />
+            <section key={gi} aria-labelledby={`nb-lnb-${gi}`}
+                     className="mt-3 border-t border-border pt-3 first:mt-1">
+              <h2 id={`nb-lnb-${gi}`}
+                  className="px-2.5 pb-1.5 text-[11px] font-bold uppercase
+                             tracking-wider text-muted/80">
                 {g.header}
-              </button>
-              {open && <div className="flex flex-col gap-1 mt-1 pl-2.5">{g.items.map(renderItem)}</div>}
-            </div>
+              </h2>
+              <div className="flex flex-col gap-1">{g.items.map(renderItem)}</div>
+            </section>
           );
         })}
       </div>

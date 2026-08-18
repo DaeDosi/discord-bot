@@ -17,7 +17,9 @@
  *    (계산은 서버가 한다 — 프런트에서 다시 매기면 두 규칙이 갈라진다).
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, ExternalLink, Loader2, Radio, Trophy, Users } from "lucide-react";
+import {
+  AlertCircle, BarChart3, ExternalLink, Loader2, Radio, Trophy, Users,
+} from "lucide-react";
 import { api } from "@/lib/api";
 import type {
   PikuEntry, PikuRankingResponse, QualifierGroupRow, QualifierRow,
@@ -367,7 +369,14 @@ function DivisionSection({ division, label, rows, ranking, limit, showAll,
 }
 
 /* ── 화면 ────────────────────────────────────────────────────────────────── */
-export default function SingcupOfficial() {
+export default function SingcupOfficial({ onRanking }: {
+  /** 비공식 인기점수 랭킹으로 넘어가는 경로.
+   *
+   *  **두 순위는 서로 다른 것이다** — 이쪽은 PIKU 사용자 투표, 저쪽은 클립 조회수·
+   *  하트로 NexBot이 계산한 값이다. 그래서 한 랭킹으로 합치지 않는다. 다만 가는
+   *  길이 없으면 그 화면은 사실상 사라진 것과 같아서(실제로 그랬다) 입구를 둔다. */
+  onRanking?: () => void;
+} = {}) {
   const [tab, setTab] = useState<Tab>("all");
   // 공개 정렬 토큰이다. **내부 컬럼명(win_rate 등)을 쓰지 않는다** —
   // 그 이름이 번들과 응답에 남으면 "어느 형태로도 노출 금지" 계약이 깨진다.
@@ -428,12 +437,20 @@ export default function SingcupOfficial() {
           사용자 투표 데이터를 내려받아 <b className="text-fg">다시 계산한 순서</b>이며,
           대회 주최 측의 발표와 무관합니다.
         </p>
-        {/* 원문으로 갈 수 있어야 한다 — 명단을 대조하려는 사람에게 유일한 근거다. */}
-        <a href={SINGCUP_QUALIFIERS.sourceUrl} target="_blank"
-           rel="noopener noreferrer nofollow"
-           className="btn-secondary nb-tap mt-3 inline-flex items-center gap-1.5 text-sm">
-          공식 공지 원문 보기 <ExternalLink size={13} aria-hidden="true" />
-        </a>
+        <div className="nb-tap-gap mt-3 flex flex-wrap items-center gap-2">
+          {/* 원문으로 갈 수 있어야 한다 — 명단을 대조하려는 사람에게 유일한 근거다. */}
+          <a href={SINGCUP_QUALIFIERS.sourceUrl} target="_blank"
+             rel="noopener noreferrer nofollow"
+             className="btn-secondary nb-tap inline-flex items-center gap-1.5 text-sm">
+            공식 공지 원문 보기 <ExternalLink size={13} aria-hidden="true" />
+          </a>
+          {onRanking && (
+            <button type="button" onClick={onRanking}
+                    className="btn-secondary nb-tap inline-flex items-center gap-1.5 text-sm">
+              <BarChart3 size={13} aria-hidden="true" /> 비공식 인기점수 보기
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ── 부문 · 정렬 ── */}

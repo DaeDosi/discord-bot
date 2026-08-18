@@ -35,10 +35,17 @@ test("상태를 모르는 동안 종료로 단정하지 않는다", () => {
 });
 
 test("종료 화면이 빈 화면이나 오류로 보이지 않는다", () => {
+  // **UI-V에서 랭킹 쪽 계약이 바뀌었다.** 예전에는 게이트가 닫히면 랭킹을
+  // 안내문 한 장(`RankingRetired`)으로 바꿨는데, 그러면 확정까지 마친 순위를
+  // 볼 방법이 사라진다(데이터는 서버에 그대로 있었다). 지금은 화면을 열어 두고
+  // 확정본을 읽기 전용으로 보여 주며, '수집 종료'는 배너로 알린다.
   const s = SINGCUP();
-  assert.ok(s.includes("function RankingRetired"));
-  assert.ok(s.includes("지우지 않았고"), "데이터가 남아 있다는 것을 알린다");
-  assert.ok(s.includes("공식 예선 참가자 보기"), "갈 곳을 준다");
+  assert.ok(!s.includes("function RankingRetired"),
+    "안내문 한 장으로 대체하지 않는다");
+  assert.ok(s.includes("수집 종료 · 최종 집계"), "무엇이 끝났는지 밝힌다");
+  assert.ok(s.includes("기록은 지우지 않고"), "데이터가 남아 있다는 것을 알린다");
+  assert.ok(s.includes("공식 예선 참가자"), "갈 곳을 준다");
+  // 라이브 화면은 그대로다 — 실시간 목록은 되살릴 데이터 자체가 없다.
   const l = LIVE();
   assert.ok(l.includes("function LiveRetired"));
   assert.ok(l.includes("공식 예선 참가자 보기"));
@@ -54,8 +61,13 @@ test("종료된 라이브 화면은 데이터 API를 부르지 않는다", () =>
 });
 
 test("확정본 기록으로 가는 길이 남아 있다", () => {
-  // 데이터를 지운 것이 아니라 기능을 내린 것이다.
-  assert.ok(SINGCUP().includes("확정된 순위를 그대로 보관"));
+  // 데이터를 지운 것이 아니라 수집을 멈춘 것이다. 그래서 (1) 공식 화면에서
+  // 랭킹으로 가는 버튼이 있고, (2) 랭킹 화면이 확정본을 그대로 그린다.
+  const s = SINGCUP();
+  assert.ok(s.includes("<SingcupRanking"), "랭킹 화면이 항상 렌더된다");
+  assert.ok(s.includes("마지막 정상 집계 기준"));
+  assert.ok(read("app/stats/SingcupOfficial.tsx").includes("비공식 인기점수 보기"),
+    "공식 화면에 진입 경로가 있어야 한다");
 });
 
 // ── 공식 예선 참가자 화면 ───────────────────────────────────────────────────
