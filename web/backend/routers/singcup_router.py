@@ -698,7 +698,7 @@ async def qualifiers(division: str | None = None):
 
     # 라이브 여부·클립은 우리가 이미 수집해 둔 값에서만 읽는다(외부 호출 0).
     ids = sq.channel_ids(div) if div else set(sq.ALL_CHANNEL_IDS)
-    live_map, clip_map = await _qualifier_side_data(ids)
+    live_map, clip_map, song_map = await _qualifier_side_data(ids)
 
     def solo_row(r: dict) -> dict:
         cid = r["channelId"]
@@ -715,6 +715,9 @@ async def qualifiers(division: str | None = None):
             "clipThumbnailUrl": clip.get("clipThumbnailUrl") or "",
             # 운영자가 대표 클립을 직접 지정했는지 — 화면에서 자동 선정과 구분한다.
             "clipIsOverride": bool(clip.get("isOverride")),
+            # 카드 2줄째. **없으면 빈 문자열이고, 화면은 그 줄을 그리지 않는다.**
+            "songTitle": (song_map.get(cid) or {}).get("songTitle", ""),
+            "artistName": (song_map.get(cid) or {}).get("artistName", ""),
             # 공식 예선 참가자만 이 값을 받을 수 있다(위 주석).
             "live": live_map.get(cid),
         }
@@ -880,7 +883,27 @@ async def _qualifier_side_data(ids: set[str]) -> tuple[dict, dict]:
         print(f"[singcup] qualifier clip join failed: {type(e).__name__}: {e}",
               flush=True)
 
-    return live, clips
+    songs: dict[str, dict] = {}
+    try:
+        # 곡·가수는 **명시적으로 저장된 값만** 쓴다(클립 제목 파싱 금지 —
+        # 운영 데이터의 형식이 제각각이라 순서조차 일정하지 않다).
+        # 운영자 입력(`admin`)이 PIKU에서 가져온 값(`piku`)보다 우선한다.
+        for r in await (await db.execute(
+            f"""SELECT channel_id, song_title, artist_name, source
+                  FROM singcup_qualifier_songs
+                 WHERE channel_id IN ({marks})
+                 ORDER BY CASE source WHEN 'admin' THEN 0 ELSE 1 END""",
+                tuple(id_list))).fetchall():
+            songs.setdefault(r["channel_id"], {
+                "songTitle": r["song_title"] or "",
+                "artistName": r["artist_name"] or "",
+                "songSource": r["source"] or "",
+            })
+    except Exception as e:      # noqa: BLE001
+        print(f"[singcup] qualifier song join failed: {type(e).__name__}: {e}",
+              flush=True)
+
+    return live, clips, songs
 
 
 @router.get("/movers")

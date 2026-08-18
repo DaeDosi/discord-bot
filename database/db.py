@@ -1,5 +1,7 @@
 import aiosqlite
+import contextlib
 import os
+import sqlite3
 
 # __file__ = discord_workspace/database/db.py  → 프로젝트 루트 = 한 단계 위
 _HERE         = os.path.dirname(os.path.abspath(__file__))
@@ -64,6 +66,134 @@ async def close_db():
     if _db:
         await _db.close()
         _db = None
+
+
+# PIKU 순위 · 싱드컵 곡 정보가 쓰는 스키마. 아래 `init_db`의 legacy 루프는
+# 모든 예외를 삼키므로(`except Exception: pass`) lock·I/O·손상·문법 오류까지
+# 조용히 지나간다 — 그 상태로 서비스가 뜨면 "테이블이 없는데 정상 기동한" 것처럼
+# 보인다. 그래서 이 기능의 스키마만 여기로 분리해 **엄격하게** 실행한다.
+#
+# 실행 단위는 7개다: 테이블 3 · 초기 행 2 · 컬럼 2.
+_PIKU_TABLES = (
+    # 싱드컵 스윕(`singcup_collect_lock`)과 같은 방식이다: 단일 행 + 조건부
+    # UPDATE의 rowcount로 소유권을 정한다. 메모리 플래그로 두면 다중 replica·
+    # 재시작에서 즉시 깨진다.
+    """CREATE TABLE IF NOT EXISTS piku_collect_lock (
+           id           INTEGER PRIMARY KEY CHECK (id = 1),
+           locked_until INTEGER NOT NULL DEFAULT 0,
+           owner        TEXT    NOT NULL DEFAULT ''
+       )""",
+    # 자동 수집 상태 — 다음 실행 예정·연속 실패는 화면이 보여 줘야 하는데,
+    # 프로세스 메모리에 두면 재시작마다 사라져 "언제 다시 도는지"를 알 수 없다.
+    """CREATE TABLE IF NOT EXISTS piku_worker_state (
+           id                    INTEGER PRIMARY KEY CHECK (id = 1),
+           last_success_at       INTEGER NOT NULL DEFAULT 0,
+           last_error_at         INTEGER NOT NULL DEFAULT 0,
+           last_error_kind       TEXT    NOT NULL DEFAULT '',
+           consecutive_failures  INTEGER NOT NULL DEFAULT 0,
+           next_run_at           INTEGER NOT NULL DEFAULT 0
+       )""",
+    # ── 공식 참가자의 곡·가수 ────────────────────────────────────────────
+    # 카드 2줄째("노래 제목 - 가수")에 쓴다.
+    #
+    # **클립 제목에서 추측하지 않는다.** 실측한 운영 데이터는 형식이 제각각이다:
+    #   "[싱드컵] 솔지 - 오늘따라 비가와서 그런가봐"   (가수 - 곡)
+    #   "어른 - 손디아"                                (곡 - 가수)
+    #   "Cheek to cheek"                               (구분자 없음)
+    # 같은 " - "를 두고 순서가 반대라 문자열만으로는 어느 쪽이 곡인지 알 수 없다.
+    # 그래서 출처를 명시한 별도 테이블에 담고, 값이 없으면 2줄째를 그리지 않는다.
+    """CREATE TABLE IF NOT EXISTS singcup_qualifier_songs (
+           channel_id  TEXT PRIMARY KEY,
+           song_title  TEXT    NOT NULL DEFAULT '',
+           artist_name TEXT    NOT NULL DEFAULT '',
+           -- 'admin'(운영자 입력) | 'piku'(확정 매핑에서 가져옴)
+           source      TEXT    NOT NULL DEFAULT 'admin',
+           updated_at  INTEGER NOT NULL DEFAULT 0
+       )""",
+)
+
+# 단일 행 테이블의 초기 행. `INSERT OR IGNORE`라 이미 있으면 그대로 둔다
+# (운영 중 쌓인 lock 소유자·연속 실패 횟수를 덮어쓰지 않는다).
+_PIKU_SEED_ROWS = (
+    "INSERT OR IGNORE INTO piku_collect_lock (id, locked_until, owner)"
+    " VALUES (1, 0, '')",
+    "INSERT OR IGNORE INTO piku_worker_state (id) VALUES (1)",
+)
+
+# 곡·가수는 **공개 정보**다(카드 2줄 표시). 내부 비율값과 달리 감출 이유가 없어
+# 공개 응답에도 나간다. 기존 행은 빈 문자열 기본값을 받는다.
+_PIKU_ENTRY_COLUMNS = (
+    ("song_title", "TEXT NOT NULL DEFAULT ''"),
+    ("artist_name", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
+async def _table_columns(db, table: str) -> set[str]:
+    """`PRAGMA table_info`로 현재 컬럼 집합을 읽는다.
+
+    컬럼 존재 판정을 **예외 메시지 문자열**이 아니라 스키마 조회로 하는 게
+    핵심이다. "duplicate column name"이 들어 있다는 이유로 무시하면, 전혀 다른
+    이유로 실패한 ALTER까지 성공으로 오해하게 된다.
+    """
+    cur = await db.execute(f"PRAGMA table_info({table})")
+    return {row[1] for row in await cur.fetchall()}
+
+
+async def _migrate_piku_and_qualifier_schema(db) -> None:
+    """PIKU·싱드컵 곡 정보 스키마를 **실패를 숨기지 않고** 적용한다.
+
+    legacy 루프와의 차이는 하나뿐이다 — 여기서는 어떤 예외도 삼키지 않는다.
+    lock 경합, 읽기 전용 파일시스템, 디스크 이미지 손상, 문법 오류는 전부
+    호출자(`init_db` → 봇/백엔드 기동)로 올라가 기동을 중단시킨다. 스키마가
+    없는 채로 "정상 기동한 것처럼" 진행되는 편이 훨씬 나쁘다.
+
+    재실행 안전성은 예외 무시가 아니라 구문 자체로 얻는다:
+      · 테이블   `CREATE TABLE IF NOT EXISTS`
+      · 초기 행  `INSERT OR IGNORE`
+      · 컬럼     `PRAGMA table_info`로 먼저 조회해 **없을 때만** `ALTER`
+
+    `commit`/`rollback`은 이 함수 안에서 닫는다. 호출부는 바로 앞에서 이미
+    commit 했으므로 열린 transaction이 없는 상태로 들어오고, 나갈 때도 남기지
+    않는다. (Python 3.13 sqlite3의 legacy 격리 모드에서 DDL은 열린 transaction이
+    없으면 즉시 autocommit되고, 있으면 그 transaction에 합류해 rollback 대상이
+    된다.)
+    """
+    committed = False
+    try:
+        for sql in _PIKU_TABLES:
+            await db.execute(sql)
+        for sql in _PIKU_SEED_ROWS:
+            await db.execute(sql)
+
+        existing = await _table_columns(db, "piku_entries")
+        if not existing:
+            # legacy 루프가 `piku_entries` 생성 실패를 삼켰다는 뜻이다.
+            # 여기서 막지 않으면 아래 ALTER가 엉뚱한 오류로 터진다.
+            raise sqlite3.OperationalError(
+                "piku_entries 테이블이 없다 — 앞선 스키마 초기화가 실패했다")
+
+        for column, decl in _PIKU_ENTRY_COLUMNS:
+            if column in existing:
+                continue
+            try:
+                await db.execute(
+                    f"ALTER TABLE piku_entries ADD COLUMN {column} {decl}")
+            except sqlite3.Error:
+                # 다른 프로세스(봇 ↔ 백엔드는 같은 파일을 쓴다)가 방금 같은
+                # 컬럼을 만들었을 수 있다. **메시지를 믿지 말고 다시 조회해서**
+                # 실제로 생겼을 때만 완료로 본다. 아니면 원래 예외를 그대로 올린다.
+                if column not in await _table_columns(db, "piku_entries"):
+                    raise
+
+        await db.commit()
+        committed = True
+    finally:
+        if not committed:
+            # 실패 경로에서 열린 transaction을 남기지 않는다. rollback 자체가
+            # 실패하더라도 원래 예외를 가리지 않도록 여기서만 억제한다
+            # (finally이므로 원래 예외는 그대로 전파된다).
+            with contextlib.suppress(Exception):
+                await db.rollback()
 
 
 async def init_db():
@@ -1346,3 +1476,6 @@ async def init_db():
         except Exception:
             pass
     await db.commit()
+
+    # 위 루프와 달리 **실패를 삼키지 않는다**. 아래 참조.
+    await _migrate_piku_and_qualifier_schema(db)

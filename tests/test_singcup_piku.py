@@ -26,8 +26,8 @@ import database
 F, M, G = "female_solo", "male_solo", "groups"
 URLS = {
     F: "https://www.piku.co.kr/w/rank/8jGsHE",
-    M: "https://www.piku.co.kr/w/rank/7fXoNs",
-    G: "https://www.piku.co.kr/w/rank/7PqH44",
+    M: "https://www.piku.co.kr/w/rank/7PqH44",
+    G: "https://www.piku.co.kr/w/rank/7fXoNs",
 }
 
 
@@ -48,14 +48,26 @@ def pdb(db):
 
 # ── fixture 응답 ────────────────────────────────────────────────────────────
 
-def _rows(names, *, start_win=90.0):
-    return [{"rank": i + 1, "name": n,
-             "winRate": start_win - i * 1.5, "matchRate": 80.0 - i}
+def _rows(names, *, start_win=90.0, rank_from=1):
+    """`rank_from`은 **페이지 간 순위가 이어지게** 하기 위한 것이다.
+
+    실제 DataTables는 `start` 오프셋에 이어지는 순위를 준다. 페이지마다 1부터
+    다시 매기면 전체를 합쳤을 때 순위가 중복되고, 그건 파싱이 어긋났다는 신호라
+    `validate_rows`가 거절한다(그 검사가 이 헬퍼 때문에 오작동하면 안 된다).
+    """
+    return [{"rank": rank_from + i, "name": n,
+             "winRate": max(0.0, start_win - i * 1.5),
+             "matchRate": max(0.0, 80.0 - i)}
             for i, n in enumerate(names)]
 
 
-def _json_page(names, **kw):
-    return json.dumps({"data": _rows(names, **kw)}, ensure_ascii=False)
+def _json_page(names, *, total=None, **kw):
+    """DataTables 응답 한 장. `total`을 주면 `recordsTotal`을 함께 싣는다."""
+    body = {"data": _rows(names, **kw)}
+    if total is not None:
+        body["recordsTotal"] = total
+        body["recordsFiltered"] = total
+    return json.dumps(body, ensure_ascii=False)
 
 
 CHALLENGE_HTML = """<!doctype html><html><head><title>Just a moment...</title>
@@ -72,17 +84,27 @@ class FakeClient:
     """페이지별 응답을 미리 정해 두는 가짜 클라이언트. **소켓을 열지 않는다.**"""
 
     def __init__(self, pages):
-        self.pages = pages          # page(int) -> FakeResponse | Exception
+        #: page 번호(1부터) -> FakeResponse | Exception.
+        #: 수집이 DataTables **POST**로 바뀌었으므로 `start` 오프셋을 페이지 번호로
+        #: 환산해 받는다. 테스트의 뜻(“n번째 묶음에 이 응답”)은 그대로 둔다.
+        self.pages = pages
         self.calls = []
 
-    async def get(self, url, params=None, headers=None, timeout=None,
-                  follow_redirects=False):
-        page = int((params or {}).get("page", 1))
+    def _resolve(self, url, page, headers):
         self.calls.append((url, page, (headers or {}).get("User-Agent")))
         r = self.pages.get(page, FakeResponse(200, json.dumps({"data": []})))
         if isinstance(r, Exception):
             raise r
         return r
+
+    async def post(self, url, data=None, headers=None, timeout=None, **kw):
+        start = int((data or {}).get("start", 0))
+        length = int((data or {}).get("length", 10)) or 10
+        return self._resolve(url, start // length + 1, headers)
+
+    async def get(self, url, params=None, headers=None, timeout=None,
+                  follow_redirects=False):
+        raise AssertionError("DataTables 계약은 POST다 — GET을 쓰면 안 된다.")
 
     async def aclose(self):
         pass
@@ -208,14 +230,34 @@ def _collect(pdb, pages, division=F):
     return pdb(piku.collect_division(division, client=client)), client
 
 
-def test_정상_1에서_4페이지를_수집한다(pdb):
+def test_recordsTotal이_알려_준_수만큼_수집한다(pdb):
+    """예전 계약은 **1~4페이지 고정**이었다. 그래서 5페이지째부터가 통째로
+    빠졌다(여성 64명은 10명씩 7장이다). 이제 서버가 알려 준 전체 수를 채운다."""
     pdb(_set_sources())
-    pages = {i: FakeResponse(200, _json_page([f"참가자{i}-{j}" for j in range(3)]))
-             for i in range(1, 5)}
+    per = piku.PAGE_LENGTH
+    total = per * 4
+    pages = {i: FakeResponse(200, _json_page(
+        [f"참가자{i}-{j}" for j in range(per)], total=total,
+        rank_from=(i - 1) * per + 1))
+        for i in range(1, 5)}
     res, client = _collect(pdb, pages)
     assert res["applied"] is True
-    assert res["entries"] == 12
+    assert res["entries"] == total
     assert {c[1] for c in client.calls} == {1, 2, 3, 4}
+
+
+def test_페이지_수를_고정하지_않는다(pdb):
+    """4장을 넘겨도 끝까지 간다 — 상수로 박아 두면 뒷사람이 사라진다."""
+    pdb(_set_sources())
+    per = piku.PAGE_LENGTH
+    total = per * 7
+    pages = {i: FakeResponse(200, _json_page(
+        [f"p{i}-{j}" for j in range(per)], total=total,
+        rank_from=(i - 1) * per + 1))
+        for i in range(1, 8)}
+    res, client = _collect(pdb, pages)
+    assert res["entries"] == total
+    assert len(client.calls) == 7
 
 
 def test_빈_페이지에서_멈춘다(pdb):
@@ -480,8 +522,11 @@ def test_공개_응답에_비율과_승률_숫자가_없다(pdb):
     _assert_no_rate_numbers(blob, "공개 순위 응답")
     # 필드 이름도 새지 않는다. (`sort`의 값 `"win_rate"`는 **정렬 키 이름**이라
     # 예외다 — 어느 버튼이 활성인지 화면이 알아야 하고, 숫자가 아니다.)
+    # 공개 필드 집합을 **정확히** 고정한다. 곡·가수는 화면 2줄 표시에 쓰는
+    # 공개 정보라 여기 들어오지만, 비율·승률은 어떤 이름으로도 들어올 수 없다.
     for e in r["entries"]:
-        assert set(e) == {"rank", "channelId", "name", "thumbnailUrl", "sourceRank"}
+        assert set(e) == {"rank", "channelId", "name", "thumbnailUrl",
+                          "sourceRank", "songTitle", "artistName"}
     # **이제는 예외가 필요 없다** — 공개 응답의 `sort`는 `primary`/`secondary`이고
     # 내부 컬럼명(`win_rate` 등)은 서버 밖으로 나가지 않는다.
     for bad in ("win_rate", "winRate", "match_rate", "matchRate"):

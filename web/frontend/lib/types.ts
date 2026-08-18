@@ -351,6 +351,10 @@ export interface QualifierRow {
   clipThumbnailUrl: string;
   /** 운영자가 대표 클립을 직접 지정했는지(자동 선정과 구분) */
   clipIsOverride?: boolean;
+  /** 카드 2줄째. **서버가 명시적으로 준 값만** 쓴다 — 클립 제목에서 추측하지
+   *  않는다(운영 데이터는 `가수 - 곡`과 `곡 - 가수`가 섞여 있다). */
+  songTitle?: string;
+  artistName?: string;
   live: { channelName: string; concurrentViewers: number;
           categoryName: string; liveTitle: string } | null;
 }
@@ -374,6 +378,9 @@ export interface PikuEntry {
   thumbnailUrl: string;
   /** PIKU 원본 순위 — 우리 순위와 **다른 값**이라 화면에서 섞지 않는다. */
   sourceRank: number | null;
+  /** 곡·가수는 **공개 정보**다(비율·승률과 달리 화면에 쓴다). */
+  songTitle?: string;
+  artistName?: string;
 }
 export interface PikuDivisionRanking {
   division: string;
@@ -396,6 +403,11 @@ export interface PikuRankingResponse {
 
 /** PIKU 관리 화면 타입 — **비율·승률 숫자는 여기에도 없다.** */
 export interface PikuSource {
+  /** 정본과 어긋나게 배치됐으면 기대되는 부문 키, 아니면 빈 문자열.
+   *  화면이 이 값으로 경고를 띄운다 — 남성 순위가 그룹 부문에 들어가는 사고는
+   *  이름만 보여서는 눈으로 잡히지 않는다. */
+  divisionMismatch?: string;
+  expectedUrl?: string;
   division: string;
   label: string;
   url: string;
@@ -433,6 +445,12 @@ export interface PikuAdminStatus {
   runs: PikuRun[];
   mappingCounts: Record<string, number>;
   unmapped: PikuMapping[];
+  /** 자동 수집 상태 — 재시작해도 유지되도록 DB에 저장한다. */
+  nextRunAt?: number;
+  consecutiveFailures?: number;
+  lastSuccessAt?: number;
+  lastErrorAt?: number;
+  lastErrorKind?: string;
 }
 export interface PikuMappingsResponse {
   mappings: PikuMapping[];

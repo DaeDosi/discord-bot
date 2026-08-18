@@ -30,6 +30,37 @@
     -webkit-font-smoothing: antialiased;
     transition: background-color 0.25s ease, color 0.25s ease;
   }
+  /* ── 3영역 셸 (Header / sidebar / main) ────────────────────────────────
+     Header는 고정, 그 아래 두 칸이 **각자** 스크롤한다. 예전에는 문서 전체가
+     하나로 스크롤해서, 좌측 메뉴를 보려고 내리면 본문도 같이 내려갔고 본문을
+     끝까지 읽으면 메뉴가 화면 밖으로 사라졌다.
+
+     높이를 `--nb-header-h` 하나로 계산한다. 헤더가 확대(150%)에서 자라도 이
+     값만 바뀌므로 두 칸이 알아서 따라간다 — 숫자를 여러 곳에 복사하면 확대할
+     때마다 어긋난다.
+
+     `100svh`를 쓰는 이유: 모바일 주소창이 접혔다 펴질 때 `vh`는 값이 변해
+     그 자체가 스크롤 점프를 만든다. `svh`는 가장 작은 뷰포트 기준이라 고정이다. */
+  :root { --nb-header-h: 60px; }
+
+  /* 셸을 쓰는 페이지에서만 문서 스크롤을 끈다(`html`을 전역으로 잠그면 셸이
+     없는 페이지가 스크롤을 잃는다). */
+  .nb-shell {
+    height: 100svh;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
+  }
+  /* 두 칸 모두 `min-height: 0`이 있어야 grid 안에서 실제로 줄어들고 스크롤이
+     생긴다. 이게 없으면 자식 높이만큼 늘어나 문서가 다시 하나로 스크롤한다. */
+  .nb-shell-body { min-height: 0; min-width: 0; display: flex; }
+  .nb-shell-nav,
+  .nb-shell-main { min-height: 0; min-width: 0; overflow-y: auto; }
+  /* 가로는 각 칸이 스스로 책임진다 — 셸에서 `overflow-x: hidden`으로 덮으면
+     안쪽의 진짜 overflow가 보이지 않게 될 뿐 고쳐지지 않는다. */
+  .nb-shell-nav { overflow-x: hidden; overscroll-behavior: contain; }
+  .nb-shell-main { overscroll-behavior: contain; }
+
   /* ── 전역 scrollbar ───────────────────────────────────────────────────
      기존 6px thumb는 `--color-border`와 거의 같은 값이라 어두운 배경에서
      **트랙과 구분되지 않았다.** 폭도 좁아 마우스로 잡기 어려웠다.
@@ -210,6 +241,14 @@
   .nb-tap { min-height: 44px; }
   /* 정사각 아이콘 버튼 — 가로세로 모두 */
   .nb-tap-icon { min-width: 44px; min-height: 44px; }
+  /* 가로 스크롤 영역 — 전역 scrollbar보다 얇게, 그러나 **숨기지는 않는다**.
+     숨기면 "옆으로 더 있다"는 유일한 신호가 사라진다. */
+  .nb-hscroll::-webkit-scrollbar { height: 8px; }
+  .nb-hscroll { scrollbar-width: thin; }
+
+  /* 가로로 짧은 텍스트 버튼(정렬 탭 등) — 세로만 늘리면 좌우가 여전히 좁다.
+     글자 크기는 그대로 두고 최소 폭만 확보한다. */
+  .nb-tap-wide { min-width: 44px; }
   /* 위 두 클래스를 쓴 요소들의 부모: 타깃이 커진 만큼 사이도 벌린다 */
   .nb-tap-gap { gap: 0.5rem; }
 }

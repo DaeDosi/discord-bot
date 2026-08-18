@@ -50,7 +50,7 @@ test("브랜드는 아이콘 없이 워드마크 하나로 표시된다", () => 
 
 test("브랜드 옆에 치지직 통계 Beta가 붙고 구분자·신호 아이콘이 없다", () => {
   const s = H();
-  const bar = s.slice(s.indexOf("grid-cols-[1fr_auto_1fr]"));
+  const bar = s.slice(s.indexOf("grid-cols-[auto_1fr_auto]"));
   assert.ok(bar.includes("치지직 통계"), "브랜드 옆에 현재 서비스명이 있어야 한다");
   assert.ok(!/<span className="text-border" aria-hidden="true">\/<\/span>/.test(s),
     "`/` 구분자는 제거됐다");
@@ -63,8 +63,13 @@ test("브랜드 옆에 치지직 통계 Beta가 붙고 구분자·신호 아이�
 test("헤더는 3영역 grid라 검색이 viewport 중앙에 온다", () => {
   const s = H();
   // flex + flex-1로는 좌우 폭이 다른 순간 검색창 중심이 그 차이의 절반만큼 밀린다.
-  assert.ok(s.includes("grid-cols-[1fr_auto_1fr]"),
-    "좌우를 같은 1fr로 잡아야 가운데가 화면 중앙이다");
+  // 가운데 칸이 `auto`면 검색창이 콘텐츠 폭에 머문다(실측 296px). UI-U에서
+  // `minmax(0,680px)`으로 바꿔 실제로 넓히면서 좌우 1fr 대칭은 유지했다.
+  // 가운데를 고정폭(680px)으로 잡았더니 768px에서 좌우 묶음과 겹쳤다(실측 5쌍).
+  // 이제 가운데는 `auto`(검색창이 스스로 clamp로 줄어듦)이고, 좌우가
+  // `minmax(0,1fr)`로 남은 폭을 **균등하게** 나눠 중앙 정렬을 유지한다.
+  assert.ok(s.includes("md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]"),
+    "좌우가 같은 비율이어야 가운데가 화면 중앙이다");
   assert.ok(/justify-end/.test(s), "오른쪽 묶음은 끝에 붙는다");
 });
 
@@ -97,10 +102,13 @@ test("햄버거의 대상은 sidebar 유무로만 갈린다", () => {
     "sidebar가 있는 페이지에서는 drawer가 뜨지 않는다");
 });
 
-test("아이콘이 열림/닫힘에 따라 바뀐다", () => {
+test("아이콘이 상태와 무관하게 고정된다", () => {
   const s = H();
-  assert.ok(/burgerExpanded\s*\?\s*<X size=\{20\}/.test(s),
-    "열렸는데 햄버거 그대로면 닫는 방법이 보이지 않는다");
+  // UI-T에서는 열리면 X로 바꿨다. UI-U에서 그 분기를 **없앴다** — 같은 버튼이
+  // 같은 자리에서 토글하는데 그림만 바뀌면 "닫기 전용 버튼"으로 읽힌다.
+  // 상태는 `aria-expanded`와 라벨이 말한다.
+  assert.ok(!/burgerExpanded\s*\?\s*<X/.test(s), "X 분기가 남아 있다");
+  assert.ok(s.includes("<Menu size={20}"), "햄버거 아이콘 하나만 쓴다");
 });
 
 test("drawer 목록이 통계 sidebar와 같은 묶음이다", () => {

@@ -175,8 +175,11 @@ function BarPanel({ rows, onPick, deltaName }:
               표만 eager로 바꾸고 여기를 lazy로 두면 정작 보이는 아바타가
               늦게 뜬다(실측으로 확인). 같은 컴포넌트로 통일한다. */}
           <StreamerAvatar src={r.channel_image_url} index={i} />
+          {/* 막대 차트의 이름 라벨이다. 행 높이가 곧 막대 굵기라 **시각 크기를
+              키울 수 없다** — 대신 `nb-tap`으로 터치 히트 영역만 넓힌다.
+              행끼리 세로로 붙어 있어 영역이 겹치지 않도록 부모가 간격을 갖는다. */}
           <button type="button" onClick={() => onPick(r.chzzk_channel_id)}
-            className="w-[64px] shrink-0 truncate text-left text-xs font-semibold text-fg
+            className="nb-tap w-[64px] shrink-0 truncate text-left text-xs font-semibold text-fg
                        transition-colors hover:text-accent sm:w-[88px] md:w-[104px]">
             {r.channel_name}
           </button>
@@ -193,8 +196,13 @@ function BarPanel({ rows, onPick, deltaName }:
               폭은 '고정'이어야 한다 — min-width로 두면 1위처럼 여섯 자리(128,400명)인
               행만 이 칸이 넓어지고, 그만큼 flex-1인 막대 트랙이 짧아져 1위 막대만
               안쪽에서 끝난다. 칸을 고정하면 모든 행의 막대 길이 기준이 같아진다. */}
-          <div className="flex w-[112px] shrink-0 items-center justify-end gap-2
-                          tabular-nums sm:w-[150px] sm:gap-3 md:w-[176px] md:gap-4">
+          {/* 기준 폭을 112 → 92px로 낮춘다. 112px은 390@150%(실폭 260px)에서
+              막대 트랙과 합쳐 부모를 밀어 문서가 가로로 넘쳤다(실측 36px).
+              칸이 '고정'이어야 하는 이유(모든 행의 막대 기준을 같게)는 그대로다 —
+              값을 지우거나 숨기지 않고 폭만 줄인다. */}
+          <div className="flex w-[92px] shrink-0 items-center justify-end gap-1.5
+                          tabular-nums xs:w-[112px] xs:gap-2 sm:w-[150px] sm:gap-3
+                          md:w-[176px] md:gap-4">
             <span className="flex-1 whitespace-nowrap text-right text-[11px] font-semibold
                              sm:text-[13px] md:text-sm"
                   style={{ color: r.deltaPct == null || r.deltaPct === 0
@@ -204,9 +212,9 @@ function BarPanel({ rows, onPick, deltaName }:
                 : r.deltaPct === 0 ? "0.0%"
                 : `${r.deltaPct > 0 ? "▲" : "▼"} ${Math.abs(r.deltaPct).toFixed(1)}%`}
             </span>
-            <span className="w-[60px] shrink-0 whitespace-nowrap text-right text-[12px]
-                             font-extrabold text-fg sm:w-[72px] sm:text-sm
-                             md:w-[86px] md:text-[15px]">
+            <span className="w-[50px] shrink-0 whitespace-nowrap text-right text-[11px]
+                             font-extrabold text-fg xs:w-[60px] xs:text-[12px]
+                             sm:w-[72px] sm:text-sm md:w-[86px] md:text-[15px]">
               {nf(r.concurrent_viewers)}명
             </span>
           </div>
@@ -700,22 +708,26 @@ export default function RankingCharts({ rows, y, deltaName = "변동률" }:
     <div className="card !p-4 md:!p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <button type="button" onClick={() => setOpen((v) => !v)}
-          className="flex items-center gap-1.5 text-left" aria-expanded={open}>
+          className="nb-tap flex items-center gap-1.5 text-left" aria-expanded={open}>
           <h3 className="section-title">랭킹 요약 차트</h3>
           <ChevronDown size={15} className="text-muted transition-transform"
                        style={{ transform: open ? "none" : "rotate(-90deg)" }} />
           <span className="ml-1 text-[11px] text-muted">{open ? "접기" : "펼치기"}</span>
         </button>
 
+        {/* 터치에서는 시각 크기를 키우지 않고 히트 영역만 44px로 넓힌다.
+            `nb-tap-gap`이 넓어진 영역끼리의 간격도 함께 벌린다. */}
         {open && (
-          <div className="flex shrink-0 items-center gap-1.5">
+          <div className="nb-tap-gap flex shrink-0 flex-wrap items-center gap-1.5">
             <button type="button" onClick={() => setMode("bar")}
-              className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
+              aria-pressed={mode === "bar"}
+              className="nb-tap inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
               style={tab(mode === "bar")}>
               <BarChart3 size={13} /> Top 10 시청자
             </button>
             <button type="button" onClick={() => setMode("scatter")}
-              className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
+              aria-pressed={mode === "scatter"}
+              className="nb-tap inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
               style={tab(mode === "scatter")}>
               <ScatterChart size={13} /> 성장성 분석
             </button>

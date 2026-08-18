@@ -368,13 +368,20 @@ export default function StreamerPage() {
               </div>
 
               {/* 서브 탭 */}
-              <div className="mt-4 flex gap-2 overflow-x-auto border-b border-border pb-3
-                              [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {/* 예전에는 서브 탭과 기간 토글이 **한 줄에 강제**로 있었다
+                  (`ml-auto` + `shrink-0`). 320px과 확대 화면에서 둘의 최소 폭 합이
+                  뷰포트를 넘어 문서가 가로로 밀렸다(실측 8~68px).
+                  이제 좁은 화면에서는 두 줄로 내려가고, 넓어지면 한 줄로 돌아온다. */}
+              <div className="mt-4 flex flex-wrap items-center gap-y-2 border-b
+                              border-border pb-3">
+              <div className="nb-hscroll nb-tap-gap flex min-w-0 flex-1 gap-2
+                              overflow-x-auto">
                 {SUB_TABS.map((t) => {
                   const active = tab === t;
                   return (
                     <button key={t} onClick={() => setTab(t)}
-                      className="whitespace-nowrap rounded-full px-4 py-1.5 text-sm transition-colors"
+                      className="nb-tap whitespace-nowrap rounded-full px-4 py-1.5
+                                 text-sm transition-colors"
                       style={active
                         ? { background: "rgba(0,255,163,0.12)", color: GREEN, fontWeight: 700 }
                         : { color: "rgb(var(--color-muted-rgb))" }}>
@@ -382,10 +389,14 @@ export default function StreamerPage() {
                     </button>
                   );
                 })}
-                <div className="ml-auto flex shrink-0 items-center gap-1">
+                </div>
+                {/* `ml-auto`를 뺐다 — 좁을 때 줄바꿈으로 내려오고 넓을 때만
+                    오른쪽 끝으로 간다(`sm:ml-auto`). */}
+                <div className="nb-tap-gap flex shrink-0 items-center gap-1 sm:ml-auto">
                   {[7, 30, 90].map((d) => (
                     <button key={d} onClick={() => setDays(d)}
-                      className="rounded-md border px-2 py-1 text-[11px] transition-colors"
+                      className="nb-tap nb-tap-wide inline-flex items-center justify-center
+                                 rounded-md border px-2 py-1 text-[11px] transition-colors"
                       style={{ background: days === d ? "rgba(0,255,163,0.1)" : "transparent",
                                borderColor: days === d ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
                                color: days === d ? GREEN : "rgb(var(--color-muted-rgb))" }}>

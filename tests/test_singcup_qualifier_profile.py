@@ -37,7 +37,8 @@ def qdb(db):
     async def _clear():
         c = await database.get_db()
         for t in ("singcup_streamers", "singcup_clips",
-                  "singcup_representative_overrides"):
+                  "singcup_representative_overrides",
+                  "singcup_qualifier_songs"):
             try:
                 await c.execute(f"DELETE FROM {t}")
             except Exception:
@@ -78,8 +79,16 @@ async def _seed_clip(uid, cid, *, title="노래", thumb="https://t/x.jpg",
 
 
 async def _side(ids):
+    """(live, clips) — 곡 맵은 별도 테스트가 본다."""
     from routers.singcup_router import _qualifier_side_data
-    return await _qualifier_side_data(set(ids))
+    live, clips, _songs = await _qualifier_side_data(set(ids))
+    return live, clips
+
+
+async def _songs(ids):
+    from routers.singcup_router import _qualifier_side_data
+    _live, _clips, songs = await _qualifier_side_data(set(ids))
+    return songs
 
 
 # ── 1) 결함 자체 ────────────────────────────────────────────────────────────
@@ -287,3 +296,82 @@ class TestRetirementIndependence:
                if r["channelId"] == CASES[4][0]][0]
         assert row["clipThumbnailUrl"] == "https://thumb/l.jpg"
         assert out["counts"]["female_solo"] == 64
+
+
+# ── 6) 곡·가수는 명시적으로 저장된 값만 쓴다 ────────────────────────────────
+#
+# 운영 클립 제목은 형식이 제각각이다(실측):
+#   "[싱드컵] 솔지 - 오늘따라 비가와서 그런가봐"  → 가수 - 곡
+#   "어른 - 손디아"                               → 곡 - 가수
+#   "Cheek to cheek"                              → 구분자 없음
+# 같은 " - "를 두고 순서가 반대라 문자열만으로는 어느 쪽이 곡인지 알 수 없다.
+
+class TestSongMetadata:
+    @staticmethod
+    async def _seed_song(cid, song, artist, source="admin"):
+        c = await database.get_db()
+        await c.execute(
+            "INSERT OR REPLACE INTO singcup_qualifier_songs"
+            " (channel_id, song_title, artist_name, source, updated_at)"
+            " VALUES (?,?,?,?,?)", (cid, song, artist, source, int(time.time())))
+        await c.commit()
+
+    def test_저장된_곡과_가수가_응답에_실린다(self, qdb):
+        import singcup_qualifiers as sq
+        from routers.singcup_router import qualifiers as ep
+        cid = sq.QUALIFIERS["female_solo"][0]["channelId"]
+
+        async def _go():
+            await self._seed_song(cid, "오늘따라 비가와서 그런가봐", "솔지")
+            return await ep(division="female_solo")
+
+        row = [r for r in qdb(_go())["divisions"]["female_solo"]
+               if r["channelId"] == cid][0]
+        assert row["songTitle"] == "오늘따라 비가와서 그런가봐"
+        assert row["artistName"] == "솔지"
+
+    def test_값이_없으면_빈_문자열이다(self, qdb):
+        """없는 정보를 만들어내지 않는다 — 화면은 이 줄을 그리지 않는다."""
+        from routers.singcup_router import qualifiers as ep
+
+        rows = qdb(ep(division="female_solo"))["divisions"]["female_solo"]
+        assert all(r["songTitle"] == "" for r in rows)
+        assert all(r["artistName"] == "" for r in rows)
+
+    def test_클립_제목을_쪼개지_않는다(self, qdb):
+        """제목에 ` - `가 있어도 곡·가수로 나누지 않는다(순서를 알 수 없다)."""
+        import singcup_qualifiers as sq
+        from routers.singcup_router import qualifiers as ep
+        cid = sq.QUALIFIERS["female_solo"][0]["channelId"]
+
+        async def _go():
+            await _seed_streamer(cid, "이름", rep_uid="c1")
+            await _seed_clip("c1", cid, title="[싱드컵] 솔지 - 오늘따라 비가와서")
+            return await ep(division="female_solo")
+
+        row = [r for r in qdb(_go())["divisions"]["female_solo"]
+               if r["channelId"] == cid][0]
+        assert row["clipTitle"].startswith("[싱드컵]")
+        assert row["songTitle"] == "", "제목을 쪼개 곡을 추측했다"
+        assert row["artistName"] == "", "제목을 쪼개 가수를 추측했다"
+
+    def test_운영자_입력이_PIKU보다_우선한다(self, qdb):
+        import singcup_qualifiers as sq
+        cid = sq.QUALIFIERS["female_solo"][0]["channelId"]
+
+        async def _go():
+            await self._seed_song(cid, "피쿠곡", "피쿠가수", source="piku")
+            await self._seed_song(cid, "운영자곡", "운영자가수", source="admin")
+            return await _songs([cid])
+
+        got = qdb(_go())[cid]
+        assert got["songTitle"] == "운영자곡"
+        assert got["songSource"] == "admin"
+
+    def test_조회는_id_집합으로_좁힌다(self):
+        import inspect
+
+        from routers import singcup_router as sr
+        src = inspect.getsource(sr._qualifier_side_data)
+        assert "singcup_qualifier_songs" in src
+        assert src.count("IN ({marks})") >= 3, "곡 조회도 id로 좁혀야 한다"

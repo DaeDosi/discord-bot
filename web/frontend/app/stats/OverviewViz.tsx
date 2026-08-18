@@ -112,10 +112,14 @@ export function TrafficHeatmap() {
         <p className="py-10 text-center text-sm text-muted">집계할 수집 이력이 아직 없습니다.</p>
       ) : (
         <>
-          <div className="mt-4 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {/* 라벨을 키운 만큼 최소 폭도 함께 올린다 — 좁은 화면에서 시간 숫자끼리
-                겹치지 않게 하려면 셀 폭이 같이 확보돼야 한다. */}
-            <div style={{ minWidth: 640 }}>
+          {/* 스크롤바를 숨기지 않는다 — 여기만 숨기면 "더 있다"는 신호가 사라져
+              히트맵이 잘린 그림처럼 보인다(UI-T에서 전역 스크롤바를 살린 이유와 같다). */}
+          <div className="nb-hscroll mt-4 overflow-x-auto">
+            {/* `min-width`를 640px로 **고정**하면 확대(150%, 실폭 260px) 화면에서
+                컨테이너가 부모를 밀어 문서 전체가 가로로 넘쳤다(실측 49px).
+                가로 스크롤 컨테이너가 이미 있으므로 최소폭은 뷰포트를 넘지 않는
+                선에서만 잡으면 된다 — 데이터는 그대로 두고 스크롤로 본다. */}
+            <div className="min-w-[min(640px,100%)] [--nb-cell:14px] sm:[--nb-cell:18px]">
               {grid.map((row, d) => (
                 <div key={d} className="mb-[2px] flex items-center gap-[2px]">
                   {/* 요일 라벨 — 셀과 세로 중심을 맞추고 오른쪽 정렬해

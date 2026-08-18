@@ -104,12 +104,11 @@ const GRAD  = `linear-gradient(135deg, ${GREEN}, #00C2FF)`;
 const GOLD  = "#FACC15";
 
 export default function StatsNav({
-  active, onSelect, children,
+  active, onSelect,
 }: {
   active: Tab;
   onSelect: (k: Tab) => void;
   /** 메뉴 위에 놓을 요소 (스트리머 검색 등) */
-  children?: React.ReactNode;
 }) {
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
     const h = groupHeaderOf(active); return new Set(h ? [h] : []);
@@ -175,8 +174,13 @@ export default function StatsNav({
   };
 
   return (
-    <aside className="md:sticky md:top-[76px] md:self-start">
-      {children}
+    /* 예전에는 여기서 `md:sticky top-[76px]`로 붙잡았다. 이제 **셸이 스크롤
+       소유권을 갖는다**(`.nb-shell-nav`) — sticky를 겹치면 두 개의 스크롤 기준이
+       싸워서 확대 시 메뉴가 헤더 밑으로 파고든다.
+
+       `children` 슬롯도 없앴다. 그 자리에 sidebar 전용 스트리머 검색이 있었는데,
+       공통 헤더에 전역 검색이 생기면서 한 화면에 검색창이 둘이 됐다. */
+    <nav aria-label="통계 메뉴" className="w-full">
       {/* 스트리머 검색 ↔ 통계 사이에 단독 이벤트 메뉴.
           **봉누도가 싱드컵 위**다(요구). 준비 중이라도 자리를 먼저 잡아 두면
           나중에 항목이 끼어들며 메뉴가 재배치되지 않는다. */}
@@ -184,7 +188,7 @@ export default function StatsNav({
         {renderItem(UPCOMING_ITEM)}
         {renderItem(EVENT_ITEM)}
       </div>
-      <nav className="flex flex-col gap-1">
+      <div className="flex flex-col gap-1">
         {NAV_GROUPS.map((g, gi) => {
           if (!g.header) return <div key={gi} className="mt-1">{g.items.map(renderItem)}</div>;
           const open = openGroups.has(g.header);
@@ -202,7 +206,7 @@ export default function StatsNav({
             </div>
           );
         })}
-      </nav>
+      </div>
       {/* 통계 안내 — 탭이 아니라 별도 페이지라 nav 목록 안에 넣지 않고 그 아래에 둔다.
           목록에 섞으면 "탭을 하나 더 눌렀는데 페이지가 통째로 바뀌는" 동작이 된다. */}
       <Link href="/stats/guide"
@@ -214,6 +218,6 @@ export default function StatsNav({
       <p className="hidden md:block text-[11px] text-muted/60 mt-4 px-1 leading-relaxed">
         약 10분 주기로 치지직 공개 라이브 목록을 수집합니다. 비공식 서비스로 실제 수치와 오차가 있을 수 있습니다.
       </p>
-    </aside>
+    </nav>
   );
 }

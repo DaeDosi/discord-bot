@@ -186,88 +186,10 @@ const TS_RANGE_DESC: Record<string, string> = {
   "72h": "최근 72시간 추이 · 1시간 구간 평균",
 };
 
-// 스트리머 검색 — 랭킹에 없는 스트리머도 검색해 개인 분석으로 이동
-function StreamerSearch() {
-  const [q, setQ] = useState("");
-  const [results, setResults] = useState<RisingSearchResult[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+// 스트리머 검색은 **공통 헤더의 전역 검색 하나**로 모았다.
+// 예전에는 이 페이지 sidebar에도 같은 입력창이 있어 한 화면에 검색창이 둘이었고,
+// 둘이 서로 다른 API(무거운 `search` / 가벼운 `quick-search`)를 써서 결과도 달랐다.
 
-  // 드롭다운은 '입력이 있으면' 즉시 열고 로딩 중에도 계속 열어 둔다.
-  // 예전엔 fetch가 성공한 뒤에야 setOpen(true)를 해서, 타이핑할 때마다 패널이
-  // 닫혔다 열리며 아래로 내려왔다 올라가는 것처럼 보였다.
-  // reqId: 늦게 도착한 이전 요청이 최신 결과를 덮어쓰지 않게 하는 가드.
-  const reqId = useRef(0);
-  useEffect(() => {
-    const kw = q.trim();
-    if (kw.length < 1) { setResults([]); setOpen(false); setLoading(false); return; }
-    setOpen(true);
-    setLoading(true);
-    const id = setTimeout(() => {
-      const my = ++reqId.current;
-      api.rising.search(kw)
-        .then((r) => { if (my === reqId.current) setResults(r.results || []); })
-        .catch(() => { if (my === reqId.current) setResults([]); })
-        .finally(() => { if (my === reqId.current) setLoading(false); });
-    }, 350);
-    return () => clearTimeout(id);
-  }, [q]);
-
-  useEffect(() => {
-    const onClick = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
-  }, []);
-
-  return (
-    <div className="relative mb-5" ref={ref}>
-      <p className="text-xs font-semibold text-muted/70 uppercase tracking-wider px-1 mb-2">스트리머 검색</p>
-      <div className="relative">
-        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-        <input value={q} onChange={(e) => setQ(e.target.value)} onFocus={() => results.length > 0 && setOpen(true)}
-          placeholder="채널명으로 검색"
-          className="w-full bg-bg border border-border rounded-lg pl-9 pr-3 py-2 text-sm text-fg placeholder-muted focus:outline-none focus:border-accent" />
-        {/* 입력창 안 스피너는 제거했다 — 드롭다운에 '검색 중...' 행이 따로 있어
-            로딩 표시가 두 개로 겹쳐 보였다. */}
-      </div>
-      {open && (
-        <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-bg-card border border-border rounded-xl shadow-xl py-1.5 max-h-80 overflow-y-auto">
-          {loading && results.length === 0 ? (
-            <p className="flex items-center gap-2 px-4 py-3 text-sm text-muted">
-              <Loader2 size={13} className="animate-spin" /> 검색 중...
-            </p>
-          ) : results.length === 0 ? (
-            <p className="px-4 py-3 text-sm text-muted">결과가 없습니다.</p>
-          ) : results.map((c) => (
-            <Link key={c.channel_id} href={`/stats/streamer/${c.channel_id}`} onClick={() => setOpen(false)}
-              className="flex items-center gap-2.5 px-3 py-2 mx-1.5 rounded-lg hover:bg-bg-hover transition-colors">
-              <span className="w-7 h-7 rounded-full overflow-hidden bg-bg-hover shrink-0">
-                {c.channel_image_url && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={c.channel_image_url} alt="" width={28} height={28} className="w-full h-full object-cover" />
-                )}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="text-sm font-semibold text-fg truncate flex items-center gap-1.5">
-                  {c.channel_name}
-                  {c.open_live && <span className="text-[9px] font-bold px-1 rounded" style={{ color: "#03C75A", background: "rgba(3,199,90,0.15)" }}>LIVE</span>}
-                </span>
-                <span className="block text-[11px] text-muted">팔로워 {nf(c.follower_count)}</span>
-              </span>
-            </Link>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// 범용 세그먼트 버튼 그룹 (지표 필터 / 기간 선택 공용)
-//
-// 칩마다 테두리를 두르면 그룹이 둘 이상 나란히 놓일 때(기간 + 지표) 똑같이 생긴
-// 버튼이 한 줄로 늘어서 어디까지가 한 컨트롤인지 알 수 없다. 그래서 그룹 전체를
-// 하나의 '트랙'으로 감싸고, 안쪽 버튼은 테두리 없이 선택된 것만 채운다.
 function Seg<T extends string>({ options, value, onChange, label }:
   { options: { k: T; label: string }[]; value: T; onChange: (v: T) => void;
     /** 무엇을 고르는 그룹인지 — 그룹이 둘 이상 나란히 놓일 때만 붙인다 */
@@ -757,7 +679,7 @@ function RankingTab({ rank }: { rank: RisingLiveRanking }) {
 
   const SortBtn = ({ k, label }: { k: SortKey; label: string }) => (
     <button onClick={() => setSort(k)}
-      className="text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors"
+      className="nb-tap inline-flex items-center justify-center text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors"
       style={{ background: sort === k ? "rgba(0,255,163,0.1)" : "transparent",
                borderColor: sort === k ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
                color: sort === k ? GREEN : "rgb(var(--color-muted-rgb))" }}>
@@ -1518,7 +1440,7 @@ function NewcomersRankingTab({ data }: { data: RisingNewcomers }) {
     const active = sort === k;
     return (
       <button onClick={() => setSort(k)}
-        className="text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors"
+        className="nb-tap inline-flex items-center justify-center text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors"
         style={{ background: active ? "rgba(0,255,163,0.1)" : "transparent",
                  borderColor: active ? "rgba(0,255,163,0.35)" : "rgb(var(--color-border-rgb))",
                  color: active ? GREEN : "rgb(var(--color-muted-rgb))" }}>
@@ -2343,6 +2265,9 @@ export default function StatsPage() {
      (넣으면 hydration mismatch가 난다). */
   const [navOpen, setNavOpen] = useState(true);
   useEffect(() => {
+    // 모바일에서는 **항상 접힌 채로 시작한다.** drawer가 본문을 덮으므로
+    // 저장값이 "펼침"이어도 첫 화면이 메뉴로 가려지면 안 된다.
+    if (window.matchMedia("(max-width: 767px)").matches) { setNavOpen(false); return; }
     try {
       const v = localStorage.getItem(STATS_NAV_STORAGE);
       if (v === "0") setNavOpen(false);
@@ -2351,6 +2276,32 @@ export default function StatsPage() {
   useEffect(() => {
     try { localStorage.setItem(STATS_NAV_STORAGE, navOpen ? "1" : "0"); }
     catch { /* 저장 실패는 화면 동작에 영향을 주지 않는다 */ }
+  }, [navOpen]);
+
+  /* 모바일에서 메뉴는 **drawer**다(본문 위를 덮는다). 그래서 데스크톱에는 없는
+     세 가지가 필요하다: 배경 스크롤 잠금 · ESC 닫기 · 닫은 뒤 포커스 복귀.
+     `md` 이상에서는 메뉴가 본문 옆에 나란히 있으므로 이 처리를 하지 않는다 —
+     넓은 화면에서 배경 스크롤을 잠그면 본문을 읽을 수 없게 된다. */
+  useEffect(() => {
+    if (!navOpen) return;
+    const mobile = window.matchMedia("(max-width: 767px)");
+    if (!mobile.matches) return;
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setNavOpen(false);
+      // 이 메뉴를 연 버튼은 공통 헤더의 햄버거다. id로 되찾아 포커스를 돌린다 —
+      // ref를 넘기면 헤더와 이 페이지가 서로를 알아야 해서 결합이 커진다.
+      document.querySelector<HTMLElement>(
+        `header button[aria-controls="${STATS_NAV_ID}"]`)?.focus();
+    };
+    document.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
   }, [navOpen]);
 
   // 그룹 접힘 상태는 StatsNav가 소유한다. 여기서는 활성 탭만 관리.
@@ -2423,7 +2374,10 @@ export default function StatsPage() {
   const empty = !ov || ov.collected_at === null;
 
   return (
-    <div className="min-h-screen bg-bg text-fg flex flex-col">
+    /* **3영역 셸.** Header는 고정이고 그 아래 좌측 메뉴와 본문이 각자 스크롤한다
+       (`.nb-shell`은 globals.css). 예전에는 문서 전체가 하나로 스크롤해서, 메뉴를
+       보려고 내리면 본문이 같이 내려갔고 본문을 끝까지 읽으면 메뉴가 사라졌다. */
+    <div className="nb-shell bg-bg text-fg">
       {/* 공통 헤더 하나만 쓴다. `치지직 통계`는 이제 헤더 왼쪽 브랜드 옆에
           상시로 있으므로 여기서 breadcrumb으로 또 넘기지 않는다(중복 제거).
           햄버거는 이 페이지의 **좌측 통계 sidebar**를 접고 편다. */}
@@ -2432,8 +2386,33 @@ export default function StatsPage() {
         statsNav={{ open: navOpen, onToggle: () => setNavOpen((o) => !o),
                     controlsId: STATS_NAV_ID }} />
 
-      <main className="flex-1 w-full px-4 md:px-6 py-7 md:py-9">
-        <div className="mb-4">
+      {/* `pt-4`뿐이다. 예전에는 `py-7 md:py-9`(28~36px)에 본문 첫 블록의
+          `mb-*`까지 겹쳐 헤더 아래가 비어 보였다. 셸에서는 본문이 자기 스크롤을
+          갖기 때문에 위쪽 여백이 그대로 "빈 띠"로 남는다. */}
+      <div className="nb-shell-body">
+        {/* ── 좌측 통계 navigation ──
+            `md` 이상에서는 본문과 **형제**로 나란히 서고 각자 스크롤한다.
+            `md` 미만에서는 같은 노드가 drawer가 된다 — 목록을 두 벌로 두면
+            "PC에서 본 메뉴가 폰에 없다"가 되므로 마크업은 하나만 유지한다. */}
+        {navOpen && (
+          <>
+            {/* 모바일 dim — 배경을 눌러 닫는다. `md` 이상에는 없다. */}
+            <button type="button" aria-label="메뉴 닫기"
+                    onClick={() => setNavOpen(false)}
+                    className="fixed inset-0 z-30 bg-black/50 md:hidden" />
+            <aside id={STATS_NAV_ID}
+                   className="nb-shell-nav fixed inset-y-0 left-0 z-40 w-[86vw]
+                              max-w-[300px] border-r border-border bg-bg px-4 pb-8
+                              pt-4 md:static md:z-auto md:w-[240px] md:max-w-none
+                              md:shrink-0 md:bg-transparent md:pl-4 md:pr-3"
+                   style={{ paddingTop: undefined }}>
+              <StatsNav active={tab} onSelect={selectTab} />
+            </aside>
+          </>
+        )}
+
+      <main className="nb-shell-main w-full px-4 pb-8 pt-3 md:px-6">
+        <div className="mb-3">
           {/* 큰 제목과 설명 문단을 **본문에서 걷어냈다.** 같은 내용을 헤더의
               `치지직 통계` 메뉴와 좌측 sidebar가 이미 말하고 있어, 화면 상단
               4분의 1이 중복 문구에 쓰이고 실제 데이터가 접힘선 밑으로 밀렸다.
@@ -2546,19 +2525,9 @@ export default function StatsPage() {
              아이콘 16 + 배지 ≈38이 먼저 자리를 잡아 라벨에 약 100px만 남았다.
              240px면 같은 계산에서 라벨에 약 130px이 남아 가장 긴 라벨도 여유가 생긴다.
              글꼴이 더 넓은 PC를 위한 최종 안전망은 StatsNav의 라벨 truncate다. */
-          <div className={`grid grid-cols-1 gap-5 md:gap-7 ${
-            navOpen ? "md:grid-cols-[240px_1fr]" : "md:grid-cols-1"}`}>
-            {/* 좌측 메뉴 — 접으면 **DOM에서 빠진다.** `hidden`으로만 감추면
-                그리드 열이 남아 본문이 240px을 못 쓴다. */}
-            {navOpen && (
-              <div id={STATS_NAV_ID}>
-                <StatsNav active={tab} onSelect={selectTab}>
-                  <StreamerSearch />
-                </StatsNav>
-              </div>
-            )}
-
-            {/* 우측 뷰 */}
+          /* 좌측 메뉴는 이제 이 안이 아니라 **셸 본문의 형제**다(위쪽 `aside`).
+             그래야 메뉴와 본문이 각자 스크롤한다. 여기에는 본문만 남는다. */
+          <div className="min-w-0">
             <div className="min-w-0">
               {tab === "bongnudo"                      && <BongnudoTab />}
               {tab === "singcup"                       && <Singcup />}
@@ -2593,6 +2562,7 @@ export default function StatsPage() {
             항상 서버 렌더링 HTML에 포함되게 한다(크롤러가 읽는 본문). */}
         <StatsAbout />
       </main>
+      </div>
 
     </div>
   );

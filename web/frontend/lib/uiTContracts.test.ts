@@ -157,9 +157,12 @@ test("페이지 metadata는 건드리지 않았다", () => {
 
 test("sidebar 접힘이 본문 폭을 실제로 돌려준다", () => {
   const s = read("app/stats/page.tsx");
-  // `hidden`으로만 감추면 그리드 열이 남아 본문이 240px을 못 쓴다.
-  assert.ok(/navOpen \? "md:grid-cols-\[240px_1fr\]" : "md:grid-cols-1"/.test(s));
+  // UI-T에서는 grid 열 개수를 바꿨다. UI-U에서 3영역 셸(flex)로 옮기면서
+  // **메뉴를 DOM에서 빼는 방식**만 남았다 — `hidden`으로 감추면 칸이 남아
+  // 본문이 240px을 못 쓴다.
   assert.ok(s.includes("{navOpen && ("), "접으면 DOM에서 빠진다");
+  assert.ok(s.includes('className="nb-shell-body"'), "셸이 두 칸을 나눈다");
+  assert.ok(s.includes("md:shrink-0"), "메뉴는 고정폭, 본문이 남은 폭을 갖는다");
 });
 
 test("sidebar 선택이 저장되고 hydration을 깨지 않는다", () => {

@@ -97,6 +97,32 @@ export default function PikuPanel() {
     run(`collect:${d}`, () => api.admin.pikuCollect(d),
         `${LABELS[d]} 수집을 완료했습니다.`);
 
+  /** 실제 응답으로 **검증만** — 저장하지 않으므로 형식이 틀려도 기존 데이터가 남는다. */
+  const previewLive = (d: string) =>
+    run(`preview:${d}`, () => api.admin.pikuPreviewLive(d),
+        `${LABELS[d]} 응답을 확인했습니다. 아직 반영하지 않았습니다.`);
+
+  /** 세 부문 일괄 — **부분 성공을 공개하지 않는다.** */
+  const collectAll = async () => {
+    if (busy) return;
+    setBusy("collect-all"); setMsg(null);
+    try {
+      const r = await api.admin.pikuCollectAll();
+      if (r.published) {
+        setMsg({ ok: true, text: "세 부문을 모두 반영했습니다." });
+      } else {
+        const failed = Object.entries(r.errors)
+          .map(([d, k]) => `${LABELS[d] ?? d}(${k})`).join(", ");
+        // 성공하지 않았는데 성공 UI를 보이지 않는다.
+        setMsg({ ok: false,
+                 text: `일부 부문이 실패해 아무것도 반영하지 않았습니다: ${failed}` });
+      }
+      await load();
+    } catch (e) {
+      setMsg({ ok: false, text: errText(e) });
+    } finally { setBusy(null); }
+  };
+
   const importBody = () => {
     const text = importText.trim();
     if (!text) return null;
@@ -207,6 +233,18 @@ export default function PikuPanel() {
                            className="min-w-0 flex-1 rounded-lg border border-border
                                       bg-bg-card px-2 py-1.5 font-mono text-sm"
                            style={{ minWidth: 220 }} />
+                    {/* 확인이 먼저, 반영이 나중 — 순서를 배치에도 둔다. */}
+                    <button onClick={() => void previewLive(d)}
+                            disabled={!!busy || !s?.url}
+                            className="btn-secondary nb-tap inline-flex shrink-0 items-center
+                                       gap-1 text-xs disabled:opacity-40"
+                            title={s?.url ? "저장하지 않고 응답만 확인합니다"
+                                          : "주소를 먼저 저장해 주세요"}>
+                      {busy === `preview:${d}`
+                        ? <Loader2 size={12} className="animate-spin" />
+                        : <Eye size={12} />}
+                      먼저 확인
+                    </button>
                     <button onClick={() => void collect(d)}
                             disabled={!!busy || !s?.url}
                             className="btn-secondary nb-tap inline-flex shrink-0 items-center
@@ -233,6 +271,26 @@ export default function PikuPanel() {
                 );
               })}
             </div>
+            {/* 정본과 어긋난 배치를 화면에서 먼저 알린다 — 수집이 돌기 전에
+                잡아야 남성 순위가 그룹 부문에 들어가는 사고를 막는다. */}
+            {(status?.sources ?? []).some((x) => x.divisionMismatch) && (
+              <p role="alert"
+                 className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3
+                            py-2 text-xs text-amber-300">
+                부문과 주소가 서로 맞지 않습니다. 저장된 주소를 확인해 주세요 —
+                이 상태로는 수집이 반영되지 않습니다.
+              </p>
+            )}
+            <button onClick={() => void collectAll()}
+                    disabled={!!busy}
+                    className="btn-secondary nb-tap inline-flex items-center gap-1.5
+                               text-sm disabled:opacity-40"
+                    title="세 부문을 모두 수집합니다. 하나라도 실패하면 아무것도 반영하지 않습니다.">
+              {busy === "collect-all"
+                ? <Loader2 size={13} className="animate-spin" />
+                : <RefreshCw size={13} />}
+              세 부문 일괄 수집
+            </button>
             <button onClick={() => void saveSources()} disabled={!!busy}
                     className="btn-primary nb-tap inline-flex items-center gap-1.5 text-sm
                                disabled:opacity-50">

@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import SiteHeader from "@/components/SiteHeader";
+
 
 // 통계 안내 페이지.
 //
@@ -43,9 +45,15 @@ function Section({ id, title, children }: {
 export default function StatsGuidePage() {
   return (
     <div className="flex min-h-screen flex-col bg-bg text-fg">
-      <main className="mx-auto w-full max-w-3xl flex-1 px-5 py-10 md:py-14">
+      {/* 이 페이지만 공통 헤더가 없어 다른 화면에서 오면 상단이 통째로 바뀌었다.
+          헤더는 `components/SiteHeader` 한 곳에서만 만든다. */}
+      <SiteHeader maxWidth="3xl" />
+      <main className="mx-auto w-full max-w-3xl flex-1 px-5 py-8 md:py-12">
         <nav aria-label="위치" className="text-[13px] text-muted">
-          <Link href="/stats" className="hover:text-fg">치지직 통계</Link>
+          {/* `nb-tap`은 `min-height`를 주는데, 기본 `<a>`는 inline이라 먹지 않는다.
+              `inline-flex`로 바꿔야 실제 히트 영역이 커진다. */}
+          <Link href="/stats"
+                className="nb-tap inline-flex items-center hover:text-fg">치지직 통계</Link>
           <span className="mx-1.5">/</span>
           <span className="text-fg">통계 안내</span>
         </nav>

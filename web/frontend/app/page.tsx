@@ -102,7 +102,8 @@ function AnnouncementBanner() {
         <button
           onClick={dismiss}
           aria-label="공지 닫기"
-          className="shrink-0 p-1 rounded hover:bg-white/15 transition-colors"
+          className="nb-tap-icon inline-flex shrink-0 items-center justify-center
+                     rounded p-1 hover:bg-white/15 transition-colors"
         >
           <X size={15} />
         </button>

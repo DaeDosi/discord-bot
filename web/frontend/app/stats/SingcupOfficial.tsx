@@ -137,6 +137,8 @@ function TopCard({ row, rank, teamNumber }: {
         <p className="truncate text-sm font-bold text-fg" title={row.channelName}>
           {row.channelName || row.announcedName}
         </p>
+        {/* 2줄째 — 닉네임보다 작고 흐리게. 없으면 줄 자체가 사라진다. */}
+        <SongLine row={row} className="mt-0.5" />
         {/* 발표 시점 이름이 지금과 다르면 함께 보여 준다 — 공지와 대조할 수 있게. */}
         {row.announcedName && row.announcedName !== row.channelName && (
           <p className="mt-0.5 truncate text-[11px] text-muted"
@@ -152,6 +154,32 @@ function TopCard({ row, rank, teamNumber }: {
         )}
       </div>
     </div>
+  );
+}
+
+/* ── 곡 · 가수 한 줄 ──────────────────────────────────────────────────────
+ * 카드와 목록이 함께 쓴다. 값이 **없으면 아무것도 그리지 않는다** — 빈 줄이나
+ * 단독 `-`가 남으면 "정보가 있는데 못 불러왔다"로 읽힌다.
+ * 서버가 준 `songTitle`/`artistName`만 쓰고 이름 문자열을 다시 쪼개지 않는다
+ * (운영 클립 제목은 `가수 - 곡`과 `곡 - 가수`가 섞여 있어 추측이 불가능하다).
+ */
+export function songLine(row: { songTitle?: string; artistName?: string }): string {
+  const song = (row.songTitle || "").trim();
+  const artist = (row.artistName || "").trim();
+  if (song && artist) return `${song} - ${artist}`;
+  return song || artist || "";
+}
+
+function SongLine({ row, className = "" }: {
+  row: { songTitle?: string; artistName?: string }; className?: string;
+}) {
+  const text = songLine(row);
+  if (!text) return null;
+  return (
+    <p className={`truncate text-[11.5px] leading-snug text-muted ${className}`}
+       title={text}>
+      {text}
+    </p>
   );
 }
 
@@ -173,9 +201,11 @@ function ListRow({ row, rank }: { row: QualifierRow; rank: number | null }) {
       </span>
       <a href={`https://chzzk.naver.com/${row.channelId}`} target="_blank"
          rel="noopener noreferrer"
-         className="nb-tap min-w-0 flex-1 truncate text-sm font-semibold text-fg
-                    transition-colors hover:text-accent">
-        {row.channelName || row.announcedName}
+         className="nb-tap min-w-0 flex-1 transition-colors hover:text-accent">
+        <span className="block truncate text-sm font-semibold text-fg">
+          {row.channelName || row.announcedName}
+        </span>
+        <SongLine row={row} />
       </a>
       {row.live && (
         <span className="shrink-0 text-[10px] font-bold" style={{ color: "#FF4D4D" }}>
@@ -196,13 +226,24 @@ function ListRow({ row, rank }: { row: QualifierRow; rank: number | null }) {
 }
 
 /* ── 부문 섹션 ───────────────────────────────────────────────────────────── */
-function DivisionSection({ division, label, rows, ranking, limit, showAll }: {
+/** 정렬 탭 — 공개 토큰만 쓴다. 라벨의 "우승 비율·승률"은 **기준 이름**이고
+ *  숫자는 어디에도 표시하지 않는다(정렬은 서버가 한다). */
+export const SORT_TABS = [
+  { key: "primary", label: "우승 비율" },
+  { key: "secondary", label: "승률" },
+] as const;
+
+function DivisionSection({ division, label, rows, ranking, limit, showAll,
+                           sort, onSort }: {
   division: Division;
   label: string;
   rows: (QualifierRow | QualifierGroupRow)[];
   ranking: PikuEntry[] | null;
   limit: number;
   showAll: boolean;
+  /** 현재 정렬 기준(공개 토큰). PIKU dataset이 없으면 탭 자체가 나오지 않는다. */
+  sort?: string;
+  onSort?: (key: string) => void;
 }) {
   // PIKU 순위가 있으면 그 순서로, 없으면 공지 순서로 보여 준다.
   // **프런트에서 순위를 다시 매기지 않는다** — 동점 규칙이 서버에 있고, 두 곳에서
@@ -254,12 +295,50 @@ function DivisionSection({ division, label, rows, ranking, limit, showAll }: {
             {nf(rows.length)}{unit}
           </span>
         </h3>
-        {/* 순서의 출처를 섹션마다 밝힌다 — 카드만 보면 공식 순위로 읽힌다. */}
-        <p className="text-[11px] text-muted/80">
-          {ranking && ranking.length > 0
-            ? "순서: PIKU 사용자 투표 기준 (공식 순위 아님)"
-            : "순서: 치지직 공지 표기 순 (순위 아님)"}
-        </p>
+        {/* 정렬 탭 — PIKU dataset이 있을 때만 조작 가능하다.
+            데이터가 없으면 버튼을 흉내 내지 않고 **현재 순서의 출처만** 밝힌다
+            (가짜 0%로 줄을 세우면 없는 순위를 만들어내는 것이다). */}
+        {ranking && ranking.length > 0 && onSort ? (
+          <div role="tablist" aria-label={`${label} 정렬 기준`}
+               className="nb-tap-gap flex items-center gap-1 text-[13px]">
+            {SORT_TABS.map((o, i) => (
+              <span key={o.key} className="flex items-center">
+                {i > 0 && <span aria-hidden="true" className="px-1 text-muted/50">·</span>}
+                <button type="button" role="tab" id={`${division}-sort-${o.key}`}
+                        aria-selected={sort === o.key}
+                        tabIndex={sort === o.key ? 0 : -1}
+                        onClick={() => onSort(o.key)}
+                        onKeyDown={(e) => {
+                          if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                          e.preventDefault();
+                          const next = SORT_TABS[(SORT_TABS.findIndex(
+                            (x) => x.key === sort) + (e.key === "ArrowRight" ? 1 : -1)
+                            + SORT_TABS.length) % SORT_TABS.length];
+                          onSort(next.key);
+                          document.getElementById(
+                            `${division}-sort-${next.key}`)?.focus();
+                        }}
+                        /* 시각 크기는 텍스트 그대로 두고 **히트 영역만** 44px로
+                           넓힌다(UI-S 계약). 정렬 탭은 촘촘히 붙어 있어
+                           `nb-tap-gap`이 이웃과의 간격도 함께 벌린다. */
+                        className={`nb-tap nb-tap-wide inline-flex items-center
+                                    justify-center rounded px-2 py-1 transition-colors ${
+                          sort === o.key
+                            ? "font-semibold text-fg"
+                            : "text-muted/70 hover:text-muted"}`}>
+                  {o.label}
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : (
+          /* 순서의 출처를 섹션마다 밝힌다 — 카드만 보면 공식 순위로 읽힌다. */
+          <p className="text-[11px] text-muted/80">
+            {ranking && ranking.length > 0
+              ? "순서: PIKU 사용자 투표 기준 (공식 순위 아님)"
+              : "순서: 치지직 공지 표기 순 (순위 아님)"}
+          </p>
+        )}
       </div>
 
       {top.length > 0 && (
@@ -377,28 +456,9 @@ export default function SingcupOfficial() {
           })}
         </div>
 
-        {/* 정렬 버튼은 PIKU 순위가 있을 때만 뜻이 있다 — 없으면 숨긴다.
-            비활성으로 남겨 두면 "왜 안 먹지"를 유발한다. */}
-        {hasAnyRanking && (
-          <div className="nb-tap-gap flex flex-wrap items-center gap-1.5"
-               role="group" aria-label="순위 정렬 기준">
-            <span className="text-xs text-muted">정렬 기준</span>
-            {sortOptions.map((o) => {
-              const on = sort === o.key;
-              return (
-                <button key={o.key} onClick={() => setSort(o.key)} aria-pressed={on}
-                  className="nb-tap rounded-lg border px-3 py-2 text-xs font-medium
-                             transition-colors"
-                  style={{ background: on ? "rgba(0,255,163,0.1)" : "transparent",
-                           borderColor: on ? "rgba(0,255,163,0.35)"
-                             : "rgb(var(--color-border-rgb))",
-                           color: on ? GREEN : "rgb(var(--color-muted-rgb))" }}>
-                  {o.label}
-                </button>
-              );
-            })}
-          </div>
-        )}
+        {/* 정렬은 이제 **각 부문 제목 오른쪽**에 있다(요구). 여기 또 두면 한 화면에
+            같은 컨트롤이 둘이 되고, 부문마다 기준이 다른지 같은지도 모호해진다.
+            기준은 세 부문이 공유한다 — 부문을 바꿔도 고른 기준이 유지된다. */}
       </div>
 
       {/* 현재 정렬 기준을 문장으로도 밝힌다 — 버튼 색만으로는 무엇이 적용됐는지
@@ -436,7 +496,9 @@ export default function SingcupOfficial() {
               rows={(data.divisions?.[d] ?? []) as (QualifierRow | QualifierGroupRow)[]}
               ranking={rankingOf(d)}
               limit={OVERVIEW_ROWS}
-              showAll={tab !== "all"} />
+              showAll={tab !== "all"}
+              sort={sort}
+              onSort={setSort} />
           ))}
         </div>
       )}

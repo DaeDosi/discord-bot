@@ -6,7 +6,7 @@
  * 페이지에 각자 복제돼 있어서, 한 곳을 고치면 나머지 열 곳이 남았다(UI-S 회차에
  * 로고 hit area 하나를 고치는 데 12파일을 만져야 했던 이유다).
  *
- * 레이아웃 계약 — **3영역 grid**다:
+ * 레이아웃 계약 — **3영역 grid**다(가운데는 `minmax(0,680px)`):
  *   [☰ NexBot 치지직통계Beta] [검색] [사용 방법 · 로그인/프로필]
  * · 좌우를 `1fr`로 같게 잡아야 가운데가 "남은 공간의 중심"이 아니라
  *   **viewport의 중심**에 온다(실측: 전 뷰포트 offCenter 0).
@@ -61,7 +61,11 @@ function HeaderNav() {
   );
 }
 
-function GlobalSearch({ compact = false }: { compact?: boolean }) {
+function GlobalSearch({ compact = false, fill = false }: {
+  compact?: boolean;
+  /** 부모(헤더 칸)가 폭을 정하는 경우 — 자기 폭을 강제하지 않는다. */
+  fill?: boolean;
+}) {
   const router = useRouter();
   const [q, setQ] = useState("");
   const [items, setItems] = useState<QuickSearchItem[]>([]);
@@ -122,8 +126,19 @@ function GlobalSearch({ compact = false }: { compact?: boolean }) {
   const showPanel = open && q.trim().length > 0;
 
   return (
+    /* 폭을 고정값(680px)으로 두면 768px 화면에서 좌우 묶음과 **겹쳤다**(실측 5쌍).
+       `clamp`로 "가능한 만큼 넓게, 그러나 좌우를 밀지 않게" 잡는다 —
+       가운데 칸이 `auto`라 이 값이 곧 칸의 폭이 되고, 좌우 `minmax(0,1fr)`이
+       남은 폭을 균등하게 나눠 중앙 정렬이 유지된다. */
+    /* 폭을 뷰포트(`vw`) 기준으로 잡으면 **본문 폭이 좁은 페이지**(`maxWidth="3xl"`,
+       컨테이너 768px)에서 헤더 컨테이너를 넘겨 좌우와 겹쳤다(실측 1쌍).
+       `cqw`가 아니라 `%`를 쓰는 이유는 부모가 이미 grid 칸이라 백분율이
+       **칸이 아니라 컨테이너 폭**을 기준으로 잡히지 않기 때문이다 — 대신
+       `max-w`를 컨테이너에 맞춰 두고 `w-full`로 칸을 채운다. 칸 자체는
+       `auto`이므로 좌우 `minmax(0,1fr)`이 남은 폭을 균등하게 나눈다. */
     <div ref={boxRef}
-         className={`relative w-full min-w-0 ${compact ? "" : "max-w-[520px]"}`}>
+         className={`relative w-full min-w-0 ${
+           compact || fill ? "" : "max-w-[680px]"}`}>
       <div className="relative">
         <Search size={15} aria-hidden="true"
                 className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
@@ -212,7 +227,13 @@ function AuthArea() {
   const [user, setUser] = useState<User | null>(null);
   const [loginUrl, setLoginUrl] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  //: 로그아웃 진행/실패 상태. 성공은 곧바로 이동하므로 별도 표시가 없다.
+  const [signingOut, setSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
 
   useEffect(() => {
     try {
@@ -226,7 +247,13 @@ function AuthArea() {
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      // 닫은 뒤 포커스를 trigger로 되돌린다 — 안 그러면 포커스가 사라진 노드에
+      // 남아 다음 Tab이 문서 맨 앞으로 튄다.
+      triggerRef.current?.focus();
+    };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -235,10 +262,32 @@ function AuthArea() {
     };
   }, []);
 
+  // 열리면 첫 항목으로 포커스를 옮긴다(키보드만으로 메뉴에 들어갈 수 있어야 한다).
+  useEffect(() => {
+    if (!open) return;
+    const first = menuRef.current?.querySelector<HTMLElement>(
+      '[role="menuitem"]');
+    first?.focus();
+  }, [open]);
+
+  /** 로그아웃 — **기존 인증 방식을 그대로 쓴다**(토큰은 localStorage에 있고
+   *  서버 세션이 없다). 새 인증 체계를 만들지 않는다.
+   *
+   *  성공은 이동으로 드러나므로 따로 표시하지 않고, **실패만** 화면에 남긴다.
+   *  조용히 실패하면 사용자는 로그아웃됐다고 믿은 채 로그인 상태로 남는다. */
   const logout = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("discord_user");
-    window.location.href = "/";
+    if (signingOut) return;
+    setSigningOut(true);
+    setSignOutError(false);
+    try {
+      localStorage.removeItem("token");
+      localStorage.removeItem("discord_user");
+      if (localStorage.getItem("token")) throw new Error("token remains");
+      window.location.href = "/";
+    } catch {
+      setSigningOut(false);
+      setSignOutError(true);
+    }
   };
 
   if (!user) {
@@ -262,8 +311,9 @@ function AuthArea() {
 
   return (
     <div className="relative shrink-0" ref={ref}>
-      <button onClick={() => setOpen((o) => !o)}
+      <button ref={triggerRef} type="button" onClick={() => setOpen((o) => !o)}
               aria-expanded={open} aria-haspopup="menu"
+              aria-controls={open ? menuId : undefined}
               aria-label={`${user.global_name || user.username} 계정 메뉴`}
               className="nb-tap flex items-center gap-2 rounded-full border border-transparent
                          px-2 py-1.5 transition-all hover:border-border hover:bg-bg-hover sm:px-3">
@@ -280,9 +330,12 @@ function AuthArea() {
       </button>
 
       {open && (
-        <div role="menu"
-             className="absolute right-0 top-full z-[60] mt-2 w-48 rounded-xl border
-                        border-border bg-bg-card py-1.5 shadow-2xl shadow-black/40">
+        <div role="menu" id={menuId} ref={menuRef}
+             /* `right-0`으로 trigger 오른쪽 끝에 맞춘다 — 헤더 오른쪽 끝 요소라
+                왼쪽으로 펼쳐야 viewport 밖으로 잘리지 않는다. */
+             className="absolute right-0 top-full z-[60] mt-2 w-48 max-w-[calc(100vw-1.5rem)]
+                        rounded-xl border border-border bg-bg-card py-1.5
+                        shadow-2xl shadow-black/40">
           <Link href="/dashboard" role="menuitem" onClick={() => setOpen(false)}
                 className="nb-tap flex items-center gap-2.5 px-4 py-2.5 text-sm text-fg
                            transition-colors hover:bg-bg-hover">
@@ -296,11 +349,18 @@ function AuthArea() {
           <div className="mx-3 my-1 h-px bg-border" />
           {/* 로그아웃과 회원탈퇴는 **시각·기능적으로 분리한다.**
               탈퇴는 설정 페이지 맨 아래에만 둔다 — 여기 나란히 두면 오조작이 난다. */}
-          <button onClick={logout} role="menuitem"
+          <button onClick={logout} role="menuitem" disabled={signingOut}
                   className="nb-tap flex w-full items-center gap-2.5 px-4 py-2.5 text-sm
-                             text-danger transition-colors hover:bg-danger/8">
-            <LogOut size={14} aria-hidden="true" /> 로그아웃
+                             text-danger transition-colors hover:bg-danger/8
+                             disabled:opacity-50">
+            <LogOut size={14} aria-hidden="true" />
+            {signingOut ? "로그아웃 중..." : "로그아웃"}
           </button>
+          {signOutError && (
+            <p role="alert" className="px-4 pb-1.5 pt-0.5 text-[11px] text-danger">
+              로그아웃하지 못했습니다. 다시 시도해 주세요.
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -364,6 +424,10 @@ export default function SiteHeader({ maxWidth = "full", statsNav }: {
   }, [menuOpen]);
 
   const inner = INNER[maxWidth] ?? INNER.full;
+  /** 본문 폭이 좁은 페이지에서는 검색창도 그만큼 좁아야 좌우와 겹치지 않는다. */
+  const searchWidth = maxWidth === "full"
+    ? "md:w-[min(52vw,680px)] lg:w-[min(46vw,680px)]"
+    : "md:w-[min(40vw,420px)]";
 
   // sidebar를 가진 페이지면 그 sidebar를, 아니면 통계 메뉴 drawer를 제어한다.
   const usesSidebar = Boolean(statsNav);
@@ -374,8 +438,23 @@ export default function SiteHeader({ maxWidth = "full", statsNav }: {
     ? (statsNav!.open ? "통계 메뉴 접기" : "통계 메뉴 펼치기")
     : (menuOpen ? "통계 메뉴 닫기" : "통계 메뉴 열기");
 
+  /* 헤더 실제 높이를 CSS 변수로 알린다. 3영역 셸의 두 칸이 이 값으로 자기 높이를
+     계산하므로, 확대(150%)에서 헤더가 자라도 숫자를 여러 곳에 고칠 필요가 없다. */
+  const headerRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const apply = () => document.documentElement.style.setProperty(
+      "--nb-header-h", `${Math.round(el.getBoundingClientRect().height)}px`);
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   return (
-    <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
+    <header ref={headerRef}
+            className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
       {/* **3영역 grid다.** 좌우를 `1fr`로 같게 잡아야 가운데 칸이 남은 공간의
           중심이 아니라 **viewport의 중심**에 온다. flex + `flex-1` 검색창으로는
           좌우 폭이 다른 순간 검색창 중심이 그 차이의 절반만큼 밀린다(실측으로
@@ -384,11 +463,12 @@ export default function SiteHeader({ maxWidth = "full", statsNav }: {
           최소 높이만 정하고 고정하지 않는다 — 확대(150%)에서 글자가 커져도
           내용이 잘리지 않고 헤더가 함께 자란다. */}
       <div className={`nb-tap-gap grid min-h-[60px] grid-cols-[auto_1fr_auto]
-                       items-center gap-2 py-2 md:grid-cols-[1fr_auto_1fr] ${inner}`}>
+                       items-center gap-2 py-2 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]
+                       ${inner}`}>
         {/* ── 왼쪽: 햄버거 · NexBot · 치지직 통계 Beta ── */}
         {/* `overflow-hidden`이 있어야 자식이 셀 밖으로 삐져나가지 않는다.
             390@150%(실폭 260px)에서 워드마크가 오른쪽 묶음과 겹쳤던 자리다. */}
-        <div className="flex min-w-0 items-center gap-1 overflow-hidden">
+        <div className="-ml-1.5 flex min-w-0 items-center gap-1 overflow-hidden">
           <button ref={burgerRef} type="button"
                   onClick={onBurger}
                   aria-expanded={burgerExpanded}
@@ -397,9 +477,10 @@ export default function SiteHeader({ maxWidth = "full", statsNav }: {
                   className="nb-tap-icon inline-flex h-11 w-11 shrink-0 items-center
                              justify-center rounded-lg text-muted transition-colors
                              hover:bg-bg-hover hover:text-fg">
-            {burgerExpanded
-              ? <X size={20} aria-hidden="true" />
-              : <Menu size={20} aria-hidden="true" />}
+            {/* 열려도 X로 바꾸지 않는다 — 같은 버튼이 같은 자리에서 토글하는데
+                아이콘만 바뀌면 "닫기 전용 버튼"으로 읽힌다. 상태는 `aria-expanded`와
+                라벨이 말하고, 그림은 고정한다. */}
+            <Menu size={20} aria-hidden="true" />
           </button>
 
           {/* 로봇 아이콘을 두지 않는다 — 워드마크 하나로 브랜드를 말한다.
@@ -414,13 +495,24 @@ export default function SiteHeader({ maxWidth = "full", statsNav }: {
 
           {/* `/` 구분자와 신호 아이콘 없이, 워드마크 바로 오른쪽에 붙인다.
               배지는 **이 한 곳에만** 있다(HeaderNav의 중복은 제거했다). */}
+          {/* `치지직 통계`는 현재 위치를 말하는 라벨이다. **크기는 워드마크와 같게**
+              (둘 다 17px) 두고, 브랜드 우선순위는 **굵기로만** 구분한다
+              (NexBot bold 700 / 여기 medium 500).
+
+              색은 `text-fg`(#EBEFF6)가 아니라 순백 `#FFFFFF`다 — 지시한 값이고,
+              한 단계 밝아지는 만큼 옆 워드마크와 같은 급으로 읽힌다.
+              17px는 헤더의 기존 줄 높이 안에 들어가므로 헤더가 자라지 않는다
+              (min-h-[60px]이고 실제 높이는 브랜드 줄이 정한다). */}
           <Link href="/stats"
                 className="nb-tap ml-1 hidden min-w-0 items-center gap-1.5 rounded-lg
-                           px-2 py-2 text-sm font-medium text-muted transition-colors
-                           hover:text-fg sm:inline-flex">
+                           px-2 py-2 text-[17px] font-medium text-white transition-colors
+                           hover:text-neon sm:inline-flex">
             <span className="min-w-0 truncate">치지직 통계</span>
-            <span className="shrink-0 rounded border border-accent/40 px-1 py-px
-                             text-[10px] font-bold leading-none text-accent">
+            {/* Beta 배지 — 브랜드 그린(#00FFA3) 계열 토큰. 배경을 옅게 깔아
+                테두리만으로 버티지 않게 하고, 대비를 확보한다. */}
+            <span className="shrink-0 rounded-[5px] border border-neon/50
+                             bg-neon/10 px-1.5 py-[3px] text-[11.5px] font-bold
+                             leading-none tracking-tight text-neon">
               Beta
             </span>
           </Link>
@@ -431,8 +523,10 @@ export default function SiteHeader({ maxWidth = "full", statsNav }: {
             겹쳤다(실측: 320px에서 검색 263px, 남는 폭 57px). 그래서 좁은 화면은
             **접을 수 있는 검색**으로 바꾼다 — 기본은 접힘, 아이콘을 누르면
             헤더 아래 한 줄이 열린다. `md` 이상에서는 늘 펼쳐진 채 중앙 정렬이다. */}
-        <div className="hidden min-w-0 justify-center md:flex">
-          <GlobalSearch />
+        {/* 가운데 칸이 `auto`면 자식 콘텐츠 폭만큼만 잡혀 검색창이 296px에
+            머물렀다. 칸에 `w-full`을 줘야 `max-w`까지 자란다. */}
+        <div className={`hidden w-full min-w-0 justify-center md:flex ${searchWidth}`}>
+          <GlobalSearch fill />
         </div>
         <span className="md:hidden" aria-hidden="true" />
 

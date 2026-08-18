@@ -25,6 +25,10 @@ const config: Config = {
         fg:     "rgb(var(--color-fg-rgb) / <alpha-value>)",
         // Hardcoded brand colors (opacity already works)
         accent:  { DEFAULT: "#5865F2", hover: "#4752C4", light: "#7289DA" },
+        // 통계 화면의 네온 그린(#00FFA3). `accent`는 **Discord 블루**,
+        // `chzzk`는 이미 **네이버 그린(#03C75A)**으로 잡혀 있어 둘 다 쓸 수 없다.
+        // 이 저장소가 그래프·글로우에서 리터럴로 반복하던 값이라 이름을 붙인다.
+        neon:    "#00FFA3",
         success: "#57F287",
         warning: "#FEE75C",
         danger:  "#ED4245",

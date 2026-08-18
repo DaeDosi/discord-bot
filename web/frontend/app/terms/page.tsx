@@ -215,10 +215,14 @@ export default function TermsPage() {
           <p className="text-sm font-semibold text-muted uppercase tracking-wider mb-3">목차</p>
           <ol className="space-y-1.5">
             {sections.map(({ id, title }) => (
-              <li key={id}>
+              <li key={id} className="nb-tap-gap">
                 <a
                   href={`#section-${id}`}
-                  className="flex items-center gap-2 text-sm text-muted hover:text-fg transition-colors group"
+                  /* 목차 링크는 촘촘한 세로 목록이라 손가락으로 누르기 어려웠다
+                     (실측 높이 24px). 글자 크기는 그대로 두고 터치 포인터에서만
+                     44px를 확보한다(`nb-tap`), 이웃과의 간격은 `nb-tap-gap`이 벌린다. */
+                  className="nb-tap flex items-center gap-2 text-sm text-muted
+                             hover:text-fg transition-colors group"
                 >
                   <span className="w-5 h-5 rounded-md bg-accent/10 text-accent text-[11px]
                                    font-bold flex items-center justify-center flex-shrink-0

@@ -372,6 +372,17 @@ export const api = {
       request<{ ok: boolean; entries: number; applied: false;
                 matched: string[]; unmatched: string[]; duplicates: string[] }>(
         "/api/admin/piku/preview", { method: "POST", body: JSON.stringify(body) }),
+    /** 세 부문 일괄 수집 — 하나라도 실패하면 아무것도 공개되지 않는다. */
+    pikuCollectAll: () =>
+      request<{ ok: boolean; published: boolean;
+                results: Record<string, { entries: number }>;
+                errors: Record<string, string> }>(
+        "/api/admin/piku/collect-all", { method: "POST" }),
+    /** 실제 응답으로 검증만(저장 없음). */
+    pikuPreviewLive: (division: string) =>
+      request<{ ok: boolean; entries: number; applied: false }>(
+        `/api/admin/piku/preview-live?division=${encodeURIComponent(division)}`,
+        { method: "POST" }),
     pikuMappings: (division?: string) =>
       request<import("./types").PikuMappingsResponse>(
         `/api/admin/piku/mappings${division

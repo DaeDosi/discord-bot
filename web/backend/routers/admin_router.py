@@ -1407,6 +1407,36 @@ async def piku_collect(division: str, user: dict = Depends(_require_owner)):
         raise _piku_400(e) from e
 
 
+@router.post("/piku/collect-all")
+async def piku_collect_all(user: dict = Depends(_require_owner)):
+    """세 부문을 한 번에 — **하나라도 실패하면 아무것도 공개하지 않는다.**
+
+    부문별로 따로 반영하면 "여성은 새 데이터, 그룹은 어제 데이터"인 화면이 되고
+    사용자는 그 사실을 알 수 없다. 먼저 세 부문을 전부 검증하고(`apply=False`),
+    전부 통과했을 때만 반영한다.
+    """
+    import singcup_piku as piku
+    if not await piku.acquire_collect_lock():
+        raise HTTPException(status_code=409,
+                            detail="이미 수집이 진행 중입니다.")
+    try:
+        return {"ok": True, **await piku.collect_all()}
+    except piku.PikuError as e:
+        raise _piku_400(e) from e
+    finally:
+        await piku.release_collect_lock()
+
+
+@router.post("/piku/preview-live")
+async def piku_preview_live(division: str, user: dict = Depends(_require_owner)):
+    """실제 응답으로 **검증만** 한다(저장 없음). 반영 전에 형태를 먼저 본다."""
+    import singcup_piku as piku
+    try:
+        return {"ok": True, **await piku.preview_division(division)}
+    except piku.PikuError as e:
+        raise _piku_400(e) from e
+
+
 @router.post("/piku/import")
 async def piku_import(body: PikuImportBody, user: dict = Depends(_require_owner)):
     """수동 import(JSON/CSV) — **외부 접속 없이** 데이터를 넣는 대체 경로.

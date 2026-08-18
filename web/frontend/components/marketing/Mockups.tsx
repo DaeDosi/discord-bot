@@ -74,12 +74,15 @@ export function PointsMockup({ color = "#A855F7" }: { color?: string }) {
               <p className="text-sm font-medium text-fg truncate">{name}</p>
               <p className="text-[11px] text-muted">잔여 {stock}개</p>
             </div>
-            <button
-              className="text-[11px] font-semibold px-2.5 py-1 rounded-lg shrink-0 cursor-default"
+            {/* 목업 안의 **가격표**다. `button`이었지만 누를 수 없고(`cursor-default`)
+                핸들러도 없어, 접근성 트리에는 "동작하지 않는 버튼"으로 남고
+                44px 터치 계약 검사에도 잡혔다. 의미대로 텍스트로 되돌린다. */}
+            <span
+              className="text-[11px] font-semibold px-2.5 py-1 rounded-lg shrink-0"
               style={{ background: `${color}18`, color }}
             >
               {typeof points === "number" ? points.toLocaleString() : points}P
-            </button>
+            </span>
           </div>
         ))}
       </div>

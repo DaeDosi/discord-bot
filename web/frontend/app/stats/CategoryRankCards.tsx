@@ -98,7 +98,10 @@ export default function CategoryRankCards({ categories }: { categories: RisingCa
 
   const top = categories.slice(0, 20);
   const total = categories.reduce((s, c) => s + c.viewers, 0);
-  const arrowBtn = "rounded-lg border border-border bg-bg-card/80 p-1.5 text-muted transition-colors " +
+  // `nb-tap-icon`은 터치 포인터에서만 44×44를 강제한다 — 마우스 화면의
+  // 시각 크기는 그대로 두고 손가락으로 누를 때만 넓어진다(UI-S 계약).
+  const arrowBtn = "nb-tap-icon inline-flex items-center justify-center rounded-lg " +
+                   "border border-border bg-bg-card/80 p-1.5 text-muted transition-colors " +
                    "hover:text-fg hover:bg-bg-hover disabled:opacity-30 disabled:hover:bg-transparent";
 
   if (top.length === 0) {

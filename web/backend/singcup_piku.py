@@ -39,6 +39,45 @@ DIVISION_LABELS: dict[str, str] = {
     "groups": "그룹",
 }
 
+#: 부문별 PIKU 랭킹 페이지 **정본**.
+#:
+#: 운영자가 실측해 확정한 매핑이다. 처음 전달받은 값에서 **남성 솔로와 그룹이
+#: 서로 뒤바뀌어 있었고**, 그대로 두면 남성 참가자 순위가 그룹 부문에 저장되는
+#: 조용한 오염이 된다(화면에는 이름만 보이므로 눈으로 잡히지 않는다).
+#: 그래서 상수로 고정하고 `expected_division_for_url()`로 교차 검증한다.
+#:
+#: 부문 키는 코드베이스 전역이 쓰는 `groups`(복수)를 그대로 둔다 — DB·공개 API·
+#: 프론트가 모두 이 키를 쓰므로 이름만 바꾸면 연쇄 변경이 된다.
+PIKU_CATEGORY_URLS: dict[str, str] = {
+    "female_solo": "https://www.piku.co.kr/w/rank/8jGsHE",
+    "male_solo":   "https://www.piku.co.kr/w/rank/7PqH44",
+    "groups":      "https://www.piku.co.kr/w/rank/7fXoNs",
+}
+
+
+def expected_division_for_url(url: str) -> str | None:
+    """이 주소가 어느 부문의 정본인지. 정본에 없으면 `None`(판단하지 않는다)."""
+    u = (url or "").strip().rstrip("/")
+    for d, known in PIKU_CATEGORY_URLS.items():
+        if u == known.rstrip("/"):
+            return d
+    return None
+
+
+def assert_division_matches_url(division: str, url: str) -> None:
+    """설정한 부문과 주소가 정본과 어긋나면 **저장 전에** 막는다.
+
+    정본에 없는 주소는 통과시킨다 — 대회 URL이 바뀔 수 있고, 모르는 주소를
+    금지하면 운영자가 새 주소를 넣을 방법이 없어진다. 막는 것은 **아는 주소를
+    틀린 부문에 넣는 경우**뿐이다.
+    """
+    want = expected_division_for_url(url)
+    if want is not None and want != division:
+        raise PikuError(
+            "division_mismatch",
+            f"이 주소는 {DIVISION_LABELS[want]} 부문입니다"
+            f"({DIVISION_LABELS.get(division, division)}으로 설정할 수 없습니다).")
+
 #: 정렬 기준 — **내부 컬럼명**. DB 안에서만 쓴다.
 SORT_KEYS: tuple[str, ...] = ("win_rate", "match_rate")
 
@@ -76,6 +115,19 @@ def auto_collect_enabled() -> bool:
 #: 최소 수집 간격(분). 요구가 "최대 1시간에 한 번"이므로 하한을 60분으로 잡는다.
 MIN_INTERVAL_MINUTES = max(60.0, float(os.getenv("PIKU_INTERVAL_MINUTES", "60")))
 #: 한 부문에서 넘길 최대 페이지 수.
+#: 한 번에 요청할 행 수(DataTables `length`). 화면 기본이 10이라 그대로 쓴다.
+PAGE_LENGTH = max(10, min(100, int(os.getenv("PIKU_PAGE_LENGTH", "10"))))
+
+#: **페이지 수를 고정하지 않는다.** `recordsTotal`을 보고 끝까지 간다. 이 값은
+#: 폭주를 막는 안전 상한일 뿐이며 정상 수집에서 도달하지 않는다(64명 → 7회).
+MAX_REQUESTS_PER_DIVISION = max(10, min(100,
+                                        int(os.getenv("PIKU_MAX_REQUESTS", "60"))))
+
+#: 한 응답의 최대 바이트. HTML 덤프나 폭주 응답을 파서에 넣지 않기 위한 방어선.
+MAX_RESPONSE_BYTES = max(64_000, int(os.getenv("PIKU_MAX_RESPONSE_BYTES",
+                                               str(2_000_000))))
+
+#: 예전 `?page=` 추측 방식의 잔재. 이제 쓰지 않지만 설정 호환을 위해 남긴다.
 MAX_PAGES = max(1, min(10, int(os.getenv("PIKU_MAX_PAGES", "4"))))
 #: 페이지 사이 대기(초). 사람이 넘기는 속도보다 느리게 둔다.
 PAGE_DELAY_SECONDS = float(os.getenv("PIKU_PAGE_DELAY_SECONDS", "2.0"))
@@ -156,6 +208,35 @@ def _pct(v: Any) -> float | None:
     return n if 0.0 <= n <= 100.0 else None
 
 
+#: `src="..."` / `src='...'` 양쪽을 받는다. 따옴표를 문자 클래스로 두면
+#: 파이썬 문자열 안에서 이스케이프가 꼬이지 않는다.
+_IMG_RE = re.compile(r"<img[^>]+src=[\"']([^\"']+)[\"']", re.I)
+#: "이름<br><small>곡 - 가수</small>" 또는 "이름 (곡 - 가수)" 형태를 가른다.
+_BREAK_RE = re.compile(r"<br\s*/?>|</?small[^>]*>|\n", re.I)
+
+
+def split_name_song(cell_html: str) -> tuple[str, str, str]:
+    """이름 셀에서 `(이름, 곡, 가수)`를 가른다.
+
+    **이름 문자열을 추측으로 쪼개지 않는다.** 줄바꿈·`<small>`로 이미 나뉘어 온
+    두 번째 조각만 곡 정보로 보고, 그 안에서 마지막 ` - `를 기준으로 가수를 뗀다
+    (곡 제목에 하이픈이 들어갈 수 있으므로 **마지막** 구분자를 쓴다).
+    조각이 하나뿐이면 곡·가수는 빈 문자열이다 — 없는 정보를 만들어내지 않는다.
+    """
+    parts = [_clean_text(x) for x in _BREAK_RE.split(cell_html or "")]
+    parts = [x for x in parts if x]
+    if not parts:
+        return "", "", ""
+    name = parts[0]
+    if len(parts) < 2:
+        return name, "", ""
+    tail = parts[1]
+    if " - " in tail:
+        song, artist = tail.rsplit(" - ", 1)
+        return name, song.strip(), artist.strip()
+    return name, tail, ""
+
+
 def normalize_rows(raw: Any) -> list[dict]:
     """어떤 형태로 오든 `[{source_rank, name, thumbnail_url, win_rate, match_rate}]`로.
 
@@ -174,6 +255,7 @@ def normalize_rows(raw: Any) -> list[dict]:
     out: list[dict] = []
     for i, row in enumerate(raw):
         name = win = match = thumb = None
+        song = artist = ""
         rank = None
         if isinstance(row, dict):
             for k in ("name", "title", "participant", "이름", "참가자"):
@@ -184,6 +266,10 @@ def normalize_rows(raw: Any) -> list[dict]:
             match = _pct(row.get("matchRate", row.get("match_rate", row.get("승률"))))
             rank = row.get("rank", row.get("source_rank", row.get("순위")))
             thumb = _clean_text(row.get("thumbnail", row.get("thumbnailUrl", "")))
+            song = _clean_text(row.get("songTitle", row.get("song_title",
+                                                            row.get("곡", ""))))
+            artist = _clean_text(row.get("artistName", row.get("artist_name",
+                                                               row.get("가수", ""))))
         elif isinstance(row, (list, tuple)):
             # DataTables 배열형: [순위, 이름, 우승비율, 승률] 순서를 기대하되
             # 열이 밀려도 **퍼센트로 보이는 두 열**을 찾아 쓴다.
@@ -195,10 +281,20 @@ def normalize_rows(raw: Any) -> list[dict]:
             if len(pcts) >= 2:
                 win, match = pcts[0][1], pcts[1][1]
             used = {j for j, _ in pcts[:2]}
+            raw_cells = [c if isinstance(c, str) else "" for c in row]
+            # 이미지 주소는 **원본 셀**에서 뽑는다(_clean_text가 태그를 지운다).
+            for c in raw_cells:
+                m = _IMG_RE.search(c)
+                if m:
+                    thumb = m.group(1)
+                    break
             texts = [(j, c) for j, c in enumerate(cells)
                      if j not in used and c and not c.replace(".", "").isdigit()]
             if texts:
-                name = texts[0][1]
+                j = texts[0][0]
+                name, song, artist = split_name_song(raw_cells[j])
+                if not name:
+                    name = texts[0][1]
             if cells and cells[0].isdigit():
                 rank = cells[0]
         else:
@@ -211,6 +307,9 @@ def normalize_rows(raw: Any) -> list[dict]:
         except (TypeError, ValueError):
             rank_i = i + 1
         out.append({"source_rank": rank_i, "name": name,
+                    # 곡·가수는 **공개 정보**다(화면 2줄 표시에 쓴다).
+                    # 비율과 달리 감출 이유가 없다.
+                    "song_title": song or "", "artist_name": artist or "",
                     "thumbnail_url": thumb or "",
                     "win_rate": win, "match_rate": match})
         if len(out) >= MAX_ENTRIES:
@@ -224,21 +323,40 @@ def validate_rows(rows: list[dict], *, min_entries: int = 1) -> list[dict]:
         raise PikuError("empty", "수집 결과가 비어 있습니다.")
     if len(rows) < min_entries:
         raise PikuError("too_few", f"수집 결과가 너무 적습니다({len(rows)}건).")
+    import math
+
     seen: set[str] = set()
+    seen_ranks: set[int] = set()
     out: list[dict] = []
     for r in rows:
-        name = r.get("name") or ""
+        name = (r.get("name") or "").strip()
         if not name:
             raise PikuError("parse_failed", "이름이 없는 행이 있습니다.")
-        key = name.strip()
-        if key in seen:
+        # **중복 순위는 파싱이 어긋났다는 신호다.** 이름 중복과 달리 조용히
+        # 넘기지 않는다 — 순위가 겹치면 어느 쪽이 맞는지 알 수 없다.
+        rk = r.get("source_rank")
+        try:
+            rk_i = int(rk)
+        except (TypeError, ValueError):
+            raise PikuError("parse_failed", "순위를 읽지 못한 행이 있습니다.") from None
+        if rk_i <= 0:
+            raise PikuError("parse_failed", f"순위가 양수가 아닙니다({rk_i}).")
+        if rk_i in seen_ranks:
+            raise PikuError("duplicate_rank", f"순위 {rk_i}이(가) 중복됩니다.")
+        seen_ranks.add(rk_i)
+        if name in seen:
             # 같은 이름이 두 번 오면 뒤엣것을 버린다(앞엣것이 상위 순위다).
             continue
-        seen.add(key)
+        seen.add(name)
         for f in ("win_rate", "match_rate"):
             v = r.get(f)
-            if v is None or not (0.0 <= float(v) <= 100.0):
-                raise PikuError("bad_rate", f"{f} 값이 범위를 벗어났습니다.")
+            if v is None:
+                raise PikuError("bad_rate", f"{f}가 없습니다.")
+            fv = float(v)
+            if math.isnan(fv) or math.isinf(fv):
+                raise PikuError("bad_rate", f"{f}가 숫자가 아닙니다.")
+            if not (0.0 <= fv <= 100.0):
+                raise PikuError("bad_rate", f"{f} 값이 범위를 벗어났습니다({fv}).")
         out.append(r)
     return out
 
@@ -259,7 +377,17 @@ async def list_sources() -> list[dict]:
         "lastAttemptAt": int(by_div[d]["last_attempt_at"]) if d in by_div else 0,
         "lastSuccessAt": int(by_div[d]["last_success_at"]) if d in by_div else 0,
         "lastErrorKind": by_div[d]["last_error_kind"] if d in by_div else "",
+        # 정본과 어긋나게 배치됐는지. 관리 화면이 이 값을 보고 경고를 띄운다 —
+        # 과거에 뒤바뀐 채로 저장된 설정을 **조용히 다시 수집하지 않기** 위해서다.
+        "divisionMismatch": _mismatch_of(d, by_div[d]["url"] if d in by_div else ""),
+        "expectedUrl": PIKU_CATEGORY_URLS.get(d, ""),
     } for d in DIVISIONS]
+
+
+def _mismatch_of(division: str, url: str) -> str:
+    """이 주소가 다른 부문의 정본이면 그 부문 키를, 아니면 빈 문자열."""
+    want = expected_division_for_url(url)
+    return want if (want is not None and want != division) else ""
 
 
 _URL_RE = re.compile(r"^https://www\.piku\.co\.kr/w/rank/[A-Za-z0-9_-]{1,32}$")
@@ -294,6 +422,11 @@ async def set_sources(mapping: dict[str, str]) -> list[dict]:
     dupes = [u for u in set(cleaned.values()) if list(cleaned.values()).count(u) > 1]
     if dupes:
         raise PikuError("duplicate_url", "같은 주소를 두 부문에 지정할 수 없습니다.")
+    # **정본과 어긋난 배치를 저장 전에 막는다.** 남성 솔로와 그룹이 뒤바뀐 채로
+    # 수집되면 남성 참가자 순위가 그룹 부문에 들어가는데, 화면에는 이름만 보여
+    # 눈으로는 잡히지 않는다.
+    for d, u in cleaned.items():
+        assert_division_matches_url(d, u)
 
     now = int(time.time())
     db = await get_db()
@@ -325,10 +458,12 @@ async def _fill_dataset(dataset_id: int, rows: list[dict]) -> None:
     db = await get_db()
     await db.executemany(
         """INSERT OR REPLACE INTO piku_entries
-               (dataset_id, source_rank, name, thumbnail_url, win_rate, match_rate)
-           VALUES (?,?,?,?,?,?)""",
+               (dataset_id, source_rank, name, thumbnail_url, win_rate, match_rate,
+                song_title, artist_name)
+           VALUES (?,?,?,?,?,?,?,?)""",
         [(dataset_id, r["source_rank"], r["name"], r.get("thumbnail_url", ""),
-          r["win_rate"], r["match_rate"]) for r in rows])
+          r["win_rate"], r["match_rate"],
+          r.get("song_title", ""), r.get("artist_name", "")) for r in rows])
     await db.commit()
 
 
@@ -398,13 +533,81 @@ async def _record_run(division: str, started: int, *, ok: bool, applied: bool,
 
 # ── 수집 ────────────────────────────────────────────────────────────────────
 
-async def _fetch_page(client, url: str, page: int) -> tuple[int, str]:
-    """한 페이지를 가져온다. 우회 수단은 쓰지 않는다."""
-    r = await client.get(url, params={"page": page} if page > 1 else None,
-                         headers={"User-Agent": USER_AGENT,
-                                  "Accept": "text/html,application/json"},
-                         timeout=REQUEST_TIMEOUT, follow_redirects=True)
-    return r.status_code, r.text
+# ── DataTables 요청 계약 ────────────────────────────────────────────────────
+#
+# 랭킹 페이지(`/w/rank/<id>`)는 표를 **서버사이드 DataTables**로 그린다:
+#
+#     serverSide: true, ajax: { url: "x.php?u=<id>", type: "POST" }
+#
+# 즉 표 데이터는 페이지 HTML이 아니라 `POST /w/rank/x.php?u=<id>`가 준다.
+# 예전 구현은 `GET ...?page=N`으로 **추측**했고 그래서 아무것도 못 가져왔다.
+# 여기서는 실측된 계약을 그대로 쓴다.
+
+_RANK_ID_RE = re.compile(r"^https://www\.piku\.co\.kr/w/rank/([A-Za-z0-9_-]{1,32})/?$")
+
+
+def ajax_endpoint(page_url: str) -> str:
+    """랭킹 **페이지** 주소 → 표 데이터 **엔드포인트** 주소.
+
+    호스트를 고정한 정규식으로만 유도한다 — 임의 URL을 받아 POST를 쏘는 함수가
+    되면 그 자체가 SSRF 통로가 된다.
+    """
+    m = _RANK_ID_RE.match((page_url or "").strip())
+    if not m:
+        raise PikuError("bad_url", "PIKU 랭킹 주소 형식이 아닙니다.")
+    return f"https://www.piku.co.kr/w/rank/x.php?u={m.group(1)}"
+
+
+#: 표의 열 순서(실측): 순위 · 이미지 · 이름/곡 · 우승 비율 · 승률 · 추이
+_COLUMNS = ("rank", "image", "name", "win", "match", "trend")
+
+
+def datatables_params(*, draw: int, start: int, length: int) -> dict:
+    """표준 DataTables 서버사이드 파라미터.
+
+    서버가 정렬 대상을 알아야 하므로 `columns[n][*]`까지 채운다. 정렬은 **순위
+    오름차순 고정**이다 — 우리가 원하는 것은 PIKU가 정한 순서 그대로이고,
+    정렬을 바꾸면 `source_rank`의 의미가 흔들린다.
+    """
+    p: dict[str, Any] = {
+        "draw": draw,
+        "start": start,
+        "length": length,
+        "search[value]": "",
+        "search[regex]": "false",
+        "order[0][column]": 0,
+        "order[0][dir]": "asc",
+    }
+    for i, name in enumerate(_COLUMNS):
+        p[f"columns[{i}][data]"] = i
+        p[f"columns[{i}][name]"] = name
+        p[f"columns[{i}][searchable]"] = "false"
+        p[f"columns[{i}][orderable]"] = "true" if name == "rank" else "false"
+        p[f"columns[{i}][search][value]"] = ""
+        p[f"columns[{i}][search][regex]"] = "false"
+    return p
+
+
+async def _fetch_rows(client, endpoint: str, *, draw: int,
+                      start: int) -> tuple[int, str, str | None]:
+    """표 한 묶음을 가져온다. **우회 수단은 쓰지 않는다.**
+
+    쿠키·세션·프록시·브라우저 위장 없이, 서비스를 밝히는 User-Agent로만 요청한다.
+    """
+    r = await client.post(
+        endpoint,
+        data=datatables_params(draw=draw, start=start, length=PAGE_LENGTH),
+        headers={"User-Agent": USER_AGENT,
+                 "Accept": "application/json, text/javascript",
+                 "X-Requested-With": "XMLHttpRequest",
+                 "Content-Type": "application/x-www-form-urlencoded"},
+        timeout=REQUEST_TIMEOUT)
+    retry_after = None
+    try:
+        retry_after = r.headers.get("Retry-After")
+    except Exception:      # noqa: BLE001 — 헤더가 없는 대역 클라이언트도 받는다
+        retry_after = None
+    return r.status_code, r.text, retry_after
 
 
 def _raise_for_status(status: int, text: str, retry_after: str | None) -> None:
@@ -433,6 +636,10 @@ def extract_payload(text: str) -> Any:
     **HTML 원문을 저장하지 않는다** — 여기서 구조만 꺼내고 버린다.
     """
     t = (text or "").strip()
+    # 응답이 지나치게 크면 파서에 넣지 않는다 — HTML 덤프나 폭주 응답을
+    # 정규식으로 훑다가 시간을 다 쓰는 것을 막는 방어선이다.
+    if len(t.encode("utf-8", "ignore")) > MAX_RESPONSE_BYTES:
+        raise PikuError("too_large", "응답이 너무 큽니다. 반영하지 않습니다.")
     if t.startswith("{") or t.startswith("["):
         try:
             return json.loads(t)
@@ -459,24 +666,107 @@ def extract_payload(text: str) -> Any:
     raise PikuError("parse_failed", "표 데이터를 찾지 못했습니다.")
 
 
-async def collect_division(division: str, *, client=None) -> dict:
+async def _fetch_all_rows(client, page_url: str, division: str) -> list[dict]:
+    """한 부문의 **전체** 행을 가져온다.
+
+    페이지 수를 고정하지 않는다. 첫 응답의 `recordsTotal`이 전체 인원을 알려 주므로
+    그 수를 채울 때까지 `start`를 늘려 간다(여성 64명 = 10명씩 7회). 예전 구현은
+    1~4페이지로 박아 두어 뒷사람이 통째로 빠졌다.
+
+    **부분 성공을 성공으로 착각하지 않는다** — 도중에 실패하면 예외가 그대로 올라가고
+    호출부가 활성화하지 않으므로 직전 정상 dataset이 남는다.
+    """
+    endpoint = ajax_endpoint(page_url)
+    rows_all: list[dict] = []
+    total: int | None = None
+    start = 0
+
+    for draw in range(1, MAX_REQUESTS_PER_DIVISION + 1):
+        attempt = 0
+        while True:
+            try:
+                status, text, retry_after = await _fetch_rows(
+                    client, endpoint, draw=draw, start=start)
+                _raise_for_status(status, text, retry_after)
+                break
+            except PikuError as e:
+                # 403·challenge·부문 불일치는 **재시도하지 않는다**(거부가 분명하다).
+                if e.kind in ("forbidden", "challenge"):
+                    raise
+                attempt += 1
+                if attempt > MAX_RETRIES:
+                    raise
+                delay = (e.retry_after if e.retry_after is not None
+                         else BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
+                _log("retry", division=division, start=start, attempt=attempt,
+                     kind=e.kind, delaySeconds=delay)
+                await asyncio.sleep(min(300.0, max(0.0, delay)))
+
+        payload = extract_payload(text)
+        if total is None:
+            total = _records_total(payload)
+        chunk = normalize_rows(payload)
+        if not chunk:
+            break
+        rows_all.extend(chunk)
+        start += PAGE_LENGTH
+        if total is not None and len(rows_all) >= total:
+            break
+        await asyncio.sleep(PAGE_DELAY_SECONDS)
+    else:
+        raise PikuError("too_many_requests",
+                        "요청 상한에 도달했습니다(응답이 끝나지 않습니다).")
+
+    if total is not None and len(rows_all) != total:
+        # 서버가 알려 준 전체 수와 실제로 받은 수가 다르면 **부분 수집**이다.
+        raise PikuError(
+            "incomplete",
+            f"전체 {total}건 중 {len(rows_all)}건만 받았습니다. 반영하지 않습니다.")
+    return rows_all
+
+
+def _records_total(payload: Any) -> int | None:
+    """DataTables가 알려 주는 전체 행 수. 없으면 `None`(끝까지 읽어 판단한다)."""
+    if isinstance(payload, dict):
+        for k in ("recordsFiltered", "recordsTotal", "iTotalRecords"):
+            v = payload.get(k)
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                continue
+            if n >= 0:
+                return n
+    return None
+
+
+async def collect_division(division: str, *, client=None,
+                           apply: bool = True) -> dict:
     """한 부문을 수집해 **전부 정상일 때만** 활성화한다.
 
-    실패 종류(`forbidden`/`rate_limited`/`challenge`/`parse_failed`/`empty`/`timeout`)
-    와 무관하게, 활성화하지 않으면 **직전 정상 데이터가 그대로 남는다**.
+    실패 종류(`forbidden`/`rate_limited`/`challenge`/`parse_failed`/`empty`/
+    `incomplete`/`division_mismatch`)와 무관하게, 활성화하지 않으면 **직전 정상
+    데이터가 그대로 남는다**.
+
+    `apply=False`는 미리보기 — 검증까지만 하고 DB에 쓰지 않는다.
     """
     if division not in DIVISIONS:
         raise PikuError("bad_division", "알 수 없는 부문입니다.")
     started = int(time.time())
     src = {s["division"]: s for s in await list_sources()}[division]
     if not src["url"]:
-        await _record_run(division, started, ok=False, applied=False,
-                          error_kind="missing_url")
+        if apply:
+            await _record_run(division, started, ok=False, applied=False,
+                              error_kind="missing_url")
         raise PikuError("missing_url", "이 부문의 PIKU 주소가 설정되지 않았습니다.")
     if not src["enabled"]:
-        await _record_run(division, started, ok=False, applied=False,
-                          error_kind="disabled")
+        if apply:
+            await _record_run(division, started, ok=False, applied=False,
+                              error_kind="disabled")
         raise PikuError("disabled", "이 부문의 수집이 꺼져 있습니다.")
+
+    # **수집 직전에 다시 교차 검증한다.** 설정 경로를 우회해 DB가 오염된 경우에도
+    # 어긋난 데이터가 공개되면 안 된다(남성 순위가 그룹 부문에 들어가는 사고).
+    assert_division_matches_url(division, src["url"])
 
     owns_client = client is None
     if owns_client:
@@ -485,68 +775,146 @@ async def collect_division(division: str, *, client=None) -> dict:
 
     dataset_id: int | None = None
     rows_all: list[dict] = []
-    pages_done = 0
     try:
-        for page in range(1, MAX_PAGES + 1):
-            attempt = 0
-            while True:
-                try:
-                    status, text = await _fetch_page(client, src["url"], page)
-                    _raise_for_status(status, text,
-                                      None)  # Retry-After는 아래 except에서 처리
-                    break
-                except PikuError as e:
-                    # 403·challenge는 **재시도하지 않는다**(거부 의사가 분명하다).
-                    if e.kind in ("forbidden", "challenge"):
-                        raise
-                    attempt += 1
-                    if attempt > MAX_RETRIES:
-                        raise
-                    delay = (e.retry_after if e.retry_after is not None
-                             else BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
-                    _log("retry", division=division, page=page, attempt=attempt,
-                         kind=e.kind, delaySeconds=delay)
-                    await asyncio.sleep(min(60.0, max(0.0, delay)))
-
-            rows = normalize_rows(extract_payload(text))
-            pages_done = page
-            if not rows:
-                # 빈 페이지 = 목록의 끝. 첫 페이지가 비면 아래 검증이 잡는다.
-                break
-            rows_all.extend(rows)
-            if page < MAX_PAGES:
-                await asyncio.sleep(PAGE_DELAY_SECONDS)
-
+        rows_all = await _fetch_all_rows(client, src["url"], division)
         valid = validate_rows(rows_all)
+        if not apply:
+            return {"division": division, "entries": len(valid), "applied": False}
+
         dataset_id = await _begin_dataset(division, source="scrape",
                                           source_url=src["url"])
         await _fill_dataset(dataset_id, valid)
-        await _activate(dataset_id, division, pages=pages_done,
-                        entry_count=len(valid))
+        await _activate(dataset_id, division, pages=0, entry_count=len(valid))
         await _record_run(division, started, ok=True, applied=True,
-                          pages=pages_done, entries=len(valid))
+                          entries=len(valid))
         await sync_mappings(division)
-        return {"division": division, "entries": len(valid), "pages": pages_done,
-                "applied": True}
+        return {"division": division, "entries": len(valid), "applied": True}
     except PikuError as e:
         if dataset_id is not None:
             await _discard(dataset_id)
-        await _record_run(division, started, ok=False, applied=False,
-                          http_status=e.http_status, error_kind=e.kind,
-                          pages=pages_done, entries=len(rows_all))
+        if apply:
+            await _record_run(division, started, ok=False, applied=False,
+                              http_status=e.http_status, error_kind=e.kind,
+                              entries=len(rows_all))
         _log("collect_failed", division=division, kind=e.kind,
              httpStatus=e.http_status, detail=str(e)[:160])
         raise
     except Exception as e:                       # noqa: BLE001 — 마지막 방어선
         if dataset_id is not None:
             await _discard(dataset_id)
-        await _record_run(division, started, ok=False, applied=False,
-                          error_kind="unexpected", pages=pages_done)
+        if apply:
+            await _record_run(division, started, ok=False, applied=False,
+                              error_kind="unexpected")
         _log("collect_error", division=division, detail=str(e)[:160])
         raise PikuError("unexpected", "수집 중 오류가 발생했습니다.") from e
     finally:
         if owns_client:
             await client.aclose()
+
+
+async def preview_division(division: str, *, client=None) -> dict:
+    """수집해 보되 **저장하지 않는다**(dry-run).
+
+    응답에 우승 비율·승률 숫자를 담지 않는다 — 미리보기라는 이유로 내부값을
+    관리 화면에 흘리면 "비율은 정렬에만 쓴다"는 계약이 거기서 깨진다.
+    """
+    out = await collect_division(division, client=client, apply=False)
+    return {**out, "applied": False}
+
+
+# ── 자동 수집 lock · 상태 ───────────────────────────────────────────────────
+#
+# 소유권은 **DB의 조건부 UPDATE**가 정한다. 메모리 플래그로 두면 다중 replica와
+# 재시작에서 즉시 깨진다(싱드컵 스윕이 같은 이유로 같은 방식을 쓴다).
+
+#: lock 유효 시간(초). 프로세스가 죽어도 이 시간이 지나면 다른 쪽이 이어받는다.
+COLLECT_LOCK_TTL_SECONDS = int(os.getenv("PIKU_LOCK_TTL_SECONDS", "1800"))
+
+_lock_owner = f"piku-{os.getpid()}"
+
+
+async def acquire_collect_lock(*, ttl: int | None = None) -> bool:
+    """수집 lock을 잡는다. 이미 유효한 lock이 있으면 `False`."""
+    now = int(time.time())
+    until = now + (ttl if ttl is not None else COLLECT_LOCK_TTL_SECONDS)
+    db = await get_db()
+    cur = await db.execute(
+        "UPDATE piku_collect_lock SET locked_until = ?, owner = ?"
+        " WHERE id = 1 AND locked_until < ?", (until, _lock_owner, now))
+    await db.commit()
+    return cur.rowcount > 0
+
+
+async def release_collect_lock() -> None:
+    """내가 잡은 lock만 푼다 — 남의 lock을 풀면 동시 실행이 생긴다."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE piku_collect_lock SET locked_until = 0, owner = ''"
+        " WHERE id = 1 AND owner = ?", (_lock_owner,))
+    await db.commit()
+
+
+async def worker_state() -> dict:
+    db = await get_db()
+    r = await (await db.execute(
+        "SELECT * FROM piku_worker_state WHERE id = 1")).fetchone()
+    if r is None:
+        return {"lastSuccessAt": 0, "lastErrorAt": 0, "lastErrorKind": "",
+                "consecutiveFailures": 0, "nextRunAt": 0}
+    return {"lastSuccessAt": int(r["last_success_at"]),
+            "lastErrorAt": int(r["last_error_at"]),
+            "lastErrorKind": r["last_error_kind"] or "",
+            "consecutiveFailures": int(r["consecutive_failures"]),
+            "nextRunAt": int(r["next_run_at"])}
+
+
+async def _record_worker(*, ok: bool, kind: str = "") -> None:
+    now = int(time.time())
+    nxt = now + int(MIN_INTERVAL_MINUTES * 60)
+    db = await get_db()
+    if ok:
+        await db.execute(
+            "UPDATE piku_worker_state SET last_success_at=?, consecutive_failures=0,"
+            " next_run_at=? WHERE id=1", (now, nxt))
+    else:
+        await db.execute(
+            "UPDATE piku_worker_state SET last_error_at=?, last_error_kind=?,"
+            " consecutive_failures = consecutive_failures + 1, next_run_at=?"
+            " WHERE id=1", (now, kind[:40], nxt))
+    await db.commit()
+
+
+async def collect_all(*, clients: dict | None = None) -> dict:
+    """세 부문을 모두 수집한다. **하나라도 실패하면 아무것도 공개하지 않는다.**
+
+    부문별로 따로 활성화하면 "여성은 새 데이터, 그룹은 어제 데이터"인 화면이 되고,
+    사용자는 그 사실을 알 수 없다. 그래서 먼저 세 부문을 전부 검증하고
+    (`apply=False`), 전부 통과했을 때만 실제로 반영한다.
+    """
+    results: dict[str, dict] = {}
+    errors: dict[str, str] = {}
+
+    for d in DIVISIONS:
+        c = (clients or {}).get(d)
+        try:
+            results[d] = await collect_division(d, client=c, apply=False)
+        except PikuError as e:
+            errors[d] = e.kind
+
+    if errors:
+        _log("collect_all_aborted", failed=list(errors), kinds=list(errors.values()))
+        await _record_worker(ok=False, kind=next(iter(errors.values())))
+        return {"published": False, "results": results, "errors": errors}
+
+    applied: dict[str, dict] = {}
+    for d in DIVISIONS:
+        c = (clients or {}).get(d)
+        if hasattr(c, "calls"):
+            c.calls.clear()          # 대역 클라이언트 재사용 시 호출 기록 초기화
+        applied[d] = await collect_division(d, client=c, apply=True)
+    await _record_worker(ok=True)
+    _log("collect_all_published", entries={d: applied[d]["entries"] for d in applied})
+    return {"published": True, "results": applied, "errors": {}}
 
 
 async def preview_rows(division: str, raw: Any) -> dict:
@@ -758,6 +1126,7 @@ async def public_ranking(division: str, *, sort: str = DEFAULT_SORT,
     db = await get_db()
     rows = [dict(r) for r in await (await db.execute(
         """SELECT e.source_rank, e.name, e.thumbnail_url, e.win_rate, e.match_rate,
+                  e.song_title, e.artist_name,
                   m.channel_id, m.state
              FROM piku_entries e
              LEFT JOIN piku_mappings m
@@ -776,6 +1145,9 @@ async def public_ranking(division: str, *, sort: str = DEFAULT_SORT,
         "channelId": r["channel_id"],
         "name": r["name"],
         "thumbnailUrl": r["thumbnail_url"] or "",
+        # 곡·가수는 화면 2줄 표시에 쓰는 **공개 정보**다(비율과 다르다).
+        "songTitle": r["song_title"] or "",
+        "artistName": r["artist_name"] or "",
         # 원본 순위는 **참고용으로만** 내보낸다(우리 순위와 다른 값임을 화면이 밝힌다).
         "sourceRank": int(r["source_rank"]) if r["source_rank"] is not None else None,
     } for i, r in enumerate(ordered)]
@@ -830,6 +1202,7 @@ async def admin_status() -> dict:
         by_state[m["state"]] = by_state.get(m["state"], 0) + 1
     return {
         "sources": await list_sources(),
+        **await worker_state(),
         "autoCollectEnabled": auto_collect_enabled(),
         "intervalMinutes": MIN_INTERVAL_MINUTES,
         "maxPages": MAX_PAGES,
