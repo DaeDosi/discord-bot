@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>NexBot PIKU Collector</title>
+<style>
+  :root { color-scheme: dark; }
+  body { width: 340px; margin: 0; padding: 14px;
+         font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: #0f1216; color: #ebeff6; }
+  h1 { margin: 0 0 8px; font-size: 14px; }
+  p { margin: 0 0 10px; color: #97a1b0; }
+  label { display: block; margin: 10px 0 4px; font-weight: 600; }
+  input { width: 100%; box-sizing: border-box; min-height: 44px; padding: 8px 10px;
+          border: 1px solid #2a313b; border-radius: 8px;
+          background: #171b21; color: #ebeff6; font: inherit; }
+  button { width: 100%; min-height: 44px; margin-top: 10px; padding: 10px;
+           border: 1px solid #2a313b; border-radius: 8px;
+           background: #1f6feb; color: #fff; font: inherit; font-weight: 700;
+           cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.secondary { background: #171b21; color: #ebeff6; }
+  #out { margin-top: 10px; padding: 9px 10px; border-radius: 8px;
+         border: 1px solid #2a313b; background: #171b21; white-space: pre-wrap; }
+  .ok { border-color: #1f6f4a !important; color: #7ee2b8; }
+  .bad { border-color: #7a2630 !important; color: #ff9aa5; }
+  .note { font-size: 11.5px; color: #6f7987; }
+</style>
+<h1>PIKU 랭킹 수집</h1>
+<p>PIKU 랭킹 페이지를 연 상태에서 실행하세요. 이미 화면에 표시된 표만 읽습니다.</p>
+<label for="tok">수집 토큰 (Nexadmin에서 발급)</label>
+<input id="tok" type="password" autocomplete="off" spellcheck="false"
+       placeholder="한 번만 쓰는 토큰">
+<label for="base">NexBot 주소</label>
+<input id="base" type="url" autocomplete="off" value="https://nexbot.shop">
+<button id="run">이 페이지 읽어 보내기</button>
+<button id="check" class="secondary">읽기만 하고 확인</button>
+<div id="out" role="status" aria-live="polite">대기 중</div>
+<p class="note">쿠키·로그인 정보·원문 HTML은 보내지 않습니다. 정규화된 행만 전송합니다.</p>
+<script src="popup.js"></script>

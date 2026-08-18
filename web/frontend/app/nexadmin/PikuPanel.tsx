@@ -105,36 +105,6 @@ export default function PikuPanel() {
   const saveSources = () =>
     run("sources", () => api.admin.pikuSetSources(urls), "부문 매핑을 저장했습니다.");
 
-  const collect = (d: string) =>
-    run(`collect:${d}`, () => api.admin.pikuCollect(d),
-        `${LABELS[d]} 수집을 완료했습니다.`);
-
-  /** 실제 응답으로 **검증만** — 저장하지 않으므로 형식이 틀려도 기존 데이터가 남는다. */
-  const previewLive = (d: string) =>
-    run(`preview:${d}`, () => api.admin.pikuPreviewLive(d),
-        `${LABELS[d]} 응답을 확인했습니다. 아직 반영하지 않았습니다.`);
-
-  /** 세 부문 일괄 — **부분 성공을 공개하지 않는다.** */
-  const collectAll = async () => {
-    if (busy) return;
-    setBusy("collect-all"); setMsg(null);
-    try {
-      const r = await api.admin.pikuCollectAll();
-      if (r.published) {
-        setMsg({ ok: true, text: "세 부문을 모두 반영했습니다." });
-      } else {
-        const failed = Object.entries(r.errors)
-          .map(([d, k]) => `${LABELS[d] ?? d}(${k})`).join(", ");
-        // 성공하지 않았는데 성공 UI를 보이지 않는다.
-        setMsg({ ok: false,
-                 text: `일부 부문이 실패해 아무것도 반영하지 않았습니다: ${failed}` });
-      }
-      await load();
-    } catch (e) {
-      setMsg({ ok: false, text: errText(e) });
-    } finally { setBusy(null); }
-  };
-
   const importBody = () => {
     const text = importText.trim();
     if (!text) return null;
@@ -146,8 +116,10 @@ export default function PikuPanel() {
   const doImport = () => {
     const body = importBody();
     if (!body) { setMsg({ ok: false, text: "가져올 데이터를 붙여 넣어 주세요." }); return; }
-    return run("import", () => api.admin.pikuImport(body),
-      `${LABELS[importDiv]} 데이터를 반영했습니다.`);
+    return run("import", () => api.admin.pikuCollectorImport(body),
+      `${LABELS[importDiv]} 데이터를 수집본으로 저장했습니다. `
+      + "아직 공개되지 않았습니다 — 'PIKU 수집(브라우저)' 탭에서 "
+      + "이름 매핑을 확정한 뒤 세 부문을 함께 공개하세요.");
   };
 
   /* 반영 **전에** 형태만 본다. 활성 dataset을 건드리지 않으므로 형식이 틀려도
@@ -264,28 +236,10 @@ export default function PikuPanel() {
                                       bg-bg-card px-2 py-1.5 font-mono text-sm"
                            style={{ minWidth: 220 }} />
                     {/* 확인이 먼저, 반영이 나중 — 순서를 배치에도 둔다. */}
-                    <button onClick={() => void previewLive(d)}
-                            disabled={!!busy || !s?.url || blocked}
-                            className="btn-secondary nb-tap inline-flex shrink-0 items-center
-                                       gap-1 text-xs disabled:opacity-40"
-                            title={s?.url ? "저장하지 않고 응답만 확인합니다"
-                                          : "주소를 먼저 저장해 주세요"}>
-                      {busy === `preview:${d}`
-                        ? <Loader2 size={12} className="animate-spin" />
-                        : <Eye size={12} />}
-                      먼저 확인
-                    </button>
-                    <button onClick={() => void collect(d)}
-                            disabled={!!busy || !s?.url || blocked}
-                            className="btn-secondary nb-tap inline-flex shrink-0 items-center
-                                       gap-1 text-xs disabled:opacity-40"
-                            title={s?.url ? "지금 PIKU에 접속해 갱신합니다"
-                                          : "주소를 먼저 저장해 주세요"}>
-                      {busy === `collect:${d}`
-                        ? <Loader2 size={12} className="animate-spin" />
-                        : <RefreshCw size={12} />}
-                      수동 갱신
-                    </button>
+                    {/* 수집·확인 버튼은 이 탭에서 걷어냈다. 서버에서 PIKU로
+                        직접 요청하는 경로라 403으로 막혀 있고, 성공해도 한
+                        부문만 즉시 공개돼 원자 공개 계약을 우회했다.
+                        수집은 'PIKU 수집(브라우저)' 탭에서 한다. */}
                     <span className="w-full text-[11px] text-muted">
                       {/* 시도와 성공을 나눠 보여 준다 — 하나로 합치면 실패가 이어져도
                           최신인 것처럼 보인다. */}
@@ -311,16 +265,6 @@ export default function PikuPanel() {
                 이 상태로는 수집이 반영되지 않습니다.
               </p>
             )}
-            <button onClick={() => void collectAll()}
-                    disabled={!!busy || blocked}
-                    className="btn-secondary nb-tap inline-flex items-center gap-1.5
-                               text-sm disabled:opacity-40"
-                    title="세 부문을 모두 수집합니다. 하나라도 실패하면 아무것도 반영하지 않습니다.">
-              {busy === "collect-all"
-                ? <Loader2 size={13} className="animate-spin" />
-                : <RefreshCw size={13} />}
-              세 부문 일괄 수집
-            </button>
             <button onClick={() => void saveSources()} disabled={!!busy}
                     className="btn-primary nb-tap inline-flex items-center gap-1.5 text-sm
                                disabled:opacity-50">

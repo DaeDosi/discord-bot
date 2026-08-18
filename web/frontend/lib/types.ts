@@ -1249,3 +1249,88 @@ export interface GroupDetail {
   members: GroupAnalysisMember[];
   truncated: boolean;
 }
+
+/** 브라우저 기반 PIKU Collector 상태.
+ *
+ *  **우승 비율·승률은 여기에도 없다** — 관리 화면에서도 값은 쓰지 않는다.
+ *  담는 것은 개수와 상태뿐이다. */
+export interface PikuCollectorDivisionStatus {
+  label: string;
+  sourceId: string;
+  sourceUrl: string;
+  expected: number;
+  /** null=아직 없음, "draft"=수집됨, "failed"=실패, "published"=공개됨 */
+  lastResult: string | null;
+  lastErrorKind: string;
+  lastAt: number;
+  rowCount: number;
+  draftRows: number;
+  draftCount: number;
+  activeEntryCount: number;
+  draftReady: boolean;
+}
+
+export interface PikuCollectorStatus {
+  autoCollectEnabled: boolean;
+  autoPublishEnabled: boolean;
+  minIntervalMinutes: number;
+  publishReady: boolean;
+  /** 공개를 막고 있는 **구체적인 이유**들. 비어 있으면 공개할 수 있다.
+   *  화면에서 다시 계산하지 않는다 — 서버가 막는 이유와 갈라지면 안 된다. */
+  blockers: string[];
+  divisions: Record<string, PikuCollectorDivisionStatus>;
+}
+
+/** draft 기준 매핑 한 행. **비율값은 담지 않는다.** */
+export interface PikuMappingRow {
+  rank: number;
+  pikuName: string;
+  /** 그룹의 전체 팀원 문자열(솔로는 빈 값) */
+  teamMembers: string;
+  /** 그룹 대표자 = PIKU 문자열의 첫 이름 */
+  lead: string;
+  songTitle: string;
+  artistName: string;
+  /** confirmed | suggested | unmapped */
+  state: string;
+  channelId: string | null;
+  officialName: string;
+  duplicate: boolean;
+}
+
+export interface PikuCollectorMappings {
+  division: string;
+  label: string;
+  expected: number;
+  rows: PikuMappingRow[];
+  counts: { confirmed: number; suggested: number; unmatched: number;
+            duplicate: number };
+  candidates: { channelId: string; name: string; taken: boolean }[];
+}
+
+export interface PikuPublishPreviewDivision {
+  label: string;
+  expected: number;
+  draftRows: number;
+  activeRows: number;
+  added: number;
+  removed: number;
+  changed: number;
+  addedSample: string[];
+  removedSample: string[];
+  confirmed: number;
+  unconfirmed: number;
+  duplicate: number;
+  linked: number;
+  rows: { rank: number; pikuName: string; lead: string; songTitle: string;
+          artistName: string; officialName: string; state: string }[];
+}
+
+export interface PikuPublishPreview {
+  /** 내부 정렬 기준(공개 토큰). 값 자체는 나오지 않는다. */
+  sort: string;
+  sortLabel: string;
+  divisions: Record<string, PikuPublishPreviewDivision>;
+  blockers: string[];
+  publishReady: boolean;
+}

@@ -203,11 +203,18 @@ test("부문 매핑을 관리자가 직접 지정한다", () => {
   assert.ok(s.includes("api.admin.pikuSetSources"));
 });
 
-test("수동 갱신과 수동 import 경로가 모두 있다", () => {
+test("서버 직접 수집 경로는 없고 import는 draft로만 간다", () => {
+  // **이전 계약을 뒤집는다.** 서버 → PIKU 직접 요청은 Railway·AWS 모두 403이라
+  // 성공하지 않고, 예전 import는 한 부문만 즉시 공개해 원자 공개 계약을
+  // 우회했다. 수집은 'PIKU 수집(브라우저)' 탭이 맡는다.
   const s = PANEL();
-  assert.ok(s.includes("api.admin.pikuCollect"), "수동 갱신");
-  assert.ok(s.includes("api.admin.pikuImport"), "JSON/CSV import");
-  assert.ok(s.includes("PIKU에 접속하지 않고"), "import는 접속 없는 대체 경로다");
+  assert.ok(!s.includes("api.admin.pikuCollect("), "서버 직접 수집이 남아 있다");
+  assert.ok(!s.includes("api.admin.pikuCollectAll"), "일괄 수집이 남아 있다");
+  assert.ok(!s.includes("api.admin.pikuPreviewLive"), "직접 확인이 남아 있다");
+  assert.ok(s.includes("api.admin.pikuCollectorImport"),
+    "import는 draft 전용 경로를 써야 한다");
+  assert.ok(s.includes("아직 공개되지 않았습니다"),
+    "import가 곧바로 공개되지 않는다는 것을 알린다");
 });
 
 test("자동 수집이 꺼져 있음을 화면에서 알 수 있다", () => {

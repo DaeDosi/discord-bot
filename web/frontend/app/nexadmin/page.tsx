@@ -10,6 +10,7 @@ import SingcupRepPanel from "./SingcupRepPanel";
 import SingcupClipMetricsPanel from "./SingcupClipMetricsPanel";
 import StreamerTagsPanel from "./StreamerTagsPanel";
 import PikuPanel from "./PikuPanel";
+import PikuCollectorPanel from "./PikuCollectorPanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -704,7 +705,8 @@ export default function AdminPage() {
   const [loading, setLoading]         = useState(true);
   const [showAdd, setShowAdd]         = useState(false);
   const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow" | "announcement" | "singcup-rep"
-                                      | "streamer-tags" | "piku">("guilds");
+                                      | "streamer-tags" | "piku"
+                                      | "piku_collector">("guilds");
   const [refreshing, setRefreshing]   = useState(false);
   const [selectedVerif, setSelectedVerif] = useState<VerifUser | null>(null);
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null);
@@ -854,6 +856,8 @@ export default function AdminPage() {
     { key: "streamer-tags", label: "스트리머 소속 그룹" },
     // PIKU 사용자 투표 순위 — 부문 매핑·수집·이름 매핑을 한 곳에서 한다.
     { key: "piku", label: "PIKU 순위" },
+    // 수집 경로가 서버 → 브라우저로 바뀌어 관리 화면도 나뉜다.
+    { key: "piku_collector", label: "PIKU 수집(브라우저)" },
   ] as const;
 
   return (
@@ -1142,6 +1146,7 @@ export default function AdminPage() {
         {activeTab === "streamer-tags" && <StreamerTagsPanel />}
 
         {activeTab === "piku" && <PikuPanel />}
+        {activeTab === "piku_collector" && <PikuCollectorPanel />}
 
       </main>
     </div>

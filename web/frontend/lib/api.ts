@@ -359,30 +359,55 @@ export const api = {
       request<{ ok: boolean; sources: import("./types").PikuSource[] }>(
         "/api/admin/piku/sources",
         { method: "POST", body: JSON.stringify(body) }),
-    pikuCollect: (division: string) =>
-      request<{ ok: boolean; entries: number; pages: number }>(
-        `/api/admin/piku/collect?division=${encodeURIComponent(division)}`,
-        { method: "POST" }),
-    pikuImport: (body: { division: string; rows?: unknown[]; csv?: string }) =>
-      request<{ ok: boolean; entries: number }>(
-        "/api/admin/piku/import", { method: "POST", body: JSON.stringify(body) }),
-    /** 반영 전 검증(dry-run) — 활성 dataset을 건드리지 않는다.
-     *  응답에 우승 비율·승률 숫자는 없다(이름과 건수만). */
     pikuPreview: (body: { division: string; rows?: unknown[]; csv?: string }) =>
       request<{ ok: boolean; entries: number; applied: false;
                 matched: string[]; unmatched: string[]; duplicates: string[] }>(
         "/api/admin/piku/preview", { method: "POST", body: JSON.stringify(body) }),
     /** 세 부문 일괄 수집 — 하나라도 실패하면 아무것도 공개되지 않는다. */
-    pikuCollectAll: () =>
-      request<{ ok: boolean; published: boolean;
-                results: Record<string, { entries: number }>;
-                errors: Record<string, string> }>(
-        "/api/admin/piku/collect-all", { method: "POST" }),
-    /** 실제 응답으로 검증만(저장 없음). */
-    pikuPreviewLive: (division: string) =>
-      request<{ ok: boolean; entries: number; applied: false }>(
-        `/api/admin/piku/preview-live?division=${encodeURIComponent(division)}`,
-        { method: "POST" }),
+    // ── 브라우저 기반 Collector ──────────────────────────────────────────
+    // Railway·AWS 모두 PIKU에서 403이라, PIKU가 열리는 **운영자 브라우저**가
+    // 이미 렌더된 공개 표를 읽어 보낸다. 서버는 받기만 한다.
+    /** 수동 JSON/CSV — **draft로만** 들어간다(공개하지 않는다). */
+    pikuCollectorImport: (body: unknown) =>
+      request<{ ok: boolean; division: string; rowCount: number;
+                published: false }>(
+        "/api/admin/piku/collector/import",
+        { method: "POST", body: JSON.stringify(body) }),
+    pikuCollectorMappings: (division: string) =>
+      request<import("./types").PikuCollectorMappings>(
+        `/api/admin/piku/collector/mappings?division=${encodeURIComponent(division)}`),
+    pikuCollectorSetMapping: (body: {
+      division: string; pikuName: string; channelId: string | null }) =>
+      request<{ ok: boolean; state: string }>(
+        "/api/admin/piku/collector/mapping",
+        { method: "POST", body: JSON.stringify(body) }),
+    /** **정확히 일치한 것만** 일괄 확정. 유사도 매칭은 없다. */
+    pikuCollectorConfirmExact: (division: string) =>
+      request<{ ok: boolean; confirmed: number }>(
+        "/api/admin/piku/collector/confirm-exact",
+        { method: "POST", body: JSON.stringify({ division }) }),
+    pikuCollectorPublishPreview: () =>
+      request<import("./types").PikuPublishPreview>(
+        "/api/admin/piku/collector/publish-preview"),
+    pikuCollectorStatus: () =>
+      request<import("./types").PikuCollectorStatus>(
+        "/api/admin/piku/collector/status"),
+    /** 확장에 넘길 **단기·1회용** 토큰. 원문은 이 응답에서만 나온다. */
+    pikuCollectorToken: (division: string) =>
+      request<{ ok: boolean; token: string; division: string;
+                expiresAt: number; ttlSeconds: number }>(
+        "/api/admin/piku/collector/token",
+        { method: "POST", body: JSON.stringify({ division }) }),
+    /** 검증만 — DB write 0건. */
+    pikuCollectorPreview: (body: unknown) =>
+      request<{ ok: boolean; division: string; rowCount: number;
+                expected: number; applied: false; hasActive: boolean }>(
+        "/api/admin/piku/collector/preview",
+        { method: "POST", body: JSON.stringify(body) }),
+    /** 세 부문 draft를 **한 번에** 공개한다. 하나라도 없으면 아무것도 안 바뀐다. */
+    pikuCollectorPublish: () =>
+      request<{ ok: boolean; published: boolean; rows: Record<string, number> }>(
+        "/api/admin/piku/collector/publish", { method: "POST" }),
     pikuMappings: (division?: string) =>
       request<import("./types").PikuMappingsResponse>(
         `/api/admin/piku/mappings${division

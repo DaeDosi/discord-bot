@@ -9,7 +9,8 @@ _KST = timezone(timedelta(hours=9))
 
 def _today_kst() -> date:
     return datetime.now(_KST).date()
-from fastapi import APIRouter, HTTPException, Depends, Query, Response
+from fastapi import (APIRouter, Depends, HTTPException, Query, Request,
+                     Response)
 from pydantic import BaseModel
 from typing import Optional
 from deps import get_current_user
@@ -1393,64 +1394,16 @@ async def piku_sources(body: PikuSources, user: dict = Depends(_require_owner)):
         raise _piku_400(e) from e
 
 
-@router.post("/piku/collect")
-async def piku_collect(division: str, user: dict = Depends(_require_owner)):
-    """수동 갱신 — **실제로 PIKU에 접속한다.**
-
-    자동 수집과 **같은 검증·같은 원자 교체**를 거친다. 실패하면 직전 정상 데이터가
-    그대로 남고, 실패 종류(403·429·challenge·파싱 실패)를 구분해 알려 준다.
-    """
-    import singcup_piku as piku
-    try:
-        return {"ok": True, **await piku.collect_division(division)}
-    except piku.PikuError as e:
-        raise _piku_400(e) from e
-
-
-@router.post("/piku/collect-all")
-async def piku_collect_all(user: dict = Depends(_require_owner)):
-    """세 부문을 한 번에 — **하나라도 실패하면 아무것도 공개하지 않는다.**
-
-    부문별로 따로 반영하면 "여성은 새 데이터, 그룹은 어제 데이터"인 화면이 되고
-    사용자는 그 사실을 알 수 없다. 먼저 세 부문을 전부 검증하고(`apply=False`),
-    전부 통과했을 때만 반영한다.
-    """
-    import singcup_piku as piku
-    if not await piku.acquire_collect_lock():
-        raise HTTPException(status_code=409,
-                            detail="이미 수집이 진행 중입니다.")
-    try:
-        return {"ok": True, **await piku.collect_all()}
-    except piku.PikuError as e:
-        raise _piku_400(e) from e
-    finally:
-        await piku.release_collect_lock()
-
-
-@router.post("/piku/preview-live")
-async def piku_preview_live(division: str, user: dict = Depends(_require_owner)):
-    """실제 응답으로 **검증만** 한다(저장 없음). 반영 전에 형태를 먼저 본다."""
-    import singcup_piku as piku
-    try:
-        return {"ok": True, **await piku.preview_division(division)}
-    except piku.PikuError as e:
-        raise _piku_400(e) from e
-
-
-@router.post("/piku/import")
-async def piku_import(body: PikuImportBody, user: dict = Depends(_require_owner)):
-    """수동 import(JSON/CSV) — **외부 접속 없이** 데이터를 넣는 대체 경로.
-
-    수집이 막혔을 때의 대안이자, 파서를 실제 응답으로 검증하는 수단이다.
-    """
-    import singcup_piku as piku
-    try:
-        raw = piku.parse_csv(body.csv) if body.csv else body.rows
-        if raw is None:
-            raise piku.PikuError("empty", "가져올 데이터가 없습니다.")
-        return {"ok": True, **await piku.import_rows(body.division, raw)}
-    except piku.PikuError as e:
-        raise _piku_400(e) from e
+# ── 걷어낸 PIKU 경로 (되살리지 말 것) ──────────────────────────────────────
+#
+# `/piku/collect`, `/piku/collect-all`, `/piku/preview-live`는 **서버가 PIKU에
+# 직접 요청**하는 경로였다. Railway·AWS 서울 EC2 모두 403을 받으므로 지금은
+# 어떤 경우에도 성공하지 않는다. `/piku/import`는 검증 직후 곧바로 활성화해서
+# **한 부문만 공개되는 상태**를 만들 수 있었다 — Collector의 "세 부문 원자 공개"
+# 계약을 우회하는 뒷문이었다.
+#
+# 대체 경로는 아래 `/piku/collector/*` 하나뿐이다. 수동 JSON/CSV도 draft로만
+# 들어가고, 이름 매핑을 확정한 뒤 세 부문을 함께 공개한다.
 
 
 @router.post("/piku/preview")
@@ -1498,3 +1451,173 @@ async def piku_set_mapping(body: PikuMappingBody,
             body.division, body.pikuName, body.channelId, state=body.state)}
     except piku.PikuError as e:
         raise _piku_400(e) from e
+
+
+# ── 브라우저 기반 PIKU Collector ────────────────────────────────────────────
+#
+# Railway·AWS 서울 EC2 모두 PIKU에서 403을 받는다. 우회하지 않고, PIKU가 정상
+# 열리는 **운영자 브라우저**가 이미 렌더된 공개 표를 읽어 보내는 경로를 쓴다.
+# 서버는 받기만 하고 PIKU에 직접 요청하지 않는다.
+#
+# 확장 프로그램에는 어떤 secret도 넣지 않는다. 운영자가 아래 `token`을 눌러
+# 그때마다 **짧고 한 번만 쓰는** 토큰을 발급받아 확장에 넘긴다.
+
+class CollectorTokenBody(BaseModel):
+    division: str
+
+
+@router.post("/piku/collector/token")
+async def piku_collector_token(body: CollectorTokenBody,
+                               user: dict = Depends(_require_owner)):
+    """수집 토큰 발급 — **원문은 이 응답에서 한 번만** 나온다(DB에는 해시만)."""
+    import singcup_piku_collector as col
+    try:
+        return {"ok": True, **await col.issue_token(body.division)}
+    except Exception as e:
+        raise _piku_400(e) from e
+
+
+@router.post("/piku/collector/ingest")
+async def piku_collector_ingest(request: Request):
+    """브라우저가 읽은 랭킹 행을 받는다. **draft까지만** 간다(공개 안 함).
+
+    OWNER JWT 대신 단기 토큰을 쓴다 — 확장이 장기 자격 증명을 들고 있지 않게
+    하기 위해서다. 토큰은 부문에 묶여 있고 1회용이라, 새어도 재사용되지 않는다.
+    """
+    import singcup_piku_collector as col
+    token = request.headers.get("X-Collector-Token", "")
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="본문을 읽지 못했습니다.") from e
+    division = body.get("division") if isinstance(body, dict) else None
+    try:
+        # 토큰을 **먼저** 소비한다 — 검증 실패한 요청으로 토큰을 무한히 시험하지
+        # 못하게 한다(1회용이므로 실패해도 그 토큰은 끝난다).
+        await col.consume_token(token, division)
+        return {"ok": True, **await col.save_draft(body)}
+    except col.PikuError as e:
+        raise _piku_400(e) from e
+
+
+@router.post("/piku/collector/preview")
+async def piku_collector_preview(request: Request,
+                                 user: dict = Depends(_require_owner)):
+    """검증만 — **DB write 0건.** 형식이 틀려도 기존 데이터가 그대로 남는다."""
+    import singcup_piku_collector as col
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="본문을 읽지 못했습니다.") from e
+    try:
+        return {"ok": True, **await col.preview(body)}
+    except col.PikuError as e:
+        raise _piku_400(e) from e
+
+
+@router.get("/piku/collector/status")
+async def piku_collector_status(user: dict = Depends(_require_owner)):
+    """Collector 상태 — 부문별 최근 수집·draft 행 수·Publish 가능 여부."""
+    import singcup_piku_collector as col
+    return await col.status()
+
+
+class CollectorFailureBody(BaseModel):
+    division: str
+    kind: str
+
+
+@router.post("/piku/collector/failure")
+async def piku_collector_failure(body: CollectorFailureBody):
+    """브라우저 쪽 실패(차단 화면·CAPTCHA·미렌더·중단)를 **실패로** 남긴다.
+
+    성공으로 위장하지 않는 것이 요점이다. 인증을 요구하지 않는 대신 상태만
+    기록하고 데이터는 받지 않는다.
+    """
+    import singcup_piku_collector as col
+    try:
+        return {"ok": True, **await col.record_client_failure(body.division,
+                                                              body.kind)}
+    except col.PikuError as e:
+        raise _piku_400(e) from e
+
+
+@router.post("/piku/collector/publish")
+async def piku_collector_publish(user: dict = Depends(_require_owner)):
+    """세 부문 draft를 **한 번에** 공개한다. 하나라도 없으면 아무것도 바꾸지 않는다.
+
+    자동으로 불리지 않는다 — 운영자가 눌러야만 실행된다.
+    """
+    import singcup_piku_collector as col
+    try:
+        return {"ok": True, **await col.publish_drafts()}
+    except col.PikuError as e:
+        raise _piku_400(e) from e
+
+
+@router.post("/piku/collector/import")
+async def piku_collector_import(body: PikuImportBody,
+                                user: dict = Depends(_require_owner)):
+    """수동 JSON/CSV — **draft로만** 저장한다(공개하지 않는다).
+
+    예전 `/piku/import`는 검증 직후 곧바로 활성화해서 한 부문만 공개되는 상태를
+    만들 수 있었다. 이 경로는 같은 검증을 거치되 draft에서 멈춘다.
+    """
+    import singcup_piku_collector as col
+    try:
+        return {"ok": True, **await col.import_manual(body.model_dump())}
+    except col.PikuError as e:
+        raise _piku_400(e) from e
+
+
+@router.get("/piku/collector/mappings")
+async def piku_collector_mappings(division: str,
+                                  user: dict = Depends(_require_owner)):
+    """draft 기준 매핑 목록 + 후보. **비율값은 담지 않는다.**"""
+    import singcup_piku_collector as col
+    try:
+        return {"ok": True, **await col.draft_mappings(division),
+                "candidates": await col.official_candidates(division)}
+    except col.PikuError as e:
+        raise _piku_400(e) from e
+
+
+class CollectorMappingBody(BaseModel):
+    division: str
+    pikuName: str
+    #: None이면 연결 해제(운영자가 명시적으로 지운 것으로 본다).
+    channelId: Optional[str] = None
+
+
+@router.post("/piku/collector/mapping")
+async def piku_collector_set_mapping(body: CollectorMappingBody,
+                                     user: dict = Depends(_require_owner)):
+    """한 행의 매핑을 확정하거나 해제한다."""
+    import singcup_piku_collector as col
+    try:
+        return {"ok": True, **await col.set_mapping(body.division, body.pikuName,
+                                                    body.channelId)}
+    except col.PikuError as e:
+        raise _piku_400(e) from e
+
+
+class CollectorConfirmBody(BaseModel):
+    division: str
+
+
+@router.post("/piku/collector/confirm-exact")
+async def piku_collector_confirm_exact(body: CollectorConfirmBody,
+                                       user: dict = Depends(_require_owner)):
+    """**정확히 일치한 것만** 일괄 확정한다. 유사도 매칭은 하지 않는다."""
+    import singcup_piku_collector as col
+    try:
+        return {"ok": True, **await col.confirm_exact(body.division)}
+    except col.PikuError as e:
+        raise _piku_400(e) from e
+
+
+@router.get("/piku/collector/publish-preview")
+async def piku_collector_publish_preview(user: dict = Depends(_require_owner)):
+    """공개하면 무엇이 바뀌는지. **DB write 0건.**"""
+    import singcup_piku_collector as col
+    return await col.publish_preview()
