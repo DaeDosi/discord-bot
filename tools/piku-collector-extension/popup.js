@@ -106,7 +106,18 @@ $("run").addEventListener("click", async () => {
     });
     const j = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      show(false, j.detail || `전송 실패 (HTTP ${resp.status})`);
+      // 서버가 준 안전한 사유가 있으면 그것을 보여 준다 — "전송 실패 (HTTP 404)"만
+      // 보이면 무엇을 고쳐야 하는지 알 수 없다. 404는 특히 헷갈리는데, 토큰이나
+      // 표가 아니라 **NexBot 쪽 수집 경로가 아직 배포되지 않았다**는 뜻이다.
+      const hint = resp.status === 404
+        ? "
+NexBot에 수집 경로가 없습니다(미배포). 운영자에게 알려 주세요."
+        : "";
+      show(false, (j.detail || `전송 실패 (HTTP ${resp.status})`) + hint
+        + "
+이 토큰은 다시 쓰지 말고 새로 발급받아 주세요.");
+      // **자동 재시도하지 않는다.** 토큰이 1회용이라 재시도는 두 번째 실패를
+      // 부르고, 실패 원인을 토큰 소진으로 덮어 버린다.
       return;
     }
     show(true, `${r.payload.rowCount}행을 보냈습니다.\n`
