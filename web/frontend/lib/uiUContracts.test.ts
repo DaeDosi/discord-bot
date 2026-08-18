@@ -16,6 +16,7 @@ const STATS = () => read("app/stats/page.tsx");
 const NAV = () => read("app/stats/StatsNav.tsx");
 const CSS = () => read("app/globals.css");
 const OFFICIAL = () => read("app/stats/SingcupOfficial.tsx");
+const MERGE = () => read("lib/singcupOfficialMerge.ts");
 
 // ── 1) 스크롤 소유권 (UI-V에서 계약이 바뀌었다) ─────────────────────────────
 //
@@ -198,18 +199,19 @@ test("로그아웃이 기존 인증 방식을 쓰고 실패를 구분한다", ()
 // ── 6) 싱드컵 2줄 정보 ──────────────────────────────────────────────────────
 
 test("곡·가수를 서버 필드에서만 읽는다", () => {
-  const s = OFFICIAL();
-  assert.ok(s.includes("row.songTitle") && s.includes("row.artistName"));
+  // 병합 로직은 `lib/singcupOfficialMerge.ts`로 옮겼다(그룹 14팀 삭제 결함 수정).
+  // 의미 검증은 그 모듈의 동작 테스트가 하고, 여기서는 출처 계약만 고정한다.
+  const s = MERGE() + OFFICIAL();
+  assert.ok(s.includes("songTitle") && s.includes("artistName"));
   // 이름/제목 문자열을 다시 쪼개지 않는다(운영 데이터는 순서가 뒤섞여 있다).
   assert.ok(!/clipTitle\s*\.\s*split/.test(s));
   assert.ok(!/channelName\s*\.\s*split/.test(s));
 });
 
 test("곡 정보가 없으면 줄 자체를 그리지 않는다", () => {
-  const s = OFFICIAL();
-  assert.ok(s.includes("if (!text) return null;"),
+  assert.ok(OFFICIAL().includes("if (!text) return null;"),
     "빈 줄이나 단독 `-`가 남으면 '못 불러왔다'로 읽힌다");
-  assert.ok(/return song \|\| artist \|\| "";/.test(s), "한쪽만 있으면 그것만");
+  assert.ok(/return song \|\| artist \|\| "";/.test(MERGE()), "한쪽만 있으면 그것만");
 });
 
 test("카드와 목록 양쪽에 2줄이 들어간다", () => {

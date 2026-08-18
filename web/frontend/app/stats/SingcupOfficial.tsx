@@ -18,7 +18,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AlertCircle, BarChart3, ExternalLink, Loader2, Radio, Trophy, Users,
+  AlertCircle, BarChart3, ExternalLink, Loader2, Radio, Trophy, User, Users,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -26,6 +26,8 @@ import type {
   QualifiersResponse,
 } from "@/lib/types";
 import { SINGCUP_QUALIFIERS } from "@/lib/singcupQualifiers";
+import type { MergedRow } from "@/lib/singcupOfficialMerge";
+import { mergeRanking, songLine } from "@/lib/singcupOfficialMerge";
 import { GOLD, GREEN, hideBrokenImage, nf } from "./singcupShared";
 
 const DIVISIONS = ["female_solo", "male_solo", "groups"] as const;
@@ -70,12 +72,14 @@ function RankBadge({ rank }: { rank: number }) {
 }
 
 /* ── TOP 카드 ────────────────────────────────────────────────────────────── */
-function TopCard({ row, rank, teamNumber }: {
-  row: QualifierRow; rank: number | null; teamNumber?: number;
-}) {
-  const live = row.live;
-  const clipUrl = row.clipUid ? `https://chzzk.naver.com/clips/${row.clipUid}` : null;
-  const href = live ? `https://chzzk.naver.com/live/${row.channelId}` : clipUrl;
+function TopCard({ item }: { item: MergedRow }) {
+  const { rank, teamNumber, displayName } = item;
+  // 공식 명단에서 못 찾은 참가자도 **행은 남는다**(순위가 사라지는 편이 더 나쁘다).
+  // 그때는 프로필·클립·LIVE만 없고 순위와 이름·곡은 그대로 보인다.
+  const row = item.row;
+  const live = row?.live ?? null;
+  const clipUrl = row?.clipUid ? `https://chzzk.naver.com/clips/${row.clipUid}` : null;
+  const href = live ? `https://chzzk.naver.com/live/${item.channelId}` : clipUrl;
   // **`없음`과 `못 불러옴`은 다른 상태다.** 전자는 대표 클립이 정말 없는 것이고,
   // 후자는 URL은 있는데 이미지 요청이 실패한 것이다. 둘을 같은 문구로 뭉치면
   // 수집 장애가 "원래 없는 것"으로 보여 신고조차 들어오지 않는다.
@@ -83,7 +87,7 @@ function TopCard({ row, rank, teamNumber }: {
 
   const thumb = (
     <>
-      {row.clipThumbnailUrl && !thumbFailed ? (
+      {row?.clipThumbnailUrl && !thumbFailed ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={row.clipThumbnailUrl} alt="" loading="lazy"
              onError={() => setThumbFailed(true)}
@@ -124,7 +128,7 @@ function TopCard({ row, rank, teamNumber }: {
   );
 
   return (
-    <div className="card !p-0 overflow-hidden">
+    <div className="card !p-0 flex h-full flex-col overflow-hidden">
       {href ? (
         <a href={href} target="_blank" rel="noopener noreferrer"
            className="group relative block aspect-video w-full overflow-hidden bg-bg-hover">
@@ -135,21 +139,28 @@ function TopCard({ row, rank, teamNumber }: {
           {thumb}
         </div>
       )}
-      <div className="p-2.5">
-        <p className="truncate text-sm font-bold text-fg" title={row.channelName}>
-          {row.channelName || row.announcedName}
+      {/* 하단 정보 — **1줄 닉네임 / 2줄 곡 - 가수**가 고정 구조다.
+          곡·가수를 닉네임 옆에 붙이지 않는다(둘의 위계가 같아 보인다).
+          LIVE·시청자는 **별도 행**으로 내려 두 줄과 겹치지 않게 한다.
+
+          높이 통일은 `min-h`만으로는 안 된다 — LIVE 카드는 시청자 줄이 하나 더
+          붙어 68px가 아니라 87px가 된다(실측). 그래서 카드를 `flex h-full flex-col`,
+          이 블록을 `flex-1`로 두어 **그리드의 stretch가 하단까지 전달되게** 한다.
+          그러면 한 줄의 카드 5개가 가장 큰 것에 맞춰 같은 높이가 된다. */}
+      <div className="flex min-h-[68px] flex-1 flex-col p-2.5">
+        <p className="truncate text-sm font-bold text-fg" title={displayName}>
+          {displayName}
         </p>
-        {/* 2줄째 — 닉네임보다 작고 흐리게. 없으면 줄 자체가 사라진다. */}
-        <SongLine row={row} className="mt-0.5" />
+        <SongLine row={item} className="mt-0.5" />
         {/* 발표 시점 이름이 지금과 다르면 함께 보여 준다 — 공지와 대조할 수 있게. */}
-        {row.announcedName && row.announcedName !== row.channelName && (
+        {row?.announcedName && row.announcedName !== row.channelName && (
           <p className="mt-0.5 truncate text-[11px] text-muted"
              title={`공지 표기: ${row.announcedName}`}>
             공지 표기 {row.announcedName}
           </p>
         )}
         {live && (
-          <p className="mt-1 flex items-center gap-1 text-[11px]"
+          <p className="mt-auto flex items-center gap-1 pt-1 text-[11px]"
              style={{ color: "#FF4D4D" }}>
             <Radio size={11} aria-hidden="true" /> {nf(live.concurrentViewers)}명 시청
           </p>
@@ -159,24 +170,17 @@ function TopCard({ row, rank, teamNumber }: {
   );
 }
 
-/* ── 곡 · 가수 한 줄 ──────────────────────────────────────────────────────
- * 카드와 목록이 함께 쓴다. 값이 **없으면 아무것도 그리지 않는다** — 빈 줄이나
- * 단독 `-`가 남으면 "정보가 있는데 못 불러왔다"로 읽힌다.
- * 서버가 준 `songTitle`/`artistName`만 쓰고 이름 문자열을 다시 쪼개지 않는다
- * (운영 클립 제목은 `가수 - 곡`과 `곡 - 가수`가 섞여 있어 추측이 불가능하다).
+/* ── 곡 · 가수 한 줄 ─────────────────────────────────────────────────────
+ * 카드와 목록이 **같은 컴포넌트**를 쓴다. 값이 없으면 아무것도 그리지 않는다 —
+ * 빈 줄이나 단독 `-`가 남으면 "정보가 있는데 못 불러왔다"로 읽힌다.
+ * 문자열 계산은 `lib/singcupOfficialMerge`의 `songLine` 하나뿐이다.
  */
-export function songLine(row: { songTitle?: string; artistName?: string }): string {
-  const song = (row.songTitle || "").trim();
-  const artist = (row.artistName || "").trim();
-  if (song && artist) return `${song} - ${artist}`;
-  return song || artist || "";
-}
-
 function SongLine({ row, className = "" }: {
   row: { songTitle?: string; artistName?: string }; className?: string;
 }) {
   const text = songLine(row);
   if (!text) return null;
+  // 한 줄이 길면 말줄임하되 전체 값은 `title`로 확인할 수 있게 둔다.
   return (
     <p className={`truncate text-[11.5px] leading-snug text-muted ${className}`}
        title={text}>
@@ -186,37 +190,45 @@ function SongLine({ row, className = "" }: {
 }
 
 /* ── 명단 행 ─────────────────────────────────────────────────────────────── */
-function ListRow({ row, rank }: { row: QualifierRow; rank: number | null }) {
+function ListRow({ item }: { item: MergedRow }) {
+  const { rank, displayName } = item;
+  const row = item.row;   // 없을 수 있다 — 그래도 행은 지우지 않는다.
   return (
     <li className="flex min-w-0 items-center gap-2 rounded-lg border border-border
                    bg-bg-card/60 px-2.5 py-2">
       {rank !== null ? <RankBadge rank={rank} />
         : <span className="w-8 shrink-0 text-center text-[11px] tabular-nums text-muted">
-            {row.officialOrder}
+            {row?.officialOrder ?? "-"}
           </span>}
-      <span className="h-7 w-7 shrink-0 overflow-hidden rounded-full bg-bg-hover">
-        {row.channelImageUrl && (
+      {/* 프로필을 못 찾아도 자리를 비우지 않는다 — 원형 기본 아바타를 둔다.
+          행을 지우는 것이 아니라 사진만 없는 상태로 보여야 한다. */}
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center
+                       overflow-hidden rounded-full bg-bg-hover text-[11px] text-muted">
+        {row?.channelImageUrl
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={row.channelImageUrl} alt="" width={28} height={28} loading="lazy"
-               onError={hideBrokenImage} className="h-full w-full object-cover" />
-        )}
+          ? <img src={row.channelImageUrl} alt="" width={28} height={28} loading="lazy"
+                 onError={hideBrokenImage} className="h-full w-full object-cover" />
+          : <User size={13} aria-hidden="true" />}
       </span>
-      <a href={`https://chzzk.naver.com/${row.channelId}`} target="_blank"
+      {/* 1줄 이름 / 2줄 곡 - 가수. 이름 **옆**이 아니라 아래다. */}
+      <a href={`https://chzzk.naver.com/${item.channelId}`} target="_blank"
          rel="noopener noreferrer"
          className="nb-tap min-w-0 flex-1 transition-colors hover:text-accent">
-        <span className="block truncate text-sm font-semibold text-fg">
-          {row.channelName || row.announcedName}
+        <span className="block truncate text-sm font-semibold text-fg"
+              title={displayName}>
+          {displayName}
         </span>
-        <SongLine row={row} />
+        <SongLine row={item} />
       </a>
-      {row.live && (
+      {/* LIVE·외부 링크는 오른쪽 보조 영역에 둔다 — 두 줄 텍스트와 겹치지 않는다. */}
+      {row?.live && (
         <span className="shrink-0 text-[10px] font-bold" style={{ color: "#FF4D4D" }}>
           LIVE
         </span>
       )}
-      {row.clipUid && (
+      {row?.clipUid && (
         <a href={`https://chzzk.naver.com/clips/${row.clipUid}`} target="_blank"
-           rel="noopener noreferrer" aria-label={`${row.channelName} 클립 열기`}
+           rel="noopener noreferrer" aria-label={`${displayName} 클립 열기`}
            className="nb-tap-icon inline-flex h-8 w-8 shrink-0 items-center justify-center
                       rounded-lg text-muted transition-colors hover:bg-bg-hover
                       hover:text-fg">
@@ -247,39 +259,12 @@ function DivisionSection({ division, label, rows, ranking, limit, showAll,
   sort?: string;
   onSort?: (key: string) => void;
 }) {
-  // PIKU 순위가 있으면 그 순서로, 없으면 공지 순서로 보여 준다.
-  // **프런트에서 순위를 다시 매기지 않는다** — 동점 규칙이 서버에 있고, 두 곳에서
-  // 계산하면 규칙이 갈라진다.
-  const byChannel = useMemo(() => {
-    const m = new Map<string, QualifierRow>();
-    for (const r of rows) {
-      if (isGroupRow(r)) { const lead = groupLead(r); if (lead) m.set(lead.channelId, lead); }
-      else m.set(r.channelId, r);
-    }
-    return m;
-  }, [rows]);
-
-  const teamOf = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const r of rows) {
-      if (isGroupRow(r)) for (const mem of r.members) m.set(mem.channelId, r.teamNumber);
-    }
-    return m;
-  }, [rows]);
-
-  const ordered = useMemo(() => {
-    if (ranking && ranking.length > 0) {
-      return ranking
-        .map((e) => ({ row: byChannel.get(e.channelId), rank: e.rank }))
-        .filter((x): x is { row: QualifierRow; rank: number } => !!x.row);
-    }
-    const flat: { row: QualifierRow; rank: null }[] = [];
-    for (const r of rows) {
-      if (isGroupRow(r)) { const lead = groupLead(r); if (lead) flat.push({ row: lead, rank: null }); }
-      else flat.push({ row: r, rank: null });
-    }
-    return flat;
-  }, [ranking, rows, byChannel]);
+  /* 병합은 `lib/singcupOfficialMerge`가 전부 한다 — 여기서 다시 만들지 말 것.
+   * 예전에는 이 자리에 인라인 병합이 있었고 두 가지가 깨져 있었다:
+   * PIKU 항목에서 rank만 꺼내 곡·가수를 버렸고, 색인을 팀 `members[0]`만으로
+   * 만든 뒤 못 찾은 행을 `filter`로 지워 그룹 32팀 중 14팀이 사라졌다.
+   * **프런트에서 순위를 다시 매기지 않는다** — 동점 규칙은 서버에 있다. */
+  const ordered = useMemo(() => mergeRanking(rows, ranking), [rows, ranking]);
 
   const top = ordered.slice(0, TOP_CARDS);
   const list = ordered.slice(0, showAll ? ordered.length : limit);
@@ -345,17 +330,15 @@ function DivisionSection({ division, label, rows, ranking, limit, showAll,
 
       {top.length > 0 && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-          {top.map(({ row, rank }) => (
-            <TopCard key={row.channelId} row={row} rank={rank}
-                     teamNumber={division === "groups"
-                       ? teamOf.get(row.channelId) : undefined} />
+          {top.map((item) => (
+            <TopCard key={item.channelId} item={item} />
           ))}
         </div>
       )}
 
       <ul className="flex flex-col gap-1.5">
-        {list.map(({ row, rank }) => (
-          <ListRow key={row.channelId} row={row} rank={rank} />
+        {list.map((item) => (
+          <ListRow key={item.channelId} item={item} />
         ))}
       </ul>
       {!showAll && ordered.length > limit && (

@@ -18,6 +18,7 @@ import {
   AlertTriangle, Check, ClipboardCopy, Eye, ListChecks, Loader2, RefreshCw,
   ShieldAlert, Upload,
 } from "lucide-react";
+import { COPY_RESET_MS, copyToken } from "@/lib/copyToken";
 import { api } from "@/lib/api";
 import type { PikuCollectorStatus, PikuPublishPreview } from "@/lib/types";
 import PikuMappingReview from "./PikuMappingReview";
@@ -65,6 +66,8 @@ export default function PikuCollectorPanel() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // 복사 결과는 버튼 문구에만 쓴다. 토큰 자체는 어디에도 보관하지 않는다.
+  const [copied, setCopied] = useState<"copied" | "failed" | null>(null);
   const [token, setToken] = useState<{ division: string; token: string;
                                        expiresAt: number } | null>(null);
   /** 매핑 검토를 펼친 부문. 한 번에 하나만 연다 — 세 개를 동시에 펴면
@@ -235,10 +238,33 @@ export default function PikuCollectorPanel() {
             확장 프로그램에 붙여 넣으세요. <b className="text-fg">한 번만</b> 쓸 수 있고{" "}
             {fmt(token.expiresAt)}에 만료됩니다. 이 값은 다시 볼 수 없습니다.
           </p>
-          <code className="mt-2 block w-full overflow-x-auto rounded-lg bg-bg-hover
-                           px-3 py-2 font-mono text-[12px] text-fg">
-            {token.token}
-          </code>
+          {/* 토큰 원문은 화면에 **한 번만** 둔다 — 복사 버튼은 그 값을 읽어 갈 뿐
+              input value나 data 속성으로 복제하지 않는다. */}
+          <div className="mt-2 flex items-start gap-2">
+            <code className="min-w-0 flex-1 overflow-x-auto rounded-lg bg-bg-hover
+                             px-3 py-2 font-mono text-[12px] text-fg">
+              {token.token}
+            </code>
+            <button type="button"
+                    onClick={async () => {
+                      setCopied(await copyToken(token.token) === "copied"
+                        ? "copied" : "failed");
+                      window.setTimeout(() => setCopied(null), COPY_RESET_MS);
+                    }}
+                    aria-label="수집 토큰을 클립보드에 복사"
+                    aria-live="polite"
+                    className="nb-tap shrink-0 rounded-lg border border-border
+                               bg-bg-card px-3 py-2 text-[13px] font-semibold
+                               text-fg transition-colors hover:bg-bg-hover">
+              {copied === "copied" ? "복사됨"
+                : copied === "failed" ? "복사 실패" : "복사"}
+            </button>
+          </div>
+          {copied === "failed" && (
+            <p className="mt-1 text-[12px] text-muted">
+              브라우저가 복사를 막았습니다. 위 값을 직접 선택해 복사해 주세요.
+            </p>
+          )}
         </div>
       )}
 

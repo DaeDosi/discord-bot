@@ -18,6 +18,11 @@ import vm from "node:vm";
 
 const FILES = ["popup.js", "collect.js"];
 
+/* CR 바이트 검사를 넣었다가 뺐다. git이 체크아웃할 때 `core.autocrlf`로 LF를
+ * CRLF로 바꾸므로 **새 worktree마다 실패한다**(실측: ui-w 체크아웃 직후 실패).
+ * 줄끝은 작업 트리의 산출물이지 소스 결함이 아니고, CRLF도 JS로 정상 파싱된다.
+ * 잡아야 할 것은 "문자열 안의 개행"이고 그건 아래 컴파일 검사가 잡는다. */
+
 const read = (f: string) =>
   readFileSync(new URL(`../../../tools/piku-collector-extension/${f}`, import.meta.url), "utf8");
 
@@ -26,11 +31,6 @@ for (const f of FILES) {
     const src = read(f);
     assert.doesNotThrow(() => { new vm.Script(src, { filename: f }); },
       `${f}가 파싱되지 않는다 — Chrome이 확장을 로드하지 못한다`);
-  });
-
-  test(`${f}에 CR 바이트가 없다`, () => {
-    // CRLF가 섞이면 이스케이프가 깨진 자리를 눈으로 찾기 어려워진다.
-    assert.equal(read(f).includes("\r"), false, `${f}에 CR이 있다`);
   });
 }
 
