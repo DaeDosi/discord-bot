@@ -19,11 +19,24 @@ test("로딩·오류·빈 상태·정상이 같은 최소 높이 위에 놓인�
   const s = read(PAGE);
   // 로딩에만 높이를 주면 짧은 빈 상태로 바뀔 때 위로 당겨져 문제가 방향만 바꿔 재발한다
   // (실측으로 겪었다: 빈 상태 0.0365 → 0.0807).
-  const i = s.indexOf('min-h-[calc(100svh-220px)]');
-  assert.ok(i > -1, "전이 상태의 최소 높이 예약이 사라졌다");
-  const around = s.slice(i, i + 400);
+  const m = /min-h-\[calc\(100svh-(\d+)px\)\]/.exec(s);
+  assert.ok(m, "전이 상태의 최소 높이 예약이 사라졌다");
+  const around = s.slice(s.indexOf(m![0]), s.indexOf(m![0]) + 400);
   assert.ok(around.includes("{loading ? ("),
     "최소 높이가 네 상태를 감싸는 위치에 있지 않다");
+});
+
+test("100svh에서 빼는 값이 헤더 높이 상한을 넘지 않는다", () => {
+  const s = read(PAGE);
+  const m = /min-h-\[calc\(100svh-(\d+)px\)\]/.exec(s);
+  assert.ok(m, "전이 상태의 최소 높이 예약이 사라졌다");
+  // UI-X: 이 컨테이너 위에 실제로 있는 것은 약 107px(1440px 실측)뿐이다. 그보다 많이
+  // 빼면 아래 고지 섹션이 접힘선 **위**에서 시작하고, 데이터가 도착할 때 그 부분이
+  // 통째로 화면 밖으로 밀려나며 그대로 CLS가 된다
+  // (220px일 때 실측: 390px 0.0744 / 1440px `v=0.0866` 단일 이동 → 120px에서 0.0033).
+  assert.ok(Number(m![1]) <= 140,
+    `100svh에서 ${m![1]}px를 빼고 있다 — 헤더(약 107px)보다 크면 하단 고지가 ` +
+    "접힘선 위에서 시작해 데이터 도착 때 밀려난다");
 });
 
 test("최소 높이는 vh가 아니라 svh를 쓴다", () => {

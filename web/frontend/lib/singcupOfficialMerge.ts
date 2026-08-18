@@ -35,6 +35,14 @@ export interface MergedRow {
   row: QualifierRow | null;
   /** 그룹에서만 채워진다. */
   teamNumber?: number;
+  /** **대표자를 제외한** 팀원 이름. 솔로는 항상 빈 배열이다.
+   *
+   *  PIKU 응답에는 대표자 이름 하나뿐이라 팀 전체는 공식 `qualifiers`의 `members[]`
+   *  에서 가져온다. 대표자는 PIKU가 정하고(문자열 첫 이름 → 그 사람의 channel_id),
+   *  나머지는 그 대표자가 속한 공식 팀에서 대표자를 빼서 만든다.
+   *  **공식 배열의 첫 멤버를 대표자로 다시 뽑지 않는다** — 실측으로 그룹 1위 팀은
+   *  공식 표기가 `김니디 · 슈향 · 이 선 · 조별하`로 대표자가 마지막이다. */
+  memberNames: string[];
 }
 
 const isGroupRow = (r: QualifierRow | QualifierGroupRow): r is QualifierGroupRow =>
@@ -71,6 +79,43 @@ export function indexByChannel(
   return m;
 }
 
+/** channelId → 그 사람이 속한 팀의 **전체 멤버**(그룹 전용).
+ *
+ * 대표자가 팀의 몇 번째로 표기되든 팀 전체를 찾을 수 있어야 한다.
+ */
+export function teamMembersByChannel(
+  rows: (QualifierRow | QualifierGroupRow)[],
+): Map<string, QualifierRow[]> {
+  const m = new Map<string, QualifierRow[]>();
+  for (const r of rows) {
+    if (!isGroupRow(r)) continue;
+    for (const mem of r.members) m.set(mem.channelId, r.members);
+  }
+  return m;
+}
+
+/** 멤버 보조 줄. 값이 없으면 빈 문자열이고, 호출부는 그때 줄을 그리지 않는다. */
+export function memberLine(row: { memberNames?: string[] }): string {
+  return (row.memberNames || []).join(" · ");
+}
+
+/** 대표자를 뺀 팀원 이름 목록. 빈 이름·중복 이름은 버린다. */
+function otherMembers(
+  team: QualifierRow[] | undefined, leadChannelId: string, leadName: string,
+): string[] {
+  if (!team) return [];
+  const out: string[] = [];
+  const seen = new Set<string>([leadName]);
+  for (const mem of team) {
+    if (mem.channelId === leadChannelId) continue;
+    const name = clean(mem.channelName) || clean(mem.announcedName);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
 /** channelId → 팀 번호(그룹 전용). 역시 전 멤버를 담는다. */
 export function teamNumberByChannel(
   rows: (QualifierRow | QualifierGroupRow)[],
@@ -89,23 +134,27 @@ export function mergeRanking(
 ): MergedRow[] {
   const byChannel = indexByChannel(rows);
   const teamOf = teamNumberByChannel(rows);
+  const teamMembers = teamMembersByChannel(rows);
 
   if (ranking && ranking.length > 0) {
     // **filter가 없는 것이 핵심이다.** 매칭 실패는 표시 품질 문제이지
     // 그 참가자가 순위에 없다는 뜻이 아니다.
     return ranking.map((e) => {
       const row = byChannel.get(e.channelId) ?? null;
+      const displayName = clean(row?.channelName) || clean(row?.announcedName)
+        || clean(e.name);
       return {
         channelId: e.channelId,
         rank: e.rank,
         // 공식 현재 닉네임을 우선한다(개명이 반영된 값). 못 찾으면 PIKU 표기.
-        displayName: clean(row?.channelName) || clean(row?.announcedName)
-          || clean(e.name),
+        displayName,
         // 운영자가 직접 입력한 값이 있으면 그쪽이 이긴다.
         songTitle: clean(row?.songTitle) || clean(e.songTitle),
         artistName: clean(row?.artistName) || clean(e.artistName),
         row,
         teamNumber: teamOf.get(e.channelId),
+        memberNames: otherMembers(
+          teamMembers.get(e.channelId), e.channelId, displayName),
       };
     });
   }
@@ -115,14 +164,17 @@ export function mergeRanking(
   for (const r of rows) {
     const lead = isGroupRow(r) ? (r.members[0] ?? null) : r;
     if (!lead) continue;
+    const leadName = clean(lead.channelName) || clean(lead.announcedName);
     out.push({
       channelId: lead.channelId,
       rank: null,
-      displayName: clean(lead.channelName) || clean(lead.announcedName),
+      displayName: leadName,
       songTitle: clean(lead.songTitle),
       artistName: clean(lead.artistName),
       row: lead,
       teamNumber: isGroupRow(r) ? r.teamNumber : undefined,
+      memberNames: isGroupRow(r)
+        ? otherMembers(r.members, lead.channelId, leadName) : [],
     });
   }
   return out;

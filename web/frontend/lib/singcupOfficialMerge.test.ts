@@ -21,7 +21,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { PikuEntry, QualifierGroupRow, QualifierRow } from "./types.ts";
-import { indexByChannel, mergeRanking, songLine } from "./singcupOfficialMerge.ts";
+import { indexByChannel, memberLine, mergeRanking, songLine,
+         teamMembersByChannel } from "./singcupOfficialMerge.ts";
 
 const solo = (id: string, name: string, extra: Partial<QualifierRow> = {}) => ({
   channelId: id, channelName: name, announcedName: name,
@@ -190,4 +191,110 @@ test("병합 결과에 비율 관련 필드가 없다", () => {
   for (const bad of ["winRate", "matchRate", "win_rate", "match_rate", "winRatio"]) {
     assert.ok(!keys.includes(bad), `${bad}가 병합 결과에 있다`);
   }
+});
+
+
+/* ── UI-X: 그룹 전체 멤버 ──────────────────────────────────────────────────
+ * 그룹 랭킹은 대표자만 보여 주고 나머지 팀원이 화면에서 사라졌다. PIKU 응답에는
+ * 대표자 이름 하나뿐이고, 팀 전체는 **공식 qualifiers의 `members[]`**에 있다
+ * (실측: 그룹 1위 대표자 조별하는 teamNumber 3에 속하고 그 팀의 공식 표기 순서는
+ * 김니디 · 슈향 · 이 선 · 조별하 — 대표자가 **마지막**이다).
+ *
+ * 그래서 계약은: 대표자는 PIKU가 정하고, 나머지 멤버는 그 대표자가 속한 공식 팀에서
+ * 대표자를 빼서 만든다. **공식 배열의 첫 멤버를 대표자로 다시 뽑지 않는다.**
+ */
+test("그룹 대표자를 제외한 나머지 멤버가 나온다", () => {
+  // 공식 순서는 대표자가 마지막 — 운영 데이터와 같은 배치다.
+  const rows = [team(3, [solo("kid", "김니디"), solo("sh", "슈향"),
+                         solo("ls", "이 선"), solo("cbh", "조별하")])];
+  const merged = mergeRanking(rows,
+    [pk(1, "cbh", "조별하", "Jackpot (잭팟)", "Block B (블락비)")]);
+  assert.equal(merged[0].displayName, "조별하");
+  assert.equal(merged[0].channelId, "cbh", "대표 프로필이 조별하가 아니다");
+  assert.deepEqual(merged[0].memberNames, ["김니디", "슈향", "이 선"]);
+  assert.equal(memberLine(merged[0]), "김니디 · 슈향 · 이 선");
+  assert.equal(songLine(merged[0]), "Jackpot (잭팟) - Block B (블락비)");
+});
+
+test("대표자 이름이 멤버 줄에 중복되지 않는다", () => {
+  const rows = [team(1, [solo("a", "가"), solo("b", "나")])];
+  const merged = mergeRanking(rows, [pk(1, "a", "가")]);
+  assert.deepEqual(merged[0].memberNames, ["나"]);
+  assert.ok(!memberLine(merged[0]).includes("가"));
+});
+
+test("공식 memberOrder가 반대여도 대표자는 PIKU 것을 쓴다", () => {
+  const fwd = [team(1, [solo("a", "가"), solo("b", "나"), solo("c", "다")])];
+  const rev = [team(1, [solo("c", "다"), solo("b", "나"), solo("a", "가")])];
+  for (const rows of [fwd, rev]) {
+    const m = mergeRanking(rows, [pk(1, "b", "나")]);
+    assert.equal(m[0].displayName, "나");
+    assert.equal(m[0].channelId, "b");
+    assert.deepEqual([...m[0].memberNames].sort(), ["가", "다"]);
+  }
+});
+
+test("멤버가 대표자 한 명뿐인 팀은 멤버 줄이 없다", () => {
+  // 실측: 32팀 중 1팀은 멤버가 1명이다.
+  const merged = mergeRanking([team(9, [solo("solo1", "혼자")])],
+    [pk(1, "solo1", "혼자")]);
+  assert.deepEqual(merged[0].memberNames, []);
+  assert.equal(memberLine(merged[0]), "");
+});
+
+test("빈 이름·중복 이름은 멤버 줄에서 빠진다", () => {
+  const rows = [team(1, [solo("a", "가"), solo("b", "나"), solo("c", "나"),
+                         solo("d", "  ")])];
+  const merged = mergeRanking(rows, [pk(1, "a", "가")]);
+  assert.deepEqual(merged[0].memberNames, ["나"]);
+});
+
+test("솔로 부문은 멤버 줄이 생기지 않는다", () => {
+  for (const rows of [[solo("x", "엑스")], [solo("y", "와이")]]) {
+    const m = mergeRanking(rows, [pk(1, rows[0].channelId, rows[0].channelName)]);
+    assert.deepEqual(m[0].memberNames, [], "솔로에 멤버가 붙었다");
+    assert.equal(memberLine(m[0]), "");
+  }
+});
+
+test("공식 팀을 못 찾아도 행과 이름은 남고 멤버 줄만 비운다", () => {
+  const merged = mergeRanking([team(1, [solo("a", "가")])],
+    [pk(1, "zz", "모르는대표")]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].displayName, "모르는대표");
+  assert.equal(merged[0].row, null);
+  assert.deepEqual(merged[0].memberNames, []);
+});
+
+test("teamMembersByChannel은 모든 멤버를 팀 전체에 연결한다", () => {
+  const rows = [team(1, [solo("a", "가"), solo("b", "나")]),
+                team(2, [solo("c", "다")])];
+  const m = teamMembersByChannel(rows);
+  assert.equal(m.get("a")?.length, 2);
+  assert.equal(m.get("b")?.length, 2);
+  assert.equal(m.get("c")?.length, 1);
+});
+
+test("그룹 32행에서 멤버 줄이 대표자를 빼고 만들어진다", () => {
+  const rows: QualifierGroupRow[] = [];
+  const entries: PikuEntry[] = [];
+  for (let i = 1; i <= 32; i++) {
+    rows.push(team(i, [solo(`m${i}a`, `멤버${i}A`), solo(`lead${i}`, `대표${i}`)]));
+    entries.push(pk(i, `lead${i}`, `대표${i}`));
+  }
+  const merged = mergeRanking(rows, entries);
+  assert.equal(merged.length, 32);
+  assert.deepEqual(merged.map((x) => x.rank),
+    Array.from({ length: 32 }, (_, i) => i + 1));
+  for (const x of merged) {
+    assert.equal(x.memberNames.length, 1);
+    assert.ok(!x.memberNames.includes(x.displayName));
+  }
+});
+
+// ── memberLine ──────────────────────────────────────────────────────────────
+test("멤버 구분자는 가운뎃점이다", () => {
+  assert.equal(memberLine({ memberNames: ["가", "나", "다"] }), "가 · 나 · 다");
+  assert.equal(memberLine({ memberNames: [] }), "");
+  assert.equal(memberLine({ memberNames: ["가"] }), "가");
 });

@@ -208,9 +208,20 @@ test("곡·가수를 서버 필드에서만 읽는다", () => {
   assert.ok(!/channelName\s*\.\s*split/.test(s));
 });
 
-test("곡 정보가 없으면 줄 자체를 그리지 않는다", () => {
-  assert.ok(OFFICIAL().includes("if (!text) return null;"),
-    "빈 줄이나 단독 `-`가 남으면 '못 불러왔다'로 읽힌다");
+test("곡 정보가 없어도 빈 문구나 단독 `-`가 남지 않는다", () => {
+  // UI-U에서는 값이 없으면 줄 자체를 그리지 않았다(`if (!text) return null;`).
+  // UI-X에서 **높이 계약**으로 바뀌었다 — 곡·가수는 공식 명단에 없고 PIKU 응답에서만
+  // 오므로(실측 201행 전부 없음) 조건부로 그리면 PIKU가 늦게 도착할 때 160행이
+  // 한꺼번에 한 줄씩 자라 아래 내용을 통째로 민다(실측 CLS `v=0.0866`).
+  // 그래서 자리는 항상 잡되 **내용은 여전히 비운다** — 이 테스트가 지키려던 것
+  // (빈 문구·단독 `-`가 보이면 안 된다)은 그대로 유효하다.
+  const s = OFFICIAL();
+  const song = s.slice(s.indexOf("function SongLine"), s.indexOf("function SongLine") + 700);
+  assert.ok(song.includes("{text}"), "곡 줄이 text 말고 다른 것을 그린다");
+  assert.ok(!/["'>]\s*-\s*["'<]/.test(song), "단독 `-`가 남아 있다");
+  // 값이 없을 때는 접근성 트리에서도 빠져야 한다(빈 줄을 읽지 않는다).
+  assert.ok(/aria-hidden=\{text \? undefined : true\}/.test(song),
+    "빈 곡 줄이 화면 읽기 프로그램에 남는다");
   assert.ok(/return song \|\| artist \|\| "";/.test(MERGE()), "한쪽만 있으면 그것만");
 });
 

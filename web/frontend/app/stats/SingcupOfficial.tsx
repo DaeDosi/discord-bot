@@ -18,7 +18,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AlertCircle, BarChart3, ExternalLink, Loader2, Radio, Trophy, User, Users,
+  AlertCircle, BarChart3, ExternalLink, Radio, Trophy, User, Users,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -27,7 +27,7 @@ import type {
 } from "@/lib/types";
 import { SINGCUP_QUALIFIERS } from "@/lib/singcupQualifiers";
 import type { MergedRow } from "@/lib/singcupOfficialMerge";
-import { mergeRanking, songLine } from "@/lib/singcupOfficialMerge";
+import { memberLine, mergeRanking, songLine } from "@/lib/singcupOfficialMerge";
 import { GOLD, GREEN, hideBrokenImage, nf } from "./singcupShared";
 
 const DIVISIONS = ["female_solo", "male_solo", "groups"] as const;
@@ -72,7 +72,7 @@ function RankBadge({ rank }: { rank: number }) {
 }
 
 /* ── TOP 카드 ────────────────────────────────────────────────────────────── */
-function TopCard({ item }: { item: MergedRow }) {
+function TopCard({ item, isGroup }: { item: MergedRow; isGroup: boolean }) {
   const { rank, teamNumber, displayName } = item;
   // 공식 명단에서 못 찾은 참가자도 **행은 남는다**(순위가 사라지는 편이 더 나쁘다).
   // 그때는 프로필·클립·LIVE만 없고 순위와 이름·곡은 그대로 보인다.
@@ -151,6 +151,7 @@ function TopCard({ item }: { item: MergedRow }) {
         <p className="truncate text-sm font-bold text-fg" title={displayName}>
           {displayName}
         </p>
+        <MemberLine item={item} reserve={isGroup} className="mt-0.5" />
         <SongLine row={item} className="mt-0.5" />
         {/* 발표 시점 이름이 지금과 다르면 함께 보여 준다 — 공지와 대조할 수 있게. */}
         {row?.announcedName && row.announcedName !== row.channelName && (
@@ -170,29 +171,78 @@ function TopCard({ item }: { item: MergedRow }) {
   );
 }
 
-/* ── 곡 · 가수 한 줄 ─────────────────────────────────────────────────────
- * 카드와 목록이 **같은 컴포넌트**를 쓴다. 값이 없으면 아무것도 그리지 않는다 —
- * 빈 줄이나 단독 `-`가 남으면 "정보가 있는데 못 불러왔다"로 읽힌다.
- * 문자열 계산은 `lib/singcupOfficialMerge`의 `songLine` 하나뿐이다.
- */
+/* ── 한 줄 보조 텍스트의 높이 계약 ───────────────────────────────────────
+ * 카드·행의 보조 줄은 **값이 있든 없든 정확히 한 줄(16px)**을 차지한다.
+ *
+ * 조건부로 그리면 데이터가 도착할 때 행이 한 줄씩 자라고 그만큼 아래 내용이 통째로
+ * 밀린다 — 뷰포트 안에서 일어나는 이동이라 그대로 CLS가 된다. 특히 곡·가수는
+ * **공식 명단(`/qualifiers`)에 아예 없고 PIKU 응답에서만 온다**(실측: 공식 201행
+ * 전부 곡 정보 없음). 두 응답은 따로 도착하므로 예약하지 않으면 PIKU가 늦게 올 때
+ * 160행이 한꺼번에 한 줄씩 자란다.
+ *
+ * 값이 없을 때는 `aria-hidden`으로 접근성 트리에서 빼 둔다 — 화면 읽기 사용자가
+ * 빈 줄을 읽을 이유가 없다. 넘치는 글자는 잘라 숨기지 않고 말줄임으로 처리하며
+ * 전체 값은 `title`로 확인할 수 있게 둔다. */
+const LINE = "h-4 truncate leading-4";
+
+/* 곡 · 가수 한 줄. 카드와 목록이 **같은 컴포넌트**를 쓴다.
+ * 문자열 계산은 `lib/singcupOfficialMerge`의 `songLine` 하나뿐이다. */
 function SongLine({ row, className = "" }: {
   row: { songTitle?: string; artistName?: string }; className?: string;
 }) {
   const text = songLine(row);
-  if (!text) return null;
-  // 한 줄이 길면 말줄임하되 전체 값은 `title`로 확인할 수 있게 둔다.
   return (
-    <p className={`truncate text-[11.5px] leading-snug text-muted ${className}`}
-       title={text}>
+    <p className={`${LINE} text-[11.5px] text-muted ${className}`}
+       aria-hidden={text ? undefined : true} title={text || undefined}>
       {text}
     </p>
   );
 }
 
+/* ── 그룹 멤버 보조 줄 ───────────────────────────────────────────────────
+ * 대표자를 **제외한** 팀원 이름. 프로필·링크는 대표자 것 하나만 쓰고, 나머지 멤버는
+ * 여기서 이름만 밝힌다 — 팀원이 화면에서 아예 사라져 있었다.
+ *
+ * 자리를 예약할지는 **부문**이 정한다(그룹만 `reserve`). `memberNames`가 비었는지로
+ * 판단하면 1인 팀(실측 32팀 중 1팀)만 행 높이가 달라지고, 정렬이 바뀌어 그 팀이
+ * 화면에 들어왔다 나갈 때마다 목록 전체 높이가 흔들린다.
+ * 솔로 부문은 `reserve=false`라 줄 자체가 생기지 않는다 — 빈 자리도 만들지 않는다. */
+function MemberLine({ item, reserve = false, className = "" }: {
+  item: { memberNames?: string[] }; reserve?: boolean; className?: string;
+}) {
+  const text = memberLine(item);
+  if (!text && !reserve) return null;
+  return (
+    <p className={`${LINE} text-[11px] text-muted/85 ${className}`}
+       aria-hidden={text ? undefined : true}
+       title={text ? `멤버 ${text}` : undefined}>
+      {text ? <><span className="text-muted/60">멤버 </span>{text}</> : null}
+    </p>
+  );
+}
+
 /* ── 명단 행 ─────────────────────────────────────────────────────────────── */
-function ListRow({ item }: { item: MergedRow }) {
+function ListRow({ item, isGroup }: { item: MergedRow; isGroup: boolean }) {
   const { rank, displayName } = item;
   const row = item.row;   // 없을 수 있다 — 그래도 행은 지우지 않는다.
+  const clipUrl = row?.clipUid
+    ? `https://chzzk.naver.com/clips/${row.clipUid}` : null;
+
+  /* 행에는 링크가 **둘**이고 서로 형제다.
+   *   · 프로필(아바타 + 이름) → 치지직 채널
+   *   · 나머지 넓은 영역(멤버 줄 + 곡 줄) → 대표 클립
+   * `<a>` 안에 `<a>`를 넣지 않는다 — 중첩 링크는 브라우저가 마크업을 다시 쓰고
+   * 스크린리더가 목적을 하나로 읽는다. 오른쪽 클립 아이콘은 제거했다(행 자체가
+   * 클립으로 가므로 같은 목적지가 두 번 있을 이유가 없다).
+   * 클립이 없으면 링크를 만들지 않고 같은 자리를 평범한 블록으로 둔다 —
+   * 빈 새 창을 여는 것보다 아무 일도 일어나지 않는 편이 정직하다. */
+  const body = (
+    <>
+      <MemberLine item={item} reserve={isGroup} />
+      <SongLine row={item} />
+    </>
+  );
+
   return (
     <li className="flex min-w-0 items-center gap-2 rounded-lg border border-border
                    bg-bg-card/60 px-2.5 py-2">
@@ -200,42 +250,119 @@ function ListRow({ item }: { item: MergedRow }) {
         : <span className="w-8 shrink-0 text-center text-[11px] tabular-nums text-muted">
             {row?.officialOrder ?? "-"}
           </span>}
-      {/* 프로필을 못 찾아도 자리를 비우지 않는다 — 원형 기본 아바타를 둔다.
-          행을 지우는 것이 아니라 사진만 없는 상태로 보여야 한다. */}
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center
-                       overflow-hidden rounded-full bg-bg-hover text-[11px] text-muted">
-        {row?.channelImageUrl
-          // eslint-disable-next-line @next/next/no-img-element
-          ? <img src={row.channelImageUrl} alt="" width={28} height={28} loading="lazy"
-                 onError={hideBrokenImage} className="h-full w-full object-cover" />
-          : <User size={13} aria-hidden="true" />}
-      </span>
-      {/* 1줄 이름 / 2줄 곡 - 가수. 이름 **옆**이 아니라 아래다. */}
+
+      {/* 프로필 링크 — 아바타와 이름이 한 덩어리다. */}
       <a href={`https://chzzk.naver.com/${item.channelId}`} target="_blank"
          rel="noopener noreferrer"
-         className="nb-tap min-w-0 flex-1 transition-colors hover:text-accent">
-        <span className="block truncate text-sm font-semibold text-fg"
-              title={displayName}>
+         aria-label={`${displayName} 치지직 프로필 보기`}
+         className="nb-tap group/prof flex min-w-0 max-w-[45%] shrink-0 items-center
+                    gap-2 rounded transition-colors hover:text-accent
+                    focus-visible:outline focus-visible:outline-2
+                    focus-visible:outline-offset-2 focus-visible:outline-accent">
+        {/* 프로필을 못 찾아도 자리를 비우지 않는다 — 원형 기본 아바타를 둔다. */}
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center
+                         overflow-hidden rounded-full bg-bg-hover text-[11px] text-muted">
+          {row?.channelImageUrl
+            // eslint-disable-next-line @next/next/no-img-element
+            ? <img src={row.channelImageUrl} alt="" width={28} height={28} loading="lazy"
+                   onError={hideBrokenImage} className="h-full w-full object-cover" />
+            : <User size={13} aria-hidden="true" />}
+        </span>
+        <span className="truncate text-sm font-semibold text-fg" title={displayName}>
           {displayName}
         </span>
-        <SongLine row={item} />
       </a>
-      {/* LIVE·외부 링크는 오른쪽 보조 영역에 둔다 — 두 줄 텍스트와 겹치지 않는다. */}
+
+      {/* 나머지 영역 = 대표 클립. 프로필과 형제이므로 클릭이 섞이지 않는다. */}
+      {clipUrl ? (
+        <a href={clipUrl} target="_blank" rel="noopener noreferrer"
+           aria-label={`${displayName} 대표 클립 보기`}
+           className="nb-tap min-w-0 flex-1 rounded transition-colors
+                      hover:text-accent focus-visible:outline focus-visible:outline-2
+                      focus-visible:outline-offset-2 focus-visible:outline-accent">
+          {body}
+        </a>
+      ) : (
+        <div className="min-w-0 flex-1" data-clip="none">
+          {body}
+          <span className="sr-only">대표 클립 없음</span>
+        </div>
+      )}
+
       {row?.live && (
         <span className="shrink-0 text-[10px] font-bold" style={{ color: "#FF4D4D" }}>
           LIVE
         </span>
       )}
-      {row?.clipUid && (
-        <a href={`https://chzzk.naver.com/clips/${row.clipUid}`} target="_blank"
-           rel="noopener noreferrer" aria-label={`${displayName} 클립 열기`}
-           className="nb-tap-icon inline-flex h-8 w-8 shrink-0 items-center justify-center
-                      rounded-lg text-muted transition-colors hover:bg-bg-hover
-                      hover:text-fg">
-          <ExternalLink size={13} aria-hidden="true" />
-        </a>
-      )}
     </li>
+  );
+}
+
+/* ── 로딩 스켈레톤 ───────────────────────────────────────────────────────
+ * 예전에는 이 자리에 스피너 한 줄(약 200px)만 있었다. 데이터가 도착하면 그 자리에
+ * 3개 부문 × (카드 5 + 행 10)이 들어서며 화면이 2,700px 넘게 길어지고, **그 아래에
+ * 있던 페이지 하단 고지가 통째로 화면 밖으로 밀려났다**(실측 1440px `v=0.0866`).
+ * 뷰포트 안에서 일어나는 이동이라 그대로 CLS가 된다.
+ *
+ * 그래서 로딩 화면이 **최종 화면과 같은 구조**를 그린다. 부문 수·카드 수(`TOP_CARDS`)·
+ * 행 수(`OVERVIEW_ROWS`)는 데이터가 아니라 상수라서 미리 알 수 있고, 카드와 행은
+ * 최종본과 **같은 클래스·같은 높이 계약**을 쓴다. 열 수는 같은 grid 클래스가 정하므로
+ * 320px부터 1440px까지 뷰포트마다 알아서 맞는다 — 고정 px 하나로 덮지 않는다.
+ * (페이지 전체에 큰 `min-height`를 씌워 빈 공간을 만드는 방식은 쓰지 않는다.)
+ *
+ * 빈 껍데기는 읽을 내용이 없으므로 `aria-hidden`으로 접근성 트리에서 빼고, 상태는
+ * `role="status"` 문장 하나로만 알린다. */
+function SkeletonBar({ className = "" }: { className?: string }) {
+  return <span className={`block animate-pulse rounded bg-bg-hover ${className}`} />;
+}
+
+function DivisionSkeleton({ isGroup }: { isGroup: boolean }) {
+  return (
+    <section className="space-y-3" aria-hidden="true">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        {/* 제목 줄 — 실제 h3와 같은 글자 크기·간격을 쓴다. */}
+        <h3 className="flex items-center gap-2 text-lg font-extrabold tracking-tight">
+          <SkeletonBar className="h-[18px] w-[18px] rounded-full" />
+          <SkeletonBar className="h-[18px] w-28" />
+        </h3>
+        <SkeletonBar className="h-4 w-40" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        {Array.from({ length: TOP_CARDS }, (_, i) => (
+          <div key={i} className="card !p-0 flex h-full flex-col overflow-hidden">
+            <div className="aspect-video w-full animate-pulse bg-bg-hover" />
+            {/* 실제 카드 하단부와 **같은** `min-h-[68px] p-2.5`와 같은 줄 높이. */}
+            <div className="flex min-h-[68px] flex-1 flex-col p-2.5">
+              <SkeletonBar className="h-5 w-2/3" />
+              {isGroup && <SkeletonBar className="mt-0.5 h-4 w-5/6" />}
+              <SkeletonBar className="mt-0.5 h-4 w-4/5" />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <ul className="flex flex-col gap-1.5">
+        {Array.from({ length: OVERVIEW_ROWS }, (_, i) => (
+          <li key={i} className="flex min-w-0 items-center gap-2 rounded-lg border
+                                 border-border bg-bg-card/60 px-2.5 py-2">
+            <SkeletonBar className="h-[19px] w-9 shrink-0" />
+            {/* `nb-tap`을 그대로 물려받는다 — 터치 뷰포트에서만 44px 바닥이 생기므로
+                (`@media (pointer: coarse)`) 스켈레톤에 빼 두면 390px에서만 행이
+                10.7px 낮아져 최종본과 높이가 어긋난다(실측). 고정 px 대신 같은
+                클래스를 쓰는 이유가 이것이다. */}
+            <span className="nb-tap flex min-w-0 max-w-[45%] shrink-0 items-center gap-2">
+              <SkeletonBar className="h-7 w-7 shrink-0 rounded-full" />
+              <SkeletonBar className="h-5 w-24" />
+            </span>
+            <span className="nb-tap block min-w-0 flex-1">
+              {isGroup && <SkeletonBar className="h-4 w-1/2" />}
+              <SkeletonBar className="h-4 w-2/3" />
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -331,14 +458,14 @@ function DivisionSection({ division, label, rows, ranking, limit, showAll,
       {top.length > 0 && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           {top.map((item) => (
-            <TopCard key={item.channelId} item={item} />
+            <TopCard key={item.channelId} item={item} isGroup={division === "groups"} />
           ))}
         </div>
       )}
 
       <ul className="flex flex-col gap-1.5">
         {list.map((item) => (
-          <ListRow key={item.channelId} item={item} />
+          <ListRow key={item.channelId} item={item} isGroup={division === "groups"} />
         ))}
       </ul>
       {!showAll && ordered.length > limit && (
@@ -462,15 +589,24 @@ export default function SingcupOfficial({ onRanking }: {
       </div>
 
       {/* 현재 정렬 기준을 문장으로도 밝힌다 — 버튼 색만으로는 무엇이 적용됐는지
-          색각 이상 사용자에게 전달되지 않는다. */}
-      {hasAnyRanking && (
+          색각 이상 사용자에게 전달되지 않는다.
+
+          이 문장은 PIKU 응답이 도착해야 나온다. 조건부로 그리면 명단(`/qualifiers`)
+          보다 늦게 올 때 이 줄이 끼어들며 아래 전체가 한 줄만큼 밀린다(실측 47px).
+          그래서 **문장은 항상 그리고**, 아직일 때만 `invisible`로 숨긴다 —
+          `visibility: hidden`은 자리를 그대로 두면서 접근성 트리에서도 빠지므로
+          `role="status"`가 빈 문장을 먼저 읽어 버리는 일이 없다. `hidden`을 쓰면
+          자리까지 사라져 원래 문제로 돌아간다. 글줄 수는 실제 문장이 정하므로
+          320px에서 3줄, 1440px에서 1줄로 뷰포트마다 알아서 맞는다. */}
+      <div className={hasAnyRanking ? undefined : "invisible"}
+           aria-hidden={hasAnyRanking ? undefined : true}>
         <p role="status" className="text-xs text-muted">
           현재 <b className="text-fg">
             {sortOptions.find((o) => o.key === sort)?.label ?? "우승 비율순"}
           </b>으로 정렬했습니다. 기준을 바꾸면 순위를 1위부터 다시 계산합니다.
           비율·승률 수치는 표시하지 않습니다.
         </p>
-      )}
+      </div>
 
       {/* ── 상태 ── */}
       {err ? (
@@ -481,8 +617,15 @@ export default function SingcupOfficial({ onRanking }: {
           <p className="mt-1 text-xs text-muted">{err}</p>
         </div>
       ) : loading ? (
-        <div className="flex items-center justify-center gap-2 py-24 text-muted" aria-busy>
-          <Loader2 size={18} className="animate-spin" aria-hidden="true" /> 불러오는 중...
+        /* 최종 화면과 같은 구조·같은 높이 계약으로 자리를 잡아 둔다(위 주석 참고).
+           스피너 한 줄로 되돌리면 하단 고지가 다시 화면 밖으로 밀린다. */
+        <div className="space-y-8" aria-busy="true">
+          <p role="status" className="sr-only">
+            공식 예선 참가자 명단을 불러오는 중입니다.
+          </p>
+          {DIVISIONS.map((d) => (
+            <DivisionSkeleton key={d} isGroup={d === "groups"} />
+          ))}
         </div>
       ) : !data ? (
         <p className="py-24 text-center text-sm text-muted">표시할 명단이 없습니다.</p>
