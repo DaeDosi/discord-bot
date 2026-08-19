@@ -12,7 +12,12 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { MAX_BODY_BYTES, relayCollector } from "./collectorRelay.ts";
+import { MAX_BODY_BYTES, RELAY_KINDS, relayCollector } from "./collectorRelay.ts";
+
+/** relay가 아는 경로의 **전부**. 늘어나면 여기부터 고쳐야 한다.
+ *  장치 인증 4경로의 상세 계약은 `collectorDeviceRelay.test.ts`에 있다. */
+const ALL_KINDS = ["device/challenge", "device/pair", "device/state", "device/token",
+                   "failure", "ingest"];
 
 const BASE = "https://backend.example.com";
 
@@ -90,13 +95,20 @@ test("route 모듈은 POST만 내보낸다", () => {
 });
 
 // ── 4. 임의 하위 경로 없음 ──────────────────────────────────────────────────
-test("collector 아래에 동적·catch-all 경로가 없다", () => {
-  const dir = new URL("../app/api/admin/piku/collector/", import.meta.url);
-  const entries: string[] = readdirSync(dir);
-  assert.deepEqual(entries.sort(), ["failure", "ingest"]);
-  for (const e of entries) {
-    assert.ok(!e.includes("["), `동적 경로가 있다: ${e}`);
-  }
+test("collector 아래에 relay 허용 목록 밖의 route가 없다", () => {
+  // 디렉터리 하나만 훑던 검사를 **재귀**로 바꿨다. `device/pair`처럼 한 단계 깊은
+  // 경로가 생기면서, 얕은 검사는 그 아래에 무엇이 있든 못 본다.
+  const found: string[] = [];
+  const walk = (dir: URL, prefix: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      assert.ok(!e.name.includes("["), `동적·catch-all 경로가 있다: ${prefix}${e.name}`);
+      if (e.isDirectory()) walk(new URL(`${e.name}/`, dir), `${prefix}${e.name}/`);
+      else if (e.name === "route.ts") found.push(prefix.replace(/\/$/, ""));
+      else assert.fail(`collector 아래에 예상 밖 파일이 있다: ${prefix}${e.name}`);
+    }
+  };
+  walk(new URL("../app/api/admin/piku/collector/", import.meta.url), "");
+  assert.deepEqual(found.sort(), ALL_KINDS);
 });
 
 // ── 5~9. 헤더 전달·차단 ────────────────────────────────────────────────────
@@ -302,11 +314,21 @@ test("모든 응답이 Cache-Control: no-store", async () => {
 });
 
 // ── 18. 다른 경로는 relay하지 않는다 ────────────────────────────────────────
-test("허용 목록은 ingest·failure 둘뿐이다", () => {
+test("허용 목록은 ingest·failure와 장치 4경로가 전부다", () => {
+  // 전에는 "소스에 이 낱말이 없다"로 검사했는데, `device/token`이 생기면서
+  // `"token"` 같은 부분 문자열 검사는 성립하지 않는다. **목록 자체를 못 박는다.**
+  assert.deepEqual([...RELAY_KINDS].sort(), ALL_KINDS);
+
+  // 표에 적힌 백엔드 경로 리터럴도 정확히 같아야 한다 — 종류 이름과 실제 나가는
+  // 경로가 어긋나면 허용 목록이 이름뿐인 것이 된다.
   const src = readFileSync(new URL("./collectorRelay.ts", import.meta.url), "utf8");
-  for (const forbidden of ["token", "status", "mappings", "confirm-exact",
-                           "preview", "publish", "import"]) {
-    assert.ok(!src.includes(`"${forbidden}"`), `relay가 ${forbidden}을 안다`);
+  const paths = [...src.matchAll(/path:\s*"([^"]+)"/g)].map((m) => m[1]).sort();
+  assert.deepEqual(paths, ALL_KINDS);
+
+  // OWNER 전용·공개 금지 경로는 relay가 아예 모른다.
+  for (const forbidden of ["mode", "devices", "devices/revoke", "automation",
+                           "mappings", "confirm-exact", "preview", "publish", "import"]) {
+    assert.ok(!paths.includes(forbidden), `relay가 ${forbidden}을 relay한다`);
   }
 });
 
