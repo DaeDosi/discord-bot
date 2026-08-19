@@ -422,6 +422,10 @@ export const api = {
       request<{ ok: boolean; deviceId: number; status: string; revokedAt: number }>(
         "/api/admin/piku/collector/devices/revoke",
         { method: "POST", body: JSON.stringify({ deviceId }) }),
+    /** AUTO-2 자동화 요약 — 모드·장치·최근 회차. **secret 없음.** */
+    pikuAutomation: () =>
+      request<import("./types").PikuAutomationStatus>(
+        "/api/admin/piku/collector/automation"),
     /** MANUAL / AUTO_COLLECT / AUTO_PUBLISH. 기본은 MANUAL이다. */
     pikuCollectorSetMode: (mode: string) =>
       request<{ ok: boolean; mode: string; schedulerImplemented: boolean;

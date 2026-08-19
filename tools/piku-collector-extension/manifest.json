@@ -3,13 +3,24 @@
   "name": "NexBot PIKU Collector",
   "version": "1.0.0",
   "description": "PIKU 공개 랭킹 표를 읽어 NexBot 관리자에게 전달합니다. 쿠키·원문 HTML은 보내지 않습니다.",
-  "permissions": ["activeTab", "scripting"],
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "alarms"
+  ],
   "host_permissions": [
     "https://www.piku.co.kr/w/rank/*",
     "https://nexbot.shop/api/admin/piku/collector/*"
   ],
-  "action": { "default_popup": "popup.html", "default_title": "NexBot PIKU Collector" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "NexBot PIKU Collector"
+  },
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'none'"
+  },
+  "background": {
+    "service_worker": "sw.js",
+    "type": "module"
   }
 }

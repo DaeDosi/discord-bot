@@ -12,6 +12,7 @@ import StreamerTagsPanel from "./StreamerTagsPanel";
 import PikuPanel from "./PikuPanel";
 import PikuCollectorPanel from "./PikuCollectorPanel";
 import PikuDevicePanel from "./PikuDevicePanel";
+import PikuAutomationPanel from "./PikuAutomationPanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -708,7 +709,8 @@ export default function AdminPage() {
   const [activeTab, setActiveTab]     = useState<"guilds" | "verif" | "follow" | "announcement" | "singcup-rep"
                                       | "streamer-tags" | "piku"
                                       | "piku_collector"
-                                      | "piku_devices">("guilds");
+                                      | "piku_devices"
+                                      | "piku_automation">("guilds");
   const [refreshing, setRefreshing]   = useState(false);
   const [selectedVerif, setSelectedVerif] = useState<VerifUser | null>(null);
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null);
@@ -863,6 +865,9 @@ export default function AdminPage() {
     // AUTO-1. 수집 탭과 나눈 이유: 수집은 매번 하는 일이고 장치 등록은
     // 처음 한 번 하는 일이다. 한 화면에 붙이면 자주 쓰는 버튼이 밀린다.
     { key: "piku_devices", label: "PIKU 자동화 장치" },
+    // AUTO-2. 장치 등록은 처음 한 번 하는 일이고 자동화 상태는 매번 보는
+    // 것이라 탭을 나눈다.
+    { key: "piku_automation", label: "PIKU 자동 수집" },
   ] as const;
 
   return (
@@ -1153,6 +1158,7 @@ export default function AdminPage() {
         {activeTab === "piku" && <PikuPanel />}
         {activeTab === "piku_collector" && <PikuCollectorPanel />}
         {activeTab === "piku_devices" && <PikuDevicePanel />}
+        {activeTab === "piku_automation" && <PikuAutomationPanel />}
 
       </main>
     </div>

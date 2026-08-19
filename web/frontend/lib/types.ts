@@ -1372,3 +1372,40 @@ export interface PikuDevicesResponse {
   schedulerImplemented: boolean;
   autoPublishImplemented: boolean;
 }
+
+/* ── AUTO-2: 자동 수집 회차 ──────────────────────────────────────────────
+ * `outcome`이 셋인 것이 핵심이다. AUTO-2에는 공개(Publish)가 없어서 한 부문이
+ * 실패해도 성공한 draft는 남는데, 그 회차를 `success`로 뭉뚱그리면 운영자가
+ * 공개해도 되는 줄 안다. **부분 성공을 부분 성공으로 보여 준다.** */
+export type PikuRunOutcome = "running" | "success" | "partial" | "failed";
+
+export interface PikuRunDivision {
+  ok: boolean;
+  /** 실패 분류어(`no_tab`·`row_count`·`token_failed` 등). 성공이면 `sent`/`unchanged`. */
+  kind: string;
+  rows: number;
+}
+
+export interface PikuAutoRun {
+  id: number;
+  deviceId: number;
+  trigger: "alarm" | "manual";
+  startedAt: number;
+  finishedAt: number;
+  outcome: PikuRunOutcome;
+  divisions: Record<string, PikuRunDivision>;
+}
+
+export interface PikuAutomationStatus {
+  ok: boolean;
+  mode: PikuCollectorMode;
+  activeDeviceCount: number;
+  activeDevices: { id: number; name: string; fingerprint: string; lastSeenAt: number }[];
+  /** AUTO-3 전까지 **항상 false**. 화면이 이 값으로 자동 공개 옵션을 막는다. */
+  autoPublishReady: boolean;
+  periodMinutes: number;
+  burstLimit: number;
+  windowLimit: number;
+  lastRun: PikuAutoRun | null;
+  recentRuns: PikuAutoRun[];
+}

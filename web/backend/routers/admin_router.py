@@ -1735,17 +1735,55 @@ async def piku_device_pair(body: DevicePairBody):
 
 
 @router.post("/piku/collector/device/challenge")
-async def piku_device_challenge(body: DeviceChallengeBody):
-    """서명할 nonce를 준다. 지문으로 장치를 찾고 active가 아니면 거절한다."""
+async def piku_device_challenge(body: DeviceChallengeBody, request: Request):
+    """서명할 nonce를 준다. 지문으로 장치를 찾고 active가 아니면 거절한다.
+
+    **AUTO-2부터 속도 제한을 거친다.** 제한은 challenge를 만들기 *전에* 걸리므로
+    막힌 요청은 DB 행을 남기지 않는다. IP는 보조 방어이고 해시로만 센다.
+    """
     import singcup_piku_devices as dev
+    import singcup_piku_scheduler as sched
     row = await dev.device_by_fingerprint(body.fingerprint)
     if not row:
         raise HTTPException(status_code=400, detail="[no_device] 장치를 찾을 수 없습니다.")
+    # 신뢰 프록시 판정은 **공통 모듈 하나**에만 둔다(`client_ip.resolve`).
+    # AUTO-2가 자기 파서를 따로 두면 두 곳이 갈라져 어느 쪽이 진실인지 알 수 없다.
+    # `resolve()`는 `TRUSTED_PROXY_HOPS`로 신뢰 홉 수를 정하고 **원문 IP가 아니라
+    # 날짜 회전 해시**를 돌려주므로, 원문이 이 경로에 들어올 일 자체가 없다.
+    #
+    # 주의: 기본값 `TRUSTED_PROXY_HOPS=0`은 레거시(XFF 맨 앞) 동작이라 위조 가능하다.
+    # Railway처럼 엣지 프록시가 하나면 **환경변수로 1을 지정해야** 위조가 막힌다.
+    # 기본값을 여기서 바꾸지 않는 것은 홉 수를 잘못 잡으면 여러 사용자가 한 버킷을
+    # 공유해 정상 사용자가 막히기 때문이다(공통 모듈이 그 이유로 0을 골랐다).
+    import client_ip
+    ip = (client_ip.resolve(request) or {}).get("id") or ""
     try:
-        return {"ok": True, **await dev.challenge_issue(
-            row["id"], body.division, automation=body.automation)}
+        return {"ok": True, **await sched.guarded_challenge(
+            row["id"], body.division, ip=ip, automation=body.automation)}
     except dev.DeviceError as e:
         raise _device_400(e) from e
+
+
+@router.get("/piku/collector/automation")
+async def piku_automation_status(user: dict = Depends(_require_owner)):
+    """자동화 패널 요약 — 모드·장치·최근 회차. **secret을 담지 않는다.**"""
+    import singcup_piku_scheduler as sched
+    return {"ok": True, **await sched.status()}
+
+
+class DeviceStateBody(BaseModel):
+    fingerprint: str
+
+
+@router.post("/piku/collector/device/state")
+async def piku_device_state(body: DeviceStateBody):
+    """확장이 회차 전에 부르는 가벼운 상태 조회 — **challenge를 만들지 않는다.**
+
+    상태를 보려고 challenge를 하나 태우면 시간당 발급이 3회가 아니라 4회가 되고
+    속도 제한 계산이 흐려진다. 돌려주는 값은 전부 비밀이 아니다.
+    """
+    import singcup_piku_scheduler as sched
+    return {"ok": True, **await sched.device_state(body.fingerprint)}
 
 
 @router.post("/piku/collector/device/token")

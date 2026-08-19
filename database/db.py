@@ -217,6 +217,42 @@ _PIKU_COLLECTOR_TABLES = (
            value      TEXT NOT NULL,
            updated_at INTEGER NOT NULL
        )""",
+    # ── AUTO-2: challenge 속도 제한 ───────────────────────────────────────
+    # **시도를 challenge와 따로 적는다.** 막힌 요청은 challenge 행을 만들면 안 되는데
+    # (그러면 제한이 곧 저장소 증가가 된다) 카운트는 남아야 하기 때문이다.
+    # 메모리가 아니라 DB에 두는 이유: 서비스 재시작만으로 제한이 풀리면 안 된다.
+    """CREATE TABLE IF NOT EXISTS piku_challenge_attempts (
+           id         INTEGER PRIMARY KEY AUTOINCREMENT,
+           device_id  INTEGER NOT NULL DEFAULT 0,
+           ip_hash    TEXT    NOT NULL DEFAULT '',
+           created_at INTEGER NOT NULL
+       )""",
+    """CREATE INDEX IF NOT EXISTS idx_piku_attempts_device
+           ON piku_challenge_attempts (device_id, created_at)""",
+    """CREATE INDEX IF NOT EXISTS idx_piku_attempts_ip
+           ON piku_challenge_attempts (ip_hash, created_at)""",
+    # ── AUTO-2: 자동 수집 회차 ────────────────────────────────────────────
+    # 부문별 결과를 한 행에 담는다. **부분 성공을 성공으로 뭉치지 않기 위해**
+    # 세 부문 상태를 따로 적고 `outcome`으로 요약한다.
+    """CREATE TABLE IF NOT EXISTS piku_auto_runs (
+           id           INTEGER PRIMARY KEY AUTOINCREMENT,
+           device_id    INTEGER NOT NULL,
+           trigger      TEXT    NOT NULL DEFAULT 'alarm',
+           started_at   INTEGER NOT NULL,
+           finished_at  INTEGER NOT NULL DEFAULT 0,
+           outcome      TEXT    NOT NULL DEFAULT 'running',
+           female_ok    INTEGER NOT NULL DEFAULT 0,
+           female_kind  TEXT    NOT NULL DEFAULT '',
+           female_rows  INTEGER NOT NULL DEFAULT 0,
+           male_ok      INTEGER NOT NULL DEFAULT 0,
+           male_kind    TEXT    NOT NULL DEFAULT '',
+           male_rows    INTEGER NOT NULL DEFAULT 0,
+           groups_ok    INTEGER NOT NULL DEFAULT 0,
+           groups_kind  TEXT    NOT NULL DEFAULT '',
+           groups_rows  INTEGER NOT NULL DEFAULT 0
+       )""",
+    """CREATE INDEX IF NOT EXISTS idx_piku_auto_runs_started
+           ON piku_auto_runs (started_at DESC)""",
 )
 
 

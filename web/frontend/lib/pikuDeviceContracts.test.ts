@@ -60,12 +60,15 @@ test("확장이 우리 관리 경로로만 보낸다", () => {
 // ── 확장 권한 ───────────────────────────────────────────────────────────────
 test("확장 권한이 최소로 유지된다", () => {
   const m = MANIFEST();
-  // **AUTO-1은 권한을 한 개도 더하지 않았다.** 장치 키와 메타데이터를 전부
-  // IndexedDB에 두어 `storage` 권한조차 피했다.
-  assert.deepEqual(m.permissions, ["activeTab", "scripting"],
+  // AUTO-1은 권한을 한 개도 더하지 않았다(장치 키·메타를 전부 IndexedDB에 두어
+  // `storage`조차 피했다). **AUTO-2가 `alarms` 하나를 더했다** — 1시간 주기 실행에
+  // `chrome.alarms`가 반드시 필요하고, 다른 수단(setTimeout)은 서비스 워커가 죽으면
+  // 사라져 스케줄이 성립하지 않는다. 근거는 `docs/작업정리_2026-08-19_AUTO-2_*`와
+  // `pikuSchedulerContracts.test.ts`에 있다.
+  assert.deepEqual(m.permissions, ["activeTab", "scripting", "alarms"],
     `권한이 바뀌었다: ${JSON.stringify(m.permissions)}`);
   for (const banned of ["cookies", "webRequest", "history", "clipboardRead",
-                        "tabs", "alarms", "background", "storage"]) {
+                        "tabs", "background", "storage"]) {
     assert.ok(!m.permissions.includes(banned),
       `${banned} 권한이 추가됐다 — 필요해진 이유를 문서와 테스트에 먼저 적을 것`);
   }
