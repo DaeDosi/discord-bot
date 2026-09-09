@@ -1,14 +1,16 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Plus, Tag as TagIcon, Users, ArrowUp, ArrowDown, Check, Trash2,
+  Loader2, Radio,
 } from "lucide-react";
 import Switch from "@/components/Switch";
 import GroupMembersDrawer from "./GroupMembersDrawer";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { StreamerTagBadge, resolveStops } from "@/components/StreamerTag";
 import type {
-  StreamerTag, StreamerTagAdmin, TagGradientDirection,
+  StreamerTag, StreamerTagAdmin, TagGradientDirection, VtuberCollectResult,
+  VtuberCollectBlocked,
 } from "@/lib/types";
 
 /** 방향 선택지 — **닫힌 목록**이다. 서버도 같은 목록으로 검증한다.
@@ -363,6 +365,159 @@ function TagForm({ editing, maxStops, onDone, onCancel }: {
 }
 
 
+/** 수집 부분 실패 종류 → 화면 문구. 서버는 **종류와 개수만** 준다
+ *  (채널 id·원시 응답은 오지 않는다). 모르는 종류는 그대로 보여 준다 —
+ *  숨기면 새 실패 원인이 조용히 사라진다. */
+/** 관리 대상 그룹 이름. 서버의 `streamer_tags.VTUBER_GROUP_NAME`과 **같은 값**이다.
+ *  화면은 이 이름으로 목록에서 그룹을 찾을 뿐이고, 만드는 것은 서버가 한다. */
+const VTUBER_GROUP_NAME = "버튜버";
+
+const VTUBER_ERROR_LABEL: Record<string, string> = {
+  invalid_channel_id: "채널 식별자가 올바르지 않아 건너뛰었습니다",
+  tag_limit: "태그 개수 상한에 걸려 건너뛰었습니다",
+};
+
+/** KST 표기 — 이 패널의 다른 시각 표시와 같은 방식이다. */
+const kst = (unix: number) =>
+  new Date(unix * 1000).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+
+/** 수집이 **막힌** 오류인가(= 지금 다시 눌러도 같은 결과).
+ *
+ *  서버가 라이브 스냅샷 신선도로 fail-closed 한 경우다. 일시적 오류와 같은 문구로
+ *  "잠시 후 다시 시도"라고 안내하면, 운영자가 버튼만 반복해서 누르게 된다. */
+function blockedDetail(e: unknown): VtuberCollectBlocked | null {
+  if (!(e instanceof ApiError)) return null;
+  if (e.code !== "no_live_snapshot" && e.code !== "stale_live_snapshot") return null;
+  return (e.detail as unknown as VtuberCollectBlocked) ?? null;
+}
+
+
+/** '버튜버' 그룹 영역 — 그룹 상태 + 라이브 태그 수집 버튼 (VTUBER-1).
+ *
+ *  **그룹이 아직 없어도 이 영역은 보인다.** 목록 행에만 버튼을 달면, 그룹이 없는
+ *  최초 상태에서 만들 방법이 없어진다(수집 요청이 그룹까지 만들어 준다).
+ *
+ *  수집은 **추가 전용**이다 — 이 화면에서 멤버가 사라지는 일은 없다. 그래서
+ *  되돌리기 확인창을 두지 않는다(지우는 동작이 없는데 확인을 요구하면, 진짜
+ *  위험한 확인창까지 습관적으로 넘기게 된다).
+ */
+function VtuberCollectSection({ group, onCollected }: {
+  /** 목록에서 찾은 `버튜버` 그룹. 아직 없으면 null. */
+  group: StreamerTagAdmin | null;
+  onCollected: (res: VtuberCollectResult) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<VtuberCollectResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  /** 신선도로 **막힌** 상태. 일반 오류(`err`)와 나누는 이유는 재시도 안내가
+   *  달라야 하기 때문이다. 둘을 하나로 뭉치면 "잠시 후 재시도"만 반복된다. */
+  const [blocked, setBlocked] = useState<VtuberCollectBlocked | null>(null);
+  // 같은 tick의 두 번째 클릭을 막는다 — `busy` state는 다음 렌더에야 반영된다.
+  const inFlight = useRef(false);
+
+  const run = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true); setErr(null); setBlocked(null);
+    try {
+      const r = await api.admin.streamerTagsCollectVtuber();
+      setRes(r);
+      onCollected(r);
+    } catch (e) {
+      // 실패를 성공으로 꾸미지 않는다. 직전 결과도 지운다 — 남겨 두면 방금
+      // 실패한 실행의 결과처럼 읽힌다.
+      setRes(null);
+      const b = blockedDetail(e);
+      if (b) setBlocked(b);
+      else setErr(e instanceof Error ? e.message : "수집에 실패했습니다.");
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="space-y-2 rounded-xl border border-border bg-bg-card/60 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-bold text-fg">
+          <Radio size={14} className="shrink-0 text-accent" aria-hidden="true" />
+          <span className="truncate">버튜버</span>
+        </h3>
+        {group ? (
+          <span className="text-xs text-muted">멤버 {group.assignedCount}명</span>
+        ) : (
+          <span className="text-xs text-muted">아직 그룹이 없습니다</span>
+        )}
+        {/* `flex-wrap` + `ml-auto`라 320px에서는 버튼이 아랫줄로 내려간다.
+            한 줄에 밀어 넣으면 글자가 잘리거나 버튼이 밖으로 나간다. */}
+        <button type="button" onClick={() => void run()} disabled={busy}
+                aria-busy={busy}
+                className="btn-secondary ml-auto inline-flex shrink-0 items-center gap-1.5
+                           whitespace-nowrap text-xs disabled:opacity-60">
+          {busy
+            ? <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+            : <Plus size={12} aria-hidden="true" />}
+          {busy ? "수집 중…" : "버튜버 태그 라이브 수집"}
+        </button>
+      </div>
+
+      <p className="text-[11px] leading-relaxed text-muted/80">
+        지금 방송 중이면서 치지직 방송 태그에 <b>버튜버</b>가 정확히 들어 있는
+        스트리머를 이 그룹에 <b>추가</b>합니다. 이미 있는 멤버는 건드리지 않고,
+        방송이 꺼졌거나 태그를 뗀 멤버도 <b>지우지 않습니다</b>.
+      </p>
+
+      {/* 결과는 **셋을 구분한다**: 진행 중 / 성공 / 실패. 하나로 뭉치면 실패가
+          진행 중으로 보인다. */}
+      <p aria-live="polite" className="min-h-[1.25rem] text-xs">
+        {blocked ? (
+          /* 막힘 — **DB에 아무것도 쓰이지 않았다.** 지금 다시 눌러도 같으므로
+             '잠시 후'가 아니라 '수집기가 회복된 뒤'라고 말한다. */
+          <span role="alert" className="text-yellow-400">
+            {blocked.message}
+            {blocked.collectedAt != null
+              && ` (마지막 수집 ${kst(blocked.collectedAt)})`}
+            {" 그룹과 멤버는 변경되지 않았습니다."}
+          </span>
+        ) : err ? (
+          <span role="alert" className="text-red-400">
+            {err} 잠시 후 다시 시도해 주세요.
+          </span>
+        ) : busy ? (
+          <span className="text-muted">현재 라이브 목록에서 버튜버 태그를 찾는 중…</span>
+        ) : res ? (
+          <span className={res.added > 0 ? "text-green-400" : "text-muted"}>
+            {/* 신규 0을 실패처럼 보이게 하지 않는다 — 할 일이 없었을 뿐이다. */}
+            {res.added > 0
+              ? `라이브 버튜버 후보 ${res.liveCandidates}명 · 신규 추가 ${res.added}명`
+                + ` · 기존 멤버 ${res.alreadyPresent}명`
+              : `새로 추가할 스트리머가 없습니다. 기존 멤버 ${res.alreadyPresent}명`}
+            {res.invalidOrSkipped > 0 && ` · 건너뜀 ${res.invalidOrSkipped}명`}
+            {res.groupCreated && " · 그룹을 새로 만들었습니다"}
+          </span>
+        ) : null}
+      </p>
+
+      {/* 부분 실패를 조용히 넘기지 않는다. 종류와 개수만 보여 준다. */}
+      {!err && !blocked && res && res.errors.length > 0 && (
+        <ul className="space-y-0.5 text-[11px] text-yellow-400/90">
+          {res.errors.map((e) => (
+            <li key={e.kind}>{VTUBER_ERROR_LABEL[e.kind] ?? e.kind} {e.count}건</li>
+          ))}
+        </ul>
+      )}
+
+      {res && !err && !blocked && (
+        <p className="text-[11px] text-muted/70">
+          판정 기준 수집 시각 {new Date(res.collectedAt * 1000)
+            .toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}
+        </p>
+      )}
+    </section>
+  );
+}
+
+
 export default function StreamerTagsPanel() {
   const [tags, setTags] = useState<StreamerTagAdmin[]>([]);
   const [maxStops, setMaxStops] = useState(FALLBACK_MAX_STOPS);
@@ -396,6 +551,19 @@ export default function StreamerTagsPanel() {
    *  전체를 다시 검색하지 않는다 — 목록이 흔들려 방금 만진 행을 놓친다. */
   const visibleTags = showInactive ? tags : tags.filter((t) => t.active);
 
+  /** '버튜버' 그룹 — 이름으로 찾는다(서버가 이름 유일성을 보장한다).
+   *  아직 없으면 null이고, 그때는 수집 요청이 그룹까지 만든다. */
+  const vtuberGroup = tags.find((t) => t.name === VTUBER_GROUP_NAME) ?? null;
+
+  /** 수집 성공 후 **서버 응답으로** 멤버 수를 갈아 끼운다(재조회 없음).
+   *  이번 요청이 그룹을 새로 만들었다면 목록에 그 행 자체가 없으므로 그때만
+   *  다시 불러온다 — 새 그룹의 색·id를 응답 하나로 다 만들 수는 없다. */
+  const applyCollected = useCallback((res: VtuberCollectResult) => {
+    setTags((prev) => prev.map((t) => (t.id === res.groupId
+      ? { ...t, assignedCount: res.memberCount } : t)));
+    if (res.groupCreated) void load();
+  }, [load]);
+
   return (
     <div className="space-y-5">
       <p className="flex items-center gap-2 text-sm text-muted">
@@ -403,6 +571,9 @@ export default function StreamerTagsPanel() {
         스트리머에게 소속 그룹을 지정합니다. 지정한 그룹은 랭킹 목록과 스트리머
         상세 페이지의 이름 옆에 표시됩니다.
       </p>
+
+      {/* ── '버튜버' 그룹 영역 (VTUBER-1) ── */}
+      <VtuberCollectSection group={vtuberGroup} onCollected={applyCollected} />
 
       {/* ── 그룹 만들기 / 수정 ── */}
       <section className="space-y-2">

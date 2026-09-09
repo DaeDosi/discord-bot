@@ -1195,6 +1195,45 @@ export interface StreamerTagMutation {
 // 한국어만 "소속 그룹"으로 바뀌었고, 내부 식별자는 tag/team 계열을 유지한다 —
 // 억지로 group으로 개명하면 운영 데이터와 API 계약까지 끌고 가야 한다.
 
+/** '버튜버' 라이브 태그 수집 결과 (VTUBER-1).
+ *
+ *  **개수와 실패 종류만** 담긴다. 채널 id 목록이나 원시 외부 응답은 오지 않는다.
+ *  `liveCandidates = added + alreadyPresent + invalidOrSkipped`가 항상 성립한다 —
+ *  건너뛴 것을 추가로 세면 그게 곧 거짓 성공이다. */
+export interface VtuberCollectResult {
+  ok: boolean;
+  groupId: number;
+  groupName: string;
+  /** 이번 요청이 그룹을 만들었는지. 이미 있었으면 false. */
+  groupCreated: boolean;
+  /** 판정에 쓴 수집 회차 시각(초). **표시용이다** — 신선도 차단은 서버가 이미 했다. */
+  collectedAt: number;
+  /** 그 회차가 몇 초 전 것인지, 그리고 허용 상한. 여유를 보여 주기 위한 값이다. */
+  ageSeconds: number;
+  maxAgeSeconds: number;
+  liveCandidates: number;
+  added: number;
+  alreadyPresent: number;
+  invalidOrSkipped: number;
+  /** 수집 후 그룹의 총 멤버 수 — 화면은 이 값으로 갱신한다(재조회하지 않는다). */
+  memberCount: number;
+  errors: { kind: string; count: number }[];
+}
+
+/** 라이브 스냅샷이 없거나 오래돼 수집이 막혔을 때 서버가 주는 `detail` (HTTP 409).
+ *
+ *  이 경우 서버는 **DB에 아무것도 쓰지 않는다**(그룹 생성 0 · 멤버 추가 0).
+ *  지금 다시 눌러도 결과가 같으므로, 화면은 '잠시 후 재시도'가 아니라
+ *  '수집기가 회복된 뒤'라고 안내해야 한다. */
+export interface VtuberCollectBlocked {
+  code: "no_live_snapshot" | "stale_live_snapshot";
+  message: string;
+  stale: boolean;
+  collectedAt: number | null;
+  ageSeconds: number | null;
+  maxAgeSeconds: number;
+}
+
 export interface GroupMember {
   channelId: string;
   channelName: string | null;

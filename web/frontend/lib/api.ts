@@ -144,11 +144,20 @@ function getToken(): string | null {
 export class ApiError extends Error {
   status: number;
   code: string | null;
-  constructor(message: string, status: number, code: string | null = null) {
+  /** 서버가 객체로 준 `detail` 원본. 문자열 detail이면 null이다.
+   *
+   *  `message`/`code`만으로는 부족한 오류가 있다 — 예: 라이브 수집이 밀려 막힌
+   *  경우 화면이 "언제 것이라 막혔는지"(`collectedAt`)를 같이 보여 줘야 운영자가
+   *  무엇을 기다려야 하는지 안다. 새 예외 계층을 만들지 않고 기존 계약에 값만
+   *  얹는다(선택 필드라 기존 소비자는 영향이 없다). */
+  detail: Record<string, unknown> | null;
+  constructor(message: string, status: number, code: string | null = null,
+              detail: Record<string, unknown> | null = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.detail = detail;
   }
 }
 
@@ -181,7 +190,7 @@ async function request<T>(
     const detail = err?.detail;
     if (detail && typeof detail === "object") {
       throw new ApiError(detail.message || `HTTP ${res.status}`, res.status,
-                         detail.code ?? null);
+                         detail.code ?? null, detail);
     }
     throw new ApiError(detail || `HTTP ${res.status}`, res.status);
   }
@@ -471,6 +480,13 @@ export const api = {
       request<{ ok: boolean; tagId: number; count: number }>(
         `/api/admin/streamer-tags/${tagId}/members/reorder`,
         { method: "POST", body: JSON.stringify({ channelIds }) }),
+    /** '버튜버' 라이브 태그 수집 — **추가 전용 mutation**이다(POST).
+     *
+     *  대상 그룹·태그 이름을 보내지 않는다. 서버 상수 하나가 정한다 —
+     *  클라이언트가 이름을 정하면 오타 하나로 유령 그룹이 생긴다. */
+    streamerTagsCollectVtuber: () =>
+      request<import("./types").VtuberCollectResult>(
+        "/api/admin/streamer-tags/vtuber/collect", { method: "POST" }),
     streamerTagReorder: (channelId: string, tagIds: number[]) =>
       request<import("./types").StreamerTagMutation>(
         "/api/admin/streamer-tags/reorder",
