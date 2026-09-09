@@ -552,13 +552,16 @@ async def assign(channel_id: str, tag_id: int) -> dict:
         return {"channelId": cid, "tagId": int(tag_id), "created": False}
     if int(row["n"]) >= MAX_TAGS_PER_STREAMER:
         raise TagError(f"한 스트리머에게는 태그를 {MAX_TAGS_PER_STREAMER}개까지 붙일 수 있습니다.")
-    await db.execute(
+    # `created`는 **INSERT가 실제로 행을 만들었는지**로 판정한다. 위의 SELECT만
+    # 믿으면 동시 요청 두 개가 둘 다 "새로 붙였다"고 보고한다(행은 하나뿐인데).
+    # 대량 수집이 이 값을 그대로 세므로, 그때 추가 수가 부풀려진다.
+    cur2 = await db.execute(
         "INSERT OR IGNORE INTO streamer_tag_assignments "
         "(streamer_channel_id, tag_id, display_order, created_at) VALUES (?,?,?,?)",
         (cid, int(tag_id), int(row["mx"]) + 1, int(time.time())))
     await db.commit()
     _bump()
-    return {"channelId": cid, "tagId": int(tag_id), "created": True}
+    return {"channelId": cid, "tagId": int(tag_id), "created": bool(cur2.rowcount)}
 
 
 async def unassign(channel_id: str, tag_id: int) -> dict:
@@ -944,3 +947,289 @@ async def group_detail(tag_id: int) -> dict | None:
     }
     _group_cache[key] = (time.time(), out)
     return out
+
+
+# ── 라이브 태그 기반 그룹 수집 (VTUBER-1) ────────────────────────────────────
+#
+# 운영자가 Nexadmin에서 버튼을 눌렀을 때만 도는 **추가 전용** 경로다. 자동 주기도,
+# 자동 제거도 없다 — 이 기능으로 사람이 그룹에서 사라지면 되돌릴 방법이 없다.
+#
+# 데이터 출처는 **이미 저장된 것뿐이다.** 치지직을 새로 호출하지 않는다:
+#  · '지금 라이브' = `rising_collect_runs`의 마지막 성공 회차(`ok=1`)에 속한
+#    `rising_live_snapshots` 행. `group_detail`이 쓰는 것과 같은 기준이다.
+#  · '버튜버 태그' = 그 행의 `tags`(쉼표 join된 치지직 방송 태그)를 쪼개
+#    정규화한 뒤 **완전 일치**. 방송 제목·닉네임은 보지 않는다.
+#
+# ⚠️ 그룹 이름 `버튜버`와 방송 태그 `버튜버`는 **다른 축**이다(모듈 docstring 참고).
+#    값이 같아서 헷갈리기 쉬우니 상수를 둘로 나눠 둔다.
+
+#: 관리 대상 그룹 이름. 화면·API·DB가 이 상수 하나를 쓴다.
+VTUBER_GROUP_NAME = "버튜버"
+
+#: 판정 기준이 되는 **치지직 방송 태그**.
+VTUBER_LIVE_TAG = "버튜버"
+
+#: 그룹을 새로 만들 때 쓰는 색(단색). 운영자가 나중에 바꿔도 이 값으로 되돌리지 않는다.
+VTUBER_GROUP_COLOR = "#8B5CF6"
+
+#: 라이브 스냅샷을 "지금"으로 인정할 때 쓰는 배수.
+#:
+#: **새 기준이 아니다.** 이 저장소는 이미 같은 데이터(`rising_collect_runs`)의
+#: 신선도를 `singcup_clips`에서 이렇게 판정한다:
+#:     from rising_collector import COLLECT_INTERVAL as _LIVE_INTERVAL
+#:     "isStale": live_at is None or (now - live_at) > _LIVE_INTERVAL * 1.5
+#: 같은 질문에 두 개의 답을 만들지 않으려고 **출처(수집 주기)와 배수(1.5)를 그대로**
+#: 가져온다. 전용 환경변수를 만들지 말 것 — 주기를 바꾸면 상한도 같이 움직여야 한다.
+LIVE_STALE_FACTOR = 1.5
+
+
+def live_max_age_seconds() -> int:
+    """라이브 스냅샷을 '지금'으로 인정하는 상한(초).
+
+    `rising_collector`는 함수 안에서 import한다 — `rising_router._collect_interval`이
+    같은 이유로 그렇게 한다(모듈 로드 시점 순환 참조를 만들지 않는다).
+    """
+    from rising_collector import COLLECT_INTERVAL
+    return int(COLLECT_INTERVAL * LIVE_STALE_FACTOR)
+
+
+class LiveDataError(TagError):
+    """라이브 스냅샷이 없거나 오래돼 "지금 방송 중"을 판정할 수 없다.
+
+    **DB를 건드리기 전에** 던진다. 이 수집은 추가 전용이라 잘못 넣은 사람을 되돌리려면
+    운영자가 손으로 지워야 한다 — 그래서 의심스러우면 아무것도 하지 않는다.
+
+    `TagError`를 상속하므로 기존 호출자의 `except TagError`는 그대로 동작한다.
+    다만 라우터는 이 쪽을 **먼저** 잡아 400이 아니라 409로 내보낸다(요청이 잘못된
+    것이 아니라 지금 판정할 수 있는 상태가 아니다).
+    """
+
+    def __init__(self, message: str, *, code: str, stale: bool,
+                 collected_at: int | None, age_seconds: int | None,
+                 max_age_seconds: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.stale = stale
+        self.collected_at = collected_at
+        self.age_seconds = age_seconds
+        self.max_age_seconds = max_age_seconds
+
+    def as_detail(self) -> dict:
+        """HTTP 응답에 실을 형태.
+
+        `{code, message}`는 `lib/api.ts`의 기존 구조화 오류 계약 그대로다(새 모양을
+        만들지 않는다). 나머지는 운영자가 "언제 것이라 막혔는지"를 읽기 위한 값이고,
+        **원시 외부 응답·채널 id·토큰은 넣지 않는다.**
+        """
+        return {
+            "code": self.code,
+            "message": str(self),
+            "stale": self.stale,
+            "collectedAt": self.collected_at,
+            "ageSeconds": self.age_seconds,
+            "maxAgeSeconds": self.max_age_seconds,
+        }
+
+
+def norm_live_tag(value: object) -> str:
+    """치지직 방송 태그 정규화 — 비교는 **이 함수를 통과한 값끼리만** 한다.
+
+    · NFC로 통일한다. 같은 '버튜버'라도 자모가 분리된(NFD) 문자열이 섞여 들어오면
+      바이트가 달라 `==`가 거짓이 된다.
+    · 제어·서식 문자(제로폭 등)를 버린다 — 눈에 보이지 않는 한 글자 때문에
+      일치가 깨지는 것이 이런 비교에서 가장 찾기 어려운 실패다.
+    · 공백은 **접기만 한다**(전부 지우지 않는다). 지우면 `버튜 버`까지 같은 값이
+      돼 "부분 일치 금지" 계약이 뒷문으로 무너진다.
+    """
+    if not isinstance(value, str):
+        return ""
+    v = unicodedata.normalize("NFC", value)
+    v = "".join(c for c in v if unicodedata.category(c) not in ("Cc", "Cf"))
+    return re.sub(r"\s+", " ", v).strip().casefold()
+
+
+def split_live_tags(raw: object) -> list[str]:
+    """저장된 `tags` 문자열(쉼표 join)을 정규화된 태그 목록으로."""
+    if not isinstance(raw, str) or not raw:
+        return []
+    out = [norm_live_tag(t) for t in raw.split(",")]
+    return [t for t in out if t]
+
+
+async def ensure_group(name: str, *, color_start: str = VTUBER_GROUP_COLOR) -> tuple[dict, bool]:
+    """이름으로 그룹을 찾고, 없으면 **원자적으로 한 번만** 만든다.
+
+    `(row, created)`를 돌려준다. select-then-insert가 아니라 `INSERT OR IGNORE`인
+    이유는 이 파일이 이미 정한 계약과 같다 — **중복 차단은 DB가 한다.** 동시 요청
+    두 개가 select를 동시에 통과하면 애플리케이션 검사는 아무것도 막지 못한다.
+
+    비활성 그룹은 **되살리지도, 새로 만들지도 않는다.** 운영자가 내린 결정을
+    코드가 조용히 되돌리면 안 되고, 새로 만들면 같은 이름이 둘이 된다.
+    """
+    clean = clean_name(name)
+    slug = slugify(clean)
+    style = _style_for_write(color_stops=None, color_mode="solid",
+                             color_start=color_start, color_end=None,
+                             gradient_direction="to-right")
+    now = int(time.time())
+    db = await get_db()
+    cur = await db.execute(
+        """INSERT OR IGNORE INTO streamer_tags
+               (name, slug, kind, color_mode, color_start, color_end,
+                gradient_direction, color_stops, active, exclude_from_ranking,
+                created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,1,0,?,?)""",
+        # `exclude_from_ranking`은 **0이다.** 이 그룹은 랭킹 제외 대상이 아니다 —
+        # 1로 만들면 전체·기간별·소형 랭킹에서 멤버가 통째로 사라진다.
+        (clean, slug, "team", style["color_mode"], style["color_start"],
+         style["color_end"], style["gradient_direction"], style["color_stops"],
+         now, now))
+    created = bool(cur.rowcount)
+    await db.commit()
+    if created:
+        _bump()
+
+    row = await (await db.execute(
+        "SELECT * FROM streamer_tags WHERE name = ? COLLATE NOCASE", (clean,))).fetchone()
+    if row is None:
+        # 이름은 비었는데 INSERT가 무시됐다 = 다른 이름의 그룹이 같은 슬러그를
+        # 선점했다는 뜻이다. 조용히 넘어가면 그다음 단계가 None을 만진다.
+        raise TagError("같은 식별자를 쓰는 다른 그룹이 이미 있습니다.")
+    return row, created
+
+
+async def resolve_live_snapshot(now: int | None = None) -> tuple[int, int, int]:
+    """판정에 쓸 수집 회차를 정하고 **신선도를 검증**한다.
+
+    `(collected_at, age_seconds, max_age_seconds)`를 돌려주고, 쓸 수 없으면
+    `LiveDataError`를 던진다. **DB에 아무것도 쓰기 전에** 불린다.
+
+    시간 계약: `rising_collect_runs.collected_at`은 `int(time.time())`으로 저장된
+    **Unix 에포크 정수**다. 비교도 정수 뺄셈 하나뿐이라 datetime이 끼어들지 않는다 —
+    naive/aware를 섞을 자리가 없고, KST·UTC 날짜 경계도 판정에 영향을 주지 않는다.
+    `now`는 테스트가 고정 시계를 주입하기 위한 것이고, 운영 경로는 넘기지 않는다.
+    """
+    now_ts = int(time.time()) if now is None else int(now)
+    max_age = live_max_age_seconds()
+    db = await get_db()
+    # **한 번만 읽고 그 값을 계속 쓴다.** 검사와 후보 조회가 서로 다른 회차를 보면
+    # "검사는 통과했는데 넣은 건 다른 회차"가 된다. 아래 후보 쿼리도 이 `ts`로
+    # 못박혀 있으므로, 도중에 새 회차가 들어와도 두 회차가 섞이지 않는다.
+    row = await (await db.execute(
+        "SELECT MAX(collected_at) t FROM rising_collect_runs WHERE ok = 1")).fetchone()
+    ts = row["t"] if row else None
+
+    if ts is None:
+        raise LiveDataError(
+            "성공한 라이브 수집 회차가 없어 '지금 방송 중'을 판정할 수 없습니다. "
+            "수집기가 한 번 성공한 뒤 다시 실행해 주세요.",
+            code="no_live_snapshot", stale=False, collected_at=None,
+            age_seconds=None, max_age_seconds=max_age)
+
+    ts = int(ts)
+    age = now_ts - ts
+    if age > max_age:
+        raise LiveDataError(
+            f"마지막 라이브 수집이 {age // 60}분 전이라 '지금 방송 중'으로 쓸 수 없습니다"
+            f"(허용 {max_age // 60}분). 수집기가 회복된 뒤 다시 실행해 주세요.",
+            code="stale_live_snapshot", stale=True, collected_at=ts,
+            age_seconds=age, max_age_seconds=max_age)
+    return ts, age, max_age
+
+
+async def collect_vtuber_live_members(*, now: int | None = None) -> dict:
+    """지금 라이브이면서 `버튜버` 태그를 단 스트리머를 `버튜버` 그룹에 **추가**한다.
+
+    지우는 동작이 하나도 없다. 오프라인이 된 멤버도, 태그를 뗀 멤버도, 손으로 넣은
+    멤버도 그대로 둔다.
+
+    돌려주는 수는 서로 겹치지 않는다:
+    `liveCandidates = added + alreadyPresent + invalidOrSkipped`.
+    건너뛴 것을 추가로 세지 않는다 — 그게 곧 거짓 성공이다.
+    """
+    # **신선도 검사가 가장 먼저다.** `ensure_group`보다 뒤에 두면, 수집기가 멈춘
+    # 동안 누른 요청이 멤버 0명짜리 그룹만 만들어 놓고 실패한다.
+    ts, age, max_age = await resolve_live_snapshot(now)
+
+    group_row, created = await ensure_group(VTUBER_GROUP_NAME)
+    tag_id = int(group_row["id"])
+    if not int(group_row["active"]):
+        raise TagError(
+            f"'{VTUBER_GROUP_NAME}' 그룹이 비활성 상태입니다. 활성화한 뒤 다시 실행해 주세요.")
+
+    errors: dict[str, int] = {}
+
+    def _err(kind: str) -> None:
+        errors[kind] = errors.get(kind, 0) + 1
+
+    db = await get_db()
+    wanted = norm_live_tag(VTUBER_LIVE_TAG)
+    # dict로 모으면 **한 요청 안의 중복 channel_id가 여기서 사라진다**(추가 순서는
+    # 유지된다). 닉네임은 비교에 쓰지 않는다 — 같은 이름의 다른 사람이 존재한다.
+    candidates: dict[str, None] = {}
+    invalid = 0
+    rows = await (await db.execute(
+        "SELECT chzzk_channel_id, tags FROM rising_live_snapshots "
+        "WHERE collected_at = ? AND tags != ''", (ts,))).fetchall()
+    for r in rows:
+        if wanted not in split_live_tags(r["tags"]):
+            continue
+        cid = r["chzzk_channel_id"]
+        if not valid_channel_id(cid):
+            invalid += 1
+            _err("invalid_channel_id")
+            continue
+        candidates.setdefault(norm_channel_id(cid), None)
+
+    existing = {r["streamer_channel_id"] for r in await (await db.execute(
+        "SELECT streamer_channel_id FROM streamer_tag_assignments WHERE tag_id = ?",
+        (tag_id,))).fetchall()}
+
+    added = already = 0
+    for cid in candidates:
+        if cid in existing:
+            already += 1
+            continue
+        try:
+            res = await assign(cid, tag_id)
+        except TagError:
+            # 대부분 `MAX_TAGS_PER_STREAMER` 상한이다. 한 명이 막혔다고 나머지를
+            # 버리지 않되, **성공으로 세지도 않는다.**
+            invalid += 1
+            _err("tag_limit")
+            continue
+        if res["created"]:
+            added += 1
+        else:
+            # 같은 순간 다른 요청이 먼저 넣었다 — 새로 추가한 것이 아니다.
+            already += 1
+
+    total = (await (await db.execute(
+        "SELECT COUNT(*) n FROM streamer_tag_assignments WHERE tag_id = ?",
+        (tag_id,))).fetchone())["n"]
+
+    return {
+        "groupId": tag_id,
+        "groupName": group_row["name"],
+        "groupCreated": created,
+        # 어느 회차로 판정했는지. **이 값은 표시용이고 안전장치가 아니다** —
+        # 차단은 위의 `resolve_live_snapshot`이 이미 했다.
+        "collectedAt": ts,
+        "ageSeconds": age,
+        "maxAgeSeconds": max_age,
+        "liveCandidates": len(candidates) + invalid,
+        "added": added,
+        "alreadyPresent": already,
+        "invalidOrSkipped": invalid,
+        "memberCount": int(total),
+        # **종류와 개수만** 내보낸다. 채널 id·원시 응답·요청 헤더는 넣지 않는다.
+        "errors": [{"kind": k, "count": v} for k, v in sorted(errors.items())],
+    }
+
+
+__all__ += [
+    "VTUBER_GROUP_NAME", "VTUBER_LIVE_TAG", "norm_live_tag", "split_live_tags",
+    "ensure_group", "collect_vtuber_live_members",
+    "LIVE_STALE_FACTOR", "live_max_age_seconds", "LiveDataError",
+    "resolve_live_snapshot",
+]

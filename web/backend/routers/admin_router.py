@@ -1338,6 +1338,42 @@ async def streamer_tags_member_reorder(tag_id: int, body: GroupMemberReorder,
         raise _tag_400(e) from e
 
 
+# ── '버튜버' 그룹 라이브 태그 수집 (VTUBER-1) ────────────────────────────────
+#
+# **mutation이라 POST다.** GET으로 열어 두면 링크 한 번, 프리페치 한 번으로도
+# 그룹이 만들어지고 멤버가 붙는다.
+#
+# 대상 그룹과 태그를 **본문으로 받지 않는다.** 이름을 클라이언트가 정하면 오타
+# 하나로 `버튜버 ` 같은 유령 그룹이 생기고, 그때부터 어느 쪽이 진짜인지 알 수
+# 없다. 값은 `streamer_tags`의 상수 하나에서만 온다.
+#
+# 조회용 GET을 따로 두지 않는다 — 그룹 상태는 기존 `/streamer-tags` 목록에
+# 이미 들어 있다(같은 자원을 두 경로가 서빙하면 곧 갈라진다).
+@router.post("/streamer-tags/vtuber/collect")
+async def streamer_tags_collect_vtuber(user: dict = Depends(_require_owner)):
+    """지금 라이브 + `버튜버` 태그인 스트리머를 `버튜버` 그룹에 추가한다.
+
+    **추가 전용**이다. 오프라인이 된 멤버도, 태그를 뗀 멤버도, 손으로 넣은 멤버도
+    지우지 않는다. 자동 주기도 없다 — 운영자가 눌렀을 때만 돈다.
+
+    라이브 스냅샷이 없거나 오래됐으면 **아무것도 쓰지 않고 409**로 막는다
+    (fail-closed). 수집기가 멈춘 동안 몇 시간 전 라이브 목록을 "지금 방송 중"으로
+    넣으면, 추가 전용이라 운영자가 손으로 지우는 것 말고는 되돌릴 방법이 없다.
+
+    응답에는 개수와 실패 **종류**만 담긴다(`streamer_tags` 참고).
+    """
+    import streamer_tags as st
+    try:
+        return {"ok": True, **await st.collect_vtuber_live_members()}
+    except st.LiveDataError as e:
+        # 400이 아니라 409다 — 요청은 올바르고, **지금 판정할 수 있는 상태가 아니다.**
+        # 화면이 '입력 오류'와 '수집기가 밀렸다'를 구분해야 한다.
+        # `LiveDataError`는 `TagError`의 하위라 이 분기가 **반드시 먼저** 와야 한다.
+        raise HTTPException(status_code=409, detail=e.as_detail()) from e
+    except st.TagError as e:
+        raise _tag_400(e) from e
+
+
 # ── PIKU 사용자 투표 순위 (관리) ────────────────────────────────────────────
 #
 # **OWNER JWT를 강제한다** — Nexadmin의 다른 기능과 같은 인증이다. 인증 방식이
