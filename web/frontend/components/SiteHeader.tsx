@@ -6,13 +6,25 @@
  * 페이지에 각자 복제돼 있어서, 한 곳을 고치면 나머지 열 곳이 남았다(UI-S 회차에
  * 로고 hit area 하나를 고치는 데 12파일을 만져야 했던 이유다).
  *
- * 레이아웃 계약 — **3영역 grid**다(가운데는 `minmax(0,680px)`):
+ * 레이아웃 계약 — **3영역 grid**다:
  *   [☰ NexBot 치지직통계Beta] [검색] [사용 방법 · 로그인/프로필]
- * · 좌우를 `1fr`로 같게 잡아야 가운데가 "남은 공간의 중심"이 아니라
- *   **viewport의 중심**에 온다(실측: 전 뷰포트 offCenter 0).
+ * · `md` 이상은 `minmax(max-content,1fr) minmax(0,2fr) minmax(max-content,1fr)`.
+ *   - 좌우의 **하한이 `max-content`**다. 이게 없으면 좌우가 `1fr`의 몫까지
+ *     눌려, 왼쪽은 `NexBot`이 `Ne…`로 잘리고 오른쪽은 `사용 방법`이 글자
+ *     하나씩 세로로 쪼개졌다(한국어는 글자 사이에서 줄바꿈이 가능하다).
+ *   - 좌우가 같은 `1fr`이라 **여유가 있는 한 좌우 폭이 같아진다** = 검색창이
+ *     viewport 중심에 온다. 가운데가 `2fr`인 것은 넓은 화면에서 검색창이
+ *     예전(`min(46vw,680px)`)만큼 넓게 남게 하려는 것이다 — `1fr`로 두면
+ *     1440px에서 검색창이 3분의 1(약 459px)로 좁아진다.
+ *   - 여유가 없으면 좌우가 각자 `max-content`로 버티고 가운데만 줄어든다 —
+ *     중앙 정렬을 조금 잃는 대신 **잘림·겹침이 0**이다.
+ *   - 검색창은 `max-w`만 두고 칸을 `w-full`로 채운다(고정 폭·`vw` 금지 —
+ *     둘 다 컨테이너가 좁은 페이지에서 좌우를 밀어냈다).
  * · `md` 미만에서는 `auto 1fr auto`로 바꾸고 검색을 접는다 — 260px에서 세 칸을
  *   모두 펼치면 좌우가 0px까지 눌려 브랜드와 로그인이 겹쳤다.
  * · 그 폭에서는 로그인 글자도 감추고 아이콘만 남긴다(hit area 44×44는 유지).
+ * · **잘라서 감추지 않는다.** 브랜드·`치지직 통계`·`사용 방법`은 전부
+ *   `whitespace-nowrap`이고 말줄임표를 쓰지 않는다. 넘칠 일 자체를 없앤다.
  *
  * 접근성 계약:
  * · 햄버거 `aria-expanded`/`aria-controls`, ESC 닫기, 닫을 때 버튼으로 포커스 복귀
@@ -50,11 +62,15 @@ const DRAWER_LINKS: { href: string; label: string; icon: React.ReactNode }[] = [
 function HeaderNav() {
   // `치지직 통계 Beta`는 **왼쪽 브랜드 옆 한 곳**에만 둔다. 예전에는 여기에도
   // 같은 링크가 있어 한 헤더에 배지가 두 번 나왔다.
+  // `shrink-0` + `whitespace-nowrap`이 함께 있어야 한다. 오른쪽 칸은 flex라
+  // 자리가 모자라면 자식을 먼저 줄이는데, 한국어는 **글자 사이에서도 줄바꿈이
+  // 된다.** 그래서 폭이 모자란 순간 `사용 방법`이 `사/용/방/법`처럼 세로로
+  // 쪼개졌다(918px 부근에서 재현). 줄바꿈을 막고, 줄어들지 않게 못박는다.
   return (
-    <nav aria-label="주요 메뉴" className="hidden items-center gap-1 md:flex">
+    <nav aria-label="주요 메뉴" className="hidden shrink-0 items-center gap-1 md:flex">
       <Link href="/guide"
-            className="nb-tap inline-flex items-center rounded-lg px-2.5 py-2 text-sm
-                       text-muted transition-colors hover:text-fg">
+            className="nb-tap inline-flex shrink-0 items-center whitespace-nowrap rounded-lg
+                       px-2.5 py-2 text-sm text-muted transition-colors hover:text-fg">
         사용 방법
       </Link>
     </nav>
@@ -424,10 +440,11 @@ export default function SiteHeader({ maxWidth = "full", statsNav }: {
   }, [menuOpen]);
 
   const inner = INNER[maxWidth] ?? INNER.full;
-  /** 본문 폭이 좁은 페이지에서는 검색창도 그만큼 좁아야 좌우와 겹치지 않는다. */
-  const searchWidth = maxWidth === "full"
-    ? "md:w-[min(52vw,680px)] lg:w-[min(46vw,680px)]"
-    : "md:w-[min(40vw,420px)]";
+  // 검색창 폭을 `maxWidth`마다 다른 `vw` 식으로 계산하던 분기를 없앴다.
+  // `vw`는 **컨테이너가 아니라 viewport** 기준이라, 본문 폭이 좁은 페이지
+  // (`3xl`/`4xl`)에서 가운데 칸이 컨테이너보다 커져 좌우를 밀어냈다 —
+  // 918px에서 `NexBot` 잘림과 `사용 방법` 세로 쪼개짐이 나온 지점이 여기다.
+  // 이제 폭은 grid 칸이 정하고, 검색창은 `w-full` + `max-w`만 갖는다.
 
   // sidebar를 가진 페이지면 그 sidebar를, 아니면 통계 메뉴 drawer를 제어한다.
   const usesSidebar = Boolean(statsNav);
@@ -455,15 +472,21 @@ export default function SiteHeader({ maxWidth = "full", statsNav }: {
   return (
     <header ref={headerRef}
             className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur">
-      {/* **3영역 grid다.** 좌우를 `1fr`로 같게 잡아야 가운데 칸이 남은 공간의
-          중심이 아니라 **viewport의 중심**에 온다. flex + `flex-1` 검색창으로는
-          좌우 폭이 다른 순간 검색창 중심이 그 차이의 절반만큼 밀린다(실측으로
-          이미지3에서 확인된 문제다).
+      {/* **3영역 grid다.** 세 칸이 모두 `1fr`이라 여유가 있으면 좌우 폭이 같아지고,
+          검색창은 **viewport의 중심**에 온다. flex + `flex-1` 검색창으로는 좌우
+          폭이 다른 순간 검색창 중심이 그 차이의 절반만큼 밀린다.
+
+          좌우의 하한이 `max-content`인 것이 이 계약의 핵심이다. 예전 값
+          (`minmax(0,1fr)`)은 하한이 0이라, 가운데 칸이 자기 폭을 고집하면 좌우가
+          그만큼 눌렸다 — 왼쪽은 `overflow-hidden`에 잘려 `Ne…`가 되고, 오른쪽은
+          `사용 방법`이 글자 단위로 줄바꿈됐다. 이제 좌우는 자기 내용보다 좁아지지
+          않고, 모자란 폭은 **가운데(검색)만** 흡수한다.
 
           최소 높이만 정하고 고정하지 않는다 — 확대(150%)에서 글자가 커져도
           내용이 잘리지 않고 헤더가 함께 자란다. */}
       <div className={`nb-tap-gap grid min-h-[60px] grid-cols-[auto_1fr_auto]
-                       items-center gap-2 py-2 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]
+                       items-center gap-2 py-2
+                       md:grid-cols-[minmax(max-content,1fr)_minmax(0,2fr)_minmax(max-content,1fr)]
                        ${inner}`}>
         {/* ── 왼쪽: 햄버거 · NexBot · 치지직 통계 Beta ── */}
         {/* `overflow-hidden`이 있어야 자식이 셀 밖으로 삐져나가지 않는다.
@@ -486,11 +509,11 @@ export default function SiteHeader({ maxWidth = "full", statsNav }: {
           {/* 로봇 아이콘을 두지 않는다 — 워드마크 하나로 브랜드를 말한다.
               (아이콘 + 텍스트 + 두 번째 아이콘이 겹치면 왼쪽이 시끄러워진다) */}
           {/* `shrink-0`을 주지 않는다 — 260px 같은 폭에서 이 링크가 버티면
-              오른쪽 묶음과 겹친다. `nb-brand-tap`의 min-width 44px가 하한이라
-              읽을 수 없을 만큼 줄지는 않는다. */}
+              오른쪽 묶음과 겹친다. `nb-brand-tap`의 min-width 44px가 하한이다.
+              **`truncate` 금지** — `Ne…`는 고친 게 아니라 덮은 것이다. */}
           <Link href="/"
                 className="nb-brand-tap min-w-0 px-1 font-bold text-[17px] text-fg">
-            <span className="truncate">NexBot</span>
+            <span className="whitespace-nowrap">NexBot</span>
           </Link>
 
           {/* `/` 구분자와 신호 아이콘 없이, 워드마크 바로 오른쪽에 붙인다.
@@ -507,7 +530,9 @@ export default function SiteHeader({ maxWidth = "full", statsNav }: {
                 className="nb-tap ml-1 hidden min-w-0 items-center gap-1.5 rounded-lg
                            px-2 py-2 text-[17px] font-medium text-white transition-colors
                            hover:text-neon sm:inline-flex">
-            <span className="min-w-0 truncate">치지직 통계</span>
+            {/* 여기도 말줄임표를 쓰지 않는다 — `치지직 통계`가 `치지직 …`으로
+                줄면 현재 위치를 말하는 라벨의 뜻이 사라진다. */}
+            <span className="whitespace-nowrap">치지직 통계</span>
             {/* Beta 배지 — 브랜드 그린(#00FFA3) 계열 토큰. 배경을 옅게 깔아
                 테두리만으로 버티지 않게 하고, 대비를 확보한다. */}
             <span className="shrink-0 rounded-[5px] border border-neon/50
@@ -523,9 +548,13 @@ export default function SiteHeader({ maxWidth = "full", statsNav }: {
             겹쳤다(실측: 320px에서 검색 263px, 남는 폭 57px). 그래서 좁은 화면은
             **접을 수 있는 검색**으로 바꾼다 — 기본은 접힘, 아이콘을 누르면
             헤더 아래 한 줄이 열린다. `md` 이상에서는 늘 펼쳐진 채 중앙 정렬이다. */}
-        {/* 가운데 칸이 `auto`면 자식 콘텐츠 폭만큼만 잡혀 검색창이 296px에
-            머물렀다. 칸에 `w-full`을 줘야 `max-w`까지 자란다. */}
-        <div className={`hidden w-full min-w-0 justify-center md:flex ${searchWidth}`}>
+        {/* 칸은 `minmax(0,1fr)`이라 **남는 폭을 유동적으로** 받는다. 검색창은
+            그 안에서 `w-full`로 칸을 채우되 `max-w`로 상한만 둔다 — 고정 폭이나
+            `vw` 계산을 다시 들이지 말 것(좌우를 밀어내 잘림·겹침을 만든다).
+
+            `mx-auto`가 빠지면 안 된다. grid item은 기본이 stretch라, `max-w`에
+            걸린 순간 남는 폭이 **오른쪽에만** 생겨 검색창이 칸 왼쪽에 붙는다. */}
+        <div className="mx-auto hidden w-full min-w-0 justify-center md:flex md:max-w-[680px]">
           <GlobalSearch fill />
         </div>
         <span className="md:hidden" aria-hidden="true" />

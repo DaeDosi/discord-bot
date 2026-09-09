@@ -69,7 +69,9 @@ const DO_NOT_SEND = [
 export default function ContactPage() {
   return (
     <div className="min-h-screen bg-bg text-fg flex flex-col">
-      <SiteHeader maxWidth="4xl" />
+      {/* 수정 요청 페이지와 같은 이유로 `/stats`와 동일한 헤더 계약을 쓴다
+          (`app/support/correction/page.tsx`의 주석 참고). */}
+      <SiteHeader maxWidth="full" />
 
       <main className="flex-1 w-full max-w-4xl mx-auto px-5 py-10 md:py-14 break-words">
         <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">문의</h1>

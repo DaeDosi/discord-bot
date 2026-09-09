@@ -81,7 +81,13 @@ export default function CorrectionPage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-bg text-fg">
-      <SiteHeader maxWidth="3xl" />
+      {/* 헤더 레이아웃은 **메인 통계 페이지(`/stats`)와 같은 계약**을 쓴다.
+          예전에는 `maxWidth="3xl"`로 본문 폭(768px)에 맞췄는데, 그러면 `md`
+          이상에서 헤더 3영역이 768px 안으로 압축돼 918px 부근부터 `NexBot`이
+          잘리고 `사용 방법`이 글자 단위로 세로로 쪼개졌다. 브랜드가 본문
+          왼쪽 끝과 딱 맞지 않게 되지만, 그 정렬을 지키려다 헤더가 페이지마다
+          다르게 깨지는 쪽이 더 나쁘다. */}
+      <SiteHeader maxWidth="full" />
 
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-10 sm:px-5">
         <h1 className="flex items-center gap-2 text-2xl font-extrabold tracking-tight">

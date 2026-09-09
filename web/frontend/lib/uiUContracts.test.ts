@@ -150,13 +150,15 @@ test("neon 토큰이 #00FFA3이고 기존 토큰과 충돌하지 않는다", () 
 
 test("검색이 3영역 grid의 가운데 칸이고 폭이 넓다", () => {
   const s = HEADER();
-  assert.ok(s.includes("md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]"),
+  assert.ok(
+    s.includes("md:grid-cols-[minmax(max-content,1fr)_minmax(0,2fr)_minmax(max-content,1fr)]"),
     "좌우가 같은 비율이어야 viewport 중앙이다");
-  // 폭은 **헤더 칸**이 정한다. 뷰포트 기준 고정값은 본문 폭이 좁은 페이지
-  // (`maxWidth="3xl"`)에서 컨테이너를 넘어 좌우와 겹쳤다(실측 1쌍).
-  assert.ok(s.includes('maxWidth === "full"'), "컨테이너 폭에 따라 달라져야 한다");
-  assert.ok(s.includes("md:w-[min(52vw,680px)]"), "넓은 레이아웃");
-  assert.ok(s.includes("md:w-[min(40vw,420px)]"), "좁은 레이아웃");
+  // 폭은 **헤더 칸**이 정한다. HDR-1에서 `maxWidth`별 `vw` 분기를 없앴다 —
+  // `vw`는 컨테이너가 아니라 viewport 기준이라, 본문 폭이 좁은 페이지에서
+  // 가운데 칸이 컨테이너보다 커져 좌우를 밀어냈다(918px 잘림·세로 쪼개짐).
+  assert.ok(!/md:w-\[min\(\d+vw/.test(s), "vw 기반 고정 폭을 다시 들이지 않는다");
+  assert.ok(s.includes("md:max-w-[680px]"), "상한만 둔다");
+  assert.ok(s.includes("mx-auto hidden w-full"), "칸 안에서 가운데 정렬");
   assert.ok(s.includes("rounded-full"), "pill 형태");
 });
 

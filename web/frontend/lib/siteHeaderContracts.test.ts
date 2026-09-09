@@ -42,8 +42,12 @@ test("브랜드는 아이콘 없이 워드마크 하나로 표시된다", () => 
   assert.ok(s.includes("nb-brand-tap"), "44px hit area 유지");
   // 예전에는 좁은 화면에서 글자를 `sr-only`로 내리고 로봇 아이콘만 남겼다.
   // 이제 아이콘을 없앴으므로 **어느 폭에서도 글자가 그대로 보인다**.
-  assert.ok(s.includes('<span className="truncate">NexBot</span>'),
+  // HDR-1: `truncate`였다. 918px 부근에서 실제로 `Ne…`가 되어 **문제를 덮는
+  // 표시**가 됐으므로 줄바꿈 금지로 바꿨다. 폭은 grid 칸의 `max-content` 하한이
+  // 보장한다(아래 "3영역 grid" 테스트).
+  assert.ok(s.includes('<span className="whitespace-nowrap">NexBot</span>'),
     "워드마크 텍스트가 항상 보여야 한다");
+  assert.ok(!/truncate">NexBot/.test(s), "워드마크를 말줄임표로 줄이지 않는다");
   assert.ok(!/<Bot size=\{20\}/.test(s),
     "브랜드 옆 로봇 아이콘은 제거됐다");
 });
@@ -66,10 +70,17 @@ test("헤더는 3영역 grid라 검색이 viewport 중앙에 온다", () => {
   // 가운데 칸이 `auto`면 검색창이 콘텐츠 폭에 머문다(실측 296px). UI-U에서
   // `minmax(0,680px)`으로 바꿔 실제로 넓히면서 좌우 1fr 대칭은 유지했다.
   // 가운데를 고정폭(680px)으로 잡았더니 768px에서 좌우 묶음과 겹쳤다(실측 5쌍).
-  // 이제 가운데는 `auto`(검색창이 스스로 clamp로 줄어듦)이고, 좌우가
-  // `minmax(0,1fr)`로 남은 폭을 **균등하게** 나눠 중앙 정렬을 유지한다.
-  assert.ok(s.includes("md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]"),
+  //
+  // HDR-1: 그다음 값(`minmax(0,1fr) auto minmax(0,1fr)`)은 좌우의 **하한이 0**
+  // 이었다. 가운데가 `vw`로 자기 폭을 고집하면 좌우가 그만큼 눌려, 918px에서
+  // 왼쪽은 `Ne…`로 잘리고 오른쪽은 `사용 방법`이 세로로 쪼개졌다. 지금은 좌우
+  // 하한이 `max-content`라 자기 내용보다 좁아지지 않고, 모자란 폭은 가운데만
+  // 흡수한다. 좌우 비율이 같으므로 여유가 있는 한 중앙 정렬도 유지된다.
+  assert.ok(
+    s.includes("md:grid-cols-[minmax(max-content,1fr)_minmax(0,2fr)_minmax(max-content,1fr)]"),
     "좌우가 같은 비율이어야 가운데가 화면 중앙이다");
+  assert.ok(!s.includes("md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]"),
+    "좌우 하한이 0이면 브랜드가 잘리고 우측 라벨이 세로로 쪼개진다");
   assert.ok(/justify-end/.test(s), "오른쪽 묶음은 끝에 붙는다");
 });
 
