@@ -28,6 +28,15 @@ function sweepShared(now: number) {
   }
 }
 
+/** 테스트 전용 — 모듈 단위 캐시를 비운다.
+ *
+ *  이 캐시는 **모듈 수명**을 따르므로 테스트 사이에 값이 새어 나간다. 운영 코드에서
+ *  부르지 말 것(사용자 화면에서 캐시를 비울 이유가 없다 — 그 목적이면 `force`를 쓴다). */
+export function resetSharedCache(): void {
+  _sharedCache.clear();
+  _sharedPending.clear();
+}
+
 /** 캐시가 채워진 시각으로부터 지난 시간(ms). 없으면 null. */
 export function sharedAge(key: string): number | null {
   const entry = _sharedCache.get(key);
@@ -637,8 +646,27 @@ export const api = {
       fetch(`${BASE}/api/rising/timeseries?range=${range}`).then(r => r.json()) as Promise<import("./types").RisingTimeseries>,
     liveRanking: (limit = 200) =>
       fetch(`${BASE}/api/rising/live-ranking?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingLiveRanking>,
+    /** 카테고리 집계 — **같은 (range, limit)은 한 번만 받는다.**
+     *
+     *  `?tab=category`로 바로 들어오면 같은 URL이 두 번 나갔다. 탭 state가 `overview`로
+     *  시작해 한 프레임 동안 개요가 렌더되면서 `CategoryDonut`이 부르고, 그다음
+     *  URL의 `?tab=`이 반영되며 카테고리 탭이 또 부르기 때문이다(실측: 66ms·368ms에
+     *  `range=1h&limit=60` 두 번).
+     *
+     *  `sharedGet`이 **진행 중이면 합류시키고 끝났으면 짧게 재사용**해 이 중복을 없앤다.
+     *
+     *  캐시 계약(정확히):
+     *   · 공개 집계 데이터다 — 사용자별·인증별 값이 아니라 섞일 위험이 없다.
+     *   · TTL 60초 → **최대 60초의 stale window가 존재한다.** 수집 주기가 600초라
+     *     그 창이 한 수집 사이클을 넘지는 않지만, "오래된 값이 안 보인다"는 뜻은
+     *     **아니다**. 화면이 최대 60초 전 집계를 보여 줄 수 있다.
+     *   · 실패는 캐시하지 않는다(`sharedGet`) — 다음 호출이 곧바로 재시도한다.
+     *   · 진행 중인 같은 요청에는 합류한다(네트워크 1회).
+     *   · `range`/`limit`이 키에 들어가므로 다른 파라미터는 별도로 받는다. */
     categories: (range: import("./types").CatRange = "1h", limit = 60) =>
-      fetch(`${BASE}/api/rising/categories?range=${range}&limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingCategories>,
+      sharedGet(`rising:categories:${range}:${limit}`, 60_000, () =>
+        fetch(`${BASE}/api/rising/categories?range=${range}&limit=${limit}`)
+          .then(r => r.json()) as Promise<import("./types").RisingCategories>),
     risingStars: (limit = 20) =>
       fetch(`${BASE}/api/rising/rising-stars?limit=${limit}`).then(r => r.json()) as Promise<import("./types").RisingStars>,
     streamer: (cid: string, days = 30) =>

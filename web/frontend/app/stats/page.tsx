@@ -9,6 +9,10 @@ import {
   Leaf, Sparkles,
 } from "lucide-react";
 import { api } from "@/lib/api";
+// 첫 진입 적재 계획은 화면에서 떼어 냈다 — 실제로 실행해 검증할 수 있어야 해서다
+// (`lib/statsInitialLoad.test.ts`). 규칙과 실측 근거는 그 파일의 주석에 있다.
+import { loadFirstPaint, pendingTabLoads, whenMounted } from "@/lib/statsInitialLoad";
+import type { LoadState } from "@/lib/statsInitialLoad";
 import type {
   RisingOverview, RisingTimeseries, RisingLiveRanking, RisingCategories, RisingCategory,
   RisingStars, TimeRange, CatRange, RisingSearchResult, RisingNewcomers, RisingNewcomer,
@@ -2173,6 +2177,35 @@ function PeriodRankingTab() {
 // 카테고리 분석 — 점유율 도넛 + 표(스트리머 랭킹과 동일 규격).
 // 행을 누르면 표 아래에 붙이지 않고 '카테고리별 스트리머' 탭으로 넘겨 조회하게 한다
 // (표가 길면 아래에 펼친 결과가 화면 밖으로 밀려 안 보이는 문제가 있었다).
+/** 탭 데이터가 아직 없을 때 자리를 지키는 표시.
+ *
+ *  **세 상태를 문구로 구분한다** — 이 페이지의 다른 탭들이 이미 쓰는 규칙이다.
+ *  실패를 빈 화면이나 무한 스피너로 두면 사용자는 "느린 것"과 "고장난 것"을
+ *  구분할 수 없다. 높이는 이 블록을 감싸는 바깥 셸의 최소 높이 예약이 잡아 주므로
+ *  여기서 또 고정 높이를 주지 않는다(주면 실데이터 전환 때 오히려 흔들린다). */
+function TabDataState({ state, what }: { state: LoadState; what: string }) {
+  if (state === "error") {
+    return (
+      <div className="card text-center py-14 px-5">
+        <p className="font-medium text-fg">{what}을(를) 불러오지 못했습니다.</p>
+        <p className="mt-1.5 text-sm text-muted leading-relaxed">
+          일시적인 네트워크 문제이거나 수집 서버가 재시작 중일 수 있습니다.
+        </p>
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          <button onClick={() => location.reload()} className="btn-secondary nb-tap text-sm">새로고침</button>
+          <Link href="/status" className="btn-secondary text-sm">서버 상태 확인</Link>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center justify-center gap-2 py-16 text-muted" aria-busy="true">
+      <Loader2 size={18} className="animate-spin" aria-hidden="true" /> {what}을(를) 불러오는 중...
+    </div>
+  );
+}
+
+
 function CategoryTab({ cats, onPick }: { cats: RisingCategories; onPick: (c: string) => void }) {
   const maxV = Math.max(1, ...cats.categories.map((c) => c.viewers));
 
@@ -2247,13 +2280,34 @@ function CategoryTab({ cats, onPick }: { cats: RisingCategories; onPick: (c: str
 }
 
 export default function StatsPage() {
+  /* 첫 화면(개요 탭)이 **실제로 쓰는 것은 이 둘뿐이다.** */
   const [ov, setOv]       = useState<RisingOverview | null>(null);
-  const [rank, setRank]   = useState<RisingLiveRanking | null>(null);
-  const [cats, setCats]   = useState<RisingCategories | null>(null);
   const [stars, setStars] = useState<RisingStars | null>(null);
-  const [news, setNews]   = useState<RisingNewcomers | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(false);
+
+  /* 아래 셋은 **다른 탭 전용**이다. 예전에는 위 둘과 같은 `Promise.all`에 묶여
+     있어서, 개요 탭에 필요 없는 데이터가 개요 화면을 잠갔다.
+
+     실측(운영, 1440px)이 그 대가를 보여 준다:
+       overview 1133ms · rising-stars 621ms  ← 개요가 기다려야 하는 것
+       live-ranking 704ms · categories 634ms
+       newcomers **3078ms**                  ← 게이트를 여기까지 끌고 갔다
+     개요 데이터는 1133ms에 준비됐는데 화면은 3078ms까지 스피너였다.
+
+     `newcomers`는 특히 나쁘다. 60초 TTL 캐시가 있는데 **미스 시 2.8~3.0초**이고
+     (4회 측정: 2794/2861/2990/2927ms), 그 계산이 도는 동안 **같은 프로세스의 다른
+     요청까지 밀린다**(실측: newcomers가 캐시 히트 383ms인데 나머지 4개가 3.9초까지
+     늘어난 회차가 있었다). 그래서 첫 진입에서는 **아예 보내지 않는다** —
+     프리페치조차 하지 않는 이유가 이것이다. */
+  const [rank, setRank]   = useState<RisingLiveRanking | null>(null);
+  const [cats, setCats]   = useState<RisingCategories | null>(null);
+  const [news, setNews]   = useState<RisingNewcomers | null>(null);
+  /* 키 이름(`rank`/`cats`/`news`)은 `lib/statsInitialLoad`의 `LazyKey`와 같아야 한다 —
+     `pendingTabLoads`가 그 이름으로 상태를 읽는다. */
+  const [rankState, setRankState] = useState<LoadState>("idle");
+  const [catsState, setCatsState] = useState<LoadState>("idle");
+  const [newsState, setNewsState] = useState<LoadState>("idle");
   /* ── 좌측 통계 sidebar 접힘 상태 ──────────────────────────────────────
      헤더 햄버거가 이 상태를 토글한다(상태 소유권은 **이 페이지 하나**다).
 
@@ -2357,15 +2411,45 @@ export default function StatsPage() {
   // selectTab을 쓴다 — setTab을 직접 부르면 URL의 ?tab= 이 갱신되지 않는다
   const pickCategory = (c: string | null) => { setPickedCat(c); if (c) selectTab("category_streamers"); };
 
+  /* 첫 화면 게이트 — **개요 탭이 쓰는 둘만** 기다린다.
+     둘은 병렬이고 둘 다 가볍다(운영 p50: overview 274ms · rising-stars 269ms). */
+  /* 언마운트 뒤 도착한 응답으로 상태를 건드리지 않는다.
+     `useRef`를 쓰는 이유는 아래 지연 로더와 같다(`whenMounted` 주석 참고). */
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+
   useEffect(() => {
-    Promise.all([
-      api.rising.overview(), api.rising.liveRanking(200),
-      api.rising.categories(), api.rising.risingStars(20), api.rising.newcomers(80),
-    ])
-      .then(([o, r, c, s, nc]) => { setOv(o); setRank(r); setCats(c); setStars(s); setNews(nc); })
-      .catch(() => setError(true))
-      .finally(() => setLoading(false));
+    loadFirstPaint(api.rising)
+      .then(whenMounted(mounted, ([o, s]) => { setOv(o); setStars(s); }))
+      .catch(whenMounted(mounted, () => setError(true)))
+      .finally(() => { if (mounted.current) setLoading(false); });
   }, []);
+
+  /* 탭 전용 데이터는 **그 탭을 처음 열 때** 가져온다.
+     `idle`일 때만 시작하므로 탭을 오가도 재요청하지 않는다(중복 호출 0). */
+  useEffect(() => {
+    const todo = pendingTabLoads(tab, { rank: rankState, cats: catsState, news: newsState });
+    for (const key of todo) {
+      /* 실패는 **그 탭의 상태만** 바꾼다. `setError(true)`를 부르면 개요까지
+         오류 화면이 된다 — 랭킹을 못 받은 것과 통계 전체를 못 받은 것은 다르다. */
+      if (key === "rank") {
+        setRankState("loading");
+        api.rising.liveRanking(200)
+          .then(whenMounted(mounted, (d) => { setRank(d); setRankState("ready"); }))
+          .catch(whenMounted(mounted, () => setRankState("error")));
+      } else if (key === "cats") {
+        setCatsState("loading");
+        api.rising.categories()
+          .then(whenMounted(mounted, (d) => { setCats(d); setCatsState("ready"); }))
+          .catch(whenMounted(mounted, () => setCatsState("error")));
+      } else {
+        setNewsState("loading");
+        api.rising.newcomers(80)
+          .then(whenMounted(mounted, (d) => { setNews(d); setNewsState("ready"); }))
+          .catch(whenMounted(mounted, () => setNewsState("error")));
+      }
+    }
+  }, [tab, rankState, catsState, newsState]);
 
   const collectedLabel = useMemo(() =>
     ov?.collected_at
@@ -2553,8 +2637,11 @@ export default function StatsPage() {
               {tab === "overview"           && ov   && <OverviewTab ov={ov} stars={stars} />}
               {/* 두 통계 탭은 **각자 자기 상태를 갖는다**. `key`로 강제 재마운트해
                   한쪽에서 난 오류·스크롤 위치가 다른 쪽에 남지 않게 한다. */}
+              {/* `initial`을 넘기지 않는다 — 이 컴포넌트는 값이 없으면 **스스로**
+                  불러온다(`small` 탭이 원래 그렇게 동작해 왔다). 최상위가 미리
+                  받아 두려고 첫 화면을 3초 잠그던 것이 이번에 고친 문제다. */}
               {tab === "newcomers_stats" && (
-                <NewcomerStatsTab key="new" group="new" initial={news}
+                <NewcomerStatsTab key="new" group="new"
                                   onRanking={() => selectTab("newcomers_ranking")} />
               )}
               {tab === "small_stats" && (
@@ -2562,11 +2649,20 @@ export default function StatsPage() {
                                   onRanking={() => selectTab("small_ranking")} />
               )}
               {tab === "period_analysis"              && <PeriodAnalysis />}
-              {tab === "ranking"            && rank && <RankingTab rank={rank} />}
-              {tab === "newcomers_ranking"  && news && <NewcomersRankingTab data={news} />}
+              {tab === "ranking" && (
+                rank ? <RankingTab rank={rank} />
+                     : <TabDataState state={rankState} what="전체 스트리머 랭킹" />
+              )}
+              {tab === "newcomers_ranking" && (
+                news ? <NewcomersRankingTab data={news} />
+                     : <TabDataState state={newsState} what="신규 스트리머 랭킹" />
+              )}
               {tab === "small_ranking"                && <SmallRankingTab />}
               {tab === "ranking_period"                && <PeriodRankingTab />}
-              {tab === "category"           && cats && <CategoryTab cats={cats} onPick={pickCategory} />}
+              {tab === "category" && (
+                cats ? <CategoryTab cats={cats} onPick={pickCategory} />
+                     : <TabDataState state={catsState} what="카테고리 분석" />
+              )}
               {tab === "tags"                         && <TagSearch />}
               {tab === "group"                        && <GroupAnalysis />}
               {tab === "category_streamers"          && (
