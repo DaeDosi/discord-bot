@@ -1600,6 +1600,40 @@ async def init_db():
         "ON correction_requests(dedupe_key) WHERE dedupe_key <> ''",
         "CREATE INDEX IF NOT EXISTS idx_correction_time "
         "ON correction_requests(created_at DESC)",
+
+        # ── 채널별 7일 롤업 집계용 커버링 인덱스 (CHZZK-STATS-PERF-2) ──────
+        # `/api/rising/newcomers`의 agg7 쿼리:
+        #   SELECT chzzk_channel_id, SUM(sum_viewers)/SUM(snaps), SUM(snaps)
+        #   FROM rising_hourly_rollup WHERE hour_ts >= ? GROUP BY chzzk_channel_id
+        #
+        # 기존 `idx_rising_roll_channel(chzzk_channel_id, hour_ts)`는 GROUP BY 순서는
+        # 주지만 `sum_viewers`·`snaps`가 인덱스에 없어 **행마다 테이블을 다시 읽었다**.
+        # 필요한 컬럼을 전부 담으면 테이블 접근이 사라진다.
+        #   실측(롤업 100.8만 행): PLAN이 COVERING INDEX로 바뀌고 605ms -> 187ms (-69%).
+        #
+        # 이게 왜 중요한가 — `get_db()`는 **전역 단일 aiosqlite 커넥션**이고 aiosqlite는
+        # 커넥션당 워커 스레드 하나로 쿼리를 **직렬 처리**한다. 그래서 이 쿼리가 도는
+        # 동안 뒤에 온 가벼운 쿼리가 큐에서 기다린다(실측: 이 쿼리만 돌 때 가벼운 쿼리
+        # 중앙값 1.3ms인데 최대 333ms -> 인덱스 적용 후 109ms).
+        # 이벤트 루프 자체는 이 쿼리에 막히지 않는다(heartbeat 최대 12ms인데 이 머신의
+        # 아무 일도 안 할 때 바닥값이 12.7ms다 — 즉 '측정 한계'이지 '여유'가 아니다).
+        #
+        # 위 `idx_rising_roll_cover`와 목적이 다르다. 그쪽은 `hour_ts` 선두라
+        # **시간대 집계**용이고, 이쪽은 `chzzk_channel_id` 선두라 **채널별 집계**용이다.
+        # newcomers는 두 쿼리를 모두 실행하며 각각 다른 인덱스를 쓴다(실측 PLAN 확인).
+        #
+        # 쓰기 비용: 수집 1회당 롤업 upsert 약 3천 행에 인덱스 1개가 더 붙는다
+        # (같은 판단의 선례가 `idx_rising_roll_cover` 주석에 있다).
+        # 크기·기동 비용(롤업 50.4만 행 실측): 인덱스 약 25MB(50.8 bytes/행),
+        # **인덱스가 없는 DB의 첫 기동에서 한 번만** 약 0.6초가 더 걸린다(0.88~1.2us/행).
+        # 이후 기동은 기준본과 같다(25~27ms).
+        #
+        # 참고 — 이 인덱스가 생기면 기존 `idx_rising_roll_channel(chzzk_channel_id,
+        # hour_ts)`는 컬럼 접두가 완전히 포함돼 사실상 중복이 된다. 지금은 남겨 둔다:
+        # 인덱스를 지우는 것은 되돌리기 어렵고 다른 쿼리의 PLAN을 바꿀 수 있어
+        # **별도 승인과 점검이 있을 때** 다룰 일이다(그때까지 쓰기 비용만 조금 더 든다).
+        "CREATE INDEX IF NOT EXISTS idx_rising_roll_channel_cover "
+        "ON rising_hourly_rollup(chzzk_channel_id, hour_ts, sum_viewers, snaps)",
     ]:
         try:
             await db.execute(sql)

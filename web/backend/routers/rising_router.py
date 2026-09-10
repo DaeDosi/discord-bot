@@ -5,6 +5,7 @@
 데이터가 쌓이기 전(수집 시작 직후)에는 일부 지표(라이징/히트맵)가 비어 있을 수 있다.
 """
 import asyncio
+import functools
 import hashlib
 import json
 import re
@@ -662,8 +663,85 @@ async def _first_stream_map(db) -> dict[str, int]:
     return out
 
 
+#: 진행 중인 `newcomers` 계산. 키는 캐시 키와 같다(`(group, tag_version)`).
+#:
+#: **왜 필요한가** — 캐시가 만료된 순간 동시에 들어온 요청이 각자 계산을 시작하면,
+#: 그 무거운 롤업 쿼리가 요청 수만큼 반복된다. `get_db()`는 전역 단일 aiosqlite
+#: 커넥션이라 그 쿼리들이 **직렬로 줄을 서고**, 뒤에 온 가벼운 API까지 그만큼 밀린다
+#: (동시 5건 실측: 같이 돈 가벼운 DB 쿼리 최대 1012ms -> 100ms).
+#: 하나만 계산하고 나머지는 합류시킨다.
+#:
+#: ⚠️ **프로세스 안에서만 유효하다.** Railway 인스턴스가 여럿이면 인스턴스마다 한 번씩
+#: 계산한다 — 이 구조로 전체가 보호된다고 주장하지 말 것.
+_newcomers_inflight: dict = {}
+
+
 @router.get("/newcomers")
 async def newcomers(limit: int = 100, group: str = "new"):
+    """`_newcomers_compute`의 single-flight 래퍼.
+
+    같은 키의 계산이 이미 돌고 있으면 **새로 시작하지 않고 그 결과를 기다린다.**
+
+    키는 `(group, 태그 세대)`다. `limit`은 **일부러 넣지 않는다** — 계산은 항상
+    전체를 내고 자르기는 `_newcomers_slice`가 응답에서만 하므로(그래서
+    `_newcomers_compute`에는 `limit` 인자가 아예 없다), limit이 달라도 같은 계산을
+    안전하게 공유할 수 있다. 요청 인자는 이 둘뿐이며
+    (시간 범위 같은 별도 파라미터가 없다) 인자가 늘어나면 키를 다시 설계해야 한다 —
+    `test_endpoint_signature_is_limit_and_group_only`가 그 순간 깨지도록 걸어 뒀다.
+
+    계산은 요청 코루틴이 아니라 **독립 Task**에서 돈다. 요청 쪽에 그대로 붙여 두면
+    최초 요청자가 연결을 끊는 순간 `CancelledError`가 합류자 전원에게 퍼진다.
+    """
+    g = group if group in _GROUPS else "new"
+    ck = (g, st.version())
+
+    hit = _newcomers_cache.get(ck)
+    if hit and int(time.time()) - hit[0] < 60:
+        return _newcomers_slice(hit[1], limit)
+
+    task = _newcomers_inflight.get(ck)
+    if task is None:
+        task = asyncio.create_task(_newcomers_compute(group=g))
+        _newcomers_inflight[ck] = task
+        task.add_done_callback(functools.partial(_newcomers_release, ck))
+
+    # shield — 이 요청이 취소돼도 공유 계산과 다른 합류자는 살아 있어야 한다.
+    # 실패하면 합류자 전원이 같은 예외를 받는다(실패는 캐시하지 않는다).
+    return _newcomers_slice(await asyncio.shield(task), limit)
+
+
+def _newcomers_release(ck, task: "asyncio.Task") -> None:
+    """성공·예외·취소 **모든** 경로에서 진행 중 표시를 지운다.
+
+    같은 키에 이미 **다른** Task가 들어와 있으면 건드리지 않는다 — 끝난 Task의
+    정리가 뒤이어 시작된 새 계산을 지워 버리는 ABA를 막는다.
+    """
+    if _newcomers_inflight.get(ck) is task:
+        del _newcomers_inflight[ck]
+    if not task.cancelled():
+        # 아무도 기다리지 않는 채로 실패하면 "회수되지 않은 예외" 경고가 뜬다.
+        task.exception()
+
+
+def _newcomers_slice(result: dict, limit: int | None) -> dict:
+    """캐시에는 **자르지 않은 전체**를 담고, 응답에서만 `limit`을 적용한다.
+
+    예전에는 계산 안에서 `out[:limit]`을 하고 그 결과를 캐시했다. 그러면 limit이
+    다른 요청이 같은 캐시를 공유할 때 행 수가 어긋난다. 요약/카테고리 값은 원래도
+    자르기 전 전체 기준이므로 여기서 `streamers`만 잘라내면 계약이 그대로 유지된다.
+    """
+    if limit is None:
+        return result
+    streamers = result.get("streamers") or []
+    if len(streamers) <= limit:
+        return result
+    # **새 dict을 만든다.** `result`는 캐시에 들어 있는 바로 그 객체이고 합류한
+    # 요청들이 함께 보고 있다 — 제자리에서 자르면 캐시가 오염돼 뒤이은 다른
+    # `limit` 요청이 잘린 목록을 받는다.
+    return {**result, "streamers": streamers[:limit]}
+
+
+async def _newcomers_compute(group: str = "new"):
     """신규 & 초기 스트리머 분석 — 현재 라이브 중인 채널을 두 기준 중 하나로 거른다.
 
     group=new   : (지금 - 첫 방송일) <= 60일. 첫 방송일은 chzzk_channel_history의
@@ -680,10 +758,9 @@ async def newcomers(limit: int = 100, group: str = "new"):
     now = int(time.time())
     # 캐시 키에 태그 세대(version)를 섞는다. 안 섞으면 태그를 바꿔도 최대 60초 동안
     # 낡은 응답이 나가 "저장했는데 화면이 그대로"가 된다.
+    # (히트 시 조기 반환은 위 `newcomers` 래퍼가 한다 — single-flight와 같은 자리에서
+    #  판정해야 "캐시 미스 → 계산 시작" 사이에 다른 요청이 끼어들지 않는다.)
     ck = (group, st.version())
-    hit = _newcomers_cache.get(ck)
-    if hit and now - hit[0] < 60:
-        return hit[1]
 
     ts = await _latest_run_ts()
     if ts is None:
@@ -1016,7 +1093,9 @@ async def newcomers(limit: int = 100, group: str = "new"):
         key=lambda x: x["viewers"], reverse=True,
     )[:20]
 
-    result = {"collected_at": ts, "group": group, "streamers": out[:limit],
+    # **자르지 않고** 캐시한다 — `limit`은 응답 단계(`_newcomers_slice`)에서 적용한다.
+    # 그래야 limit이 다른 요청이 같은 캐시를 공유해도 행 수가 어긋나지 않는다.
+    result = {"collected_at": ts, "group": group, "streamers": out,
               "summary": summary, "insights": insights, "categories": categories,
               "criteria": {"debut_max_days": _NEW_DEBUT_MAX_DAYS,
                            "small_avg_max": _SMALL_AVG_MAX}}
