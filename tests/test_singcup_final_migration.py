@@ -101,7 +101,7 @@ def _snapshot(path):
     conn = sqlite3.connect(path)
     out = {}
     for t in ("piku_sources", "piku_datasets", "piku_entries", "piku_mappings", "piku_auto_runs"):
-        cols = [c for c in _cols(conn, t) if c not in ("campaign", "scheduled_at")]
+        cols = [c for c in _cols(conn, t) if c not in ("campaign", "scheduled_at", "invocation_id")]
         out[t] = conn.execute(f"SELECT {', '.join(cols)} FROM {t} ORDER BY 1, 2").fetchall()
     conn.close()
     return out
@@ -116,6 +116,13 @@ def test_fresh_db_has_all_campaign_columns_and_new_table(tmp_path):
         assert c[2].upper() == "TEXT" and c[3] == 1 and c[4] == "'qualifier'", t   # NOT NULL DEFAULT
     runs = _cols(conn, "piku_auto_runs")
     assert runs["campaign"][4] == "''" and runs["scheduled_at"][4] == "0"
+    assert runs["invocation_id"][4] == "''"
+    # 같은 invocation의 회차 중복을 DB에서도 막는 부분 unique 인덱스.
+    idx = {r[1] for r in conn.execute("PRAGMA index_list(piku_auto_runs)")}
+    assert "idx_piku_auto_runs_invocation" in idx
+    # 테스트 허가 테이블(해시만 저장).
+    assert set(_cols(conn, "piku_test_grants")) == {"grant_hash", "device_id", "campaign",
+                                                    "expires_at", "used_at", "created_at"}
     src = _cols(conn, "piku_auto_run_sources")
     assert set(src) == {"run_id", "campaign", "source", "ok", "kind", "row_count"}
     pk = [r for r in conn.execute("PRAGMA table_info(piku_auto_run_sources)") if r[5]]
@@ -138,7 +145,8 @@ def test_legacy_db_migrates_in_place_and_values_are_unchanged(tmp_path):
     for t in TABLES_WITH_CAMPAIGN:
         assert conn.execute(f"SELECT count(*) FROM {t} WHERE campaign IS NULL OR campaign<>'qualifier'"
                             ).fetchone()[0] == 0, t
-    assert conn.execute("SELECT campaign, scheduled_at FROM piku_auto_runs").fetchone() == ("", 0)
+    assert conn.execute("SELECT campaign, scheduled_at, invocation_id FROM piku_auto_runs"
+                        ).fetchone() == ("", 0, "")
     # 활성 dataset·마지막 공개 시각 그대로.
     assert conn.execute("SELECT id FROM piku_datasets WHERE division='groups' AND status='active'"
                         ).fetchone() == (13,)
@@ -212,6 +220,8 @@ def test_new_columns_are_harmless_to_old_code_shapes(tmp_path):
                  " VALUES ('h','groups',1,1)")
     conn.execute("INSERT INTO piku_auto_runs (device_id, trigger, started_at, outcome)"
                  " VALUES (1,'alarm',1,'running')")
+    conn.execute("INSERT INTO piku_auto_runs (device_id, trigger, started_at, outcome)"
+                 " VALUES (1,'alarm',2,'running')")   # invocation_id='' 는 unique 대상 밖
     conn.execute("INSERT INTO piku_mappings (division, piku_name, channel_id, state, updated_at)"
                  " VALUES ('groups','x',NULL,'unmapped',0)")
     conn.commit()

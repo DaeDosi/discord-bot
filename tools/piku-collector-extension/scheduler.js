@@ -64,6 +64,35 @@ const MAX_PAGES = 10;
 
 const nowSafe = (env) => (env.now ? env.now() : Date.now());
 
+/** 서버가 `[code] 문장` 형태로 주는 안전한 실패 코드를 **정규화된 종류**로 바꾼다.
+ *
+ *  예전에는 challenge·서명·토큰의 모든 실패가 `token_failed` 하나로 뭉개져서, 운영에서
+ *  "수집 토큰을 받지 못함"만 보고는 원인(MANUAL 게이트인지, 장치 폐기인지, 구버전
+ *  확장인지, 서명 오류인지)을 알 수 없었다. **응답 원문·토큰·nonce는 쓰지 않고**
+ *  대괄호 코드만 읽는다. 모르는 코드는 `token_rejected`로 접는다. */
+const TOKEN_KINDS = new Set([
+  "manual_mode", "test_grant_required", "test_grant_invalid", "test_grant_expired",
+  "test_grant_used", "device_not_active", "protocol_too_old",
+  "bad_signature", "campaign_frozen", "rate_limited", "no_device", "bad_division",
+  "automation_off", "bad_challenge",
+]);
+
+export function classifyAuthError(err) {
+  const msg = String((err && err.message) || err || "");
+  if (/^\s*(Failed to fetch|NetworkError|TypeError: Failed to fetch)/i.test(msg)
+      || /요청 실패 \(HTTP 5\d\d\)/.test(msg)) return "relay_unavailable";
+  if (/요청 실패 \(HTTP 404\)/.test(msg)) return "relay_unavailable";
+  if (/timed? ?out|AbortError/i.test(msg)) return "timeout";
+  const m = /\[([a-z_]{3,40})\]/.exec(msg);
+  const code = m && m[1];
+  if (!code) return "token_rejected";
+  if (code === "automation_off") return "manual_mode";
+  if (code === "no_device") return "device_not_active";
+  if (code === "bad_challenge") return "challenge_expired";
+  if (TOKEN_KINDS.has(code)) return code;
+  return "token_rejected";
+}
+
 /** 전송할 내용의 지문. 같은 표를 두 번 보내지 않기 위한 것이다. */
 function fingerprint(payload) {
   const head = `${payload.campaign}:${payload.division}:${payload.sourceId}:${payload.rowCount}`;
@@ -287,8 +316,9 @@ export function createScheduler(env) {
       const c = await env.getChallenge(division);
       const t = await env.signAndRedeem(c.challengeId, c.message);
       token = t.token;
-    } catch {
-      return { ok: false, kind: "token_failed" };
+    } catch (e) {
+      // 원인을 구분해 남긴다(원문·토큰·nonce는 담지 않는다).
+      return { ok: false, kind: classifyAuthError(e) };
     }
 
     try {
@@ -324,8 +354,11 @@ export function createScheduler(env) {
   }
 
   /** 한 회차. `trigger`는 `alarm`(자동) 또는 `manual`(사람). `plan`은 서버가 준 것. */
-  async function runCycle({ trigger, mode, deviceActive, plan }) {
+  async function runCycle({ trigger, mode, deviceActive, plan, invocationId }) {
     const manual = trigger === "manual";
+    // 한 번의 클릭(또는 alarm 발화)을 식별한다. 보고가 재시도돼도 서버 run은 하나다.
+    const invocation = invocationId
+      || `${trigger}-${nowSafe(env)}-${Math.random().toString(36).slice(2, 10)}`;
     // 1) 모드 게이트 — 자동 실행은 MANUAL에서 돌지 않는다.
     if (!manual && mode === "MANUAL") return { skipped: "manual_mode" };
     if (!deviceActive) return { skipped: "no_active_device" };
@@ -402,7 +435,7 @@ export function createScheduler(env) {
       }
       try {
         await env.report({
-          trigger, campaign: resolved.campaign, outcome,
+          trigger, campaign: resolved.campaign, outcome, invocationId: invocation,
           scheduledAt, startedAt, finishedAt,
           sources: Object.fromEntries(keys.map((d) => [d, {
             ok: !!sources[d].ok, kind: sources[d].kind || "", rows: sources[d].rows || 0,
@@ -415,7 +448,7 @@ export function createScheduler(env) {
     }
     // 공개는 여기에 없다. 이 값은 호출부가 착각하지 않게 명시한다.
     return { outcome, campaign: resolved.campaign, sources, divisions: sources,
-             published: false, scheduledAt, startedAt, nextRunAt };
+             published: false, scheduledAt, startedAt, nextRunAt, invocationId: invocation };
   }
 
   return {

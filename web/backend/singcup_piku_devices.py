@@ -313,6 +313,10 @@ async def revoke(device_id: Any) -> dict:
     await db.execute(
         "UPDATE piku_collector_challenges SET used_at=? WHERE device_id=? AND used_at=0",
         (now, row["id"]))
+    # 미사용 테스트 허가도 함께 소각한다.
+    await db.execute(
+        "UPDATE piku_test_grants SET used_at=? WHERE device_id=? AND used_at=0",
+        (now, row["id"]))
     await db.commit()
     _log("revoked", device_id=row["id"])
     return {"deviceId": row["id"], "status": "revoked", "revokedAt": now}
@@ -369,13 +373,111 @@ def challenge_message(challenge_id: str, nonce: str, division: str,
             f"|{meta.get('sourceId', '')}|{int(device_id)}")
 
 
+# ── 테스트 수집 허가(SINGCUP-FINAL-1b) ─────────────────────────────────────
+#
+# **MANUAL의 의미를 서버가 지킨다.** 등록 장치가 "수동입니다"라고 말한다고 challenge를
+# 내주면, 변조된 확장이 MANUAL을 무시하고 언제든 수집할 수 있다(장치 키만 있으면).
+# 그래서 MANUAL에서는 자동이든 수동이든 challenge를 내주지 않되, 운영자가 Nexadmin에서
+# 방금 발급한 **짧은 1회용 허가 코드**를 함께 내면 그 한 번만 허용한다.
+#   · 허가는 장치·단계에 묶이고 10분 뒤 만료, 한 번 쓰면 끝, DB에는 해시만.
+#   · 허가 소비는 challenge 행을 만들기 **전**이고 성공·실패와 무관하게 소비된다.
+#   · AUTO_COLLECT에서는 허가가 필요 없다(모드 자체가 허용).
+#   · 장기 secret이 아니다(pairing code와 같은 성격) — 확장은 저장하지 않는다.
+TEST_GRANT_TTL_SECONDS = max(60, min(3600,
+                                     int(os.getenv("PIKU_TEST_GRANT_TTL", "600"))))
+
+
+def _hash_grant(raw: str, device_id: int, campaign: str) -> str:
+    norm = "".join(str(raw or "").split()).upper()
+    return hashlib.sha256(f"{norm}|{int(device_id)}|{campaign}".encode()).hexdigest()
+
+
+async def test_grant_issue(device_id: Any, campaign: Any) -> dict:
+    """운영자(OWNER)가 발급. **코드 원문은 이 반환값에서 한 번만** 나온다."""
+    if campaign not in camps.CAMPAIGNS:
+        raise DeviceError("bad_campaign", "알 수 없는 단계입니다.")
+    if camps.CAMPAIGNS[campaign]["status"] != "active":
+        raise DeviceError("campaign_frozen", "동결된 단계에는 테스트 허가를 내지 않습니다.")
+    row = await _device_row(device_id)
+    if not row or row["status"] != "active":
+        raise DeviceError("device_not_active", "등록이 끝나지 않았거나 폐기된 장치입니다.")
+    raw = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LEN))
+    now = int(time.time())
+    db = await get_db()
+    # 같은 장치·단계의 미사용 허가는 하나만 살아 있게 한다(예전 것은 소각).
+    await db.execute(
+        "UPDATE piku_test_grants SET used_at=? WHERE device_id=? AND campaign=? AND used_at=0",
+        (now, row["id"], campaign))
+    await db.execute(
+        "INSERT INTO piku_test_grants (grant_hash, device_id, campaign, expires_at, created_at)"
+        " VALUES (?,?,?,?,?)",
+        (_hash_grant(raw, row["id"], campaign), row["id"], campaign,
+         now + TEST_GRANT_TTL_SECONDS, now))
+    await db.commit()
+    _log("test_grant_issued", device_id=row["id"], campaign=campaign)
+    return {"deviceId": row["id"], "campaign": campaign, "grant": raw,
+            "expiresAt": now + TEST_GRANT_TTL_SECONDS, "ttlSeconds": TEST_GRANT_TTL_SECONDS}
+
+
+#: 허가 실패의 **안전한** 종류. 운영자가 취할 조치가 서로 다르므로 구분한다
+#: (없음→발급, 틀림→다시 입력, 만료·사용됨→재발급). 어느 쪽도 코드 원문이나
+#: 내부 값을 드러내지 않는다. 코드 자체는 8자·1회용이고 challenge 경로는 이미
+#: 장치별 속도 제한 뒤에 있어 추측 오라클로 쓸 수 없다.
+GRANT_FAIL_CODES = ("test_grant_required", "test_grant_invalid",
+                    "test_grant_expired", "test_grant_used")
+
+_GRANT_FAIL_MESSAGES = {
+    "test_grant_required": "MANUAL 모드입니다. Nexadmin에서 이 장치의 테스트 수집 허가를 "
+                           "발급받아 입력해 주세요(10분·1회용).",
+    "test_grant_invalid": "테스트 허가 코드가 올바르지 않습니다. Nexadmin에 표시된 "
+                          "코드를 다시 확인해 주세요.",
+    "test_grant_expired": "테스트 허가가 만료됐습니다(10분). Nexadmin에서 다시 발급해 주세요.",
+    "test_grant_used": "이미 사용한 테스트 허가입니다. Nexadmin에서 다시 발급해 주세요.",
+}
+
+
+async def _consume_test_grant(device_id: int, campaign: str, raw: Any) -> str:
+    """허가를 **한 번만** 통과시킨다(조건부 UPDATE rowcount).
+
+    성공하면 `""`, 실패하면 `GRANT_FAIL_CODES` 중 하나를 돌려준다. 소비는 조건부
+    UPDATE 한 번이라 동시에 두 요청이 와도 `rowcount=1`은 정확히 하나뿐이다 —
+    나머지는 `used`로 떨어진다.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return "test_grant_required"
+    now = int(time.time())
+    db = await get_db()
+    grant_hash = _hash_grant(raw, device_id, campaign)
+    cur = await db.execute(
+        "UPDATE piku_test_grants SET used_at=? WHERE grant_hash=? AND device_id=? AND campaign=?"
+        " AND used_at=0 AND expires_at>?",
+        (now, grant_hash, int(device_id), campaign, now))
+    await db.commit()
+    if cur.rowcount:
+        return ""
+    # 왜 안 됐는지만 좁혀 준다. 행이 없으면 "코드가 틀렸다"와 구분할 수 없고,
+    # 그것이 정확히 우리가 말할 수 있는 전부다(장치·단계도 해시에 묶여 있다).
+    cur = await db.execute(
+        "SELECT used_at, expires_at FROM piku_test_grants WHERE grant_hash=?"
+        " AND device_id=? AND campaign=?", (grant_hash, int(device_id), campaign))
+    row = await cur.fetchone()
+    if row is None:
+        return "test_grant_invalid"
+    if row["used_at"]:
+        return "test_grant_used"
+    return "test_grant_expired"
+
+
 async def challenge_issue(device_id: Any, division: Any, *,
-                          automation: bool = False, protocol: int = 1) -> dict:
+                          automation: bool = False, protocol: int = 1,
+                          test_grant: Any = None) -> dict:
     """challenge 발급.
 
-    `automation=True`는 스케줄러가 부르는 경로다 — 모드가 MANUAL이면 거절한다.
-    운영자가 확장에서 직접 누르는 수동 경로(`automation=False`)는 모드와 무관하게
-    허용한다. 자동화를 꺼 둔다고 수동 수집까지 막히면 안 된다.
+    `automation=True`는 alarm 회차다 — 모드가 MANUAL이면 거절한다(`automation_off`).
+    `automation=False`는 사람이 누른 실행이다 — **MANUAL이면 운영자가 발급한 1회용
+    테스트 허가(`test_grant`)가 있어야** 한다(`test_grant_required`). AUTO_COLLECT에서는
+    둘 다 허가 없이 허용한다. 서버가 모드를 지키므로 확장의 "수동" 주장만으로는
+    MANUAL을 넘을 수 없다.
     """
     if division not in SOURCES:
         raise DeviceError("bad_division", "알 수 없는 부문입니다.")
@@ -397,9 +499,15 @@ async def challenge_issue(device_id: Any, division: Any, *,
         raise DeviceError(
             "device_not_active",
             "등록이 끝나지 않았거나 폐기된 장치입니다." if row["status"] != "active" else "")
-    if automation and await get_mode() == "MANUAL":
+    mode = await get_mode()
+    if automation and mode == "MANUAL":
         raise DeviceError("automation_off",
                           "자동 수집이 꺼져 있습니다(MANUAL). Nexadmin에서 모드를 바꿔 주세요.")
+    if not automation and mode == "MANUAL":
+        # 허가는 성공·실패와 무관하게 여기서 소비된다(허가 하나로 여러 번 시험 금지).
+        fail = await _consume_test_grant(row["id"], camps.campaign_of(division), test_grant)
+        if fail:
+            raise DeviceError(fail, _GRANT_FAIL_MESSAGES[fail])
 
     cid = uuid.uuid4().hex
     nonce = base64.b64encode(secrets.token_bytes(32)).decode()

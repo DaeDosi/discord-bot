@@ -194,13 +194,18 @@ def test_revoked_device_and_mode_gates(env):
         with pytest.raises(devices.DeviceError) as ei:
             await devices.challenge_issue(device_id, "final", automation=True, protocol=2)
         assert ei.value.code == "device_not_active"
-        # 새 장치: MANUAL이면 자동 challenge 거절, 수동은 허용
+        # 새 장치: MANUAL이면 자동도 수동도 거절, 운영자 허가가 있을 때만 한 번 통과
         device_id2, dev2, _ = await _register()
         await devices.set_mode("MANUAL")
         with pytest.raises(devices.DeviceError) as ei:
             await devices.challenge_issue(device_id2, "final", automation=True, protocol=2)
         assert ei.value.code == "automation_off"
-        c = await devices.challenge_issue(device_id2, "final", automation=False, protocol=2)
+        with pytest.raises(devices.DeviceError) as ei:
+            await devices.challenge_issue(device_id2, "final", automation=False, protocol=2)
+        assert ei.value.code == "test_grant_required"
+        g = await devices.test_grant_issue(device_id2, "final")
+        c = await devices.challenge_issue(device_id2, "final", automation=False, protocol=2,
+                                          test_grant=g["grant"])
         assert c["campaign"] == "final"
     env.run_until_complete(go())
 

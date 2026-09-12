@@ -1460,6 +1460,8 @@ export interface PikuRunDivision {
 export interface PikuAutoRun {
   id: number;
   deviceId: number;
+  /** 확장의 한 번 클릭(또는 alarm 발화)을 식별한다. 같은 값이면 서버 run은 하나다. */
+  invocationId?: string;
   trigger: "alarm" | "manual";
   /** 어느 단계의 회차인지. 구 회차는 빈 문자열. */
   campaign?: string;

@@ -103,11 +103,24 @@ async def _n_challenges(device_id: int, n: int, ip: str = "1.2.3.4"):
     ok = 0
     for _ in range(n):
         try:
-            await sched.guarded_challenge(device_id, "groups", ip=ip)
+            await _guarded(device_id, "groups", ip=ip)
             ok += 1
         except devices.DeviceError:
             pass
     return ok
+
+
+async def _guarded(device_id, division, **kw):
+    """MANUAL 수동 challenge는 1회용 테스트 허가가 필요하다(SINGCUP-FINAL-1b).
+    이 파일은 **속도 제한**을 보는 곳이라, 허가는 여기서 자동으로 붙여 준다."""
+    import singcup_piku_campaigns as camps
+    if not kw.get("automation") and await devices.get_mode() == "MANUAL" \
+            and "test_grant" not in kw:
+        row = await devices._device_row(device_id)
+        if row and row["status"] == "active" and division in camps.SOURCES:
+            g = await devices.test_grant_issue(row["id"], camps.campaign_of(division))
+            kw["test_grant"] = g["grant"]
+    return await sched.guarded_challenge(device_id, division, **kw)
 
 
 # ── 1) 속도 제한 ────────────────────────────────────────────────────────────
@@ -116,7 +129,7 @@ def test_normal_hourly_collection_is_not_throttled():
     async def go():
         dev_id, _ = await _active_device()
         for d in ("female_solo", "male_solo", "groups"):
-            c = await sched.guarded_challenge(dev_id, d, ip="1.2.3.4")
+            c = await _guarded(dev_id, d, ip="1.2.3.4")
             assert c["division"] == d
     run(go())
 
@@ -134,7 +147,7 @@ def test_burst_beyond_limit_is_rejected():
         dev_id, _ = await _active_device()
         await _n_challenges(dev_id, sched.BURST_LIMIT)
         with pytest.raises(devices.DeviceError) as e:
-            await sched.guarded_challenge(dev_id, "groups", ip="1.2.3.4")
+            await _guarded(dev_id, "groups", ip="1.2.3.4")
         assert e.value.code == "rate_limited"
     run(go())
 
@@ -150,7 +163,7 @@ def test_throttled_request_creates_no_challenge_row():
             "SELECT count(*) FROM piku_collector_challenges")).fetchone())[0]
         for _ in range(5):
             with pytest.raises(devices.DeviceError):
-                await sched.guarded_challenge(dev_id, "groups", ip="1.2.3.4")
+                await _guarded(dev_id, "groups", ip="1.2.3.4")
         after = (await (await conn.execute(
             "SELECT count(*) FROM piku_collector_challenges")).fetchone())[0]
         assert after == before, "제한된 요청이 challenge 행을 만들었다"
@@ -164,10 +177,10 @@ def test_long_window_limit_applies_beyond_burst():
         # burst 창을 넘겨 가며 window 한도까지 채운다.
         for i in range(sched.WINDOW_LIMIT):
             await sched._shift_attempts_for_tests(dev_id, seconds=sched.BURST_SECONDS + 1)
-            await sched.guarded_challenge(dev_id, "groups", ip="1.2.3.4")
+            await _guarded(dev_id, "groups", ip="1.2.3.4")
         await sched._shift_attempts_for_tests(dev_id, seconds=sched.BURST_SECONDS + 1)
         with pytest.raises(devices.DeviceError) as e:
-            await sched.guarded_challenge(dev_id, "groups", ip="1.2.3.4")
+            await _guarded(dev_id, "groups", ip="1.2.3.4")
         assert e.value.code == "rate_limited"
     run(go())
 
@@ -179,8 +192,8 @@ def test_limit_is_per_device_not_global():
         b, _ = await _active_device("B")
         await _n_challenges(a, sched.BURST_LIMIT + 3, ip="1.1.1.1")
         with pytest.raises(devices.DeviceError):
-            await sched.guarded_challenge(a, "groups", ip="1.1.1.1")
-        c = await sched.guarded_challenge(b, "groups", ip="2.2.2.2")
+            await _guarded(a, "groups", ip="1.1.1.1")
+        c = await _guarded(b, "groups", ip="2.2.2.2")
         assert c["challengeId"]
     run(go())
 
@@ -202,7 +215,7 @@ def test_ip_limit_is_a_secondary_guard():
         for d in ids:
             for _ in range(sched.BURST_LIMIT):     # 장치별 한도 안
                 try:
-                    await sched.guarded_challenge(d, "groups", ip="9.9.9.9")
+                    await _guarded(d, "groups", ip="9.9.9.9")
                     ok += 1
                 except devices.DeviceError as e:
                     assert e.code == "rate_limited"
@@ -210,7 +223,7 @@ def test_ip_limit_is_a_secondary_guard():
         assert ok <= sched.IP_LIMIT, f"IP 한도를 넘겼다: {ok}"
         # 다른 IP는 여전히 통과해야 한다 — IP 한도가 전역 차단이 되면 안 된다.
         fresh, _ = await _active_device("다른망")
-        c = await sched.guarded_challenge(fresh, "groups", ip="10.0.0.1")
+        c = await _guarded(fresh, "groups", ip="10.0.0.1")
         assert c["challengeId"]
     run(go())
 
@@ -223,7 +236,7 @@ def test_rate_limit_survives_process_restart():
         # 모듈 상태를 통째로 날려도(재시작 흉내) 제한이 유지돼야 한다.
         sched._reset_process_state_for_tests()
         with pytest.raises(devices.DeviceError) as e:
-            await sched.guarded_challenge(dev_id, "groups", ip="1.2.3.4")
+            await _guarded(dev_id, "groups", ip="1.2.3.4")
         assert e.value.code == "rate_limited"
     run(go())
 
@@ -233,7 +246,7 @@ def test_rate_limit_message_leaks_nothing():
         dev_id, _ = await _active_device()
         await _n_challenges(dev_id, sched.BURST_LIMIT)
         with pytest.raises(devices.DeviceError) as e:
-            await sched.guarded_challenge(dev_id, "groups", ip="1.2.3.4")
+            await _guarded(dev_id, "groups", ip="1.2.3.4")
         blob = f"{e.value.code} {e.value.message}"
         for bad in ("nonce", "token", "signature", "1.2.3.4", "challengeId"):
             assert bad not in blob, f"{bad}가 제한 응답에 실렸다"
@@ -245,12 +258,12 @@ def test_revoked_and_pending_devices_are_blocked_before_rate_limit():
     async def go():
         pending = await devices.register_start("PC")
         with pytest.raises(devices.DeviceError) as e:
-            await sched.guarded_challenge(pending["deviceId"], "groups", ip="1.2.3.4")
+            await _guarded(pending["deviceId"], "groups", ip="1.2.3.4")
         assert e.value.code != "rate_limited"
         dev_id, _ = await _active_device("B")
         await devices.revoke(dev_id)
         with pytest.raises(devices.DeviceError) as e:
-            await sched.guarded_challenge(dev_id, "groups", ip="1.2.3.4")
+            await _guarded(dev_id, "groups", ip="1.2.3.4")
         assert e.value.code != "rate_limited"
     run(go())
 
@@ -261,7 +274,7 @@ def test_manual_mode_blocks_automation_challenges():
         dev_id, _ = await _active_device()
         await devices.set_mode("MANUAL")
         with pytest.raises(devices.DeviceError) as e:
-            await sched.guarded_challenge(dev_id, "groups", ip="1.2.3.4",
+            await _guarded(dev_id, "groups", ip="1.2.3.4",
                                           automation=True)
         assert e.value.code == "automation_off"
     run(go())
@@ -271,7 +284,7 @@ def test_auto_collect_mode_allows_automation():
     async def go():
         dev_id, _ = await _active_device()
         await devices.set_mode("AUTO_COLLECT")
-        c = await sched.guarded_challenge(dev_id, "groups", ip="1.2.3.4",
+        c = await _guarded(dev_id, "groups", ip="1.2.3.4",
                                           automation=True)
         assert c["challengeId"]
     run(go())
@@ -287,7 +300,7 @@ def test_auto_publish_is_not_available_in_this_stage():
         assert await sched.publish_allowed() is False
         # 수집은 허용된다(AUTO_PUBLISH ⊃ AUTO_COLLECT).
         dev_id, _ = await _active_device()
-        c = await sched.guarded_challenge(dev_id, "groups", ip="1.2.3.4",
+        c = await _guarded(dev_id, "groups", ip="1.2.3.4",
                                           automation=True)
         assert c["challengeId"]
     run(go())
@@ -421,13 +434,13 @@ def test_manual_mode_rejection_does_not_burn_rate_limit():
         before = await _attempt_count()
         for _ in range(5):
             with pytest.raises(devices.DeviceError) as e:
-                await sched.guarded_challenge(dev_id, "groups", ip="1.2.3.4",
+                await _guarded(dev_id, "groups", ip="1.2.3.4",
                                               automation=True)
             assert e.value.code == "automation_off"
         assert await _attempt_count() == before, "MANUAL 거절이 카운터를 태웠다"
         # 카운터가 멀쩡하므로 모드를 켜면 곧바로 정상 동작한다.
         await devices.set_mode("AUTO_COLLECT")
-        assert (await sched.guarded_challenge(dev_id, "groups", ip="1.2.3.4",
+        assert (await _guarded(dev_id, "groups", ip="1.2.3.4",
                                               automation=True))["challengeId"]
     run(go())
 
@@ -443,7 +456,7 @@ def test_inactive_device_rejection_does_not_burn_rate_limit():
                              (999999, "no_device")):
             for _ in range(4):
                 with pytest.raises(devices.DeviceError) as e:
-                    await sched.guarded_challenge(dev_id, "groups", ip="1.2.3.4")
+                    await _guarded(dev_id, "groups", ip="1.2.3.4")
                 assert e.value.code == want
         assert await _attempt_count() == before, "비활성 거절이 카운터를 태웠다"
     run(go())
@@ -455,7 +468,7 @@ def test_guarded_challenge_checks_division_before_anything_else():
         dev_id, _ = await _active_device()
         before = await _attempt_count()
         with pytest.raises(devices.DeviceError) as e:
-            await sched.guarded_challenge(dev_id, "mixed_doubles", ip="1.2.3.4")
+            await _guarded(dev_id, "mixed_doubles", ip="1.2.3.4")
         assert e.value.code == "bad_division"
         assert await _attempt_count() == before
     run(go())
@@ -597,7 +610,7 @@ def test_resolve_never_returns_the_raw_ip():
 def test_ip_is_stored_hashed_not_in_plaintext():
     async def go():
         dev_id, _ = await _active_device()
-        await sched.guarded_challenge(dev_id, "groups", ip="203.0.113.55")
+        await _guarded(dev_id, "groups", ip="203.0.113.55")
         from database import get_db
         conn = await get_db()
         cur = await conn.execute("SELECT ip_hash FROM piku_challenge_attempts")

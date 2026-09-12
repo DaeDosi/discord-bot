@@ -1733,6 +1733,13 @@ class DeviceChallengeBody(BaseModel):
     automation: bool = False
     #: 확장 프로토콜. 본선(v2) challenge는 2 이상이어야 한다(구버전 확장 차단).
     protocol: int = 1
+    #: MANUAL 모드의 수동 실행에 필요한 1회용 테스트 허가 코드(운영자가 Nexadmin에서 발급).
+    testGrant: Optional[str] = None
+
+
+class DeviceTestGrantBody(BaseModel):
+    deviceId: int
+    campaign: str
 
 
 class DeviceTokenBody(BaseModel):
@@ -1829,7 +1836,22 @@ async def piku_device_challenge(body: DeviceChallengeBody, request: Request):
     try:
         return {"ok": True, **await sched.guarded_challenge(
             row["id"], body.division, ip=ip, automation=body.automation,
-            protocol=body.protocol)}
+            protocol=body.protocol, test_grant=body.testGrant)}
+    except dev.DeviceError as e:
+        raise _device_400(e) from e
+
+
+@router.post("/piku/collector/devices/test-grant")
+async def piku_device_test_grant(body: DeviceTestGrantBody,
+                                 user: dict = Depends(_require_owner)):
+    """MANUAL 모드에서 **한 번의 테스트 수집**을 허가한다(OWNER). 코드 원문은 이 응답에서만.
+
+    허가는 장치·단계에 묶이고 10분 뒤 만료, 1회용이며 DB에는 해시만 남는다. 모드를
+    AUTO_COLLECT로 바꾸지 않고도 실제 페이지 넘김·draft 저장을 한 번 시험할 수 있다.
+    """
+    import singcup_piku_devices as dev
+    try:
+        return {"ok": True, **await dev.test_grant_issue(body.deviceId, body.campaign)}
     except dev.DeviceError as e:
         raise _device_400(e) from e
 
@@ -1860,6 +1882,9 @@ class DeviceRunReportBody(BaseModel):
     fingerprint: str
     trigger: str
     campaign: str
+    #: 확장의 한 번 클릭(또는 alarm 발화) 식별자. **선언하지 않으면 pydantic이 조용히
+    #: 버려서** 서버가 멱등 키를 못 받는다(E2E에서 실제로 그랬다).
+    invocationId: Optional[str] = None
     scheduledAt: Optional[int] = None
     startedAt: Optional[int] = None
     finishedAt: Optional[int] = None

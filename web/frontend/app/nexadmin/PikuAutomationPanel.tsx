@@ -39,6 +39,23 @@ const KIND_TEXT: Record<string, string> = {
   ambiguous_tab: "같은 부문 탭이 여러 개라 중단",
   loading: "페이지가 아직 로딩 중",
   row_count: "행 수가 기대와 다름",
+  // challenge/token 단계의 정규화된 종류(SINGCUP-FINAL-1b) — 예전에는 전부
+  // `token_failed` 하나여서 운영에서 원인을 알 수 없었다.
+  manual_mode: "MANUAL 모드라 서버가 거절함",
+  test_grant_required: "MANUAL — 테스트 허가 코드가 필요함",
+  test_grant_invalid: "허가 코드가 올바르지 않음",
+  test_grant_expired: "허가가 만료됨(10분)",
+  test_grant_used: "이미 사용한 허가",
+  device_not_active: "장치가 등록돼 있지 않거나 폐기됨",
+  protocol_too_old: "확장이 오래됨(재로드 필요)",
+  challenge_rejected: "challenge를 받지 못함",
+  bad_signature: "서명 검증 실패(장치 키 불일치)",
+  challenge_expired: "challenge 만료·이미 사용됨",
+  token_rejected: "서버가 토큰 발급을 거절함",
+  campaign_frozen: "동결된 단계",
+  rate_limited: "요청이 너무 잦음",
+  relay_unavailable: "NexBot 서버에 닿지 못함",
+  timeout: "시간 초과",
   rank_gap: "순위가 비거나 중복됨",
   source_mismatch: "탭 주소와 부문이 어긋남",
   title_mismatch: "페이지 제목이 기대한 단계와 다름",
@@ -137,12 +154,24 @@ export default function PikuAutomationPanel() {
   const [data, setData] = useState<PikuAutomationStatus | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** 방금 발급한 테스트 허가. **화면에 한 번만** 두고 다시 볼 수 없다. */
+  const [grant, setGrant] = useState<{ deviceId: number; code: string; expiresAt: number } | null>(null);
 
   const load = useCallback(async () => {
     try { setData(await api.admin.pikuAutomation()); setErr(null); }
     catch (e) { setErr(e instanceof Error ? e.message : "자동화 상태를 불러오지 못했습니다."); }
   }, []);
   useEffect(() => { void load(); }, [load]);
+
+  const issueGrant = async (deviceId: number) => {
+    if (busy) return;
+    setBusy(true); setGrant(null); setErr(null);
+    try {
+      const r = await api.admin.pikuDeviceTestGrant(deviceId, data?.plan?.campaign ?? "final");
+      setGrant({ deviceId, code: r.grant, expiresAt: r.expiresAt });
+    } catch (e) { setErr(e instanceof Error ? e.message : "허가를 발급하지 못했습니다."); }
+    finally { setBusy(false); }
+  };
 
   const setMode = async (mode: PikuCollectorMode) => {
     setBusy(true);
@@ -224,11 +253,46 @@ export default function PikuAutomationPanel() {
           </span>
         </div>
 
+        {/* MANUAL에서 실제 수집을 한 번 시험하는 유일한 경로. 모드를 AUTO_COLLECT로
+            올렸다 내리는 위험한 우회를 요구하지 않는다. */}
+        {!auto && !noDevice && (
+          <div className="rounded-lg border border-border bg-bg-hover/40 px-3 py-2.5">
+            <p className="text-[12.5px] leading-relaxed text-muted">
+              <b className="text-fg">지금 모드는 수동입니다.</b> 확장의 &lsquo;지금 테스트 수집&rsquo;은
+              아래에서 발급한 <b className="text-fg">1회용 허가 코드</b>가 있어야 실행됩니다
+              (10분·한 번만·이 장치/단계 전용). 자동 회차는 여전히 돌지 않습니다.
+            </p>
+            <div className="nb-tap-gap mt-2 flex flex-wrap items-center gap-2">
+              {data.activeDevices.map((d) => (
+                <button key={d.id} type="button" disabled={busy}
+                        onClick={() => void issueGrant(d.id)}
+                        className="btn-secondary nb-tap inline-flex items-center gap-1.5
+                                   text-sm disabled:opacity-40">
+                  {d.name} 테스트 허가 발급
+                </button>
+              ))}
+            </div>
+            {grant && (
+              <div className="mt-2 rounded-lg border border-accent/40 bg-accent/8 px-3 py-2">
+                <p className="text-[12.5px] text-muted">
+                  확장 팝업의 <b className="text-fg">테스트 허가 코드</b> 칸에 넣으세요.
+                  {" "}{fmt(grant.expiresAt)}에 만료되고 <b className="text-fg">한 번만</b> 쓸 수 있습니다.
+                  {" "}수집이 실패해도 코드는 소비되니, 다시 시험하려면 새로 발급하세요.
+                </p>
+                <code className="mt-1 block select-all font-mono text-[15px] font-bold text-fg">
+                  {grant.code}
+                </code>
+              </div>
+            )}
+          </div>
+        )}
+
         <p className="text-xs leading-relaxed text-muted">
           {auto
             ? `Chrome alarm 주기(약 ${data.periodMinutes}분, 정각을 보장하지 않음)로 plan의 `
               + "source를 읽어 draft까지만 저장합니다. 이름 매핑과 공개는 계속 사람이 확인합니다."
-            : "지금은 수동입니다. 확장이 자동으로 실행하지 않습니다."}
+            : "지금은 수동입니다. 확장이 자동으로 실행하지 않고, 사람이 누른 테스트 수집도 "
+              + "위 허가 코드가 있을 때만 한 번 실행됩니다."}
         </p>
 
         {auto && noDevice && (

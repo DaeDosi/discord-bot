@@ -108,6 +108,21 @@ def _isolated_db(tmp_path):
     _LOOP = None
 
 
+async def _challenge(device_id, division, **kw):
+    """MANUAL 모드의 **수동** challenge는 이제 1회용 테스트 허가가 필요하다
+    (SINGCUP-FINAL-1b). 이 파일의 기존 테스트는 challenge/서명/토큰 기계를 보는 것이지
+    모드 게이트를 보는 것이 아니므로, 허가를 먼저 발급해 넘긴다. 모드 게이트 자체는
+    `test_manual_mode_*` / `test_singcup_final_security.py`가 따로 고정한다."""
+    import singcup_piku_campaigns as camps
+    if not kw.get("automation") and await devices.get_mode() == "MANUAL" \
+            and "test_grant" not in kw:
+        row = await devices._device_row(device_id)
+        if row and row["status"] == "active" and division in camps.SOURCES:
+            g = await devices.test_grant_issue(row["id"], camps.campaign_of(division))
+            kw["test_grant"] = g["grant"]
+    return await devices.challenge_issue(device_id, division, **kw)
+
+
 async def _register(name: str = "거실 PC") -> tuple[int, FakeDevice, str]:
     """등록 두 단계를 한 번에 — 대부분의 테스트가 등록된 장치에서 시작한다."""
     started = await devices.register_start(name)
@@ -192,7 +207,7 @@ def test_malformed_public_key_is_rejected():
 def test_challenge_issue_returns_nonce_and_expiry():
     async def go():
         dev_id, _, _ = await _register()
-        c = await devices.challenge_issue(dev_id, "female_solo")
+        c = await _challenge(dev_id, "female_solo")
         assert c["division"] == "female_solo"
         assert len(base64.b64decode(c["nonce"])) >= 32
         assert 0 < c["expiresAt"] - int(time.time()) <= devices.CHALLENGE_TTL_SECONDS
@@ -205,7 +220,7 @@ def test_challenge_issue_returns_nonce_and_expiry():
 def test_valid_signature_issues_short_lived_single_use_division_token():
     async def go():
         dev_id, dev, _ = await _register()
-        c = await devices.challenge_issue(dev_id, "groups")
+        c = await _challenge(dev_id, "groups")
         out = await devices.challenge_redeem(
             c["challengeId"], dev.sign(c["message"]))
         assert out["division"] == "groups"
@@ -221,7 +236,7 @@ def test_valid_signature_issues_short_lived_single_use_division_token():
 def test_token_is_bound_to_the_requested_division():
     async def go():
         dev_id, dev, _ = await _register()
-        c = await devices.challenge_issue(dev_id, "female_solo")
+        c = await _challenge(dev_id, "female_solo")
         out = await devices.challenge_redeem(c["challengeId"], dev.sign(c["message"]))
         import singcup_piku_collector as col
         with pytest.raises(col.PikuError):     # 다른 부문으로는 못 쓴다
@@ -232,7 +247,7 @@ def test_token_is_bound_to_the_requested_division():
 def test_challenge_is_single_use():
     async def go():
         dev_id, dev, _ = await _register()
-        c = await devices.challenge_issue(dev_id, "male_solo")
+        c = await _challenge(dev_id, "male_solo")
         sig = dev.sign(c["message"])
         await devices.challenge_redeem(c["challengeId"], sig)
         with pytest.raises(devices.DeviceError):
@@ -243,7 +258,7 @@ def test_challenge_is_single_use():
 def test_expired_challenge_is_rejected():
     async def go():
         dev_id, dev, _ = await _register()
-        c = await devices.challenge_issue(dev_id, "groups")
+        c = await _challenge(dev_id, "groups")
         await devices._expire_challenge_for_tests(c["challengeId"])
         with pytest.raises(devices.DeviceError):
             await devices.challenge_redeem(c["challengeId"], dev.sign(c["message"]))
@@ -254,7 +269,7 @@ def test_wrong_key_signature_is_rejected():
     async def go():
         dev_id, _, _ = await _register()
         other = FakeDevice()
-        c = await devices.challenge_issue(dev_id, "groups")
+        c = await _challenge(dev_id, "groups")
         with pytest.raises(devices.DeviceError):
             await devices.challenge_redeem(c["challengeId"], other.sign(c["message"]))
     run(go())
@@ -264,8 +279,8 @@ def test_signature_over_a_different_message_is_rejected():
     """다른 challenge에 대한 서명을 옮겨 붙이지 못한다(replay)."""
     async def go():
         dev_id, dev, _ = await _register()
-        c1 = await devices.challenge_issue(dev_id, "groups")
-        c2 = await devices.challenge_issue(dev_id, "groups")
+        c1 = await _challenge(dev_id, "groups")
+        c2 = await _challenge(dev_id, "groups")
         with pytest.raises(devices.DeviceError):
             await devices.challenge_redeem(c2["challengeId"], dev.sign(c1["message"]))
     run(go())
@@ -274,7 +289,7 @@ def test_signature_over_a_different_message_is_rejected():
 def test_garbage_signature_is_rejected_without_crashing():
     async def go():
         dev_id, _, _ = await _register()
-        c = await devices.challenge_issue(dev_id, "groups")
+        c = await _challenge(dev_id, "groups")
         for bad in ["", "!!!", base64.b64encode(b"\x00" * 64).decode(),
                     base64.b64encode(b"\x01" * 10).decode()]:
             with pytest.raises(devices.DeviceError):
@@ -286,7 +301,7 @@ def test_unknown_division_is_rejected():
     async def go():
         dev_id, _, _ = await _register()
         with pytest.raises(devices.DeviceError):
-            await devices.challenge_issue(dev_id, "mixed_doubles")
+            await _challenge(dev_id, "mixed_doubles")
     run(go())
 
 
@@ -294,7 +309,7 @@ def test_concurrent_redeem_of_one_challenge_yields_exactly_one_token():
     """같은 challenge를 동시에 두 번 써도 토큰은 하나만 나온다."""
     async def go():
         dev_id, dev, _ = await _register()
-        c = await devices.challenge_issue(dev_id, "groups")
+        c = await _challenge(dev_id, "groups")
         sig = dev.sign(c["message"])
         results = await asyncio.gather(
             devices.challenge_redeem(c["challengeId"], sig),
@@ -312,7 +327,7 @@ def test_revoked_device_cannot_get_a_challenge():
         dev_id, _, _ = await _register()
         await devices.revoke(dev_id)
         with pytest.raises(devices.DeviceError):
-            await devices.challenge_issue(dev_id, "groups")
+            await _challenge(dev_id, "groups")
     run(go())
 
 
@@ -320,7 +335,7 @@ def test_revoke_kills_challenges_already_outstanding():
     """revoke 시점에 이미 나가 있던 challenge도 무효가 된다."""
     async def go():
         dev_id, dev, _ = await _register()
-        c = await devices.challenge_issue(dev_id, "groups")
+        c = await _challenge(dev_id, "groups")
         await devices.revoke(dev_id)
         with pytest.raises(devices.DeviceError):
             await devices.challenge_redeem(c["challengeId"], dev.sign(c["message"]))
@@ -336,7 +351,7 @@ def test_revoke_burns_outstanding_challenges_in_storage():
     """
     async def go():
         dev_id, _, _ = await _register()
-        c = await devices.challenge_issue(dev_id, "groups")
+        c = await _challenge(dev_id, "groups")
         from database import get_db
         conn = await get_db()
         cur = await conn.execute(
@@ -355,7 +370,7 @@ def test_pending_device_cannot_get_a_challenge():
     async def go():
         started = await devices.register_start("PC")
         with pytest.raises(devices.DeviceError):
-            await devices.challenge_issue(started["deviceId"], "groups")
+            await _challenge(started["deviceId"], "groups")
     run(go())
 
 
@@ -373,7 +388,7 @@ def test_revoked_device_stays_listed_for_audit():
 def test_last_seen_and_last_success_are_tracked():
     async def go():
         dev_id, dev, _ = await _register()
-        c = await devices.challenge_issue(dev_id, "groups")
+        c = await _challenge(dev_id, "groups")
         await devices.challenge_redeem(c["challengeId"], dev.sign(c["message"]))
         d = next(x for x in await devices.list_devices() if x["id"] == dev_id)
         assert d["lastSeenAt"] > 0
@@ -420,20 +435,36 @@ def test_automation_allowed_only_when_mode_is_auto_and_device_active():
     run(go())
 
 
-def test_manual_mode_blocks_challenges_for_automation_but_not_manual_tokens():
-    """MANUAL에서도 **운영자가 직접 누르는** 기존 수동 토큰 경로는 살아 있다."""
+def test_manual_mode_blocks_challenges_and_manual_needs_a_test_grant():
+    """MANUAL에서는 **자동도 수동도** challenge를 못 받는다 — 수동은 운영자가 발급한
+    1회용 테스트 허가가 있을 때만 한 번 통과한다(SINGCUP-FINAL-1b).
+
+    예전 계약은 "수동이면 모드와 무관하게 허용"이었는데, 그러면 변조된 확장이
+    `automation=false`라고만 말하고 MANUAL을 통째로 우회할 수 있었다. 운영자가 Nexadmin에서
+    직접 발급하는 토큰 경로(`col.issue_token`)는 그대로 살아 있다."""
     async def go():
         await devices.set_mode("MANUAL")
         import singcup_piku_collector as col
-        out = await col.issue_token("groups")          # 기존 수동 경로
+        out = await col.issue_token("groups")          # 기존 수동 경로(OWNER 인증)
         assert out["token"]
         dev_id, _, _ = await _register()
         # 자동화용 challenge는 모드로 막힌다.
-        with pytest.raises(devices.DeviceError):
+        with pytest.raises(devices.DeviceError) as ei:
             await devices.challenge_issue(dev_id, "groups", automation=True)
-        # 운영자가 확장에서 직접 pairing 후 수동 실행하는 것은 허용한다.
-        c = await devices.challenge_issue(dev_id, "groups", automation=False)
+        assert ei.value.code == "automation_off"
+        # 허가 없는 수동도 막힌다.
+        with pytest.raises(devices.DeviceError) as ei:
+            await devices.challenge_issue(dev_id, "groups", automation=False)
+        assert ei.value.code == "test_grant_required"
+        # 운영자 허가가 있으면 **한 번만** 통과한다.
+        g = await devices.test_grant_issue(dev_id, "qualifier")
+        c = await devices.challenge_issue(dev_id, "groups", automation=False,
+                                          test_grant=g["grant"])
         assert c["challengeId"]
+        with pytest.raises(devices.DeviceError) as ei:
+            await devices.challenge_issue(dev_id, "groups", automation=False,
+                                          test_grant=g["grant"])
+        assert ei.value.code == "test_grant_used"
     run(go())
 
 
@@ -441,7 +472,7 @@ def test_manual_mode_blocks_challenges_for_automation_but_not_manual_tokens():
 def test_no_secret_material_in_any_listing_or_status():
     async def go():
         dev_id, dev, _ = await _register()
-        c = await devices.challenge_issue(dev_id, "groups")
+        c = await _challenge(dev_id, "groups")
         out = await devices.challenge_redeem(c["challengeId"], dev.sign(c["message"]))
         blob = repr(await devices.list_devices()) + repr(await devices.status())
         assert out["token"] not in blob
@@ -454,7 +485,7 @@ def test_no_secret_material_in_any_listing_or_status():
 def test_token_is_never_stored_in_plaintext():
     async def go():
         dev_id, dev, _ = await _register()
-        c = await devices.challenge_issue(dev_id, "groups")
+        c = await _challenge(dev_id, "groups")
         out = await devices.challenge_redeem(c["challengeId"], dev.sign(c["message"]))
         from database import get_db
         conn = await get_db()
@@ -521,14 +552,14 @@ def test_signature_bound_to_division_and_device():
     async def go():
         dev_id, dev, _ = await _register("A")
         other_id, _, _ = await _register("B")
-        c = await devices.challenge_issue(dev_id, "groups")
+        c = await _challenge(dev_id, "groups")
         # 같은 challenge인데 부문만 바꿔 서명 → 거부
         wrong_div = devices.challenge_message(
             c["challengeId"], c["nonce"], "female_solo", dev_id)
         with pytest.raises(devices.DeviceError):
             await devices.challenge_redeem(c["challengeId"], dev.sign(wrong_div))
         # challenge는 실패해도 소비된다 → 새로 발급해 장치 id 바꿔치기 확인
-        c2 = await devices.challenge_issue(dev_id, "groups")
+        c2 = await _challenge(dev_id, "groups")
         wrong_dev = devices.challenge_message(
             c2["challengeId"], c2["nonce"], "groups", other_id)
         with pytest.raises(devices.DeviceError):
@@ -541,7 +572,7 @@ def test_challenge_nonce_is_csprng_and_unique():
         dev_id, _, _ = await _register()
         seen = set()
         for _ in range(20):
-            c = await devices.challenge_issue(dev_id, "groups")
+            c = await _challenge(dev_id, "groups")
             raw = base64.b64decode(c["nonce"])
             assert len(raw) >= 32, f"nonce가 {len(raw)}바이트뿐이다"
             seen.add(c["nonce"])
@@ -555,7 +586,7 @@ def test_revoked_device_cannot_redeem_even_a_fresh_challenge():
         dev_id, dev, _ = await _register()
         await devices.revoke(dev_id)
         with pytest.raises(devices.DeviceError):
-            await devices.challenge_issue(dev_id, "groups")
+            await _challenge(dev_id, "groups")
     run(go())
 
 
@@ -574,7 +605,7 @@ def test_default_state_has_no_active_device_so_no_token_can_be_issued():
         # 존재하지 않는 장치로는 challenge가 나오지 않는다.
         for bad_id in (0, 1, 999, -1, "1"):
             with pytest.raises(devices.DeviceError):
-                await devices.challenge_issue(bad_id, "groups")
+                await _challenge(bad_id, "groups")
     run(go())
 
 
@@ -596,7 +627,7 @@ def test_module_never_stores_or_returns_raw_token():
     """토큰 원문은 발급 응답에만 있고 DB에는 sha256만 남는다(기존 계약 재확인)."""
     async def go():
         dev_id, dev, _ = await _register()
-        c = await devices.challenge_issue(dev_id, "groups")
+        c = await _challenge(dev_id, "groups")
         out = await devices.challenge_redeem(c["challengeId"], dev.sign(c["message"]))
         from database import get_db
         conn = await get_db()

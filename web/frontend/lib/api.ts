@@ -441,6 +441,13 @@ export const api = {
         "/api/admin/piku/collector/devices",
         { method: "POST", body: JSON.stringify({ name }) }),
     /** 장치 폐기. 이미 나가 있던 challenge도 그 자리에서 무효가 된다. */
+    /** MANUAL에서 **한 번의 테스트 수집**을 허가한다. 코드 원문은 이 응답에서만 나온다
+     *  (10분·1회용·장치/단계 고정). 확장은 저장하지 않고 그 회차에만 쓴다. */
+    pikuDeviceTestGrant: (deviceId: number, campaign: string) =>
+      request<{ ok: boolean; deviceId: number; campaign: string; grant: string;
+                expiresAt: number; ttlSeconds: number }>(
+        "/api/admin/piku/collector/devices/test-grant",
+        { method: "POST", body: JSON.stringify({ deviceId, campaign }) }),
     pikuDeviceRevoke: (deviceId: number) =>
       request<{ ok: boolean; deviceId: number; status: string; revokedAt: number }>(
         "/api/admin/piku/collector/devices/revoke",

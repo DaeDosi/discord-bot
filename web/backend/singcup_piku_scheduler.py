@@ -31,6 +31,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from typing import Any
 
@@ -117,7 +118,8 @@ async def purge_attempts() -> int:
 
 
 async def guarded_challenge(device_id: Any, division: Any, *, ip: str = "",
-                            automation: bool = False, protocol: int = 1) -> dict:
+                            automation: bool = False, protocol: int = 1,
+                            test_grant: Any = None) -> dict:
     """속도 제한을 거친 challenge 발급.
 
     순서가 중요하다:
@@ -161,7 +163,7 @@ async def guarded_challenge(device_id: Any, division: Any, *, ip: str = "",
 
     await _record_attempt(row["id"], ip_hash)
     return await devices.challenge_issue(row["id"], division, automation=automation,
-                                         protocol=protocol)
+                                         protocol=protocol, test_grant=test_grant)
 
 
 async def device_state(fingerprint: Any) -> dict:
@@ -213,6 +215,11 @@ RUN_KINDS = frozenset({
     "source_mismatch", "title_mismatch", "row_count", "rank_gap", "partial",
     "not_rendered", "blocked", "parse_failed", "aborted", "token_failed",
     "ingest_failed", "campaign_mismatch", "no_plan", "pager_failed",
+    # SINGCUP-FINAL-1b — challenge/token 단계의 **정규화된** 실패 종류(원문 없음).
+    "manual_mode", "test_grant_required", "test_grant_invalid",
+    "test_grant_expired", "test_grant_used", "device_not_active", "protocol_too_old",
+    "challenge_rejected", "bad_signature", "challenge_expired", "token_rejected",
+    "campaign_frozen", "rate_limited", "relay_unavailable", "timeout",
 })
 
 
@@ -221,18 +228,61 @@ def _kind(value: Any) -> str:
     return k if k in RUN_KINDS else ("" if not k else "other")
 
 
-async def run_start(device_id: Any, *, trigger: str = "alarm",
-                    campaign: str = "", scheduled_at: int = 0,
-                    started_at: int | None = None) -> int:
-    if trigger not in _TRIGGERS:
-        raise devices.DeviceError("bad_trigger", "알 수 없는 실행 종류입니다.")
+_INVOCATION_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def _invocation(value) -> str:
+    """확장이 준 실행 식별자를 정규화한다. 형식이 아니면 빈 문자열(= 멱등 없음)."""
+    v = str(value or "")[:64]
+    return v if _INVOCATION_RE.match(v) else ""
+
+
+async def _run_by_invocation(device_id: int, inv: str):
+    """같은 장치·같은 invocation의 기존 회차 행. 없으면 None."""
     db = await get_db()
     cur = await db.execute(
-        "INSERT INTO piku_auto_runs (device_id, trigger, started_at, outcome,"
-        " campaign, scheduled_at) VALUES (?,?,?, 'running', ?, ?)",
-        (int(device_id or 0), trigger, int(started_at or time.time()),
-         str(campaign or "")[:40], int(scheduled_at or 0)))
-    await db.commit()
+        "SELECT * FROM piku_auto_runs WHERE device_id=? AND invocation_id=?",
+        (int(device_id), inv))
+    return await cur.fetchone()
+
+
+async def run_start(device_id: Any, *, trigger: str = "alarm",
+                    campaign: str = "", scheduled_at: int = 0,
+                    started_at: int | None = None, invocation_id: str = "") -> int:
+    """회차 행 생성. **같은 장치·같은 invocation이면 기존 행을 돌려준다**(멱등).
+
+    확장의 한 번 클릭(invocation)이 보고 재시도·메시지 재전달로 두 번 와도 run 행은
+    하나다. `idx_piku_auto_runs_invocation`(부분 unique)이 DB에서도 이를 막는다.
+    """
+    if trigger not in _TRIGGERS:
+        raise devices.DeviceError("bad_trigger", "알 수 없는 실행 종류입니다.")
+    inv = _invocation(invocation_id)
+    db = await get_db()
+    if inv:
+        cur = await db.execute(
+            "SELECT id FROM piku_auto_runs WHERE device_id=? AND invocation_id=?",
+            (int(device_id or 0), inv))
+        row = await cur.fetchone()
+        if row:
+            _log("run_reused", run_id=row[0], trigger=trigger)
+            return int(row[0])
+    try:
+        cur = await db.execute(
+            "INSERT INTO piku_auto_runs (device_id, trigger, started_at, outcome,"
+            " campaign, scheduled_at, invocation_id) VALUES (?,?,?, 'running', ?, ?, ?)",
+            (int(device_id or 0), trigger, int(started_at or time.time()),
+             str(campaign or "")[:40], int(scheduled_at or 0), inv))
+        await db.commit()
+    except Exception:
+        # 동시에 같은 invocation이 들어와 unique 인덱스에 걸린 경우 — 기존 행을 쓴다.
+        await db.rollback()
+        cur = await db.execute(
+            "SELECT id FROM piku_auto_runs WHERE device_id=? AND invocation_id=?",
+            (int(device_id or 0), inv))
+        row = await cur.fetchone()
+        if row:
+            return int(row[0])
+        raise
     _log("run_started", run_id=cur.lastrowid, trigger=trigger, campaign=campaign)
     return cur.lastrowid
 
@@ -295,6 +345,7 @@ def _shape(row: Any, sources: list[dict]) -> dict:
     return {
         "id": r["id"], "deviceId": r["device_id"], "trigger": r["trigger"],
         "campaign": r.get("campaign") or "",
+        "invocationId": r.get("invocation_id") or "",
         "scheduledAt": r.get("scheduled_at") or 0,
         "startedAt": r["started_at"], "finishedAt": r["finished_at"],
         "outcome": r["outcome"],
@@ -372,6 +423,24 @@ async def report_run(fingerprint: Any, body: Any) -> dict:
         raise devices.DeviceError("bad_report", "source 결과가 없습니다.")
     now = int(time.time())
     db = await get_db()
+    # 같은 invocation이 다시 오면 **기록을 고치지 않는다.** run 행을 재사용하는
+    # 것만으로는 부족하다 — 아래 source upsert와 run_finish가 이미 끝난 회차의
+    # 결과(성공/실패)를 덮어써 버리기 때문이다. 그래서 여기서 먼저 막는다:
+    #   · 끝난 회차 → 저장된 결과를 그대로 돌려준다(쓰기 0).
+    #   · campaign·trigger가 다른데 같은 식별자 → 섞지 않고 거절한다.
+    #   · 아직 running(보고가 끊겼다 다시 온 경우) → 이어서 마감한다.
+    inv = _invocation(body.get("invocationId"))
+    if inv:
+        prior = await _run_by_invocation(row["id"], inv)
+        if prior is not None:
+            pr = dict(prior)
+            if (pr.get("campaign") or "") != campaign or pr.get("trigger") != trigger:
+                raise devices.DeviceError(
+                    "invocation_conflict",
+                    "같은 실행 식별자가 다른 회차에 이미 쓰였습니다.")
+            if pr.get("outcome") != "running":
+                return _shape(prior, await _source_rows(pr["id"]))
+
     cur = await db.execute(
         "SELECT count(*) FROM piku_auto_runs WHERE device_id=? AND started_at>=?",
         (row["id"], now - 3600))
@@ -380,7 +449,8 @@ async def report_run(fingerprint: Any, body: Any) -> dict:
 
     run_id = await run_start(row["id"], trigger=trigger, campaign=campaign,
                              scheduled_at=_ts(body.get("scheduledAt"), now),
-                             started_at=_ts(body.get("startedAt"), now) or now)
+                             started_at=_ts(body.get("startedAt"), now) or now,
+                             invocation_id=inv)
     plan_sources = camps.sources_of(campaign)
     for key, res in sources.items():
         if key not in SOURCES or camps.campaign_of(key) != campaign:

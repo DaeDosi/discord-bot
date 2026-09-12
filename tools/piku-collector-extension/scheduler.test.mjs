@@ -13,7 +13,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createScheduler, resolvePlan, SOURCES, CANONICAL } from "./scheduler.js";
+import { classifyAuthError, createScheduler, resolvePlan, SOURCES, CANONICAL } from "./scheduler.js";
 
 const HOUR = 60 * 60 * 1000;
 const FINAL_TITLE = "이상형 월드컵 랭킹 - [2026 치지직 싱드컵 갤럭시] - 파이널 본선 Ideal type worldcup PIKU";
@@ -521,14 +521,39 @@ test("collect.js가 실패(차단·미렌더)하면 그 종류가 그대로 남�
 });
 
 /* ── 6) 인증 · 전송 ───────────────────────────────────────────────────────── */
-test("challenge/token이 실패하면 token_failed이고 전송하지 않는다", async () => {
-  let env = makeEnv({ getChallenge: async () => { throw new Error("[automation_off]"); } });
-  let r = await createScheduler(env).runCycle({ trigger: "alarm", ...AUTO });
-  assert.equal(r.sources.final.kind, "token_failed");
-  env = makeEnv({ signAndRedeem: async () => { throw new Error("[rate_limited]"); } });
-  r = await createScheduler(env).runCycle({ trigger: "alarm", ...AUTO });
-  assert.equal(r.sources.final.kind, "token_failed");
+test("challenge/token 실패는 **정규화된 종류**로 남고 전송하지 않는다", async () => {
+  // 예전에는 전부 `token_failed` 하나로 뭉개져 운영에서 원인을 알 수 없었다(20:19 사건).
+  const cases = [
+    ["[automation_off] 자동 수집이 꺼져 있습니다", "manual_mode"],
+    ["[test_grant_required] 허가가 필요합니다", "test_grant_required"],
+    ["[device_not_active] 폐기된 장치", "device_not_active"],
+    ["[protocol_too_old] 확장이 오래됐습니다", "protocol_too_old"],
+    ["[rate_limited] 너무 잦습니다", "rate_limited"],
+    ["[campaign_frozen] 동결", "campaign_frozen"],
+    ["[no_device] 장치를 찾을 수 없습니다", "device_not_active"],
+    ["요청 실패 (HTTP 404)", "relay_unavailable"],
+    ["요청 실패 (HTTP 502)", "relay_unavailable"],
+    ["Failed to fetch", "relay_unavailable"],
+    ["무슨 말인지 모를 오류", "token_rejected"],
+  ];
+  for (const [msg, kind] of cases) {
+    const env = makeEnv({ getChallenge: async () => { throw new Error(msg); } });
+    const r = await createScheduler(env).runCycle({ trigger: "alarm", ...AUTO });
+    assert.equal(r.sources.final.kind, kind, msg);
+    assert.equal(env.calls.ingest.length, 0);
+  }
+  // 서명·토큰 단계의 실패도 같은 규칙을 탄다.
+  const env = makeEnv({ signAndRedeem: async () => { throw new Error("[bad_signature] x"); } });
+  const r = await createScheduler(env).runCycle({ trigger: "alarm", ...AUTO });
+  assert.equal(r.sources.final.kind, "bad_signature");
   assert.equal(env.calls.ingest.length, 0);
+});
+
+test("classifyAuthError는 응답 원문·토큰·nonce를 결과에 담지 않는다", () => {
+  const nasty = new Error('[bad_signature] <html>Traceback tok_abc nonce=AAA</html>');
+  const kind = classifyAuthError(nasty);
+  assert.equal(kind, "bad_signature");
+  assert.ok(!/html|tok_|nonce/i.test(kind));
 });
 
 test("ingest가 실패하면 ingest_failed이고 지문을 갱신하지 않는다 (다음 회차에 다시 보낸다)", async () => {
@@ -611,7 +636,10 @@ test("회차 결과를 서버에 보고한다 — 종류·시각·행 수만 (AU
   assert.equal(env.calls.report.length, 1);
   const rep = env.calls.report[0];
   assert.deepEqual(Object.keys(rep).sort(),
-    ["campaign", "finishedAt", "outcome", "scheduledAt", "sources", "startedAt", "trigger"]);
+    ["campaign", "finishedAt", "invocationId", "outcome", "scheduledAt", "sources",
+     "startedAt", "trigger"]);
+  assert.equal(rep.invocationId, r.invocationId);
+  assert.ok(/^alarm-/.test(rep.invocationId), rep.invocationId);
   assert.equal(rep.campaign, "final");
   assert.deepEqual(rep.sources, { final: { ok: true, kind: "sent", rows: 32 } });
   assert.equal(rep.scheduledAt, r.scheduledAt);
@@ -644,7 +672,7 @@ test("source마다 challenge를 따로 받고, 한 source의 토큰 실패는 �
   const r = await createScheduler(env).runCycle({ trigger: "alarm", ...QUAL });
   assert.deepEqual(env.calls.challenge.sort(), ["female_solo", "groups", "male_solo"]);
   assert.equal(r.outcome, "partial");
-  assert.equal(r.sources.groups.kind, "token_failed");
+  assert.equal(r.sources.groups.kind, "rate_limited");
   assert.equal(env.calls.ingest.length, 2);
 });
 
@@ -755,4 +783,24 @@ test("scheduledAt 간격이 정확히 60분이고 늦은 시작이 누적되지 
     sched.push(r.scheduledAt);
   }
   assert.deepEqual(sched, [t0, t0 + s.PERIOD_MS, t0 + 2 * s.PERIOD_MS]);
+});
+
+
+/* ── 10) invocation 멱등성(SINGCUP-FINAL-1b) ─────────────────────────────── */
+test("주어진 invocationId를 그대로 회차·보고에 쓴다", async () => {
+  const env = makeEnv();
+  const r = await createScheduler(env).runCycle({
+    trigger: "manual", ...AUTO, mode: "MANUAL", invocationId: "manual-abc-123" });
+  assert.equal(r.invocationId, "manual-abc-123");
+  assert.equal(env.calls.report[0].invocationId, "manual-abc-123");
+  assert.equal(r.outcome, "success");
+});
+
+test("invocationId를 주지 않으면 회차마다 새로 만든다", async () => {
+  const env = makeEnv({ alarmExists: async () => true });
+  const s = createScheduler(env);
+  const a = await s.runCycle({ trigger: "alarm", ...AUTO });
+  env.advance(61 * 60 * 1000);
+  const b = await s.runCycle({ trigger: "alarm", ...AUTO });
+  assert.ok(a.invocationId && b.invocationId && a.invocationId !== b.invocationId);
 });

@@ -266,6 +266,27 @@ _PIKU_COLLECTOR_TABLES = (
            row_count  INTEGER NOT NULL DEFAULT 0,
            PRIMARY KEY (run_id, campaign, source)
        )""",
+    # ── SINGCUP-FINAL-1b: MANUAL 모드의 **테스트 수집 허가** ──────────────────
+    # 운영자가 Nexadmin에서 발급하는 짧은 1회용 코드. 장치·단계에 묶이고 **해시만** 남는다.
+    # MANUAL에서 등록 장치가 challenge를 받으려면 이 허가가 필요하다 — 모드를 잠깐
+    # AUTO_COLLECT로 올리는 우회를 요구하지 않기 위한 장치다.
+    """CREATE TABLE IF NOT EXISTS piku_test_grants (
+           grant_hash TEXT PRIMARY KEY,
+           device_id  INTEGER NOT NULL,
+           campaign   TEXT    NOT NULL,
+           expires_at INTEGER NOT NULL,
+           used_at    INTEGER NOT NULL DEFAULT 0,
+           created_at INTEGER NOT NULL
+       )""",
+    """CREATE INDEX IF NOT EXISTS idx_piku_test_grants_device
+           ON piku_test_grants (device_id, expires_at)""",
+)
+
+#: 컬럼이 생긴 **뒤**에 만들어야 하는 인덱스(strict 함수가 campaign 컬럼 다음에 실행).
+_PIKU_LATE_INDEXES = (
+    # 같은 invocation의 회차 보고가 두 번 와도 run 행은 하나여야 한다.
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_piku_auto_runs_invocation
+           ON piku_auto_runs (device_id, invocation_id) WHERE invocation_id <> ''""",
 )
 
 # ── SINGCUP-FINAL-1: `campaign` 컬럼(append-only) ─────────────────────────
@@ -289,6 +310,8 @@ _PIKU_CAMPAIGN_COLUMNS: tuple[tuple[str, str, str], ...] = tuple(
     # 시작했나"가 스케줄 오작동을 진단하는 핵심 근거다.
     ("piku_auto_runs", "scheduled_at", "INTEGER NOT NULL DEFAULT 0"),
     ("piku_auto_runs", "campaign", "TEXT NOT NULL DEFAULT ''"),
+    # 확장의 한 번 클릭(invocation)을 식별한다. 빈 문자열 = 구 회차/알 수 없음.
+    ("piku_auto_runs", "invocation_id", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -360,6 +383,8 @@ async def _migrate_piku_and_qualifier_schema(db) -> None:
             except sqlite3.Error:
                 if column not in await _table_columns(db, table):
                     raise
+        for sql in _PIKU_LATE_INDEXES:
+            await db.execute(sql)
 
         await db.commit()
         committed = True

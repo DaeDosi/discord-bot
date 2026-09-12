@@ -115,7 +115,7 @@ function setFlag(name, value) {
 }
 
 /* ── 스케줄러에 주입할 환경 ──────────────────────────────────────────────── */
-function makeEnv(meta) {
+function makeEnv(meta, opts = {}) {
   const base = meta.base || "https://nexbot.shop";
   const run = (tabId, opts) => chrome.scripting.executeScript({ target: { tabId }, ...opts });
   return {
@@ -154,8 +154,14 @@ function makeEnv(meta) {
     },
     // `protocol: 2` — 본선(v2 서명 문자열)을 다룰 수 있는 확장임을 선언한다. 서버는 이
     // 선언이 없는 요청에 본선 challenge를 내주지 않는다(구버전 확장 차단).
+    // `automation`은 **누가 눌렀는지**를 그대로 말한다(alarm=true, 사람=false).
+    // MANUAL에서 사람이 누른 실행은 서버가 **운영자 발급 테스트 허가**를 요구하므로,
+    // 확장이 "수동입니다"라고 말하는 것만으로는 MANUAL을 넘지 못한다.
+    // 허가 코드는 팝업 입력란에서 이 회차에만 전달되고 저장하지 않는다.
     getChallenge: (division) => postJson(base, "device/challenge", {
-      fingerprint: meta.fingerprint, division, automation: true, protocol: 2,
+      fingerprint: meta.fingerprint, division, protocol: 2,
+      automation: !!opts.automation,
+      ...(opts.testGrant ? { testGrant: opts.testGrant } : {}),
     }),
     signAndRedeem: async (challengeId, message) => {
       const signature = await signMessage(message);
@@ -166,6 +172,7 @@ function makeEnv(meta) {
     // 회차 결과 보고 — **종류·시각·행 수만** 간다. 데이터·토큰·HTML은 없다.
     report: (r) => postJson(base, "device/run", {
       fingerprint: meta.fingerprint, trigger: r.trigger, campaign: r.campaign,
+      invocationId: r.invocationId,
       scheduledAt: r.scheduledAt, startedAt: r.startedAt, finishedAt: r.finishedAt,
       sources: r.sources,
     }),
@@ -200,17 +207,35 @@ async function context() {
   }
 }
 
-async function runOnce(trigger) {
-  const { meta, mode, deviceActive, plan } = await context();
-  if (!meta.fingerprint) return { skipped: "no_active_device" };
-  const s = createScheduler(makeEnv(meta));
-  return s.runCycle({ trigger, mode, deviceActive, plan });
+/** 같은 invocation(한 번의 클릭)이 두 번 실행되지 않게 하는 워커 메모리 가드.
+ *  워커가 죽으면 사라지지만, 그때는 저장소 lock과 서버의 invocation 멱등성이 받는다. */
+const inFlight = new Map();
+
+async function runOnce(trigger, opts = {}) {
+  const invocationId = opts.invocationId
+    || `${trigger}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  if (inFlight.has(invocationId)) return inFlight.get(invocationId);
+  const p = (async () => {
+    const { meta, mode, deviceActive, plan } = await context();
+    if (!meta.fingerprint) return { skipped: "no_active_device" };
+    const s = createScheduler(makeEnv(meta, {
+      automation: trigger === "alarm", testGrant: opts.testGrant,
+    }));
+    return s.runCycle({ trigger, mode, deviceActive, plan, invocationId });
+  })();
+  inFlight.set(invocationId, p);
+  try {
+    return await p;
+  } finally {
+    // 같은 id의 즉시 재전달만 막으면 된다 — 오래 들고 있을 이유가 없다.
+    setTimeout(() => inFlight.delete(invocationId), 60_000);
+  }
 }
 
 /* ── chrome 이벤트 ───────────────────────────────────────────────────────── */
 async function ensure() {
   const meta = (await idbGet(META_ID)) || {};
-  const s = createScheduler(makeEnv(meta));
+  const s = createScheduler(makeEnv(meta, { automation: true }));
   await s.ensureSchedule();
 }
 
@@ -227,10 +252,14 @@ chrome.alarms.onAlarm.addListener((a) => {
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   (async () => {
     try {
-      if (msg?.type === "run-now") reply(await runOnce("manual"));
+      if (msg?.type === "run-now") {
+        // 팝업이 만든 invocationId와 (MANUAL이면) 운영자 허가 코드를 그대로 넘긴다.
+        reply(await runOnce("manual", { invocationId: msg.invocationId,
+                                        testGrant: msg.testGrant }));
+      }
       else if (msg?.type === "state") {
         const meta = (await idbGet(META_ID)) || {};
-        const s = createScheduler(makeEnv(meta));
+        const s = createScheduler(makeEnv(meta, { automation: true }));
         await s.ensureSchedule();
         const ctx = meta.fingerprint ? await context() : { mode: null, deviceActive: false, plan: null };
         reply({ ok: true, state: await s.getState(), canonical: CANONICAL, sources: SOURCES,
@@ -238,7 +267,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
                 alarm: await chrome.alarms.get(ALARM) });
       } else if (msg?.type === "pause") {
         const meta = (await idbGet(META_ID)) || {};
-        await createScheduler(makeEnv(meta)).setPaused(!!msg.paused);
+        await createScheduler(makeEnv(meta, { automation: true })).setPaused(!!msg.paused);
         reply({ ok: true });
       } else reply({ ok: false, error: "unknown" });
     } catch (e) {

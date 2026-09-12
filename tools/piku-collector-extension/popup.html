@@ -69,6 +69,11 @@
 <section id="schedbox" aria-labelledby="schedh">
   <h2 id="schedh">자동 수집 (1시간 주기 · draft까지만)</h2>
   <div id="schedstate" role="status" aria-live="polite">확인 중…</div>
+  <label for="grant">테스트 허가 코드 (MANUAL일 때만 · Nexadmin에서 발급)</label>
+  <p class="note">한 번 쓰면 끝입니다. <b>수집이 실패해도 코드는 소비되므로</b>
+    다시 시험하려면 Nexadmin에서 새로 발급하세요.</p>
+  <input id="grant" type="text" autocomplete="off" spellcheck="false"
+         inputmode="latin" placeholder="예: ABCD2345" maxlength="12">
   <button id="runnow" class="secondary">지금 테스트 수집 (1회 · 공개 안 함)</button>
   <button id="pause" class="secondary">자동 수집 일시 정지</button>
   <p class="note">Chrome alarm은 약 60분 주기이며 정각을 보장하지 않습니다.

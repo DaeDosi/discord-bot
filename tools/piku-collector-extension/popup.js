@@ -247,6 +247,21 @@ refreshDevice();
  * 깨우는 실제 경로다. 결과에는 **종류와 시각만** 있다 — 토큰·행 데이터는 없다. */
 const KIND_TEXT = {
   sent: "전송함", unchanged: "표가 그대로(전송 생략)", no_tab: "plan의 PIKU 탭이 없음",
+  manual_mode: "MANUAL 모드라 서버가 거절함",
+  test_grant_required: "MANUAL — Nexadmin에서 테스트 허가 코드를 발급받아 입력하세요",
+  test_grant_invalid: "허가 코드가 올바르지 않음 — Nexadmin의 코드를 다시 확인하세요",
+  test_grant_expired: "허가가 만료됨(10분) — Nexadmin에서 다시 발급하세요",
+  test_grant_used: "이미 쓴 허가 — Nexadmin에서 다시 발급하세요",
+  device_not_active: "이 장치가 등록돼 있지 않거나 폐기됨",
+  protocol_too_old: "확장이 오래됨 — 확장을 다시 로드하세요",
+  challenge_rejected: "challenge를 받지 못함",
+  bad_signature: "서명 검증 실패(장치 키 불일치)",
+  challenge_expired: "challenge가 만료·이미 사용됨",
+  token_rejected: "서버가 토큰 발급을 거절함",
+  campaign_frozen: "이 단계는 동결 상태",
+  rate_limited: "요청이 너무 잦음 — 잠시 후 다시",
+  relay_unavailable: "NexBot 서버에 닿지 못함",
+  timeout: "시간 초과",
   ambiguous_tab: "같은 페이지 탭이 2개 이상", loading: "탭이 로딩 중이라 포기",
   wrong_page: "정본 주소가 아님", source_mismatch: "source id 불일치",
   title_mismatch: "페이지 제목 불일치", campaign_mismatch: "단계(campaign) 불일치",
@@ -306,18 +321,28 @@ async function refreshSched() {
   }
 }
 
+/** 진행 중인 테스트 수집. **한 번의 클릭 = 하나의 invocationId = 서버 run 1건.**
+ *  버튼은 첫 클릭 즉시 잠기고, 응답 대기 중 들어온 클릭은 무시된다(재실행 없음).
+ *  팝업을 닫았다 열어도 새 invocation을 만들지 않는다 — 사람이 다시 눌러야 한다. */
+let runInFlight = null;
+
 $("runnow").addEventListener("click", async () => {
-  // 사용자가 명시적으로 누른 1회 실행. 중복 클릭은 버튼 비활성 + 워커 lock이 막는다.
+  if (runInFlight) return;                       // 응답 대기 중 재클릭 무시
   $("runnow").disabled = true;
+  const grant = $("grant").value.trim();
+  const invocationId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   schedShow("", "테스트 수집 실행 중… (plan의 탭을 새로고침해 읽습니다. 공개하지 않습니다)");
+  runInFlight = send({ type: "run-now", invocationId, testGrant: grant || undefined });
   try {
-    const r = await send({ type: "run-now" });
+    const r = await runInFlight;
+    $("grant").value = "";                       // 허가 코드는 1회용이므로 지운다
     if (!r.ok && r.error) { schedShow("err", r.error); return; }
     if (r.skipped) { schedShow("off", `실행 안 함: ${SKIP_TEXT[r.skipped] ?? r.skipped}`); return; }
     await refreshSched();
   } catch (e) {
     schedShow("err", e.message || String(e));
   } finally {
+    runInFlight = null;
     $("runnow").disabled = false;
   }
 });

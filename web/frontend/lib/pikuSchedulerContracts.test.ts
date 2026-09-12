@@ -238,9 +238,14 @@ test("자동인데 장치가 없으면 경고한다", () => {
 
 test("화면에 secret을 그리지 않는다", () => {
   const s = PANEL();
+  // `bad_signature`는 **실패 종류의 이름**이지 값이 아니다 — 그 한 낱말만 예외로 둔다.
+  const code = s.split("bad_signature:").join("failure_kind_label:");
   for (const bad of ["pairingCode", "publicKey", "privateKey", "signature", "nonce"]) {
-    assert.ok(!s.includes(bad), `${bad}를 화면에서 다룬다`);
+    assert.ok(!code.includes(bad), `${bad}를 화면에서 다룬다`);
   }
+  // 발급된 테스트 허가 코드는 **응답에서 받은 값을 한 번 그려 줄 뿐** 저장하지 않는다.
+  assert.ok(!/localStorage|sessionStorage/.test(s), "허가 코드를 저장한다");
+  assert.ok(/setGrant\(null\)/.test(s), "새 발급 전에 이전 코드를 지우지 않는다");
 });
 
 // ── API · 비퇴행 ────────────────────────────────────────────────────────────
@@ -259,4 +264,88 @@ test("기존 수동 수집·장치 경로가 그대로다", () => {
   const p = read("../../../tools/piku-collector-extension/popup.js");
   assert.ok(p.includes('$("run")') && p.includes('$("tok")'),
     "확장 팝업의 수동 경로가 사라졌다");
+});
+
+// ── SINGCUP-FINAL-1b: MANUAL 테스트 허가 · 실패 종류 · invocation 멱등성 ──────
+test("확장은 누가 눌렀는지 그대로 말한다 — alarm만 automation:true", () => {
+  const sw = EXT("sw.js");
+  assert.ok(/automation: !!opts\.automation/.test(sw), "challenge가 automation을 고정한다");
+  assert.ok(/automation: trigger === "alarm"/.test(sw), "trigger로 automation을 정하지 않는다");
+  assert.ok(/opts\.testGrant \? \{ testGrant: opts\.testGrant \} : \{\}/.test(sw),
+    "테스트 허가를 challenge에 넘기지 않는다");
+  // 허가·토큰을 저장소에 남기지 않는다.
+  assert.ok(!/store\.set\([^)]*(testGrant|grant)/.test(sw));
+});
+
+test("popup에 테스트 허가 입력란이 있고 1회용이라 전송 후 지운다", () => {
+  const html = EXT("popup.html");
+  const js = EXT("popup.js");
+  assert.ok(/id="grant"/.test(html), "허가 입력란이 없다");
+  assert.ok(/Nexadmin에서 발급/.test(html));
+  assert.ok(/testGrant: grant \|\| undefined/.test(js), "허가를 워커에 넘기지 않는다");
+  assert.ok(/\$\("grant"\)\.value = "";/.test(js), "1회용 코드를 비우지 않는다");
+});
+
+test("한 번의 클릭 = 하나의 invocationId = 서버 run 1건", () => {
+  const js = EXT("popup.js");
+  const sw = EXT("sw.js");
+  const sched = EXT("scheduler.js");
+  assert.ok(/if \(runInFlight\) return;/.test(js), "응답 대기 중 재클릭을 막지 않는다");
+  assert.ok(/\$\("runnow"\)\.disabled = true;/.test(js), "첫 클릭 즉시 잠그지 않는다");
+  assert.ok(/const invocationId = `manual-\$\{Date\.now\(\)\}/.test(js), "invocationId를 만들지 않는다");
+  assert.ok(/const inFlight = new Map\(\)/.test(sw) && /inFlight\.has\(invocationId\)/.test(sw),
+    "워커가 같은 invocation을 합류시키지 않는다");
+  assert.ok(/invocationId: r\.invocationId/.test(sw), "보고에 invocationId가 없다");
+  assert.ok(/invocationId: invocation/.test(sched), "회차 결과에 invocationId가 없다");
+});
+
+test("challenge/token 실패를 정규화된 종류로 나눈다(원문 노출 없음)", () => {
+  const sched = EXT("scheduler.js");
+  assert.ok(/export function classifyAuthError/.test(sched));
+  for (const k of ["manual_mode", "test_grant_required", "device_not_active",
+                   "protocol_too_old", "bad_signature", "challenge_expired",
+                   "token_rejected", "relay_unavailable", "timeout"]) {
+    assert.ok(sched.includes(k), `${k} 종류가 없다`);
+  }
+  assert.ok(!/kind: "token_failed"/.test(sched), "여전히 token_failed로 뭉갠다");
+  // 팝업·Nexadmin이 같은 종류를 사람 문장으로 보여 준다.
+  const popup = EXT("popup.js");
+  const panel = readFileSync(new URL("../app/nexadmin/PikuAutomationPanel.tsx", import.meta.url), "utf8");
+  for (const k of ["manual_mode", "test_grant_required", "protocol_too_old", "relay_unavailable"]) {
+    assert.ok(popup.includes(`${k}:`), `popup에 ${k} 설명이 없다`);
+    assert.ok(panel.includes(`${k}:`), `Nexadmin에 ${k} 설명이 없다`);
+  }
+  // 허가 실패는 조치가 서로 다르다(발급·재입력·재발급) → 네 갈래를 모두 보여 준다.
+  for (const k of ["test_grant_required", "test_grant_invalid",
+                   "test_grant_expired", "test_grant_used"]) {
+    assert.ok(sched.includes(k), `scheduler가 ${k}를 종류로 인정하지 않는다`);
+    assert.ok(popup.includes(`${k}:`), `popup에 ${k} 설명이 없다`);
+    assert.ok(panel.includes(`${k}:`), `Nexadmin에 ${k} 설명이 없다`);
+  }
+  // 사람에게 보여 주는 **문구 표 안에** 내부 값이 섞이지 않는다.
+  for (const src of [popup, panel]) {
+    const table = /KIND_TEXT[^{]*\{([\s\S]*?)^\};/m.exec(src)?.[1] ?? "";
+    assert.ok(table.length > 200, "KIND_TEXT 표를 찾지 못했다");
+    // `bad_signature`는 종류 **이름**이라 괜찮다. 막는 것은 값과 내부 구조다.
+    assert.ok(!/challengeId|publicKey|token_hash|grant_hash|SELECT |piku_|Traceback/.test(table),
+              "실패 문구에 내부 값이 섞였다");
+  }
+});
+
+test("실패해도 허가가 소비된다는 점을 두 화면이 밝힌다", () => {
+  const html = readFileSync(new URL("../../../tools/piku-collector-extension/popup.html",
+                                    import.meta.url), "utf8");
+  const panel = readFileSync(new URL("../app/nexadmin/PikuAutomationPanel.tsx", import.meta.url), "utf8");
+  assert.ok(/실패해도 코드는 소비/.test(html), "팝업이 1회 소비를 밝히지 않는다");
+  assert.ok(/실패해도 코드는 소비/.test(panel), "Nexadmin이 1회 소비를 밝히지 않는다");
+});
+
+test("Nexadmin이 MANUAL에서 테스트 허가를 발급한다(자동 공개는 여전히 없음)", () => {
+  const panel = readFileSync(new URL("../app/nexadmin/PikuAutomationPanel.tsx", import.meta.url), "utf8");
+  assert.ok(/pikuDeviceTestGrant/.test(panel), "허가 발급 경로를 부르지 않는다");
+  assert.ok(/!auto && !noDevice/.test(panel), "MANUAL·장치 있을 때만 보여 주지 않는다");
+  assert.ok(/한 번만/.test(panel) && /10분/.test(panel), "1회용·만료를 밝히지 않는다");
+  assert.ok(!/collector\/publish/.test(panel), "자동화 화면에서 공개를 부른다");
+  const api = readFileSync(new URL("./api.ts", import.meta.url), "utf8");
+  assert.ok(/devices\/test-grant/.test(api));
 });
