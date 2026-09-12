@@ -13,6 +13,7 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
+import chzzk_http
 import httpx
 import streamer_tags as st
 from chzzk_channel_history import get_channel_history
@@ -865,19 +866,34 @@ async def _newcomers_compute(group: str = "new"):
     # out 자체는 자르지 않는다 — 요약/카테고리/체급 분포는 필터를 통과한 전체 기준이어야 한다.
     enrich = out[:_NEWCOMER_ENRICH_N]
     sem = asyncio.Semaphore(12)
-    async with httpx.AsyncClient() as client:
-        async def _fill(item):
-            async with sem:
-                fc, _img = await _fetch_channel_meta(client, item["chzzk_channel_id"])
-                if fc is not None:
-                    item["follower_count"] = fc
+
+    async def _fill(client, item):
+        async with sem:
+            fc, _img = await _fetch_channel_meta(client, item["chzzk_channel_id"])
+            if fc is not None:
+                item["follower_count"] = fc
+
+    async def _enrich_with(client):
         # 외부 API가 느리면 응답 전체가 그만큼 끌려간다 — 상한을 두고 초과분은 포기한다
         # (다음 사이클에 다시 시도되고, 팔로워는 부가 정보라 없어도 목록은 정상이다)
         try:
-            await asyncio.wait_for(asyncio.gather(*[_fill(x) for x in enrich]),
+            await asyncio.wait_for(asyncio.gather(*[_fill(client, x) for x in enrich]),
                                    timeout=_NEWCOMER_ENRICH_TIMEOUT)
         except asyncio.TimeoutError:
             pass
+
+    # 앱 수명주기가 만들어 둔 **공유 클라이언트**를 쓴다. 여기서 새로 만들면
+    # `httpx.AsyncClient()`의 동기 초기화가 이벤트 루프를 264~346ms 막는다
+    # (실측: cold loop lag 311.9ms ≈ 생성 315.6ms, idle 바닥값 13.5ms).
+    # 수명주기가 붙지 않은 경우(단위 테스트에서 이 함수를 직접 부르는 등)에만
+    # 예전처럼 임시로 만들어 쓴다 — 동작은 같고 비용만 든다.
+    shared = chzzk_http.get_client()
+    if shared is not None:
+        await _enrich_with(shared)
+    else:
+        chzzk_http.warn_once_if_missing()
+        async with httpx.AsyncClient() as client:
+            await _enrich_with(client)
 
     # ── KPI 요약 ──────────────────────────────────────────────────────────
     count = len(out)

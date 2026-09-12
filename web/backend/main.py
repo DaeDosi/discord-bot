@@ -59,6 +59,7 @@ from singcup_retention import start_retention_worker
 # 이 파일의 import는 전부 위쪽 `sys.path.insert` 뒤에 와야 해서 E402가 난다.
 # 기존 줄들의 기존 오류는 이번 작업에서 건드리지 않고, 새로 들이는 이 한 줄만
 # 정확히 표시해 신규 유입을 0으로 유지한다(파일 전체 noqa는 쓰지 않는다).
+import chzzk_http  # noqa: E402
 import singcup_final  # noqa: E402
 
 from database import close_db, get_db, init_db
@@ -81,48 +82,54 @@ async def _ensure_final_ranking() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    asyncio.create_task(start_monitor())
-    asyncio.create_task(start_collector())
-    # 첫 방송일 백필 — '신규 & 초기 분석'의 60일 필터가 성립하려면 채널마다 한 번씩
-    # first_live_date를 채워 둬야 한다. 요청 경로에서 모으면 첫 방문자가 다 기다린다.
-    asyncio.create_task(start_history_backfill())
-    # 싱드컵 이벤트 수집 — 이벤트 기간에만 돌고, 여러 replica가 떠도 DB 락으로
-    # 한 번에 하나만 실행된다. 실패해도 메인 통계 서비스에는 영향이 없다.
-    asyncio.create_task(start_singcup_collector())
-    # 싱드컵 클립(메인/랭킹) — 신규 탐색 전용 루프(지표 갱신은 아래 정각 스윕이 맡는다)
-    asyncio.create_task(start_clip_collector())
-    # 지표 전체 갱신 — KST 매시 정각 1회차로 대표·일반 클립 전부를 한 번씩 훑는다.
-    # 예전처럼 4분마다 상위 N건만 집으면 클립이 수천 건일 때 한 바퀴가 몇 시간이었다.
-    asyncio.create_task(start_sweep_worker())
-    # 삭제 클립 권위 감사 — 카드 API가 정상 응답해도 상세 API로 결국 한 번씩
-    # 확인한다. 기본값은 OFF이고, 켜도 SHADOW가 기본이라 상태를 바꾸지 않는다
-    # (SINGCUP_DELETION_RECONCILE_ENABLED / _SHADOW / _HOT_ENABLED / _COLD_ENABLED).
-    asyncio.create_task(start_audit_worker())
-    # 과거 적재는 성격이 달라 별도 워커가 완료될 때까지 연속 처리한다(커서는 DB에 저장)
-    asyncio.create_task(start_backfill_worker())
-    # 분리 API 스냅샷 게시 — 평상시 갱신은 recompute_ranking이 맡고, 이 루프는
-    # 재시작 직후 warm-up과 느린 안전망만 담당한다(조회 경로는 생산하지 않는다).
-    asyncio.create_task(start_snapshot_publisher())
-    # 보존정책 유지보수 — 기본은 dry-run이라 아무것도 지우지 않는다.
-    # 실제 삭제는 SINGCUP_SNAPSHOT_PRUNE_ENABLED=true + DRY_RUN=false 일 때만.
-    asyncio.create_task(start_retention_worker())
-    # 비공식 인기점수 랭킹 확정본 — 이벤트가 끝났는데 확정본이 아직 없을 때만
-    # 한 번 만든다. 이미 있으면 아무것도 하지 않으므로 재시작마다 순위가 달라지지
-    # 않는다. **수집은 멈추지 않는다** — 얼리는 것은 랭킹 화면이 받는 응답 하나뿐이고,
-    # 공식 예선 참가자 화면은 계속 최신 지표를 쓴다.
-    asyncio.create_task(_ensure_final_ranking())
-    yield
-    # 종료 훅 — 미커밋 트랜잭션을 남긴 채 프로세스가 사라지면 같은 파일을 쓰는
-    # 봇 프로세스가 그 잠금에 걸린다. 되돌린 뒤 연결을 닫는다.
-    try:
-        conn = await get_db()
-        await conn.rollback()
-    except Exception:                     # noqa: BLE001 — 종료 경로는 막지 않는다
-        pass
-    try:
-        await close_db()
-    except Exception:                     # noqa: BLE001
-        pass
+    # 치지직 공개 API용 **공유 HTTP 클라이언트** — 요청 경로에서 만들면
+    # `httpx.AsyncClient()`의 동기 초기화가 이벤트 루프를 264~346ms 막는다
+    # (실측: newcomers cold의 loop lag 311.9ms ≈ 생성 315.6ms, idle 바닥값 13.5ms).
+    # 수명주기당 한 번만 만들고 종료 시 한 번 닫는다. 아래 워커들의 **시작 순서는
+    # 그대로**이고, 종료도 기존 DB 훅이 먼저 돌고 마지막에 클라이언트가 닫힌다.
+    async with chzzk_http.chzzk_client_lifespan(app):
+        asyncio.create_task(start_monitor())
+        asyncio.create_task(start_collector())
+        # 첫 방송일 백필 — '신규 & 초기 분석'의 60일 필터가 성립하려면 채널마다 한 번씩
+        # first_live_date를 채워 둬야 한다. 요청 경로에서 모으면 첫 방문자가 다 기다린다.
+        asyncio.create_task(start_history_backfill())
+        # 싱드컵 이벤트 수집 — 이벤트 기간에만 돌고, 여러 replica가 떠도 DB 락으로
+        # 한 번에 하나만 실행된다. 실패해도 메인 통계 서비스에는 영향이 없다.
+        asyncio.create_task(start_singcup_collector())
+        # 싱드컵 클립(메인/랭킹) — 신규 탐색 전용 루프(지표 갱신은 아래 정각 스윕이 맡는다)
+        asyncio.create_task(start_clip_collector())
+        # 지표 전체 갱신 — KST 매시 정각 1회차로 대표·일반 클립 전부를 한 번씩 훑는다.
+        # 예전처럼 4분마다 상위 N건만 집으면 클립이 수천 건일 때 한 바퀴가 몇 시간이었다.
+        asyncio.create_task(start_sweep_worker())
+        # 삭제 클립 권위 감사 — 카드 API가 정상 응답해도 상세 API로 결국 한 번씩
+        # 확인한다. 기본값은 OFF이고, 켜도 SHADOW가 기본이라 상태를 바꾸지 않는다
+        # (SINGCUP_DELETION_RECONCILE_ENABLED / _SHADOW / _HOT_ENABLED / _COLD_ENABLED).
+        asyncio.create_task(start_audit_worker())
+        # 과거 적재는 성격이 달라 별도 워커가 완료될 때까지 연속 처리한다(커서는 DB에 저장)
+        asyncio.create_task(start_backfill_worker())
+        # 분리 API 스냅샷 게시 — 평상시 갱신은 recompute_ranking이 맡고, 이 루프는
+        # 재시작 직후 warm-up과 느린 안전망만 담당한다(조회 경로는 생산하지 않는다).
+        asyncio.create_task(start_snapshot_publisher())
+        # 보존정책 유지보수 — 기본은 dry-run이라 아무것도 지우지 않는다.
+        # 실제 삭제는 SINGCUP_SNAPSHOT_PRUNE_ENABLED=true + DRY_RUN=false 일 때만.
+        asyncio.create_task(start_retention_worker())
+        # 비공식 인기점수 랭킹 확정본 — 이벤트가 끝났는데 확정본이 아직 없을 때만
+        # 한 번 만든다. 이미 있으면 아무것도 하지 않으므로 재시작마다 순위가 달라지지
+        # 않는다. **수집은 멈추지 않는다** — 얼리는 것은 랭킹 화면이 받는 응답 하나뿐이고,
+        # 공식 예선 참가자 화면은 계속 최신 지표를 쓴다.
+        asyncio.create_task(_ensure_final_ranking())
+        yield
+        # 종료 훅 — 미커밋 트랜잭션을 남긴 채 프로세스가 사라지면 같은 파일을 쓰는
+        # 봇 프로세스가 그 잠금에 걸린다. 되돌린 뒤 연결을 닫는다.
+        try:
+            conn = await get_db()
+            await conn.rollback()
+        except Exception:                     # noqa: BLE001 — 종료 경로는 막지 않는다
+            pass
+        try:
+            await close_db()
+        except Exception:                     # noqa: BLE001
+            pass
 
 
 # 프로덕션에서는 API 문서를 노출하지 않는다 — 전체 엔드포인트 목록과 스키마가
