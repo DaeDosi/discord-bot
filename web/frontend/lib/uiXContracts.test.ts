@@ -52,8 +52,11 @@ test("그룹은 1인 팀이어도 같은 높이 계약을 지킨다", () => {
   // 목록 전체 높이가 흔들린다.
   assert.ok(/<MemberLine[^/]*reserve=\{isGroup\}/.test(s),
     "멤버 줄 예약이 부문이 아니라 데이터로 결정된다");
-  assert.ok(/isGroup=\{division === "groups"\}/.test(s),
-    "isGroup을 부문에서 내려 주지 않는다");
+  // SINGCUP-FINAL-1: 본선(`final`)은 솔로·팀이 섞여 있어 **모든 행**에 자리를 예약한다.
+  // 그래도 결정은 데이터가 아니라 부문(section)이 한다.
+  assert.ok(/isGroup=\{reserveMembers\}/.test(s), "isGroup을 부문에서 내려 주지 않는다");
+  assert.ok(/const reserveMembers = division === "groups" \|\| mixed;/.test(s),
+    "멤버 줄 예약이 부문·단계가 아니라 데이터로 결정된다");
   // 1인 팀에도 '멤버'라는 라벨만 떠 있으면 안 된다 — 값이 있을 때만 라벨을 붙인다.
   assert.ok(/text \? <><span className="text-muted\/60">멤버 <\/span>\{text\}<\/> : null/
     .test(MEMBER_BODY()), "값이 없는데도 '멤버' 라벨을 그린다");

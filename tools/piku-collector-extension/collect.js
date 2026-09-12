@@ -27,11 +27,33 @@
 (() => {
   "use strict";
 
+  /* source id → 부문·단계·기대 행 수. 서버 `singcup_piku_campaigns`와 같은 값이다.
+   *
+   * 예선 세 페이지는 2026-09-12 실측으로 **전부 404(삭제)** 라 더는 읽히지 않지만,
+   * 정본 목록에서 지우지는 않는다 — 다른 id의 페이지를 예선으로 잘못 읽는 일이
+   * 생기지 않게 "아는 id"로 남겨 두고, 서버 쪽 동결(campaign_frozen)이 막는다.
+   *
+   * 본선 `2ut8Li`는 여성·남성·그룹이 **한 표**에 섞인 32행이다(실측: 순위 1~32
+   * 연속, 팀 12·솔로 20). `title`은 페이지 제목에 들어 있어야 하는 문자열이다.
+   * `paged`는 '보기 개수' 컨트롤이 없어(bLengthChange=false, 10행×4페이지) 사람이
+   * 페이지 번호를 누르듯 넘겨 읽어야 한다는 뜻이다 — 그 넘김은 서비스 워커가
+   * `pager.js`로 하고, 이 파일은 **화면에 지금 보이는 행**만 읽는다. */
   const SOURCES = {
-    "8jGsHE": { division: "female_solo", expected: 64 },
-    "7PqH44": { division: "male_solo", expected: 64 },
-    "7fXoNs": { division: "groups", expected: 32 },
+    "8jGsHE": { division: "female_solo", campaign: "qualifier", expected: 64, title: "" },
+    "7PqH44": { division: "male_solo", campaign: "qualifier", expected: 64, title: "" },
+    "7fXoNs": { division: "groups", campaign: "qualifier", expected: 32, title: "" },
+    "2ut8Li": { division: "final", campaign: "final", expected: 32,
+                title: "[2026 치지직 싱드컵 갤럭시] - 파이널 본선", paged: true },
   };
+
+  /* fragment 모드 — 페이지 넘김으로 읽을 때 서비스 워커가 켠다.
+   * 이때는 "지금 보이는 행"만 돌려주고 행 수·연속성 검사는 **조각을 합친 쪽**
+   * (`scheduler.js`의 `readSource`)이 한다. 켜는 방법이 DOM 속성인 이유:
+   * `executeScript({files})`는 인자를 못 넘기고, 이 파일은 파서 테스트가 통째로
+   * 실행하므로 함수로 바꾸지 않는다. */
+  const FRAGMENT = !!(document.documentElement
+    && document.documentElement.dataset
+    && document.documentElement.dataset.nexbotPikuFragment === "1");
 
   /** 차단·확인 화면 표식. 만나면 중단한다(대응하지 않는다). */
   const BLOCKED = [
@@ -149,9 +171,19 @@
       return fail("blocked", "PIKU가 확인 화면을 표시했습니다. 중단합니다.");
     }
 
+    // 제목 — 정본에 기대 제목이 있는 단계는 페이지 제목에 그것이 **들어 있어야** 한다.
+    // 같은 id의 페이지가 다른 내용으로 바뀌면 sourceId 검사만으로는 못 잡는다.
+    const pageTitle = String(document.title || "").replace(/\s+/g, " ").trim();
+    if (meta.title && !pageTitle.includes(meta.title)) {
+      return fail("title_mismatch", "페이지 제목이 기대한 단계와 다릅니다.");
+    }
+
     // 표는 하나만 고른다 — 여러 개면 어느 것이 랭킹인지 알 수 없으므로 중단한다.
+    // fragment 모드(페이지 넘김)에서는 마지막 페이지가 2행뿐일 수 있다(실측: 32행 =
+    // 10·10·10·2). 그래서 조각을 읽을 때는 행 수 하한을 두지 않는다.
+    const minRows = FRAGMENT ? 1 : 5;
     const bodies = [...document.querySelectorAll("table tbody")]
-      .filter((tb) => tb.querySelectorAll("tr").length >= 5);
+      .filter((tb) => tb.querySelectorAll("tr").length >= minRows);
     if (bodies.length === 0) {
       return fail("not_rendered",
         "랭킹 표를 찾지 못했습니다. 표가 모두 보이도록 스크롤한 뒤 다시 시도해 주세요.");
@@ -190,6 +222,30 @@
     if (rows.length === 0) {
       return fail("not_rendered", "표에서 읽을 수 있는 행이 없습니다.");
     }
+
+    // 빠진 값이 있으면 **행 번호와 이유를 붙여** 중단한다(조용한 누락 금지).
+    // fragment 모드에서도 행 단위 검사는 그대로다 — 합치는 쪽이 다시 보지 않는다.
+    const badRow = rows.find((r) =>
+      r._reason || !r.streamer || !r.song_title || !r.artist
+      || r.win_ratio === null || r.win_rate === null);
+    if (badRow) {
+      const why = badRow._reason || "값이 비어 있거나 비율을 읽지 못했습니다";
+      return fail("parse_failed", `${badRow.rank}위 행: ${why}.`);
+    }
+
+    if (FRAGMENT) {
+      // 조각 하나. 행 수·연속성·중복은 조각을 합친 뒤 `scheduler.js`가 검사한다.
+      return {
+        ok: true, fragment: true, division: meta.division, campaign: meta.campaign,
+        sourceId, sourceUrl: `https://www.piku.co.kr/w/rank/${sourceId}`, pageTitle,
+        rows: rows.map((r) => ({
+          rank: r.rank, streamer: r.streamer, song_title: r.song_title,
+          artist: r.artist, win_ratio: r.win_ratio, win_rate: r.win_rate,
+          image_url: r.image_url,
+        })),
+      };
+    }
+
     if (rows.length !== meta.expected) {
       // 부분 데이터를 보내지 않는다 — 개수 계약은 서버도 확인하지만, 여기서
       // 먼저 끊어야 "일부만 성공"이 네트워크를 타지 않는다.
@@ -198,20 +254,14 @@
       // DataTables라면 선택을 바꾸는 순간 내부 API 요청이 나가고, 그건 "이미
       // 렌더된 것만 읽는다"는 약속을 깬다. 대신 무엇을 하면 되는지 알린다.
       const sel = document.querySelector("select[name$='_length'], .dataTables_length select");
-      const hint = sel
-        ? `표 위의 '보기 개수'를 ${meta.expected}개 이상(예: 100)으로 바꾼 뒤 다시 시도해 주세요.`
-        : "표가 모두 보이도록 펼친 뒤 다시 시도해 주세요.";
+      const hint = meta.paged
+        ? "이 페이지는 표를 한 번에 펼칠 수 없습니다. 확장의 '지금 테스트 수집'이 "
+          + "페이지를 넘겨 가며 읽습니다 — 그 버튼을 써 주세요."
+        : sel
+          ? `표 위의 '보기 개수'를 ${meta.expected}개 이상(예: 100)으로 바꾼 뒤 다시 시도해 주세요.`
+          : "표가 모두 보이도록 펼친 뒤 다시 시도해 주세요.";
       return fail("partial",
         `${meta.expected}행이어야 하는데 ${rows.length}행만 보입니다. ` + hint);
-    }
-
-    // 빠진 값이 있으면 **행 번호와 이유를 붙여** 중단한다(조용한 누락 금지).
-    const bad = rows.find((r) =>
-      r._reason || !r.streamer || !r.song_title || !r.artist
-      || r.win_ratio === null || r.win_rate === null);
-    if (bad) {
-      const why = bad._reason || "값이 비어 있거나 비율을 읽지 못했습니다";
-      return fail("parse_failed", `${bad.rank}위 행: ${why}.`);
     }
 
     // 순위는 1..N 연속이어야 하고 중복이 없어야 한다.
@@ -237,8 +287,10 @@
       payload: {
         schemaVersion: 1,
         division: meta.division,
+        campaign: meta.campaign,
         sourceId,
         sourceUrl: `https://www.piku.co.kr/w/rank/${sourceId}`,
+        pageTitle,
         collectedAt: new Date().toISOString(),
         rowCount: rows.length,
         // 내부 판정용 `_reason`은 **여기서 떨어진다** — 전송 스키마에 자리가 없다.

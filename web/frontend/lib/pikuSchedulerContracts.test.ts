@@ -70,12 +70,65 @@ test("행 수가 맞지 않으면 전송하지 않는다", () => {
   assert.ok(/expected:\s*64/.test(s) && /expected:\s*32/.test(s));
 });
 
-test("탭을 새로 만들거나 함부로 새로고침하지 않는다", () => {
+test("탭을 새로 만들지 않고, 읽기 전에는 항상 새로고침한다", () => {
   const s = code(EXT("scheduler.js") + EXT("sw.js"));
   assert.ok(!/tabs\.create/.test(s), "탭 생성 경로가 생겼다");
-  // 새로고침은 사용자가 켰을 때만.
-  assert.ok(/if \(state\.reloadBeforeRead\)/.test(EXT("scheduler.js")),
-    "새로고침이 무조건 실행된다");
+  // SINGCUP-FINAL-1: 새로고침은 **항상** 한다. AUTO-2의 "사용자가 켰을 때만"은
+  // 매시간 같은 DOM을 읽어 지문이 같아 `unchanged`만 반복되는 결함(진단 d)이었다.
+  assert.ok(!/reloadBeforeRead/.test(EXT("scheduler.js")), "선택형 새로고침이 남아 있다");
+  assert.ok(/await env\.reloadTab\(tab\.id\)/.test(EXT("scheduler.js")),
+    "읽기 전 새로고침이 없다");
+});
+
+// ── SINGCUP-FINAL-1 ─────────────────────────────────────────────────────────
+test("본선 source가 확장 정본에 있고 plan 기반으로만 읽는다", () => {
+  const s = EXT("scheduler.js");
+  assert.ok(/final:\s*\{\s*id:\s*"2ut8Li",\s*expected:\s*32/.test(s), "본선 정본이 없다");
+  assert.ok(/export function resolvePlan/.test(s), "plan 해석기가 없다");
+  assert.ok(/skipped: "no_plan"/.test(s), "plan이 없을 때 돌지 않는 게이트가 없다");
+  assert.ok(/for \(const d of resolved\.sources\)/.test(s), "plan의 source만 도는 루프가 아니다");
+  assert.ok(!/for \(const d of DIVISIONS\)/.test(s), "예선 3부문을 고정으로 돈다");
+});
+
+test("다음 예정은 '예정 시각 + 주기'이고 alarm을 그 시각에 다시 맞춘다 (결함 b)", () => {
+  const s = EXT("scheduler.js");
+  assert.ok(/scheduledAt \+ wait/.test(s), "다음 예정이 종료 시각 기준이다");
+  assert.ok(/createAlarm\(PERIOD_MS, nextRunAt\)/.test(s), "alarm을 예정 시각에 맞추지 않는다");
+  assert.ok(/when \? \{ when \} : \{\}/.test(EXT("sw.js")), "sw.js가 alarm `when`을 넘기지 않는다");
+});
+
+test("회차 결과를 device/run으로 보고하되 데이터·토큰은 싣지 않는다 (결함 c)", () => {
+  const sw = EXT("sw.js");
+  assert.ok(/postJson\(base, "device\/run"/.test(sw), "회차 보고 경로가 없다");
+  const m = /report: \(r\) => postJson\(base, "device\/run", \{([\s\S]*?)\}\)/.exec(sw);
+  assert.ok(m, "보고 본문을 찾지 못했다");
+  for (const bad of ["payload", "rows:", "token", "streamer"]) {
+    assert.ok(!m![1].includes(bad), `보고 본문에 ${bad}가 실린다`);
+  }
+});
+
+test("본선은 페이지를 넘겨 읽고 pager는 페이지 크기·내부 API를 건드리지 않는다", () => {
+  const pager = EXT("pager.js");
+  assert.ok(/paginate_button/.test(pager), "페이지 링크를 누르는 경로가 없다");
+  assert.ok(!/page\.len\(|x\.php|fetch\(|XMLHttpRequest/.test(pager),
+    "pager가 내부 API나 페이지 크기를 만진다");
+  assert.ok(/readPaged/.test(EXT("scheduler.js")), "페이지 넘김 읽기가 없다");
+  assert.ok(/kind: "rank_gap"/.test(EXT("scheduler.js")), "합친 뒤 순위 연속 검사가 없다");
+});
+
+test("popup에 '지금 테스트 수집' 1회 실행이 있고 공개 경로는 없다", () => {
+  const html = EXT("popup.html");
+  const js = EXT("popup.js");
+  assert.ok(/id="runnow"/.test(html), "테스트 수집 버튼이 없다");
+  assert.ok(/공개 안 함/.test(html), "공개하지 않는다는 문구가 없다");
+  assert.ok(/type: "run-now"/.test(js), "run-now 메시지가 없다");
+  assert.ok(/\$\("runnow"\)\.disabled = true/.test(js), "중복 클릭 방지가 없다");
+  assert.ok(!/collector\/publish/.test(js + EXT("sw.js")), "확장이 공개 경로를 부른다");
+});
+
+test("확장 권한은 여전히 activeTab·scripting·alarms 셋뿐이다", () => {
+  const m = JSON.parse(EXT("manifest.json"));
+  assert.deepEqual(m.permissions, ["activeTab", "scripting", "alarms"]);
 });
 
 test("PIKU에 직접 요청하지 않는다", () => {
@@ -153,7 +206,8 @@ test("자동 공개 선택지를 노출하지 않는다", () => {
 test("부분 성공을 성공과 구분해 보여 준다", () => {
   const s = PANEL();
   assert.ok(s.includes("일부만 완료"), "partial 표기가 없다");
-  assert.ok(s.includes("세 부문 완료"), "success 표기가 없다");
+  assert.ok(s.includes("plan 전부 완료"), "success 표기가 없다");
+  assert.ok(s.includes("표가 그대로"), "unchanged 표기가 없다");
   // 색만으로 구분하지 않는다.
   for (const g of ["✔", "⚠", "✖"]) assert.ok(s.includes(g), `글리프 ${g}가 없다`);
 });
@@ -172,7 +226,8 @@ test("실패 사유를 사람이 읽을 문장으로 바꾼다", () => {
 test("실행 주체가 확장이라는 사실을 화면이 밝힌다", () => {
   const s = PANEL();
   assert.ok(s.includes("Chrome 확장"), "누가 실행하는지 적혀 있지 않다");
-  assert.ok(s.includes("100개 보기"), "탭 전제 조건이 적혀 있지 않다");
+  assert.ok(s.includes("활성 plan의 PIKU 탭"), "탭 전제 조건이 적혀 있지 않다");
+  assert.ok(s.includes("예선 탭은 필요 없습니다"), "예선 탭이 불필요하다는 사실을 밝히지 않는다");
 });
 
 test("자동인데 장치가 없으면 경고한다", () => {

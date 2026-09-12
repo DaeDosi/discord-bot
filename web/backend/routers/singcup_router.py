@@ -753,18 +753,36 @@ async def piku_status():
     return await piku.public_status()
 
 
+@router.get("/piku/campaigns")
+async def piku_campaigns():
+    """단계(예선/본선) 공개 상태 — 동결 여부·기간·마지막 수집·마지막 공개 시각.
+
+    본선 기간은 사용자 제공 정보라 `scheduleSource`로 그 사실을 함께 내보낸다.
+    """
+    return {"campaigns": await piku.campaign_status()}
+
+
 @router.get("/piku/ranking")
-async def piku_ranking(division: str | None = None,
+async def piku_ranking(division: str | None = None, campaign: str | None = None,
                        sort: str = piku.DEFAULT_SORT, limit: int = 0):
-    """공개 순위. `division`을 생략하면 세 부문을 모두 돌려준다.
+    """공개 순위. `division`을 생략하면 예선 세 부문을 모두 돌려준다.
+
+    `campaign=final`이면 본선(source `final` 하나)을 돌려준다 — 예선 응답 형태는
+    그대로다(기존 화면 호환). 본선을 예선 부문에 섞어 주지 않는다.
 
     **응답에 우승 비율·승률이 숫자로도 이름으로도 없다.** `sort`는 공개 토큰
     (`primary`/`secondary`)이고 내부 컬럼명은 서버 밖으로 나가지 않는다.
     정렬은 **서버가** 하며, 기준이 바뀌면 1위부터 다시 계산된다.
     """
-    keys = [division] if division in piku.DIVISIONS else list(piku.DIVISIONS)
+    import singcup_piku_campaigns as camps
+    if campaign is not None:
+        if campaign not in camps.CAMPAIGNS:
+            raise HTTPException(status_code=400, detail="알 수 없는 단계입니다.")
+        keys = camps.sources_of(campaign)
+    else:
+        keys = [division] if division in piku.DIVISIONS else list(piku.DIVISIONS)
     public_sort, _ = piku.resolve_sort(sort)
-    out = {"sort": public_sort, "divisions": {}}
+    out = {"sort": public_sort, "campaign": campaign or "qualifier", "divisions": {}}
     for d in keys:
         out["divisions"][d] = await piku.public_ranking(d, sort=public_sort,
                                                         limit=limit)

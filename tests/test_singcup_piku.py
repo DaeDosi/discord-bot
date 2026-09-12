@@ -525,8 +525,10 @@ def test_공개_응답에_비율과_승률_숫자가_없다(pdb):
     # 공개 필드 집합을 **정확히** 고정한다. 곡·가수는 화면 2줄 표시에 쓰는
     # 공개 정보라 여기 들어오지만, 비율·승률은 어떤 이름으로도 들어올 수 없다.
     for e in r["entries"]:
+        # `teamMembers`(SINGCUP-FINAL-1)는 팀원 이름 문자열 — 곡·가수처럼 공개
+        # 정보다. 본선은 한 표에 솔로·팀이 섞여 있어 행마다 이걸로 팀 여부를 안다.
         assert set(e) == {"rank", "channelId", "name", "thumbnailUrl",
-                          "sourceRank", "songTitle", "artistName"}
+                          "sourceRank", "songTitle", "artistName", "teamMembers"}
     # **이제는 예외가 필요 없다** — 공개 응답의 `sort`는 `primary`/`secondary`이고
     # 내부 컬럼명(`win_rate` 등)은 서버 밖으로 나가지 않는다.
     for bad in ("win_rate", "winRate", "match_rate", "matchRate"):

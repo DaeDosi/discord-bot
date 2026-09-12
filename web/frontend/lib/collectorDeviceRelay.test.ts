@@ -33,13 +33,20 @@ const UPSTREAM: Record<string, Record<string, unknown>> = {
   "device/pair": { ok: true, deviceId: 7, name: "작업용 크롬",
                    status: "active", fingerprint: "AB12-CD34-EF56" },
   "device/state": { ok: true, deviceActive: true, deviceStatus: "active",
-                    mode: "AUTO_COLLECT", autoPublishReady: false, periodMinutes: 60 },
+                    mode: "AUTO_COLLECT", autoPublishReady: false, periodMinutes: 60,
+                    plan: { campaign: "final", internalHost: "railway.internal",
+                            sources: [{ key: "final", sourceId: "2ut8Li", expected: 32,
+                                        url: "https://www.piku.co.kr/w/rank/2ut8Li",
+                                        title: "[2026 치지직 싱드컵 갤럭시] - 파이널 본선",
+                                        paged: true, secret: "no" }] } },
   "device/challenge": { ok: true, challengeId: "ch_abc123", nonce: "n0nc3-s3cr3t",
                         division: "male_solo", deviceId: 7, expiresAt: 1755600000,
                         message: "nexbot-piku-device:ch_abc123:n0nc3-s3cr3t:male_solo:7" },
   "device/token": { ok: true, deviceId: 7, fingerprint: "AB12-CD34-EF56",
                     token: "tok_fake_for_tests", division: "male_solo",
                     expiresAt: 1755600600, ttlSeconds: 600 },
+  "device/run": { ok: true, id: 12, deviceId: 7, trigger: "alarm", campaign: "final",
+                  outcome: "success", sources: { final: { ok: true, kind: "sent", rows: 32 } } },
 };
 
 type Call = { url: string; init: RequestInit };
@@ -77,7 +84,7 @@ const relay = (kind: RelayKind, f: { impl: typeof fetch }, body: unknown = {},
 // ── 1. 네 경로가 프론트에 실재한다 (404의 직접 원인) ────────────────────────
 test("장치 4경로가 프론트 route로 존재하고 POST만 내보낸다", () => {
   assert.deepEqual([...DEVICE_RELAY_KINDS].sort(),
-    ["device/challenge", "device/pair", "device/state", "device/token"]);
+    ["device/challenge", "device/pair", "device/run", "device/state", "device/token"]);
   for (const kind of DEVICE_RELAY_KINDS) {
     const src = readFileSync(new URL(`${kind}/route.ts`, ROUTES), "utf8");
     assert.ok(/export async function POST/.test(src), `${kind}에 POST가 없다`);
@@ -98,9 +105,9 @@ test("확장이 부르는 collector 경로가 전부 프론트 route로 존재�
     for (const m of src.matchAll(
       /\b(?:postJson|ingestUrl|apiUrl)\(\s*base\s*,\s*"([^"]+)"/g)) wanted.add(m[1]);
   }
-  // 확장이 실제로 부르는 것은 여섯이다. 하나라도 못 찾으면 이 검사 자체가 무의미해진다.
+  // 확장이 실제로 부르는 것은 일곱이다. 하나라도 못 찾으면 이 검사 자체가 무의미해진다.
   assert.deepEqual([...wanted].sort(),
-    ["device/challenge", "device/pair", "device/state", "device/token",
+    ["device/challenge", "device/pair", "device/run", "device/state", "device/token",
      "failure", "ingest"],
     "확장 호출 경로 목록이 예상과 다르다 — 정규식이나 확장이 바뀌었다");
   for (const p of wanted) {
@@ -157,7 +164,7 @@ test("요청 URL 경로를 백엔드 주소에 이어 붙이지 않는다", asyn
 
 test("device 디렉터리에 동적·catch-all 경로가 없다", () => {
   const entries = readdirSync(new URL("device/", ROUTES)).sort();
-  assert.deepEqual(entries, ["challenge", "pair", "state", "token"]);
+  assert.deepEqual(entries, ["challenge", "pair", "run", "state", "token"]);
   for (const e of entries) assert.ok(!e.includes("["), `동적 경로가 있다: ${e}`);
 });
 
@@ -254,9 +261,10 @@ test("challenge의 nonce는 relay를 넘어오지 않는다 — 서명 대상은
 test("성공 응답의 키는 경로별 허용 목록과 정확히 같다", async () => {
   const expected: Record<string, string[]> = {
     "device/pair": ["deviceId", "fingerprint", "name", "ok"],
-    "device/state": ["deviceActive", "mode", "ok"],
+    "device/state": ["deviceActive", "mode", "ok", "plan"],
     "device/challenge": ["challengeId", "message", "ok"],
     "device/token": ["ok", "token", "ttlSeconds"],
+    "device/run": ["id", "ok", "outcome"],
   };
   for (const kind of DEVICE_RELAY_KINDS) {
     const j = await (await relay(kind, upstreamFor(kind))).json();
@@ -508,4 +516,26 @@ test("pairingCode·publicKey·signature·nonce·token을 로그에 남기지 않
   for (const leak of ["SECRET-", "n0nc3-s3cr3t", "tok_fake_for_tests", "AB12-CD34-EF56"]) {
     assert.ok(!blob.includes(leak), `로그에 ${leak}가 남았다`);
   }
+});
+
+
+// ── SINGCUP-FINAL-1. `device/state`의 plan은 형태를 못 박고 통과시킨다 ──────
+test("device/state의 plan은 명세된 키만 통과하고 나머지는 버린다", async () => {
+  const j = await (await relay("device/state", upstreamFor("device/state"))).json();
+  assert.deepEqual(j.plan, { campaign: "final", sources: [{
+    key: "final", sourceId: "2ut8Li", url: "https://www.piku.co.kr/w/rank/2ut8Li",
+    expected: 32, title: "[2026 치지직 싱드컵 갤럭시] - 파이널 본선", paged: true }] });
+  const text = JSON.stringify(j);
+  assert.ok(!text.includes("internalHost") && !text.includes("railway.internal"));
+  assert.ok(!text.includes("secret"));
+});
+
+test("plan이 객체가 아니거나 source가 8개를 넘으면 잘라 낸다", async () => {
+  let f = upstreamFor("device/state", { plan: "not-an-object" });
+  let j = await (await relay("device/state", f)).json();
+  assert.equal(j.plan, undefined);
+  f = upstreamFor("device/state", { plan: { campaign: "final",
+    sources: Array.from({ length: 20 }, (_, i) => ({ key: `k${i}` })) } });
+  j = await (await relay("device/state", f)).json();
+  assert.equal(j.plan.sources.length, 8);
 });

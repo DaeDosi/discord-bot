@@ -298,3 +298,43 @@ test("멤버 구분자는 가운뎃점이다", () => {
   assert.equal(memberLine({ memberNames: [] }), "");
   assert.equal(memberLine({ memberNames: ["가"] }), "가");
 });
+
+// ── SINGCUP-FINAL-1. 본선(mixed) — 솔로·팀이 한 표에 섞여 있다 ──────────────
+test("본선: 팀 여부는 PIKU teamMembers가 정한다 — 겸업 솔로에게 팀 번호가 붙지 않는다", () => {
+  const a = solo("a", "겸업솔로");
+  const b = solo("b", "팀원");
+  const rows = [a, solo("c", "순수솔로"), team(7, [b, a])];   // a는 7팀 멤버이기도 하다
+  const ranking: PikuEntry[] = [
+    { ...pk(1, "a", "겸업솔로"), teamMembers: "" },           // 본선에는 솔로로 나왔다
+    { ...pk(2, "b", "팀원"), teamMembers: "팀원, 겸업솔로" },  // 팀으로 나왔다
+    { ...pk(3, "c", "순수솔로"), teamMembers: "" },
+  ];
+  const out = mergeRanking(rows, ranking, { mixed: true });
+  assert.equal(out.length, 3);
+  assert.equal(out[0].rank, 1);
+  assert.equal(out[0].teamNumber, undefined, "겸업 솔로에 팀 번호가 붙었다");
+  assert.deepEqual(out[0].memberNames, []);
+  assert.equal(out[1].teamNumber, 7);
+  assert.deepEqual(out[1].memberNames, ["겸업솔로"]);
+  assert.equal(out[2].teamNumber, undefined);
+});
+
+test("예선(mixed 아님)은 기존 규칙 그대로 — 1인 팀도 팀 번호를 유지한다", () => {
+  const a = solo("a", "혼자");
+  const rows = [team(3, [a])];
+  const out = mergeRanking(rows, [{ ...pk(1, "a", "혼자"), teamMembers: "" }]);
+  assert.equal(out[0].teamNumber, 3);
+});
+
+test("본선: 32행이 1위부터 전부 남고 곡·가수·teamMembers를 잃지 않는다", () => {
+  const rows = Array.from({ length: 32 }, (_, i) => solo(`ch${i}`, `이름${i}`));
+  const ranking: PikuEntry[] = rows.map((r, i) => ({
+    ...pk(i + 1, r.channelId, r.channelName, `곡${i}`, `가수${i}`),
+    teamMembers: i % 3 === 0 ? `${r.channelName}, 팀원${i}` : "",
+  }));
+  const out = mergeRanking(rows, ranking, { mixed: true });
+  assert.deepEqual(out.map((x) => x.rank), Array.from({ length: 32 }, (_, i) => i + 1));
+  assert.equal(out[0].rank, 1);
+  assert.equal(out[5].songTitle, "곡5");
+  assert.equal(out[5].artistName, "가수5");
+});

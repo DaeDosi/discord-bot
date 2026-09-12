@@ -48,6 +48,7 @@ import time
 import uuid
 from typing import Any
 
+import singcup_piku_campaigns as camps
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -57,7 +58,10 @@ from database import get_db
 
 log = logging.getLogger(__name__)
 
-DIVISIONS = ("female_solo", "male_solo", "groups")
+#: 예선 부문(기존 값). challenge는 **모든 source key**(예선 3 + 본선 `final`)에
+#: 대해 발급되며, 동결된 campaign은 거절된다.
+DIVISIONS = camps.QUALIFIER_SOURCES
+SOURCES = tuple(camps.SOURCES)
 MODES = ("MANUAL", "AUTO_COLLECT", "AUTO_PUBLISH")
 DEFAULT_MODE = "MANUAL"
 
@@ -74,6 +78,18 @@ _CODE_LEN = 8
 
 #: 서명 대상 문자열의 접두사. 다른 용도의 서명을 이 자리에 옮겨 붙이지 못하게 한다.
 _SIGN_PREFIX = "nexbot-piku-collector-v1"
+#: SINGCUP-FINAL-1 — 예선이 아닌 campaign은 서명 대상에 **campaign·sourceId까지 묶는다.**
+#: canonical:
+#:   `nexbot-piku-collector-v2|{challengeId}|{nonce}|{campaign}|{source}|{sourceId}|{deviceId}`
+#:   · challengeId = uuid4 hex(32자, `|` 없음) · nonce = base64(32B)(`|` 없음)
+#:   · campaign/source/sourceId = 레지스트리 상수(ASCII, `|` 없음) · deviceId = 정수
+#: 구분자 `|`는 어느 필드에도 나올 수 없으므로 모호하지 않다. 확장은 서버가 준 문자열에
+#: 서명만 하고(형식을 스스로 만들지 않는다) 서버는 검증 때 **DB 행으로 다시 만든다.**
+#: v1(`…-v1|cid|nonce|division|deviceId`)은 예선 source에만 남겨 기존 계약 테스트를 지킨다.
+_SIGN_PREFIX_V2 = "nexbot-piku-collector-v2"
+#: 본선(v2) challenge를 받으려면 확장이 이 프로토콜 이상을 선언해야 한다. 구버전 확장
+#: (1.0.x, 예선 3부문만 앎)은 선언하지 않으므로 본선 토큰을 받을 수 없다.
+PROTOCOL_V2 = 2
 
 
 class DeviceError(Exception):
@@ -345,19 +361,35 @@ def challenge_message(challenge_id: str, nonce: str, division: str,
     있다. 여기에 challenge id·nonce·부문·장치를 모두 묶어 두어, 다른 challenge나
     다른 부문의 서명을 옮겨 붙일 수 없게 한다.
     """
-    return f"{_SIGN_PREFIX}|{challenge_id}|{nonce}|{division}|{device_id}"
+    meta = camps.SOURCES.get(division) or {}
+    campaign = meta.get("campaign", camps.CAMPAIGN_QUALIFIER)
+    if campaign == camps.CAMPAIGN_QUALIFIER:
+        return f"{_SIGN_PREFIX}|{challenge_id}|{nonce}|{division}|{device_id}"
+    return (f"{_SIGN_PREFIX_V2}|{challenge_id}|{nonce}|{campaign}|{division}"
+            f"|{meta.get('sourceId', '')}|{int(device_id)}")
 
 
 async def challenge_issue(device_id: Any, division: Any, *,
-                          automation: bool = False) -> dict:
+                          automation: bool = False, protocol: int = 1) -> dict:
     """challenge 발급.
 
     `automation=True`는 스케줄러가 부르는 경로다 — 모드가 MANUAL이면 거절한다.
     운영자가 확장에서 직접 누르는 수동 경로(`automation=False`)는 모드와 무관하게
     허용한다. 자동화를 꺼 둔다고 수동 수집까지 막히면 안 된다.
     """
-    if division not in DIVISIONS:
+    if division not in SOURCES:
         raise DeviceError("bad_division", "알 수 없는 부문입니다.")
+    # 동결된 campaign(예선)에는 challenge도 내주지 않는다 — 토큰 경로의 첫 관문이다.
+    try:
+        camps.assert_writable(division)
+    except camps.CampaignError as e:
+        raise DeviceError(e.code, e.message) from e
+    # 본선(v2)은 확장이 프로토콜 2를 선언해야 한다 — 구버전 확장은 본선 토큰을 못 받는다.
+    if (camps.campaign_of(division) != camps.CAMPAIGN_QUALIFIER
+            and (isinstance(protocol, bool) or not isinstance(protocol, int)
+                 or protocol < PROTOCOL_V2)):
+        raise DeviceError("protocol_too_old",
+                          "확장이 오래됐습니다. 확장을 다시 로드해 주세요.")
     row = await _device_row(device_id)
     if not row:
         raise DeviceError("no_device", "장치를 찾을 수 없습니다.")
@@ -375,13 +407,15 @@ async def challenge_issue(device_id: Any, division: Any, *,
     db = await get_db()
     await db.execute(
         "INSERT INTO piku_collector_challenges (id, device_id, division, nonce,"
-        " expires_at, created_at) VALUES (?,?,?,?,?,?)",
-        (cid, row["id"], division, nonce, now + CHALLENGE_TTL_SECONDS, now))
+        " expires_at, created_at, campaign) VALUES (?,?,?,?,?,?,?)",
+        (cid, row["id"], division, nonce, now + CHALLENGE_TTL_SECONDS, now,
+         camps.campaign_of(division)))
     await db.commit()
     await _touch_seen(row["id"])
     _log("challenge_issued", device_id=row["id"], division=division,
          automation=automation)
     return {"challengeId": cid, "nonce": nonce, "division": division,
+            "campaign": camps.campaign_of(division),
             "deviceId": row["id"], "expiresAt": now + CHALLENGE_TTL_SECONDS,
             "message": challenge_message(cid, nonce, division, row["id"])}
 
@@ -436,10 +470,19 @@ async def challenge_redeem(challenge_id: Any, signature_b64: Any) -> dict:
         raise DeviceError("bad_challenge", "challenge가 만료됐거나 이미 사용됐습니다.")
 
     cur = await db.execute(
-        "SELECT device_id, division, nonce FROM piku_collector_challenges WHERE id=?",
-        (challenge_id.strip(),))
+        "SELECT device_id, division, nonce, campaign FROM piku_collector_challenges"
+        " WHERE id=?", (challenge_id.strip(),))
     row = await cur.fetchone()
-    device_id, division, nonce = row[0], row[1], row[2]
+    device_id, division, nonce, stored_campaign = row[0], row[1], row[2], row[3]
+
+    # challenge 행의 campaign이 레지스트리와 어긋나면(발급 뒤 source가 다른 단계로
+    # 옮겨진 경우) 발급하지 않는다. 동결도 발급 시점이 아니라 **지금** 기준으로 다시 본다.
+    if division not in camps.SOURCES or stored_campaign != camps.campaign_of(division):
+        raise DeviceError("bad_challenge", "challenge의 단계가 현재 설정과 다릅니다.")
+    try:
+        camps.assert_writable(division)
+    except camps.CampaignError as e:
+        raise DeviceError(e.code, e.message) from e
 
     dev = await _device_row(device_id)
     if not dev or dev["status"] != "active" or not dev["public_key"]:

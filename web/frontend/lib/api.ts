@@ -404,12 +404,17 @@ export const api = {
       request<{ ok: boolean; confirmed: number }>(
         "/api/admin/piku/collector/confirm-exact",
         { method: "POST", body: JSON.stringify({ division }) }),
-    pikuCollectorPublishPreview: () =>
+    pikuCollectorPublishPreview: (campaign?: string) =>
       request<import("./types").PikuPublishPreview>(
-        "/api/admin/piku/collector/publish-preview"),
-    pikuCollectorStatus: () =>
+        `/api/admin/piku/collector/publish-preview${
+          campaign ? `?campaign=${encodeURIComponent(campaign)}` : ""}`),
+    pikuCollectorStatus: (campaign?: string) =>
       request<import("./types").PikuCollectorStatus>(
-        "/api/admin/piku/collector/status"),
+        `/api/admin/piku/collector/status${
+          campaign ? `?campaign=${encodeURIComponent(campaign)}` : ""}`),
+    pikuCollectorCampaigns: () =>
+      request<{ ok: boolean; campaigns: import("./types").PikuCampaign[] }>(
+        "/api/admin/piku/collector/campaigns"),
     /** 확장에 넘길 **단기·1회용** 토큰. 원문은 이 응답에서만 나온다. */
     pikuCollectorToken: (division: string) =>
       request<{ ok: boolean; token: string; division: string;
@@ -451,9 +456,11 @@ export const api = {
         "/api/admin/piku/collector/mode",
         { method: "POST", body: JSON.stringify({ mode }) }),
     /** 세 부문 draft를 **한 번에** 공개한다. 하나라도 없으면 아무것도 안 바뀐다. */
-    pikuCollectorPublish: () =>
-      request<{ ok: boolean; published: boolean; rows: Record<string, number> }>(
-        "/api/admin/piku/collector/publish", { method: "POST" }),
+    pikuCollectorPublish: (campaign?: string) =>
+      request<{ ok: boolean; published: boolean; campaign?: string;
+                rows: Record<string, number> }>(
+        "/api/admin/piku/collector/publish",
+        { method: "POST", body: JSON.stringify(campaign ? { campaign } : {}) }),
     pikuMappings: (division?: string) =>
       request<import("./types").PikuMappingsResponse>(
         `/api/admin/piku/mappings${division
@@ -578,13 +585,18 @@ export const api = {
         division ? `?division=${encodeURIComponent(division)}` : ""}`)
         .then(r => r.json()) as Promise<import("./types").QualifiersResponse>,
     // PIKU 재계산 순위 — **응답에 우승 비율·승률 숫자가 없다.**
-    pikuRanking: (sort = "primary", division?: string, limit = 0) =>
+    pikuRanking: (sort = "primary", division?: string, limit = 0, campaign?: string) =>
       fetch(`${BASE}/api/singcup/piku/ranking?sort=${encodeURIComponent(sort)}${
+        campaign ? `&campaign=${encodeURIComponent(campaign)}` : ""}${
         division ? `&division=${encodeURIComponent(division)}` : ""}${
         limit ? `&limit=${limit}` : ""}`)
         .then(r => r.json()) as Promise<import("./types").PikuRankingResponse>,
     pikuStatus: () =>
       fetch(`${BASE}/api/singcup/piku/status`).then(r => r.json()),
+    // 단계(예선/본선) 상태 — 동결 여부·기간·마지막 수집/공개 시각(SINGCUP-FINAL-1).
+    pikuCampaigns: () =>
+      fetch(`${BASE}/api/singcup/piku/campaigns`)
+        .then(r => r.json()) as Promise<{ campaigns: import("./types").PikuCampaign[] }>,
 
     // #싱드컵 태그 클립 — 메인/랭킹의 근거.
     // 응답이 커서(참가자 전원) 중복 호출 비용이 크다. 공유 캐시 + in-flight 합류를

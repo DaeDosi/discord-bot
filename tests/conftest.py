@@ -108,3 +108,29 @@ def pytest_sessionfinish(session, exitstatus):
             Path(str(_TMP_DB) + suffix).unlink(missing_ok=True)
         except OSError:
             pass
+
+
+# ── SINGCUP-FINAL-1: 예선 campaign은 운영에서 **동결**이다 ─────────────────
+# 아래 모듈들은 예선 3부문의 수집·매핑·원자 공개 계약을 검증하는 기존 테스트라
+# 예선이 살아 있어야 돈다. 레지스트리를 테스트 동안만 "예선 active + 활성 단계 =
+# 예선"으로 되돌리고 끝나면 복구한다. 본선 계약 테스트(`test_singcup_final.py`)는
+# 이 목록에 없어 **실제 운영 레지스트리(예선 동결·본선 활성)** 그대로 돈다.
+_LEGACY_QUALIFIER_MODULES = {
+    "test_piku_collector", "test_piku_collector_schema", "test_piku_mapping",
+    "test_singcup_piku", "test_piku_devices", "test_piku_scheduler",
+    "test_piku_datatables", "test_singcup_qualifier_profile",
+}
+
+
+@pytest.fixture(autouse=True)
+def _legacy_qualifier_campaign(request):
+    name = request.module.__name__.rsplit(".", 1)[-1]
+    if name not in _LEGACY_QUALIFIER_MODULES:
+        yield
+        return
+    import singcup_piku_campaigns as camps
+    snap = camps._set_for_tests(active="qualifier", statuses={"qualifier": "active"})
+    try:
+        yield
+    finally:
+        camps._restore_for_tests(snap)

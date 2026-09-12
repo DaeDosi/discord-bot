@@ -16,8 +16,8 @@ import { MAX_BODY_BYTES, RELAY_KINDS, relayCollector } from "./collectorRelay.ts
 
 /** relay가 아는 경로의 **전부**. 늘어나면 여기부터 고쳐야 한다.
  *  장치 인증 4경로의 상세 계약은 `collectorDeviceRelay.test.ts`에 있다. */
-const ALL_KINDS = ["device/challenge", "device/pair", "device/state", "device/token",
-                   "failure", "ingest"];
+const ALL_KINDS = ["device/challenge", "device/pair", "device/run", "device/state",
+                   "device/token", "failure", "ingest"];
 
 const BASE = "https://backend.example.com";
 
@@ -314,7 +314,7 @@ test("모든 응답이 Cache-Control: no-store", async () => {
 });
 
 // ── 18. 다른 경로는 relay하지 않는다 ────────────────────────────────────────
-test("허용 목록은 ingest·failure와 장치 4경로가 전부다", () => {
+test("허용 목록은 ingest·failure와 장치 5경로가 전부다", () => {
   // 전에는 "소스에 이 낱말이 없다"로 검사했는데, `device/token`이 생기면서
   // `"token"` 같은 부분 문자열 검사는 성립하지 않는다. **목록 자체를 못 박는다.**
   assert.deepEqual([...RELAY_KINDS].sort(), ALL_KINDS);

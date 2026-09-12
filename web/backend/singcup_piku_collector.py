@@ -31,33 +31,36 @@ import time
 from typing import Any
 
 import singcup_piku as piku
+import singcup_piku_campaigns as camps
 from singcup_piku import PikuError
 
 from database import get_db
 
-DIVISIONS = ("female_solo", "male_solo", "groups")
+#: 예선 부문(기존 값). **본선은 여기 없다** — 본선 source key는 `final` 하나이고
+#: campaign 레지스트리(`singcup_piku_campaigns`)가 정본이다.
+DIVISIONS = camps.QUALIFIER_SOURCES
+#: 받을 수 있는 source key 전부(예선 3 + 본선 1).
+SOURCES: tuple[str, ...] = tuple(camps.SOURCES)
 
-#: 부문 ↔ 정본 source id. **male과 groups를 뒤바꾸지 말 것** — 한 번 뒤집힌 적이
+#: source ↔ 정본 source id. **male과 groups를 뒤바꾸지 말 것** — 한 번 뒤집힌 적이
 #: 있고, 값이 섞이면 화면에서는 정상으로 보이면서 순위만 통째로 틀어진다.
-SOURCE_IDS: dict[str, str] = {
-    "female_solo": "8jGsHE",
-    "male_solo":   "7PqH44",
-    "groups":      "7fXoNs",
-}
-SOURCE_URLS: dict[str, str] = {
-    d: f"https://www.piku.co.kr/w/rank/{sid}" for d, sid in SOURCE_IDS.items()
-}
+#: 본선 `final → 2ut8Li`는 2026-09-12 운영자 브라우저 실측(레지스트리 주석 참조).
+SOURCE_IDS: dict[str, str] = {k: v["sourceId"] for k, v in camps.SOURCES.items()}
+SOURCE_URLS: dict[str, str] = {k: v["url"] for k, v in camps.SOURCES.items()}
 
-#: 부문별 기대 행 수. 공식 발표 기준이며, 모자라거나 넘치면 받지 않는다.
-EXPECTED_ROWS: dict[str, int] = {"female_solo": 64, "male_solo": 64, "groups": 32}
+#: source별 기대 행 수. 공식 발표(예선) / 실측(본선 32) 기준이며, 모자라거나
+#: 넘치면 받지 않는다.
+EXPECTED_ROWS: dict[str, int] = {k: v["expected"] for k, v in camps.SOURCES.items()}
 
 SCHEMA_VERSION = 1
 
 #: 수신 스키마에 **허용된 키만** 둔다. 쿠키·헤더·원문 HTML은 자리 자체가 없다 —
 #: "보내지 말라"는 규칙보다 "받을 곳이 없다"가 확실하다.
+#: `campaign`·`pageTitle`은 SINGCUP-FINAL-1에서 더했다. 예선 payload에는 없어도
+#: 되고(기존 확장 호환), 본선은 둘 다 **있어야** 한다.
 ALLOWED_PAYLOAD_KEYS = frozenset({
     "schemaVersion", "division", "sourceId", "sourceUrl", "collectedAt",
-    "rowCount", "rows",
+    "rowCount", "rows", "campaign", "pageTitle",
 })
 ALLOWED_ROW_KEYS = frozenset({
     "rank", "streamer", "song_title", "artist", "win_ratio", "win_rate",
@@ -147,13 +150,28 @@ def parse_payload(body: Any) -> dict:
                         "수집 형식이 서버가 아는 버전과 다릅니다.")
 
     division = body.get("division")
-    if division not in DIVISIONS:
+    if division not in SOURCES:
         raise PikuError("bad_division", "알 수 없는 부문입니다.")
+    meta = camps.source_meta(division)
 
     if body.get("sourceId") != SOURCE_IDS[division]:
         raise PikuError("bad_source", "부문과 출처 ID가 맞지 않습니다.")
     if body.get("sourceUrl") != SOURCE_URLS[division]:
         raise PikuError("bad_source", "부문과 출처 주소가 맞지 않습니다.")
+    # campaign — 있으면 source의 campaign과 같아야 하고, 예선이 아닌 source는
+    # **반드시** 있어야 한다(확장이 어느 단계를 읽었는지 스스로 밝힌다).
+    campaign = body.get("campaign")
+    if campaign is None:
+        if meta["campaign"] != camps.CAMPAIGN_QUALIFIER:
+            raise PikuError("bad_campaign", "단계(campaign)가 빠졌습니다.")
+        campaign = meta["campaign"]
+    elif campaign != meta["campaign"]:
+        raise PikuError("bad_campaign", "부문과 단계(campaign)가 맞지 않습니다.")
+    # 제목 — 레지스트리에 기대 제목이 있는 source는 페이지 제목에 그것이 들어 있어야 한다.
+    if meta["title"]:
+        title = body.get("pageTitle")
+        if not isinstance(title, str) or meta["title"] not in title:
+            raise PikuError("bad_title", "페이지 제목이 기대한 단계와 다릅니다.")
 
     rows = body.get("rows")
     if not isinstance(rows, list):
@@ -191,7 +209,10 @@ def parse_payload(body: Any) -> dict:
 
         streamer = _text(raw.get("streamer"), "스트리머")
         # 그룹만 대표자를 뽑는다. 솔로 이름에 쉼표가 있어도 쪼개지 않는다.
-        if division == "groups":
+        # 본선(`mixed`)은 한 표에 솔로와 팀이 섞여 있어 **쉼표 유무**로 팀을 가른다 —
+        # 실측 32행 중 팀 12행은 전부 쉼표 구분, 솔로 20행에는 쉼표가 없다.
+        is_team = division == "groups" or (meta["mixed"] and "," in streamer)
+        if is_team:
             name = group_lead(streamer)
             if not name:
                 raise PikuError("missing_lead", "대표자를 찾지 못한 팀이 있습니다.")
@@ -204,7 +225,7 @@ def parse_payload(body: Any) -> dict:
         out.append({
             "source_rank": rank,
             "name": name,
-            "team_members": streamer if division == "groups" else "",
+            "team_members": streamer if is_team else "",
             "song_title": _text(raw.get("song_title"), "노래 제목"),
             "artist_name": _text(raw.get("artist"), "가수"),
             # ⚠️ 여기가 뒤바뀌기 쉬운 지점이다. 위 모듈 주석 참조.
@@ -218,8 +239,8 @@ def parse_payload(body: Any) -> dict:
         raise PikuError("rank_gap", f"순위가 빠졌습니다: {missing[:3]}")
 
     out.sort(key=lambda r: r["source_rank"])
-    return {"division": division, "sourceId": body["sourceId"],
-            "sourceUrl": body["sourceUrl"],
+    return {"division": division, "campaign": campaign,
+            "sourceId": body["sourceId"], "sourceUrl": body["sourceUrl"],
             "collectedAt": body.get("collectedAt") or "", "rows": out}
 
 
@@ -282,9 +303,18 @@ async def save_draft(body: Any) -> dict:
     같은 부문 draft가 이미 있으면 **갈아 끼운다**(쌓이지 않는다).
     """
     parsed = parse_payload(body)
+    _assert_writable(parsed["division"])
     return await _store_draft(parsed["division"], parsed["rows"],
                               source="browser_collector",
                               source_url=parsed["sourceUrl"])
+
+
+def _assert_writable(division: str) -> None:
+    """동결된 campaign(예선)에는 새 draft·공개가 들어가지 않는다."""
+    try:
+        camps.assert_writable(division)
+    except camps.CampaignError as e:
+        raise PikuError(e.code, e.message) from e
 
 
 async def _store_draft(division: str, rows: list[dict], *,
@@ -299,8 +329,9 @@ async def _store_draft(division: str, rows: list[dict], *,
     if old is not None:
         await piku._discard(old)
 
+    campaign = camps.campaign_of(division)
     dataset_id = await piku._begin_dataset(
-        division, source=source, source_url=source_url)
+        division, source=source, source_url=source_url, campaign=campaign)
     try:
         await piku._fill_dataset(dataset_id, rows)
     except Exception:
@@ -316,20 +347,22 @@ async def _store_draft(division: str, rows: list[dict], *,
         if team:
             await db.execute(
                 "INSERT OR REPLACE INTO piku_collector_teams"
-                " (division, piku_name, team_members) VALUES (?,?,?)",
-                (division, r["name"], team))
+                " (division, piku_name, team_members, campaign) VALUES (?,?,?,?)",
+                (division, r["name"], team, campaign))
     await db.execute(
         """INSERT INTO piku_collector_state
-               (division, last_result, last_error_kind, last_at, row_count, draft_id)
-           VALUES (?,?,?,?,?,?)
+               (division, last_result, last_error_kind, last_at, row_count, draft_id,
+                campaign)
+           VALUES (?,?,?,?,?,?,?)
            ON CONFLICT(division) DO UPDATE SET
                last_result=excluded.last_result, last_error_kind='',
                last_at=excluded.last_at, row_count=excluded.row_count,
-               draft_id=excluded.draft_id""",
-        (division, "draft", "", now, len(rows), dataset_id))
+               draft_id=excluded.draft_id, campaign=excluded.campaign""",
+        (division, "draft", "", now, len(rows), dataset_id, campaign))
     await db.commit()
-    _log("draft_saved", division=division, rows=len(rows), source=source)
-    return {"division": division, "draftId": dataset_id,
+    _log("draft_saved", division=division, campaign=campaign, rows=len(rows),
+         source=source)
+    return {"division": division, "campaign": campaign, "draftId": dataset_id,
             "rowCount": len(rows), "published": False}
 
 
@@ -351,14 +384,27 @@ async def _activate_draft(division: str, dataset_id: int, rows: int) -> None:
     await piku._activate(dataset_id, division, pages=0, entry_count=rows)
 
 
-async def publish_drafts() -> dict:
-    """세 부문 draft를 **한 번에** 공개한다.
+def _campaign_sources(campaign):
+    camp = campaign or camps.ACTIVE_CAMPAIGN
+    try:
+        return camp, camps.sources_of(camp)
+    except camps.CampaignError as e:
+        raise PikuError(e.code, e.message) from e
+
+
+async def publish_drafts(campaign: str | None = None) -> dict:
+    """한 campaign의 draft를 **한 번에** 공개한다(예선 3부문 / 본선 1source).
 
     하나라도 없거나 실패하면 아무것도 바꾸지 않는다 — "여성만 새 데이터"인 화면은
     사용자가 그 사실을 알 수 없어서 가장 위험하다. 자동으로 부르지 않는다.
+    동결된 campaign(예선)은 `campaign_frozen`으로 거절된다 — 본선이 예선을
+    덮어쓸 경로는 없고, 예선 소급 갱신은 보류다.
     """
+    camp, sources = _campaign_sources(campaign)
+    for d in sources:
+        _assert_writable(d)
     drafts: dict[str, int] = {}
-    for d in DIVISIONS:
+    for d in sources:
         did = await _draft_id(d)
         if did is None:
             raise PikuError("missing_draft",
@@ -378,12 +424,12 @@ async def publish_drafts() -> dict:
 
     # **매핑이 다 확정되지 않으면 공개하지 않는다.** `public_ranking`이
     # `confirmed`만 순위에 넣으므로, 확정 전에 공개하면 화면이 통째로 빈다.
-    blockers = await publish_blockers()
+    blockers = await publish_blockers(camp)
     if blockers:
         raise PikuError("unconfirmed", " · ".join(blockers))
 
     # 되돌리기 위해 현재 활성본을 먼저 기억한다.
-    previous = {d: (await piku.active_dataset(d)) for d in DIVISIONS}
+    previous = {d: (await piku.active_dataset(d)) for d in sources}
     done: list[str] = []
     try:
         for d, did in drafts.items():
@@ -402,15 +448,15 @@ async def publish_drafts() -> dict:
         _log("publish_rolled_back", divisions=done)
         raise
 
-    for d in DIVISIONS:
+    for d in sources:
         await db.execute(
             "UPDATE piku_collector_state SET draft_id=NULL, last_result='published' "
             "WHERE division=?", (d,))
     await db.commit()
-    for d in DIVISIONS:
+    for d in sources:
         await piku.sync_mappings(d)
-    _log("published", rows=counts)
-    return {"published": True, "rows": counts}
+    _log("published", campaign=camp, rows=counts)
+    return {"published": True, "campaign": camp, "rows": counts}
 
 
 async def record_client_failure(division: str, kind: str) -> dict:
@@ -419,36 +465,45 @@ async def record_client_failure(division: str, kind: str) -> dict:
     성공으로 위장하지 않는 것이 핵심이다 — 실패를 조용히 넘기면 오래된 데이터가
     최신인 것처럼 보인다.
     """
-    if division not in DIVISIONS:
+    if division not in SOURCES:
         raise PikuError("bad_division", "알 수 없는 부문입니다.")
     db = await get_db()
     now = int(time.time())
     await db.execute(
         """INSERT INTO piku_collector_state
-               (division, last_result, last_error_kind, last_at, row_count)
-           VALUES (?,?,?,?,0)
+               (division, last_result, last_error_kind, last_at, row_count, campaign)
+           VALUES (?,?,?,?,0,?)
            ON CONFLICT(division) DO UPDATE SET
                last_result='failed', last_error_kind=excluded.last_error_kind,
                last_at=excluded.last_at, row_count=0""",
-        (division, "failed", str(kind)[:40], now))
+        (division, "failed", str(kind)[:40], now, camps.campaign_of(division)))
     await db.commit()
     _log("client_failed", division=division, kind=str(kind)[:40])
     return {"division": division, "lastResult": "failed"}
 
 
-async def status() -> dict:
-    """관리 화면용 상태. **비율값과 원문은 담지 않는다.**"""
+async def status(campaign: str | None = None) -> dict:
+    """관리 화면용 상태. **비율값과 원문은 담지 않는다.**
+
+    `campaign`을 주면 그 단계의 source만, 생략하면 활성 campaign(본선)이다.
+    예선을 보려면 `campaign="qualifier"`를 명시한다(동결 표시가 함께 나간다).
+    """
+    camp, sources = _campaign_sources(campaign)
     db = await get_db()
     rows = {r["division"]: dict(r) for r in await (await db.execute(
         "SELECT * FROM piku_collector_state")).fetchall()}
     out: dict[str, Any] = {
+        "campaign": camp,
+        "campaignLabel": camps.CAMPAIGNS[camp]["label"],
+        "campaignStatus": camps.CAMPAIGNS[camp]["status"],
+        "frozen": camps.CAMPAIGNS[camp]["status"] != "active",
         "autoCollectEnabled": piku.auto_collect_enabled(),
         "autoPublishEnabled": auto_publish_enabled(),
         "minIntervalMinutes": MIN_INTERVAL_MINUTES,
         "divisions": {},
     }
     ready = True
-    for d in DIVISIONS:
+    for d in sources:
         r = rows.get(d) or {}
         did = await _draft_id(d)
         n = 0
@@ -460,7 +515,8 @@ async def status() -> dict:
         ok = did is not None and n == EXPECTED_ROWS[d]
         ready = ready and ok
         out["divisions"][d] = {
-            "label": piku.DIVISION_LABELS[d],
+            "label": camps.SOURCES[d]["label"],
+            "campaign": camp,
             "sourceId": SOURCE_IDS[d], "sourceUrl": SOURCE_URLS[d],
             "expected": EXPECTED_ROWS[d],
             "lastResult": r.get("last_result") or None,
@@ -473,7 +529,7 @@ async def status() -> dict:
             "draftReady": ok,
         }
     # 준비 여부만 주면 운영자는 무엇을 더 해야 하는지 알 수 없다.
-    out["blockers"] = await publish_blockers()
+    out["blockers"] = await publish_blockers(camp)
     out["publishReady"] = ready and not out["blockers"]
     return out
 
@@ -495,26 +551,35 @@ TOKEN_TTL_SECONDS = max(60, min(3600,
                                 int(os.getenv("PIKU_COLLECTOR_TOKEN_TTL", "600"))))
 
 
-def _hash_token(raw: str) -> str:
+def _hash_token(raw: str, division: str = "", campaign: str = "") -> str:
+    """토큰 해시. **campaign·source를 해시에 결합**한다(SINGCUP-FINAL-1).
+
+    같은 원문이라도 다른 단계·다른 source로 제시하면 해시가 달라 찾지 못한다 —
+    컬럼 비교(`division=? AND campaign=?`)에 더해 한 겹 더 묶는 것이다.
+    """
     import hashlib
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{raw}|{campaign}|{division}".encode("utf-8")).hexdigest()
 
 
 async def issue_token(division: str) -> dict:
     """수집 토큰 발급. **원문은 이 반환값에서 딱 한 번만 나온다.**"""
-    if division not in DIVISIONS:
+    if division not in SOURCES:
         raise PikuError("bad_division", "알 수 없는 부문입니다.")
+    # 동결된 campaign에는 토큰도 내주지 않는다 — 발급 자체가 없으면 ingest 시도도 없다.
+    _assert_writable(division)
+    campaign = camps.campaign_of(division)
     import secrets
     raw = secrets.token_urlsafe(32)
     now = int(time.time())
     db = await get_db()
     await db.execute(
         "INSERT INTO piku_collector_tokens (token_hash, division, expires_at,"
-        " created_at) VALUES (?,?,?,?)",
-        (_hash_token(raw), division, now + TOKEN_TTL_SECONDS, now))
+        " created_at, campaign) VALUES (?,?,?,?,?)",
+        (_hash_token(raw, division, campaign), division, now + TOKEN_TTL_SECONDS, now,
+         campaign))
     await db.commit()
-    _log("token_issued", division=division, ttl=TOKEN_TTL_SECONDS)
-    return {"token": raw, "division": division,
+    _log("token_issued", division=division, campaign=campaign, ttl=TOKEN_TTL_SECONDS)
+    return {"token": raw, "division": division, "campaign": campaign,
             "expiresAt": now + TOKEN_TTL_SECONDS,
             "ttlSeconds": TOKEN_TTL_SECONDS}
 
@@ -527,10 +592,16 @@ async def consume_token(raw: str, division: str) -> None:
     now = int(time.time())
     # 조건부 UPDATE의 rowcount로 소비를 판정한다 — SELECT 후 UPDATE로 나누면
     # 두 요청이 같은 토큰을 동시에 통과할 수 있다.
+    # 토큰은 source(division)와 **campaign 둘 다**에 묶인다. 본선 토큰으로 예선
+    # source를, 예선 토큰으로 본선을 밀어 넣을 수 없다(키가 겹치지 않아도 명시한다).
+    # 모르는 source key는 어떤 토큰과도 맞지 않는다(레지스트리 밖 값은 해시부터 다르다).
+    if not isinstance(division, str) or division not in camps.SOURCES:
+        raise PikuError("bad_token", "토큰이 만료됐거나 이미 사용됐습니다.")
+    campaign = camps.campaign_of(division)
     cur = await db.execute(
         "UPDATE piku_collector_tokens SET used_at=? "
-        "WHERE token_hash=? AND division=? AND used_at=0 AND expires_at>?",
-        (now, _hash_token(raw), division, now))
+        "WHERE token_hash=? AND division=? AND campaign=? AND used_at=0 AND expires_at>?",
+        (now, _hash_token(raw, division, campaign), division, campaign, now))
     await db.commit()
     if not cur.rowcount:
         raise PikuError("bad_token", "토큰이 만료됐거나 이미 사용됐습니다.")
@@ -567,14 +638,27 @@ def _official_index(division: str) -> dict[str, str]:
     """
     import singcup_qualifiers as sq
     out: dict[str, str] = {}
-    if division == "groups":
-        for g in sq.QUALIFIERS["groups"]:
-            for m in (g.get("members") or []):
-                out.setdefault(piku._norm_name(m["name"]), m["channelId"])
-    else:
-        for r in sq.QUALIFIERS[division]:
-            out.setdefault(piku._norm_name(r["name"]), r["channelId"])
+    for d in _index_divisions(division):
+        if d == "groups":
+            for g in sq.QUALIFIERS["groups"]:
+                for m in (g.get("members") or []):
+                    out.setdefault(piku._norm_name(m["name"]), m["channelId"])
+        else:
+            for r in sq.QUALIFIERS[d]:
+                out.setdefault(piku._norm_name(r["name"]), r["channelId"])
     return out
+
+
+def _index_divisions(division: str) -> tuple[str, ...]:
+    """이 source의 매핑 후보가 되는 **공식 명단 부문**.
+
+    본선(`mixed`)은 여성·남성·그룹 예선 통과자가 한 표에 섞여 있으므로 세 부문
+    전체가 후보다(2026-09-12 실측: 32행 대표자 전원이 예선 명단과 정확 일치).
+    예선 부문은 자기 부문만 본다 — 여성 이름을 남성 명단에서 찾지 않는다.
+    """
+    if camps.SOURCES.get(division, {}).get("mixed"):
+        return tuple(camps.QUALIFIER_SOURCES)
+    return (division,)
 
 
 def _official_names_by_channel(division: str) -> dict[str, str]:
@@ -585,13 +669,14 @@ def _official_names_by_channel(division: str) -> dict[str, str]:
     """
     import singcup_qualifiers as sq
     out: dict[str, str] = {}
-    if division == "groups":
-        for g in sq.QUALIFIERS["groups"]:
-            for m in (g.get("members") or []):
-                out[m["channelId"]] = m["name"]
-    else:
-        for r in sq.QUALIFIERS[division]:
-            out[r["channelId"]] = r["name"]
+    for d in _index_divisions(division):
+        if d == "groups":
+            for g in sq.QUALIFIERS["groups"]:
+                for m in (g.get("members") or []):
+                    out[m["channelId"]] = m["name"]
+        else:
+            for r in sq.QUALIFIERS[d]:
+                out[r["channelId"]] = r["name"]
     return out
 
 
@@ -618,12 +703,12 @@ async def draft_mappings(division: str) -> dict:
 
     응답에 우승 비율·승률을 담지 않는다 — 관리 목록에서도 값은 쓰지 않는다.
     """
-    if division not in DIVISIONS:
+    if division not in SOURCES:
         raise PikuError("bad_division", "알 수 없는 부문입니다.")
     rows = await _draft_rows(division)
     empty = {"confirmed": 0, "suggested": 0, "unmatched": 0, "duplicate": 0}
     if not rows:
-        return {"division": division, "label": piku.DIVISION_LABELS[division],
+        return {"division": division, "label": camps.SOURCES[division]["label"],
                 "expected": EXPECTED_ROWS[division], "rows": [], "counts": empty}
 
     db = await get_db()
@@ -676,13 +761,13 @@ async def draft_mappings(division: str) -> dict:
             "officialName": names_by_ch.get(channel or "", ""),
             "duplicate": dup,
         })
-    return {"division": division, "label": piku.DIVISION_LABELS[division],
+    return {"division": division, "label": camps.SOURCES[division]["label"],
             "expected": EXPECTED_ROWS[division], "rows": out, "counts": counts}
 
 
 async def official_candidates(division: str) -> list[dict]:
     """후보 검색용 공식 명단. 이미 확정에 쓰인 채널은 표시해 둔다."""
-    if division not in DIVISIONS:
+    if division not in SOURCES:
         raise PikuError("bad_division", "알 수 없는 부문입니다.")
     db = await get_db()
     taken = {r[0] for r in await (await db.execute(
@@ -698,12 +783,13 @@ async def _write_mapping(division: str, piku_name: str,
     db = await get_db()
     await db.execute(
         """INSERT INTO piku_mappings (division, piku_name, channel_id, state,
-                                      updated_at)
-           VALUES (?,?,?,?,?)
+                                      updated_at, campaign)
+           VALUES (?,?,?,?,?,?)
            ON CONFLICT(division, piku_name) DO UPDATE SET
                channel_id=excluded.channel_id, state=excluded.state,
                updated_at=excluded.updated_at""",
-        (division, piku_name, channel_id, state, int(time.time())))
+        (division, piku_name, channel_id, state, int(time.time()),
+         camps.campaign_of(division)))
 
 
 async def set_mapping(division: str, piku_name: str,
@@ -712,10 +798,11 @@ async def set_mapping(division: str, piku_name: str,
 
     `channel_id`가 없으면 `unmapped`로 되돌린다. 다른 부문의 채널이나 이미 다른
     행이 쓰고 있는 채널은 거부한다 — 두 PIKU 행이 한 참가자에 붙으면 순위가
-    조용히 어긋난다.
+    조용히 어긋난다. 동결된 campaign의 매핑은 바꾸지 않는다(공개본이 흔들린다).
     """
-    if division not in DIVISIONS:
+    if division not in SOURCES:
         raise PikuError("bad_division", "알 수 없는 부문입니다.")
+    _assert_writable(division)
     db = await get_db()
     if channel_id is None:
         await _write_mapping(division, piku_name, None, "unmapped")
@@ -743,6 +830,7 @@ async def confirm_exact(division: str) -> dict:
     유사도·부분 일치는 대상이 아니다. 하나라도 실패하면 전부 되돌린다 — 절반만
     확정된 상태는 운영자가 무엇을 더 해야 하는지 알 수 없게 만든다.
     """
+    _assert_writable(division)
     m = await draft_mappings(division)
     targets = [r for r in m["rows"] if r["state"] == "suggested" and r["channelId"]]
     if not targets:
@@ -782,15 +870,18 @@ async def confirm_exact(division: str) -> dict:
 
 
 # ── Publish 게이트 · Preview ────────────────────────────────────────────────
-async def publish_blockers() -> list[str]:
+async def publish_blockers(campaign: str | None = None) -> list[str]:
     """공개를 막고 있는 **구체적인 이유**들. 비어 있으면 공개할 수 있다.
 
     "준비되지 않음" 한 줄로 뭉치지 않는다 — 운영자가 무엇을 더 해야 하는지
     알 수 없으면 그 화면은 막다른 길이다.
     """
+    camp, sources = _campaign_sources(campaign)
     out: list[str] = []
-    for d in DIVISIONS:
-        label = piku.DIVISION_LABELS[d]
+    if camps.CAMPAIGNS[camp]["status"] != "active":
+        out.append(f"{camps.CAMPAIGNS[camp]['label']} 동결(갱신 보류)")
+    for d in sources:
+        label = camps.SOURCES[d]["label"]
         did = await _draft_id(d)
         if did is None:
             out.append(f"{label} 수집본 없음")
@@ -809,16 +900,18 @@ async def publish_blockers() -> list[str]:
     return out
 
 
-async def publish_preview() -> dict:
+async def publish_preview(campaign: str | None = None) -> dict:
     """공개하면 무엇이 바뀌는지. **DB write 0건.**
 
     내부 정렬 기준(우승 비율/승률)을 밝힌다 — 값은 담지 않지만 어느 기준으로
     줄을 세웠는지는 운영자가 알아야 검증할 수 있다.
     """
+    camp, sources = _campaign_sources(campaign)
     sort, _ = piku.resolve_sort(piku.DEFAULT_SORT)
     out: dict[str, Any] = {
+        "campaign": camp,
         "sort": sort, "sortLabel": piku.SORT_LABELS[sort], "divisions": {}}
-    for d in DIVISIONS:
+    for d in sources:
         m = await draft_mappings(d)
         draft_names = {r["pikuName"]: r["rank"] for r in m["rows"]}
         active = await piku.active_dataset(d)
@@ -834,7 +927,7 @@ async def publish_preview() -> dict:
                       if n in active_rows and active_rows[n] != rk)
         c = m["counts"]
         out["divisions"][d] = {
-            "label": piku.DIVISION_LABELS[d],
+            "label": camps.SOURCES[d]["label"],
             "expected": EXPECTED_ROWS[d],
             "draftRows": len(draft_names),
             "activeRows": len(active_rows),
@@ -850,7 +943,7 @@ async def publish_preview() -> dict:
                       "officialName": r["officialName"],
                       "state": r["state"]} for r in m["rows"][:10]],
         }
-    out["blockers"] = await publish_blockers()
+    out["blockers"] = await publish_blockers(camp)
     out["publishReady"] = not out["blockers"]
     return out
 
@@ -866,8 +959,9 @@ async def import_manual(body: Any) -> dict:
     if not isinstance(body, dict):
         raise PikuError("parse_failed", "형식이 올바르지 않습니다.")
     division = body.get("division")
-    if division not in DIVISIONS:
+    if division not in SOURCES:
         raise PikuError("bad_division", "알 수 없는 부문입니다.")
+    _assert_writable(division)
     raw = body.get("rows")
     if raw is None and body.get("csv"):
         raw = piku.parse_csv(body["csv"])
@@ -879,9 +973,11 @@ async def import_manual(body: Any) -> dict:
     if len(rows) != expected:
         raise PikuError("row_count",
                         f"{expected}행이어야 하는데 {len(rows)}행입니다.")
-    if division == "groups":
-        # 수동 입력도 같은 대표자 규칙을 따른다.
+    if division == "groups" or camps.SOURCES[division]["mixed"]:
+        # 수동 입력도 같은 대표자 규칙을 따른다(본선은 쉼표가 있는 행만 팀이다).
         for r in rows:
+            if division != "groups" and "," not in r["name"]:
+                continue
             lead = group_lead(r["name"])
             if not lead:
                 raise PikuError("missing_lead", "대표자를 찾지 못한 팀이 있습니다.")

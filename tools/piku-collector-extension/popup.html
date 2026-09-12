@@ -32,6 +32,11 @@
   #devstate.on  { border-color: #1f6f4a; color: #7ee2b8; }
   #devstate.off { border-color: #5a4a12; color: #e8c765; }
   #devstate.err { border-color: #7a2630; color: #ff9aa5; }
+  #schedstate { padding: 8px 10px; border: 1px solid #2a313b; border-radius: 8px;
+                background: #171b21; white-space: pre-wrap; }
+  #schedstate.on  { border-color: #1f6f4a; }
+  #schedstate.off { border-color: #5a4a12; }
+  #schedstate.err { border-color: #7a2630; color: #ff9aa5; }
   code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
          color: #ebeff6; }
 </style>
@@ -55,6 +60,19 @@
     <p class="note">등록 해제는 <b>이 브라우저에서만</b> 지웁니다.
       서버 쪽 폐기는 Nexadmin에서 별도로 해야 합니다.</p>
   </div>
+</section>
+<hr>
+<!-- ── 자동 수집(AUTO-2 → SINGCUP-FINAL-1) ────────────────────────────────
+     서버가 준 **활성 plan**(지금은 본선 `2ut8Li` 하나)의 탭만 찾는다. 예선 탭이
+     없어도 실패하지 않는다. "지금 테스트 수집"은 사람이 명시적으로 누르는 1회
+     실행이고 draft까지만 간다 — 공개(Publish)는 이 확장에 없다. -->
+<section id="schedbox" aria-labelledby="schedh">
+  <h2 id="schedh">자동 수집 (1시간 주기 · draft까지만)</h2>
+  <div id="schedstate" role="status" aria-live="polite">확인 중…</div>
+  <button id="runnow" class="secondary">지금 테스트 수집 (1회 · 공개 안 함)</button>
+  <button id="pause" class="secondary">자동 수집 일시 정지</button>
+  <p class="note">Chrome alarm은 약 60분 주기이며 정각을 보장하지 않습니다.
+    plan의 PIKU 탭을 열어 두고, Chrome이 켜져 있어야 돕니다.</p>
 </section>
 <hr>
 <p>PIKU 랭킹 페이지를 연 상태에서 실행하세요. 이미 화면에 표시된 표만 읽습니다.</p>

@@ -1530,6 +1530,9 @@ async def piku_collector_ingest(request: Request):
     try:
         # 토큰을 **먼저** 소비한다 — 검증 실패한 요청으로 토큰을 무한히 시험하지
         # 못하게 한다(1회용이므로 실패해도 그 토큰은 끝난다).
+        # 토큰은 payload의 `division`(source key)과 그 source의 campaign에 묶여
+        # 소비되고, `save_draft`가 payload의 campaign·sourceId·sourceUrl을 같은
+        # source key와 다시 대조한다 — 토큰의 단계와 payload의 단계가 어긋날 길이 없다.
         await col.consume_token(token, division)
         return {"ok": True, **await col.save_draft(body)}
     except col.PikuError as e:
@@ -1552,10 +1555,26 @@ async def piku_collector_preview(request: Request,
 
 
 @router.get("/piku/collector/status")
-async def piku_collector_status(user: dict = Depends(_require_owner)):
-    """Collector 상태 — 부문별 최근 수집·draft 행 수·Publish 가능 여부."""
+async def piku_collector_status(campaign: Optional[str] = None,
+                                user: dict = Depends(_require_owner)):
+    """Collector 상태 — source별 최근 수집·draft 행 수·Publish 가능 여부.
+
+    **`campaign`을 생략하면 예선(legacy 클라이언트 의미)이다.** 단계적 배포 중 구
+    프론트(예선 3부문만 아는)가 이 경로를 campaign 없이 부르면 예선 상태를 그대로
+    받아야 화면이 비지 않는다. 신 프론트는 항상 campaign을 명시한다(SINGCUP-FINAL-1).
+    """
     import singcup_piku_collector as col
-    return await col.status()
+    try:
+        return await col.status(campaign or "qualifier")
+    except col.PikuError as e:
+        raise _piku_400(e) from e
+
+
+@router.get("/piku/collector/campaigns")
+async def piku_collector_campaigns(user: dict = Depends(_require_owner)):
+    """단계(예선/본선) 목록 — 상태·source·마지막 수집·마지막 공개."""
+    import singcup_piku as piku
+    return {"ok": True, "campaigns": await piku.campaign_status()}
 
 
 class CollectorFailureBody(BaseModel):
@@ -1578,15 +1597,23 @@ async def piku_collector_failure(body: CollectorFailureBody):
         raise _piku_400(e) from e
 
 
+class CollectorPublishBody(BaseModel):
+    #: 생략하면 예선(legacy 클라이언트 의미) — 동결이라 거절된다. 구 프론트의 공개 버튼이
+    #: 본선을 공개해 버리는 일이 없게 기본값을 활성 단계로 두지 **않는다**.
+    campaign: Optional[str] = None
+
+
 @router.post("/piku/collector/publish")
-async def piku_collector_publish(user: dict = Depends(_require_owner)):
-    """세 부문 draft를 **한 번에** 공개한다. 하나라도 없으면 아무것도 바꾸지 않는다.
+async def piku_collector_publish(body: Optional[CollectorPublishBody] = None,
+                                 user: dict = Depends(_require_owner)):
+    """한 단계의 draft를 **한 번에** 공개한다. 하나라도 없으면 아무것도 바꾸지 않는다.
 
     자동으로 불리지 않는다 — 운영자가 눌러야만 실행된다.
     """
     import singcup_piku_collector as col
     try:
-        return {"ok": True, **await col.publish_drafts()}
+        return {"ok": True,
+                **await col.publish_drafts((body.campaign if body else None) or "qualifier")}
     except col.PikuError as e:
         raise _piku_400(e) from e
 
@@ -1653,10 +1680,14 @@ async def piku_collector_confirm_exact(body: CollectorConfirmBody,
 
 
 @router.get("/piku/collector/publish-preview")
-async def piku_collector_publish_preview(user: dict = Depends(_require_owner)):
-    """공개하면 무엇이 바뀌는지. **DB write 0건.**"""
+async def piku_collector_publish_preview(campaign: Optional[str] = None,
+                                         user: dict = Depends(_require_owner)):
+    """공개하면 무엇이 바뀌는지. **DB write 0건.** campaign 생략 = 예선(legacy 의미)."""
     import singcup_piku_collector as col
-    return await col.publish_preview()
+    try:
+        return await col.publish_preview(campaign or "qualifier")
+    except col.PikuError as e:
+        raise _piku_400(e) from e
 
 
 # ── AUTO-1: 자동 수집 장치 ─────────────────────────────────────────────────
@@ -1700,6 +1731,8 @@ class DeviceChallengeBody(BaseModel):
     fingerprint: str
     division: str
     automation: bool = False
+    #: 확장 프로토콜. 본선(v2) challenge는 2 이상이어야 한다(구버전 확장 차단).
+    protocol: int = 1
 
 
 class DeviceTokenBody(BaseModel):
@@ -1795,7 +1828,8 @@ async def piku_device_challenge(body: DeviceChallengeBody, request: Request):
     ip = (client_ip.resolve(request) or {}).get("id") or ""
     try:
         return {"ok": True, **await sched.guarded_challenge(
-            row["id"], body.division, ip=ip, automation=body.automation)}
+            row["id"], body.division, ip=ip, automation=body.automation,
+            protocol=body.protocol)}
     except dev.DeviceError as e:
         raise _device_400(e) from e
 
@@ -1820,6 +1854,33 @@ async def piku_device_state(body: DeviceStateBody):
     """
     import singcup_piku_scheduler as sched
     return {"ok": True, **await sched.device_state(body.fingerprint)}
+
+
+class DeviceRunReportBody(BaseModel):
+    fingerprint: str
+    trigger: str
+    campaign: str
+    scheduledAt: Optional[int] = None
+    startedAt: Optional[int] = None
+    finishedAt: Optional[int] = None
+    #: source key → {ok, kind, rows}. **데이터가 아니라 종류만** 온다.
+    sources: dict
+
+
+@router.post("/piku/collector/device/run")
+async def piku_device_run_report(body: DeviceRunReportBody):
+    """확장이 회차가 끝날 때 결과를 보고한다(장치 지문 인증, 종류만).
+
+    AUTO-2에서는 이 경로가 없어 `piku_auto_runs`가 운영에서 늘 비어 있었고,
+    회차가 돌았는지 Nexadmin이 알 수 없었다(SINGCUP-FINAL-1 진단). draft·공개와
+    무관한 이력 기록이라 서명 대신 지문 + 장치당 시간당 횟수 제한으로 보호한다.
+    """
+    import singcup_piku_devices as dev
+    import singcup_piku_scheduler as sched
+    try:
+        return {"ok": True, **await sched.report_run(body.fingerprint, body.model_dump())}
+    except dev.DeviceError as e:
+        raise _device_400(e) from e
 
 
 @router.post("/piku/collector/device/token")

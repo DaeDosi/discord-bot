@@ -381,6 +381,9 @@ export interface PikuEntry {
   /** 곡·가수는 **공개 정보**다(비율·승률과 달리 화면에 쓴다). */
   songTitle?: string;
   artistName?: string;
+  /** 팀이면 PIKU 원문의 팀원 전체(대표자 포함, 쉼표 구분). 솔로는 빈 문자열.
+   *  본선은 한 표에 솔로·팀이 섞여 있어 행마다 이걸로 팀 여부를 안다(SINGCUP-FINAL-1). */
+  teamMembers?: string;
 }
 export interface PikuDivisionRanking {
   division: string;
@@ -396,9 +399,33 @@ export interface PikuDivisionRanking {
 }
 export interface PikuRankingResponse {
   sort: string;
+  /** "qualifier"(기본) 또는 "final". 본선은 `divisions.final` 하나다. */
+  campaign?: string;
   divisions: Record<string, PikuDivisionRanking>;
   sortOptions: { key: string; label: string }[];
   autoCollectEnabled: boolean;
+}
+
+/** 단계(예선/본선) 공개 상태 — `GET /api/singcup/piku/campaigns` (SINGCUP-FINAL-1). */
+export interface PikuCampaign {
+  campaign: string;
+  label: string;
+  /** frozen=갱신 보류(예선) · active=진행 중(본선) */
+  status: "frozen" | "active" | "archived" | string;
+  sources: { key: string; label: string; sourceId: string; url: string; expected: number }[];
+  /** ISO(+09:00). 비어 있으면 미정. */
+  collectionStartAt: string;
+  collectionEndAt: string;
+  /** 일정 출처. "user_provided"면 공식 공지로 교차 확인하지 못한 값이다. */
+  scheduleSource: string;
+  note: string;
+  available: boolean;
+  entryCount: number;
+  /** draft가 마지막으로 들어온 시각(unix s). 0이면 없음. */
+  lastCollectedAt: number;
+  /** 활성본이 마지막으로 교체된 시각(unix s). 0이면 없음. */
+  lastPublishedAt: number;
+  lastResult: string;
 }
 
 /** PIKU 관리 화면 타입 — **비율·승률 숫자는 여기에도 없다.** */
@@ -1310,6 +1337,11 @@ export interface PikuCollectorDivisionStatus {
 }
 
 export interface PikuCollectorStatus {
+  /** 이 상태가 가리키는 단계와 동결 여부(SINGCUP-FINAL-1). */
+  campaign?: string;
+  campaignLabel?: string;
+  campaignStatus?: string;
+  frozen?: boolean;
   autoCollectEnabled: boolean;
   autoPublishEnabled: boolean;
   minIntervalMinutes: number;
@@ -1416,7 +1448,7 @@ export interface PikuDevicesResponse {
  * `outcome`이 셋인 것이 핵심이다. AUTO-2에는 공개(Publish)가 없어서 한 부문이
  * 실패해도 성공한 draft는 남는데, 그 회차를 `success`로 뭉뚱그리면 운영자가
  * 공개해도 되는 줄 안다. **부분 성공을 부분 성공으로 보여 준다.** */
-export type PikuRunOutcome = "running" | "success" | "partial" | "failed";
+export type PikuRunOutcome = "running" | "success" | "partial" | "failed" | "unchanged";
 
 export interface PikuRunDivision {
   ok: boolean;
@@ -1429,15 +1461,29 @@ export interface PikuAutoRun {
   id: number;
   deviceId: number;
   trigger: "alarm" | "manual";
+  /** 어느 단계의 회차인지. 구 회차는 빈 문자열. */
+  campaign?: string;
+  /** 예정 시각(unix s). 0이면 기록 없음(수동 실행·구 회차). */
+  scheduledAt?: number;
   startedAt: number;
   finishedAt: number;
   outcome: PikuRunOutcome;
+  /** source key → 결과. 본선은 `final` 하나다. */
+  sources?: Record<string, PikuRunDivision & { campaign?: string }>;
   divisions: Record<string, PikuRunDivision>;
+}
+
+/** 서버가 확장에 내려 주는 활성 collection plan. */
+export interface PikuCollectionPlan {
+  campaign: string;
+  sources: { key: string; sourceId: string; url: string; expected: number;
+             title: string; paged: boolean }[];
 }
 
 export interface PikuAutomationStatus {
   ok: boolean;
   mode: PikuCollectorMode;
+  plan?: PikuCollectionPlan;
   activeDeviceCount: number;
   activeDevices: { id: number; name: string; fingerprint: string; lastSeenAt: number }[];
   /** AUTO-3 전까지 **항상 false**. 화면이 이 값으로 자동 공개 옵션을 막는다. */

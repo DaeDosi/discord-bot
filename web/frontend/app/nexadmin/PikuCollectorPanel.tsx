@@ -23,12 +23,22 @@ import { api } from "@/lib/api";
 import type { PikuCollectorStatus, PikuPublishPreview } from "@/lib/types";
 import PikuMappingReview from "./PikuMappingReview";
 
-const DIVISIONS = ["female_solo", "male_solo", "groups"] as const;
+/* ── 단계(campaign) — SINGCUP-FINAL-1 ─────────────────────────────────────
+ * 화면은 한 번에 한 단계만 보여 준다. **본선이 기본**이고 예선은 동결(갱신 보류)이라
+ * 수집 토큰·매핑·공개 버튼이 전부 잠긴다. source 목록은 서버 상태(`divisions`)의
+ * 키를 그대로 쓴다 — 예선 3부문/본선 1source를 화면이 따로 알 필요가 없다. */
+type Campaign = "final" | "qualifier";
+const CAMPAIGNS: { k: Campaign; label: string; hint: string }[] = [
+  { k: "final", label: "본선", hint: "진행 중" },
+  { k: "qualifier", label: "예선", hint: "동결 · 갱신 보류" },
+];
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const fmt = (unix: number) =>
   unix ? new Date(unix * 1000).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })
        : "-";
+/** 단계에서 보여 줄 source 키 — 서버 응답 순서를 그대로 쓴다. */
+const sourceKeys = (st: PikuCollectorStatus | null) => Object.keys(st?.divisions ?? {});
 
 /** 상태를 **한 단어**로. 색만으로 뜻을 전하지 않도록 문구를 함께 둔다. */
 const RESULT_LABEL: Record<string, string> = {
@@ -74,19 +84,22 @@ export default function PikuCollectorPanel() {
    *  160행이 한 화면에 쌓여 무엇을 보고 있는지 알 수 없다. */
   const [openDiv, setOpenDiv] = useState<string | null>(null);
   const [pv, setPv] = useState<PikuPublishPreview | null>(null);
+  const [campaign, setCampaign] = useState<Campaign>("final");
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
     try {
-      setSt(await api.admin.pikuCollectorStatus());
+      setSt(await api.admin.pikuCollectorStatus(campaign));
     } catch (e) {
       setErr(errText(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [campaign]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { setPv(null); setToken(null); setOpenDiv(null); void load(); }, [load]);
+  // 동결이거나 백엔드가 단계를 모르면(구 백엔드) 쓰기 버튼을 잠근다.
+  const frozen = !!st?.frozen || (!!st && !st.campaign);
 
   const issue = async (division: string) => {
     if (busy) return;
@@ -105,8 +118,8 @@ export default function PikuCollectorPanel() {
     if (busy) return;
     setBusy("publish"); setMsg(null);
     try {
-      const r = await api.admin.pikuCollectorPublish();
-      setMsg({ ok: true, text: `세 부문을 함께 공개했습니다. (${
+      const r = await api.admin.pikuCollectorPublish(campaign);
+      setMsg({ ok: true, text: `${st?.campaignLabel ?? campaign}을(를) 공개했습니다. (${
         Object.values(r.rows).join(" / ")}행)` });
       await load();
     } catch (e) {
@@ -139,6 +152,43 @@ export default function PikuCollectorPanel() {
           랭킹 표를 읽어 보냅니다. 서버는 받기만 하고 PIKU에 직접 요청하지 않습니다.
         </span>
       </p>
+
+      {/* ── 단계 선택 ── */}
+      <div className="nb-tap-gap flex flex-wrap items-center gap-1.5" role="tablist"
+           aria-label="싱드컵 단계">
+        {CAMPAIGNS.map((c) => {
+          const on = campaign === c.k;
+          return (
+            <button key={c.k} type="button" role="tab" aria-selected={on}
+                    tabIndex={on ? 0 : -1} onClick={() => setCampaign(c.k)}
+                    className={`nb-tap rounded-lg border px-3 py-2 text-sm font-semibold
+                                transition-colors ${on
+                      ? "border-accent/50 bg-accent/10 text-fg"
+                      : "border-border text-muted hover:text-fg"}`}>
+              {c.label}
+              <span className="ml-1.5 text-[11px] font-normal opacity-80">{c.hint}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* 구 백엔드(배포 중간)는 campaign을 모른다 — 응답에 `campaign`이 없으면 그 사실을 적고
+          공개를 잠근다. 새 백엔드가 뜨면 이 안내는 사라진다. */}
+      {st && !st.campaign && (
+        <p role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10
+                                    px-3 py-2 text-[12.5px] leading-relaxed text-amber-200">
+          <b>⚠ 백엔드가 아직 단계(예선/본선)를 모릅니다.</b> 서비스 갱신이 끝날 때까지
+          이 화면은 예선 상태만 보여 주고 공개는 잠깁니다.
+        </p>
+      )}
+      {frozen && (
+        <p role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10
+                                    px-3 py-2 text-[12.5px] leading-relaxed text-amber-200">
+          <b>⚠ {st?.campaignLabel}은(는) 동결 상태입니다.</b> 새 수집·매핑 변경·공개가
+          서버에서 거절됩니다(예선 마지막 구간 수집 누락, 소급 갱신 보류). 공개 중인 예선
+          데이터는 그대로 유지됩니다.
+        </p>
+      )}
 
       {/* ── 자동 기능 상태 — 기본이 꺼짐이라는 사실을 먼저 밝힌다 ── */}
       {st && (
@@ -173,9 +223,9 @@ export default function PikuCollectorPanel() {
         </p>
       )}
 
-      {/* ── 부문별 상태 ── */}
+      {/* ── source별 상태 ── */}
       <div className="space-y-2">
-        {DIVISIONS.map((d) => {
+        {sourceKeys(st).map((d) => {
           const v = st?.divisions[d];
           if (!v) return null;
           const ok = v.draftReady;
@@ -198,10 +248,11 @@ export default function PikuCollectorPanel() {
                 공개 중 {v.activeEntryCount}행 · {fmt(v.lastAt)}
               </span>
               <button type="button" onClick={() => void issue(d)}
-                      disabled={!!busy}
+                      disabled={!!busy || frozen}
                       className="btn-secondary nb-tap inline-flex shrink-0
                                  items-center gap-1 text-xs disabled:opacity-40"
-                      title="이 부문 수집에 쓸 1회용 토큰을 발급합니다">
+                      title={frozen ? "동결된 단계에는 토큰을 발급하지 않습니다"
+                        : "이 부문 수집에 쓸 1회용 토큰을 발급합니다"}>
                 {busy === `token:${d}`
                   ? <Loader2 size={12} className="animate-spin" aria-hidden="true" />
                   : <ClipboardCopy size={12} aria-hidden="true" />}
@@ -219,7 +270,7 @@ export default function PikuCollectorPanel() {
               )}
               {openDiv === d && (
                 <div className="w-full border-t border-border pt-3">
-                  <PikuMappingReview division={d} label={v.label}
+                  <PikuMappingReview division={d} label={v.label} readOnly={frozen}
                                      onChanged={() => void load()} />
                 </div>
               )}
@@ -270,11 +321,11 @@ export default function PikuCollectorPanel() {
 
       {/* ── 공개 ── */}
       <div className="rounded-xl border border-border bg-bg-card/60 px-4 py-3">
-        <p className="text-sm font-semibold text-fg">공개</p>
+        <p className="text-sm font-semibold text-fg">공개 — {st?.campaignLabel ?? campaign}</p>
         <p className="mt-1 text-[13px] leading-relaxed text-muted">
-          세 부문을 <b className="text-fg">하나의 작업으로</b> 공개합니다. 하나라도
-          실패하면 기존 공개 데이터가 그대로 남습니다 — 여성만 새 데이터인 화면은
-          사용자가 그 사실을 알 수 없어서 만들지 않습니다.
+          이 단계의 source를 <b className="text-fg">하나의 작업으로</b> 공개합니다. 하나라도
+          실패하면 기존 공개 데이터가 그대로 남습니다. 본선을 공개해도 예선 공개본은
+          바뀌지 않습니다(단계가 분리돼 있습니다). 자동 공개는 없습니다.
         </p>
         {blockers.length > 0 && (
           <p className="mt-2 flex flex-wrap items-start gap-1.5 text-[13px] text-muted">
@@ -287,7 +338,7 @@ export default function PikuCollectorPanel() {
         <button type="button" disabled={!!busy}
                 onClick={() => void (async () => {
                   setBusy("preview"); setMsg(null);
-                  try { setPv(await api.admin.pikuCollectorPublishPreview()); }
+                  try { setPv(await api.admin.pikuCollectorPublishPreview(campaign)); }
                   catch (e) { setMsg({ ok: false, text: errText(e) }); }
                   finally { setBusy(null); }
                 })()}
@@ -300,16 +351,17 @@ export default function PikuCollectorPanel() {
           공개 전 확인
         </button>
         <button type="button" onClick={() => void publish()}
-                disabled={!!busy || !st?.publishReady}
+                disabled={!!busy || !st?.publishReady || frozen}
                 className="btn-primary nb-tap mt-3 inline-flex items-center gap-1.5
                            text-sm disabled:opacity-40"
-                title={st?.publishReady
-                  ? "세 부문을 함께 공개합니다"
-                  : "세 부문 수집본이 모두 있어야 공개할 수 있습니다"}>
+                title={frozen ? "동결된 단계는 공개할 수 없습니다"
+                  : st?.publishReady
+                    ? "이 단계의 수집본을 공개합니다"
+                    : "이 단계의 수집본이 모두 있어야 공개할 수 있습니다"}>
           {busy === "publish"
             ? <Loader2 size={13} className="animate-spin" aria-hidden="true" />
             : <Check size={13} aria-hidden="true" />}
-          세 부문 함께 공개
+          {st?.campaignLabel ?? campaign} 공개
         </button>
         </div>
 
@@ -321,7 +373,7 @@ export default function PikuCollectorPanel() {
               {" — 숫자는 공개 화면·API 어디에도 나가지 않습니다."}
             </p>
             <ul className="mt-1.5 space-y-1 text-[13px]">
-              {DIVISIONS.map((d) => {
+              {Object.keys(pv.divisions).map((d) => {
                 const x = pv.divisions[d];
                 if (!x) return null;
                 return (

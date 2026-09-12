@@ -37,7 +37,13 @@ DIVISION_LABELS: dict[str, str] = {
     "female_solo": "여성 솔로",
     "male_solo": "남성 솔로",
     "groups": "그룹",
+    # SINGCUP-FINAL-1 — 본선 source key. 예선 부문이 아니라 별도 campaign이다
+    # (`singcup_piku_campaigns`). `DIVISIONS`에는 넣지 않는다 — 예선 3부문을 도는
+    # 기존 코드(원자 공개·상태 화면)가 본선까지 요구하게 되기 때문이다.
+    "final": "파이널 본선",
 }
+#: 공개 순위를 낼 수 있는 source key 전부(예선 3 + 본선 1).
+PUBLIC_SOURCES: tuple[str, ...] = DIVISIONS + ("final",)
 
 #: 부문별 PIKU 랭킹 페이지 **정본**.
 #:
@@ -363,7 +369,8 @@ def validate_rows(rows: list[dict], *, min_entries: int = 1) -> list[dict]:
 
 # ── 부문 ↔ URL 매핑 ─────────────────────────────────────────────────────────
 
-async def list_sources() -> list[dict]:
+async def list_sources(keys: tuple[str, ...] | None = None) -> list[dict]:
+    """부문별 출처 상태. 기본은 예선 3부문(기존 호출부 호환), `keys`로 본선도 본다."""
     db = await get_db()
     rows = await (await db.execute(
         "SELECT * FROM piku_sources ORDER BY division")).fetchall()
@@ -381,7 +388,7 @@ async def list_sources() -> list[dict]:
         # 과거에 뒤바뀐 채로 저장된 설정을 **조용히 다시 수집하지 않기** 위해서다.
         "divisionMismatch": _mismatch_of(d, by_div[d]["url"] if d in by_div else ""),
         "expectedUrl": PIKU_CATEGORY_URLS.get(d, ""),
-    } for d in DIVISIONS]
+    } for d in (keys or DIVISIONS)]
 
 
 def _mismatch_of(division: str, url: str) -> str:
@@ -444,12 +451,14 @@ async def set_sources(mapping: dict[str, str]) -> list[dict]:
 
 # ── dataset 원자 교체 ───────────────────────────────────────────────────────
 
-async def _begin_dataset(division: str, *, source: str, source_url: str) -> int:
+async def _begin_dataset(division: str, *, source: str, source_url: str,
+                         campaign: str = "qualifier") -> int:
     db = await get_db()
     cur = await db.execute(
-        """INSERT INTO piku_datasets (division, status, source, source_url, created_at)
-           VALUES (?, 'building', ?, ?, ?)""",
-        (division, source, source_url, int(time.time())))
+        """INSERT INTO piku_datasets (division, status, source, source_url, created_at,
+                                      campaign)
+           VALUES (?, 'building', ?, ?, ?, ?)""",
+        (division, source, source_url, int(time.time()), campaign))
     await db.commit()
     return int(cur.lastrowid)
 
@@ -483,12 +492,14 @@ async def _activate(dataset_id: int, division: str, *, pages: int,
     await db.execute(
         "UPDATE piku_datasets SET status='active', activated_at=?, pages=?, "
         "entry_count=? WHERE id=?", (now, pages, entry_count, dataset_id))
+    import singcup_piku_campaigns as camps
     await db.execute(
-        """INSERT INTO piku_sources (division, url, last_success_at, updated_at)
-           VALUES (?, '', ?, ?)
+        """INSERT INTO piku_sources (division, url, last_success_at, updated_at, campaign)
+           VALUES (?, ?, ?, ?, ?)
            ON CONFLICT(division) DO UPDATE SET last_success_at=excluded.last_success_at,
                 last_error_kind='', updated_at=excluded.updated_at""",
-        (division, now, now))
+        (division, camps.SOURCES.get(division, {}).get("url", ""), now, now,
+         camps.SOURCES.get(division, {}).get("campaign", "qualifier")))
     await db.commit()
     _log("dataset_activated", division=division, datasetId=dataset_id,
          entries=entry_count, pages=pages)
@@ -1007,15 +1018,19 @@ async def sync_mappings(division: str) -> dict:
     names = [r["name"] for r in await (await db.execute(
         "SELECT name FROM piku_entries WHERE dataset_id=?", (ds["id"],))).fetchall()]
 
-    # 공식 명단의 이름 → channel_id (부문 안에서만 찾는다)
+    # 공식 명단의 이름 → channel_id (부문 안에서만 찾는다. 본선은 세 부문 전체)
+    import singcup_piku_campaigns as camps
     official: dict[str, str] = {}
-    if division == "groups":
-        for g in sq.QUALIFIERS["groups"]:
-            for m in g["members"]:
-                official.setdefault(_norm_name(m["name"]), m["channelId"])
-    else:
-        for r in sq.QUALIFIERS[division]:
-            official.setdefault(_norm_name(r["name"]), r["channelId"])
+    scan = (DIVISIONS if camps.SOURCES.get(division, {}).get("mixed")
+            else (division,))
+    for d in scan:
+        if d == "groups":
+            for g in sq.QUALIFIERS["groups"]:
+                for m in g["members"]:
+                    official.setdefault(_norm_name(m["name"]), m["channelId"])
+        else:
+            for r in sq.QUALIFIERS[d]:
+                official.setdefault(_norm_name(r["name"]), r["channelId"])
 
     now = int(time.time())
     created = 0
@@ -1024,10 +1039,11 @@ async def sync_mappings(division: str) -> dict:
         # 이미 있는 행은 건드리지 않는다 — 관리자가 확정한 값을 덮어쓰면 안 된다.
         cur = await db.execute(
             """INSERT INTO piku_mappings (division, piku_name, channel_id, state,
-                                          updated_at)
-               VALUES (?,?,?,?,?)
+                                          updated_at, campaign)
+               VALUES (?,?,?,?,?,?)
                ON CONFLICT(division, piku_name) DO NOTHING""",
-            (division, n, exact, "suggested" if exact else "unmapped", now))
+            (division, n, exact, "suggested" if exact else "unmapped", now,
+             camps.SOURCES.get(division, {}).get("campaign", "qualifier")))
         created += cur.rowcount or 0
     await db.commit()
     return {"division": division, "created": created, "names": len(names)}
@@ -1054,9 +1070,14 @@ async def list_mappings(division: str | None = None) -> list[dict]:
 
 async def set_mapping(division: str, piku_name: str, channel_id: str | None,
                       *, state: str = "confirmed") -> dict:
-    """관리자가 매핑을 확정하거나 해제한다."""
-    if division not in DIVISIONS:
+    """관리자가 매핑을 확정하거나 해제한다. 동결된 campaign은 거절한다."""
+    if division not in PUBLIC_SOURCES:
         raise PikuError("bad_division", "알 수 없는 부문입니다.")
+    import singcup_piku_campaigns as camps
+    try:
+        camps.assert_writable(division)
+    except camps.CampaignError as e:
+        raise PikuError(e.code, e.message) from e
     if state not in ("confirmed", "unmapped", "excluded", "suggested"):
         raise PikuError("bad_state", "알 수 없는 매핑 상태입니다.")
     cid = (channel_id or "").strip().lower() or None
@@ -1071,11 +1092,13 @@ async def set_mapping(division: str, piku_name: str, channel_id: str | None,
         cid = None
     db = await get_db()
     await db.execute(
-        """INSERT INTO piku_mappings (division, piku_name, channel_id, state, updated_at)
-           VALUES (?,?,?,?,?)
+        """INSERT INTO piku_mappings (division, piku_name, channel_id, state, updated_at,
+                                      campaign)
+           VALUES (?,?,?,?,?,?)
            ON CONFLICT(division, piku_name) DO UPDATE SET channel_id=excluded.channel_id,
                 state=excluded.state, updated_at=excluded.updated_at""",
-        (division, piku_name, cid, state, int(time.time())))
+        (division, piku_name, cid, state, int(time.time()),
+         camps.SOURCES[division]["campaign"]))
     await db.commit()
     return {"division": division, "pikuName": piku_name, "channelId": cid,
             "state": state}
@@ -1111,14 +1134,17 @@ async def public_ranking(division: str, *, sort: str = DEFAULT_SORT,
 
     정렬 기준이 바뀌면 **1위부터 다시 계산**한다(PIKU 원본 순위를 그대로 쓰지 않는다).
     """
-    if division not in DIVISIONS:
+    if division not in PUBLIC_SOURCES:
         raise PikuError("bad_division", "알 수 없는 부문입니다.")
+    import singcup_piku_campaigns as camps
+    campaign = camps.SOURCES[division]["campaign"]
     # 공개 토큰 ↔ 내부 컬럼을 여기서 한 번만 바꾼다. 아래에서는 정렬에만 내부
     # 컬럼을 쓰고, **응답에는 공개 토큰만** 담는다.
     public_sort, column = resolve_sort(sort)
     ds = await active_dataset(division)
     if not ds:
-        return {"division": division, "label": DIVISION_LABELS[division],
+        return {"division": division, "campaign": campaign,
+                "label": DIVISION_LABELS[division],
                 "sort": public_sort, "sortLabel": SORT_LABELS[public_sort],
                 "entries": [], "available": False,
                 "lastSuccessAt": 0, "unmappedCount": 0}
@@ -1127,12 +1153,15 @@ async def public_ranking(division: str, *, sort: str = DEFAULT_SORT,
     rows = [dict(r) for r in await (await db.execute(
         """SELECT e.source_rank, e.name, e.thumbnail_url, e.win_rate, e.match_rate,
                   e.song_title, e.artist_name,
-                  m.channel_id, m.state
+                  m.channel_id, m.state,
+                  t.team_members
              FROM piku_entries e
              LEFT JOIN piku_mappings m
                ON m.division = ? AND m.piku_name = e.name
+             LEFT JOIN piku_collector_teams t
+               ON t.division = ? AND t.piku_name = e.name
             WHERE e.dataset_id = ?""",
-        (division, ds["id"]))).fetchall()]
+        (division, division, ds["id"]))).fetchall()]
 
     # 관리자가 확정한 매핑만 순위에 넣는다. 미매핑·제안 상태는 **잘못된 스트리머에
     # 연결하지 않기 위해** 제외하고, 개수만 알려 준다(관리 화면이 처리할 수 있게).
@@ -1150,13 +1179,17 @@ async def public_ranking(division: str, *, sort: str = DEFAULT_SORT,
         "artistName": r["artist_name"] or "",
         # 원본 순위는 **참고용으로만** 내보낸다(우리 순위와 다른 값임을 화면이 밝힌다).
         "sourceRank": int(r["source_rank"]) if r["source_rank"] is not None else None,
+        # 팀이면 PIKU 원문의 팀원 전체(대표자 포함, 쉼표 구분). 솔로는 빈 문자열.
+        # 본선은 한 표에 솔로·팀이 섞여 있어 화면이 행마다 이걸로 팀 여부를 안다.
+        "teamMembers": (r.get("team_members") or "").strip(),
     } for i, r in enumerate(ordered)]
     if limit and limit > 0:
         entries = entries[:limit]
 
-    src = {s["division"]: s for s in await list_sources()}[division]
+    src = {s["division"]: s for s in await list_sources((division,))}[division]
     return {
         "division": division,
+        "campaign": campaign,
         "label": DIVISION_LABELS[division],
         "sort": public_sort,
         "sortLabel": SORT_LABELS[public_sort],
@@ -1170,8 +1203,12 @@ async def public_ranking(division: str, *, sort: str = DEFAULT_SORT,
 
 
 async def public_status() -> dict:
-    """공개 상태 — 마지막 정상 갱신 시각과 출처. **내부 값은 없다.**"""
-    out = {"autoCollectEnabled": auto_collect_enabled(), "divisions": {}}
+    """공개 상태 — 마지막 정상 갱신 시각과 출처. **내부 값은 없다.**
+
+    기본 응답 형태(예선 3부문)는 그대로 두고, `campaigns`에 본선까지 담는다.
+    """
+    out = {"autoCollectEnabled": auto_collect_enabled(), "divisions": {},
+           "campaigns": await campaign_status()}
     for s in await list_sources():
         ds = await active_dataset(s["division"])
         out["divisions"][s["division"]] = {
@@ -1181,6 +1218,37 @@ async def public_status() -> dict:
             "available": bool(ds),
             "entryCount": int(ds["entry_count"]) if ds else 0,
         }
+    return out
+
+
+async def campaign_status() -> list[dict]:
+    """campaign(예선/본선)별 공개 상태 — 동결 여부·기간·마지막 수집·마지막 공개.
+
+    `lastCollectedAt`은 draft가 마지막으로 **들어온** 시각(`piku_collector_state`),
+    `lastPublishedAt`은 활성본이 마지막으로 **교체된** 시각(`piku_sources`)이다.
+    둘을 합치면 "수집은 되는데 공개가 안 된" 상태가 보이지 않는다.
+    """
+    import singcup_piku_campaigns as camps
+    db = await get_db()
+    state = {r["division"]: dict(r) for r in await (await db.execute(
+        "SELECT division, last_result, last_error_kind, last_at"
+        " FROM piku_collector_state")).fetchall()}
+    src = {s["division"]: s for s in await list_sources(tuple(camps.SOURCES))}
+    out: list[dict] = []
+    for c in camps.public_meta():
+        keys = [x["key"] for x in c["sources"]]
+        ds = {k: await active_dataset(k) for k in keys}
+        collected = [state[k]["last_at"] for k in keys if k in state]
+        published = [src[k]["lastSuccessAt"] for k in keys if k in src]
+        last_result = [state[k]["last_result"] for k in keys if k in state]
+        out.append({
+            **c,
+            "available": all(bool(ds[k]) for k in keys),
+            "entryCount": sum(int(ds[k]["entry_count"]) for k in keys if ds[k]),
+            "lastCollectedAt": max(collected) if collected else 0,
+            "lastPublishedAt": max(published) if published else 0,
+            "lastResult": (last_result[-1] if last_result else "") or "",
+        })
     return out
 
 

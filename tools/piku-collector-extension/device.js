@@ -176,7 +176,7 @@ async function fetchCollectorToken(base, division, { automation = false } = {}) 
   const { fingerprint } = await loadDevice();
   if (!fingerprint) throw new Error("이 브라우저는 아직 장치로 등록되지 않았습니다.");
   const c = await postJson(base, "device/challenge",
-                           { fingerprint, division, automation });
+                           { fingerprint, division, automation, protocol: 2 });
   const signature = await sign(c.message);
   const t = await postJson(base, "device/token",
                            { challengeId: c.challengeId, signature });

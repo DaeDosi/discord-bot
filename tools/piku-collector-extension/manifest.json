@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "NexBot PIKU Collector",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "PIKU 공개 랭킹 표를 읽어 NexBot 관리자에게 전달합니다. 쿠키·원문 HTML은 보내지 않습니다.",
   "permissions": [
     "activeTab",

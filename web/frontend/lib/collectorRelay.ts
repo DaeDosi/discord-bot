@@ -46,7 +46,28 @@ export const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_FIELD_CHARS = 4096;
 
 export type DeviceRelayKind =
-  | "device/pair" | "device/state" | "device/challenge" | "device/token";
+  | "device/pair" | "device/state" | "device/challenge" | "device/token"
+  | "device/run";
+
+/** 구조를 가진 성공 필드의 허용 형태 — 키마다 원시값·하위 객체·객체 목록 중 하나.
+ *  목록은 같은 형태의 객체들이고 길이 상한이 있다. 이 밖은 전부 버린다. */
+export type ShapeRule =
+  | "primitive"
+  | { readonly list: FieldShape; readonly max: number }
+  | { readonly object: FieldShape };
+export interface FieldShape { readonly [key: string]: ShapeRule; }
+
+/** 성공 필드 명세: 문자열이면 원시값만, `{key, shape}`면 그 형태만 통과한다. */
+export type SuccessField = string | { readonly key: string; readonly shape: FieldShape };
+
+/** `device/state`의 활성 collection plan(SINGCUP-FINAL-1). 확장이 **실제로 읽는 키만**
+ *  적었다(`scheduler.js resolvePlan`). source 목록은 넉넉히 8개까지다(운영은 1~3). */
+export const PLAN_SHAPE: FieldShape = {
+  campaign: "primitive",
+  sources: { list: { key: "primitive", sourceId: "primitive", url: "primitive",
+                     expected: "primitive", title: "primitive", paged: "primitive" },
+             max: 8 },
+};
 
 export type RelayKind = "ingest" | "failure" | DeviceRelayKind;
 
@@ -57,7 +78,7 @@ interface RelaySpec {
   readonly forwardCollectorToken: boolean;
   readonly maxBodyBytes: number;
   /** 성공 응답에서 내보낼 키. `null`이면 `detail` 한 줄로 접는다. */
-  readonly successFields: readonly string[] | null;
+  readonly successFields: readonly SuccessField[] | null;
 }
 
 /** **이 표가 허용 목록 그 자체다.** 여기 없는 경로는 relay되지 않는다. */
@@ -82,10 +103,12 @@ const RELAY_SPECS: Readonly<Record<RelayKind, RelaySpec>> = {
     maxBodyBytes: DEVICE_MAX_BODY_BYTES,
     successFields: ["ok", "deviceId", "name", "fingerprint"],
   },
+  // state     → sw.js `{mode, deviceActive, plan}`. `plan`은 **형태를 못 박은** 객체다
+  //             (SINGCUP-FINAL-1) — 확장이 어느 source를 찾을지 서버가 정한다.
   "device/state": {
     path: "device/state", forwardCollectorToken: false,
     maxBodyBytes: DEVICE_MAX_BODY_BYTES,
-    successFields: ["ok", "deviceActive", "mode"],
+    successFields: ["ok", "deviceActive", "mode", { key: "plan", shape: PLAN_SHAPE }],
   },
   "device/challenge": {
     path: "device/challenge", forwardCollectorToken: false,
@@ -96,6 +119,13 @@ const RELAY_SPECS: Readonly<Record<RelayKind, RelaySpec>> = {
     path: "device/token", forwardCollectorToken: false,
     maxBodyBytes: DEVICE_MAX_BODY_BYTES,
     successFields: ["ok", "token", "ttlSeconds"],
+  },
+  // run       → sw.js `report()`. 회차 결과(종류·시각·행 수)만 올라가고, 확장은
+  //             응답에서 `ok`·`outcome`만 본다. 데이터·토큰은 어느 방향으로도 없다.
+  "device/run": {
+    path: "device/run", forwardCollectorToken: false,
+    maxBodyBytes: DEVICE_MAX_BODY_BYTES,
+    successFields: ["ok", "outcome", "id"],
   },
 };
 
@@ -163,8 +193,42 @@ function safeDetail(raw: string, contentType: string, status: number): string {
  * 키 하나 밑에 내부 구조가 딸려 나갈 수 있다. JSON이 아니거나 객체가 아니면
  * `null`을 돌려주고 호출부가 fail-closed로 닫는다.
  */
+function pickPrimitive(v: unknown): unknown {
+  if (typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v))) return v;
+  if (typeof v === "string" && v.length <= MAX_FIELD_CHARS) return v;
+  return undefined;                          // 객체·배열·null·과대 문자열은 버린다
+}
+
+/** 형태 명세대로 **적힌 키만, 적힌 깊이만** 뽑는다. 명세 밖 키는 어디에서도 안 나간다. */
+function pickShape(v: unknown, shape: FieldShape): Record<string, unknown> | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const src = v as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(shape)) {
+    if (!Object.prototype.hasOwnProperty.call(src, key)) continue;
+    const rule = shape[key];
+    const val = src[key];
+    if (rule === "primitive") {
+      const p = pickPrimitive(val);
+      if (p !== undefined) out[key] = p;
+    } else if ("list" in rule) {
+      if (!Array.isArray(val)) continue;
+      const items: Record<string, unknown>[] = [];
+      for (const it of val.slice(0, rule.max)) {
+        const picked = pickShape(it, rule.list);
+        if (picked) items.push(picked);
+      }
+      out[key] = items;
+    } else {
+      const nested = pickShape(val, rule.object);
+      if (nested) out[key] = nested;
+    }
+  }
+  return out;
+}
+
 function pickAllowed(
-  raw: string, contentType: string, fields: readonly string[],
+  raw: string, contentType: string, fields: readonly SuccessField[],
 ): Record<string, unknown> | null {
   if (!/application\/json/i.test(contentType)) return null;
   let parsed: unknown;
@@ -172,15 +236,18 @@ function pickAllowed(
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const src = parsed as Record<string, unknown>;
   const out: Record<string, unknown> = {};
-  for (const key of fields) {
+  for (const field of fields) {
+    const key = typeof field === "string" ? field : field.key;
     if (!Object.prototype.hasOwnProperty.call(src, key)) continue;
     const v = src[key];
-    if (typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v))) {
-      out[key] = v;
-    } else if (typeof v === "string" && v.length <= MAX_FIELD_CHARS) {
-      out[key] = v;
+    if (typeof field === "string") {
+      const p = pickPrimitive(v);
+      if (p !== undefined) out[key] = p;
+      // 객체·배열·null·과대 문자열은 조용히 버린다.
+    } else {
+      const picked = pickShape(v, field.shape);
+      if (picked) out[key] = picked;
     }
-    // 객체·배열·null·과대 문자열은 조용히 버린다.
   }
   return out;
 }

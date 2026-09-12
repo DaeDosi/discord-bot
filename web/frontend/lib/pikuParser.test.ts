@@ -373,8 +373,9 @@ test("등록되지 않은 주소·호스트에서는 아무것도 읽지 않는�
 test("payload에 쿠키·헤더·원문 HTML이 없다", () => {
   const r = run(MALE, fullRows(64));
   const keys = Object.keys(r.payload).sort();
-  assert.deepEqual(keys, ["collectedAt", "division", "rowCount", "rows",
-                          "schemaVersion", "sourceId", "sourceUrl"]);
+  // `campaign`·`pageTitle`(SINGCUP-FINAL-1)은 단계와 페이지 제목 — 둘 다 공개 정보다.
+  assert.deepEqual(keys, ["campaign", "collectedAt", "division", "pageTitle", "rowCount",
+                          "rows", "schemaVersion", "sourceId", "sourceUrl"]);
   const rowKeys = Object.keys(r.payload.rows[0]).sort();
   // 정렬 순서 주의: "win_rate" < "win_ratio" (공통 접두사 뒤 e < i).
   assert.deepEqual(rowKeys, ["artist", "image_url", "rank", "song_title",
@@ -403,4 +404,93 @@ test("열이 모자란 행은 데이터 행으로 보지 않는다", () => {
   const r = run(MALE, rows);
   assert.equal(r.ok, true, `실패: ${r.kind} ${r.message}`);
   assert.equal(r.payload.rowCount, 64);
+});
+
+
+// ── SINGCUP-FINAL-1. 본선(2ut8Li) ─────────────────────────────────────────
+const FINAL = "2ut8Li";
+const FINAL_TITLE = "이상형 월드컵 랭킹 - [2026 치지직 싱드컵 갤럭시] - 파이널 본선 Ideal type worldcup PIKU";
+
+function runWith(sourceId: string, rows: El[], opts: { title?: string; fragment?: boolean } = {}) {
+  const tbody = el("tbody", { children: rows });
+  const table = el("table", { children: [tbody] });
+  const body = el("body", { children: [table] });
+  const document = {
+    title: opts.title ?? "",
+    documentElement: { dataset: { nexbotPikuFragment: opts.fragment ? "1" : "" } },
+    body: Object.assign(body, { innerText: "PIKU 랭킹" }),
+    querySelector: (s: string) => (body.querySelectorAll(s)[0] || null),
+    querySelectorAll: (s: string) => body.querySelectorAll(s),
+  };
+  const ctx = vm.createContext({
+    location: { hostname: "www.piku.co.kr", pathname: `/w/rank/${sourceId}` },
+    document,
+    getComputedStyle: (n: El) => ({ backgroundImage: n.style.backgroundImage || "none" }),
+    Node: function () {},
+  });
+  return vm.runInContext(SRC, ctx) as
+    { ok: boolean; kind?: string; message?: string; payload?: any; fragment?: boolean;
+      rows?: any[]; campaign?: string; sourceId?: string; pageTitle?: string; division?: string };
+}
+
+test("본선: 32행이 한 번에 보이면 campaign=final·pageTitle과 함께 payload를 만든다", () => {
+  const r = runWith(FINAL, fullRows(32), { title: FINAL_TITLE });
+  assert.equal(r.ok, true, r.message);
+  assert.equal(r.payload.division, "final");
+  assert.equal(r.payload.campaign, "final");
+  assert.equal(r.payload.sourceId, FINAL);
+  assert.equal(r.payload.sourceUrl, "https://www.piku.co.kr/w/rank/2ut8Li");
+  assert.equal(r.payload.pageTitle, FINAL_TITLE);
+  assert.equal(r.payload.rowCount, 32);
+});
+
+test("본선: 페이지 제목이 다르면 title_mismatch로 fail-closed", () => {
+  const r = runWith(FINAL, fullRows(32), { title: "이상형 월드컵 랭킹 - 다른 월드컵" });
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "title_mismatch");
+});
+
+test("본선: 10행만 보이면(페이지 넘김 필요) partial이고 안내가 페이지 넘김을 가리킨다", () => {
+  const r = runWith(FINAL, fullRows(10), { title: FINAL_TITLE });
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "partial");
+  assert.ok(/페이지/.test(r.message ?? ""), r.message);
+});
+
+test("본선 fragment 모드: 보이는 10행만 돌려주고 행 수 검사는 하지 않는다", () => {
+  const rows = Array.from({ length: 10 }, (_, i) =>
+    row({ rank: String(i + 11), strong: `[스트리머${i + 11}] 노래 - 가수` }));
+  const r = runWith(FINAL, rows, { title: FINAL_TITLE, fragment: true });
+  assert.equal(r.ok, true, r.message);
+  assert.equal(r.fragment, true);
+  assert.equal(r.campaign, "final");
+  assert.equal(r.sourceId, FINAL);
+  assert.equal(r.pageTitle, FINAL_TITLE);
+  // vm 컨텍스트의 배열은 다른 realm이라 deepEqual(strict)이 prototype에서 갈린다.
+  assert.equal(r.rows!.map((x) => x.rank).join(","), "11,12,13,14,15,16,17,18,19,20");
+  assert.equal(r.payload, undefined, "fragment는 payload가 아니다");
+});
+
+test("본선 fragment 모드에서도 행 단위 검사는 그대로다", () => {
+  const rows = fullRows(10).map((x, i) => (i === 3 ? row({ rank: "4", strong: "[대괄호없음 노래 - 가수" }) : x));
+  const r = runWith(FINAL, rows, { title: FINAL_TITLE, fragment: true });
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "parse_failed");
+});
+
+test("본선: 그룹 행(쉼표 구분)은 대괄호 안을 통째로 보존한다 — 1위 그룹 회귀", () => {
+  const rows = fullRows(32, (i) => (i === 0
+    ? { strong: "[조별하, 김니디, 슈향, 이 선] 기도 - 비투비" } : {}));
+  const r = runWith(FINAL, rows, { title: FINAL_TITLE });
+  assert.equal(r.ok, true, r.message);
+  assert.equal(r.payload.rows[0].rank, 1);
+  assert.equal(r.payload.rows[0].streamer, "조별하, 김니디, 슈향, 이 선");
+  assert.equal(r.payload.rows[0].song_title, "기도");
+  assert.equal(r.payload.rows[0].artist, "비투비");
+});
+
+test("fragment 플래그가 없으면 예선 페이지 동작은 그대로다", () => {
+  const r = runWith(MALE, fullRows(64));
+  assert.equal(r.ok, true);
+  assert.equal(r.payload.campaign, "qualifier");
 });

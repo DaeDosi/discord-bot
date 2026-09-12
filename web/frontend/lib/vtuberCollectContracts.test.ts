@@ -199,7 +199,9 @@ test("프론트에 수집 API용 route handler를 만들지 않는다", () => {
       e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)]);
   // 경로 구분자를 정규화한다(Windows 백슬래시).
   const files = walk(dir).map((f) => f.split(String.fromCharCode(92)).join("/"));
-  assert.equal(files.length, 6, `app/api route handler는 6개여야 한다: ${files}`);
+  // 6 → 7: SINGCUP-FINAL-1이 회차 보고 relay(`device/run`)를 더했다. 여전히 전부
+  // `/piku/collector/` 아래이고 스트리머 태그·버튜버 수집용 handler는 없다.
+  assert.equal(files.length, 7, `app/api route handler는 7개여야 한다: ${files}`);
   assert.ok(files.every((f) => f.includes("/piku/collector/")),
     "확장 수집 경로 외의 route handler가 생겼다");
   assert.ok(!files.some((f) => f.includes("streamer-tags") || f.includes("vtuber")),

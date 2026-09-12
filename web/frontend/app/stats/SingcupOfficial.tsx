@@ -22,16 +22,40 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
-  PikuEntry, PikuRankingResponse, QualifierGroupRow, QualifierRow,
+  PikuCampaign, PikuEntry, PikuRankingResponse, QualifierGroupRow, QualifierRow,
   QualifiersResponse,
 } from "@/lib/types";
 import { SINGCUP_QUALIFIERS } from "@/lib/singcupQualifiers";
 import type { MergedRow } from "@/lib/singcupOfficialMerge";
 import { memberLine, mergeRanking, songLine } from "@/lib/singcupOfficialMerge";
+import type { Stage } from "@/lib/singcupStage";
+import { classifyFinal, finalHint, pickStage } from "@/lib/singcupStage";
 import { GOLD, GREEN, hideBrokenImage, nf } from "./singcupShared";
 
 const DIVISIONS = ["female_solo", "male_solo", "groups"] as const;
 type Division = (typeof DIVISIONS)[number];
+/** 본선 source key. 예선 부문이 아니라 별도 단계(campaign)다 — `DIVISIONS`에 넣지 않는다. */
+const FINAL = "final";
+type SectionKey = Division | typeof FINAL;
+
+/* ── 단계(예선/본선) ────────────────────────────────────────────────────────
+ * 기본 탭은 **본선 공개본이 있을 때만 본선**이다(`lib/singcupStage`). 본선이 아직
+ * 미공개이거나 백엔드가 구버전(배포 중간)이거나 요청이 실패하면 예선(기존 공개본)을
+ * 기본으로 두고 본선 탭에 "준비 중"을 적는다 — 방문자가 빈 화면을 먼저 보지 않게.
+ * 예선은 마지막 구간 수집이 빠졌고 소급 갱신은 보류 상태라, 그 사실을 화면이 그대로 적는다.
+ * 두 단계의 데이터는 서버에서도 campaign으로 분리돼 있어 서로 덮어쓰지 않는다. */
+const STAGE_LABEL: Record<Stage, string> = { final: "본선", qualifier: "예선" };
+const STAGE_ORDER: Stage[] = ["final", "qualifier"];
+
+/** 날짜·시각은 **Asia/Seoul** 기준으로만 적는다(방문자 브라우저 시간대와 무관). */
+const fmtSeoul = (unixSec: number) => new Date(unixSec * 1000).toLocaleString("ko-KR", {
+  timeZone: "Asia/Seoul", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit",
+});
+const fmtSeoulDate = (iso: string) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso
+    : d.toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul", month: "long", day: "numeric" });
+};
 
 /** `전체` 화면에서 부문마다 보여 줄 수. 요구가 10·10·10이다. */
 const OVERVIEW_ROWS = 10;
@@ -376,7 +400,7 @@ export const SORT_TABS = [
 
 function DivisionSection({ division, label, rows, ranking, limit, showAll,
                            sort, onSort }: {
-  division: Division;
+  division: SectionKey;
   label: string;
   rows: (QualifierRow | QualifierGroupRow)[];
   ranking: PikuEntry[] | null;
@@ -390,12 +414,20 @@ function DivisionSection({ division, label, rows, ranking, limit, showAll,
    * 예전에는 이 자리에 인라인 병합이 있었고 두 가지가 깨져 있었다:
    * PIKU 항목에서 rank만 꺼내 곡·가수를 버렸고, 색인을 팀 `members[0]`만으로
    * 만든 뒤 못 찾은 행을 `filter`로 지워 그룹 32팀 중 14팀이 사라졌다.
-   * **프런트에서 순위를 다시 매기지 않는다** — 동점 규칙은 서버에 있다. */
-  const ordered = useMemo(() => mergeRanking(rows, ranking), [rows, ranking]);
+   * **프런트에서 순위를 다시 매기지 않는다** — 동점 규칙은 서버에 있다.
+   *
+   * 본선(`final`)은 한 표에 솔로와 팀이 섞여 있다(실측 팀 12 · 솔로 20). 팀 여부는
+   * PIKU가 준 `teamMembers`로 정하고(`mixed`), 멤버 줄은 **모든 행에 자리를 예약**한다 —
+   * 솔로·팀 행 높이가 달라 정렬을 바꿀 때마다 목록이 흔들리지 않게. */
+  const mixed = division === FINAL;
+  const ordered = useMemo(
+    () => mergeRanking(rows, ranking, { mixed }), [rows, ranking, mixed]);
+  const reserveMembers = division === "groups" || mixed;
 
   const top = ordered.slice(0, TOP_CARDS);
   const list = ordered.slice(0, showAll ? ordered.length : limit);
-  const unit = division === "groups" ? "팀" : "명";
+  const unit = division === "groups" ? "팀" : mixed ? "" : "명";
+  const teamCount = mixed ? ordered.filter((x) => x.teamNumber !== undefined).length : 0;
 
   return (
     <section className="space-y-3">
@@ -406,7 +438,11 @@ function DivisionSection({ division, label, rows, ranking, limit, showAll,
             : <Trophy size={18} style={{ color: GOLD }} aria-hidden="true" />}
           {label}
           <span className="text-sm font-normal text-muted tabular-nums">
-            {nf(rows.length)}{unit}
+            {mixed
+              ? (ranking && ranking.length > 0
+                  ? `${nf(ordered.length)} (팀 ${nf(teamCount)} · 개인 ${nf(ordered.length - teamCount)})`
+                  : "")
+              : `${nf(rows.length)}${unit}`}
           </span>
         </h3>
         {/* 정렬 탭 — PIKU dataset이 있을 때만 조작 가능하다.
@@ -458,14 +494,14 @@ function DivisionSection({ division, label, rows, ranking, limit, showAll,
       {top.length > 0 && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           {top.map((item) => (
-            <TopCard key={item.channelId} item={item} isGroup={division === "groups"} />
+            <TopCard key={item.channelId} item={item} isGroup={reserveMembers} />
           ))}
         </div>
       )}
 
       <ul className="flex flex-col gap-1.5">
         {list.map((item) => (
-          <ListRow key={item.channelId} item={item} isGroup={division === "groups"} />
+          <ListRow key={item.channelId} item={item} isGroup={reserveMembers} />
         ))}
       </ul>
       {!showAll && ordered.length > limit && (
@@ -487,12 +523,20 @@ export default function SingcupOfficial({ onRanking }: {
    *  길이 없으면 그 화면은 사실상 사라진 것과 같아서(실제로 그랬다) 입구를 둔다. */
   onRanking?: () => void;
 } = {}) {
+  // 사용자가 직접 고른 단계. null이면 데이터로 정한다(아래 `pickStage`).
+  const [explicitStage, setStage] = useState<Stage | null>(null);
   const [tab, setTab] = useState<Tab>("all");
   // 공개 정렬 토큰이다. **내부 컬럼명(win_rate 등)을 쓰지 않는다** —
   // 그 이름이 번들과 응답에 남으면 "어느 형태로도 노출 금지" 계약이 깨진다.
   const [sort, setSort] = useState("primary");
   const [data, setData] = useState<QualifiersResponse | null>(null);
   const [piku, setPiku] = useState<PikuRankingResponse | null>(null);
+  // 본선 순위는 예선과 **다른 요청·다른 상태**다. 한 상태에 섞으면 한쪽이 늦게 올 때
+  // 다른 쪽 화면이 비거나 덮인다.
+  const [finalRank, setFinalRank] = useState<PikuRankingResponse | null>(null);
+  const [finalErr, setFinalErr] = useState(false);
+  const [finalSettled, setFinalSettled] = useState(false);
+  const [campaigns, setCampaigns] = useState<PikuCampaign[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -517,12 +561,46 @@ export default function SingcupOfficial({ onRanking }: {
     return () => { alive = false; };
   }, [sort]);
 
+  // 본선 순위(`campaign=final`). 예선 응답에 섞어 주지 않고 따로 받는다.
+  useEffect(() => {
+    let alive = true;
+    setFinalErr(false);
+    api.singcup.pikuRanking(sort, undefined, 0, "final")
+      .then((d) => { if (alive) setFinalRank(d); })
+      .catch(() => { if (alive) { setFinalRank(null); setFinalErr(true); } })
+      .finally(() => { if (alive) setFinalSettled(true); });
+    return () => { alive = false; };
+  }, [sort]);
+
+  // 단계 상태(동결 여부·기간·마지막 수집/공개). 실패해도 화면은 뜬다 — 시각 줄만 빈다.
+  useEffect(() => {
+    let alive = true;
+    api.singcup.pikuCampaigns()
+      .then((d) => { if (alive) setCampaigns(d.campaigns ?? null); })
+      .catch(() => { if (alive) setCampaigns(null); });
+    return () => { alive = false; };
+  }, []);
+
+  // 본선 가용성(공개본 / 미공개 / 구 백엔드 / 실패)과 그에 따른 기본 단계.
+  const finalAvail = classifyFinal(finalRank, finalErr, finalSettled);
+  const finalEntries: PikuEntry[] | null =
+    finalAvail.state === "published" ? finalAvail.entries : null;
+  const stage = pickStage(finalAvail, explicitStage);
+  const finalCampaign = campaigns?.find((c) => c.campaign === "final") ?? null;
+  const qualCampaign = campaigns?.find((c) => c.campaign === "qualifier") ?? null;
+  /** 본선 병합에 쓰는 공식 명단 — 세 부문 전체(본선은 여성·남성·그룹이 한 표에 섞여 있다). */
+  const allOfficialRows = useMemo(
+    () => DIVISIONS.flatMap((d) => (data?.divisions?.[d] ?? []) as (QualifierRow | QualifierGroupRow)[]),
+    [data]);
+
   const rankingOf = useCallback((d: Division): PikuEntry[] | null => {
     const div = piku?.divisions?.[d];
     return div && div.available && div.entries.length > 0 ? div.entries : null;
   }, [piku]);
 
-  const hasAnyRanking = DIVISIONS.some((d) => rankingOf(d));
+  // 정렬 안내 문장의 표시 여부 — 지금 보고 있는 단계에 순위가 있을 때만.
+  const hasAnyRanking = stage === "final"
+    ? !!finalEntries : DIVISIONS.some((d) => rankingOf(d));
   const sortOptions = piku?.sortOptions ?? [
     { key: "primary", label: "우승 비율순" },
     { key: "secondary", label: "승률순" },
@@ -530,16 +608,113 @@ export default function SingcupOfficial({ onRanking }: {
 
   return (
     <div className="space-y-6">
-      {/* ── 머리말 ── */}
-      <div className="min-w-0 max-w-3xl">
-        <h2 className="flex flex-wrap items-center gap-2 text-xl font-extrabold
-                       tracking-tight md:text-2xl">
-          <Trophy size={20} style={{ color: GOLD }} aria-hidden="true" />
-          싱드컵 공식 예선 참가자
-        </h2>
-        <p className="mt-2 text-sm leading-relaxed text-muted">
-          치지직이 공식 공지로 발표한 예선 참가자 명단입니다.
-        </p>
+      {/* ── 단계 탭: 본선(진행 중, 기본) / 예선(과거 기록) ── */}
+      <div className="nb-tap-gap flex flex-wrap items-center gap-1.5" role="tablist"
+           aria-label="싱드컵 단계">
+        {STAGE_ORDER.map((k) => {
+          const on = stage === k;
+          const hint = k === "final" ? finalHint(finalAvail) : "과거 기록";
+          return (
+            <button key={k} type="button" role="tab" id={`stage-${k}`}
+                    aria-selected={on} tabIndex={on ? 0 : -1}
+                    onClick={() => setStage(k)}
+                    onKeyDown={(e) => {
+                      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                      e.preventDefault();
+                      const cur = STAGE_ORDER.indexOf(stage ?? "qualifier");
+                      const next = STAGE_ORDER[(cur + (e.key === "ArrowRight" ? 1 : -1)
+                        + STAGE_ORDER.length) % STAGE_ORDER.length];
+                      setStage(next);
+                      document.getElementById(`stage-${next}`)?.focus();
+                    }}
+                    className="nb-tap rounded-lg border px-3 py-2 text-sm font-semibold
+                               transition-colors"
+                    style={{ background: on ? "rgba(250,204,21,0.10)" : "transparent",
+                             borderColor: on ? "rgba(250,204,21,0.40)"
+                               : "rgb(var(--color-border-rgb))",
+                             color: on ? GOLD : "rgb(var(--color-muted-rgb))" }}>
+              {STAGE_LABEL[k]}
+              <span className="ml-1.5 text-[11px] font-normal opacity-80">{hint}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {stage === null ? (
+        /* 본선 응답을 기다리는 동안 — 어느 단계도 미리 고르지 않는다(빈 본선·통째 교체 방지).
+           골격은 예선 형태(3부문)로 둔다: 본선 미공개·구 백엔드·실패 모두 예선으로 끝나고,
+           본선 공개 뒤에는 어차피 1섹션 32행이라 어느 쪽이든 한 번은 바뀐다 — 실측으로
+           예선 골격이 두 경우의 CLS 합이 더 작았다. */
+        <div className="space-y-8" aria-busy="true">
+          <p role="status" className="sr-only">싱드컵 순위를 불러오는 중입니다.</p>
+          {DIVISIONS.map((d) => <DivisionSkeleton key={d} isGroup={d === "groups"} />)}
+        </div>
+      ) : stage === "final" ? (
+        /* ── 본선 ── */
+        <div className="min-w-0 max-w-3xl">
+          <h2 className="flex flex-wrap items-center gap-2 text-xl font-extrabold
+                         tracking-tight md:text-2xl">
+            <Trophy size={20} style={{ color: GOLD }} aria-hidden="true" />
+            싱드컵 파이널 본선
+          </h2>
+          <p className="mt-2 text-sm leading-relaxed text-muted">
+            {finalCampaign?.collectionStartAt && finalCampaign?.collectionEndAt
+              ? <>본선 기간 {fmtSeoulDate(finalCampaign.collectionStartAt)} ~ {fmtSeoulDate(finalCampaign.collectionEndAt)} (Asia/Seoul)
+                  {finalCampaign.scheduleSource === "user_provided"
+                    && <span className="text-muted/70"> · 일정은 운영자 제공 정보이며 공식 공지로 확인되지 않았습니다</span>}</>
+              : "본선 진행 중"}
+          </p>
+          <p className="mt-2 border-l-2 border-border pl-3 text-sm leading-relaxed
+                        text-muted">
+            공식 심사 결과나 순위가 아닙니다. 아래 순위는 NexBot이 PIKU 본선 페이지의 공개
+            사용자 투표 데이터를 내려받아 <b className="text-fg">다시 계산한 순서</b>이며,
+            대회 주최 측의 발표와 무관합니다.
+          </p>
+          {/* 수집 상태 — 없으면 없다고, 있으면 언제 것인지 적는다. */}
+          <p className="mt-2 text-[12px] text-muted/85" role="status">
+            {finalCampaign
+              ? (finalCampaign.lastPublishedAt
+                  ? `마지막 갱신 ${fmtSeoul(finalCampaign.lastPublishedAt)} (Asia/Seoul)`
+                  : "아직 공개된 본선 순위가 없습니다")
+                + (finalCampaign.lastCollectedAt
+                    ? ` · 마지막 수집 ${fmtSeoul(finalCampaign.lastCollectedAt)}` : "")
+                + (finalCampaign.status === "active" ? " · 자동 수집 대상" : "")
+              : "수집 상태를 불러오는 중"}
+          </p>
+        </div>
+      ) : (
+        /* ── 예선(과거 기록) ── */
+        <div className="min-w-0 max-w-3xl">
+          <h2 className="flex flex-wrap items-center gap-2 text-xl font-extrabold
+                         tracking-tight md:text-2xl">
+            <Trophy size={20} style={{ color: GOLD }} aria-hidden="true" />
+            싱드컵 공식 예선 참가자
+          </h2>
+          <p className="mt-2 text-sm leading-relaxed text-muted">
+            치지직이 공식 공지로 발표한 예선 참가자 명단입니다.
+          </p>
+          {/* 본선이 아직 없을 때만 — 예선이 기본 화면인 이유를 방문자에게 밝힌다. */}
+          {finalAvail.state !== "published" && finalAvail.state !== "loading" && (
+            <p className="mt-2 text-[12px] text-muted/85" role="status" data-testid="final-pending">
+              {finalAvail.state === "error"
+                ? "본선 순위를 불러오지 못했습니다. 예선 결과는 그대로 볼 수 있습니다."
+                : "본선 순위는 준비 중입니다(수집·검토 후 공개). 그때까지 예선 결과를 보여 드립니다."}
+            </p>
+          )}
+          {/* 예선은 동결이다 — 마지막 구간 수집이 빠졌고 소급 갱신은 보류다. 숨기지 않는다. */}
+          <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2
+                        text-[12px] leading-relaxed text-muted" role="status">
+            <b className="text-fg">예선 순위 업데이트 보류.</b>{" "}
+            예선 마지막 구간 수집이 누락됐고 소급 갱신은 보류 상태입니다. 예선 PIKU 페이지는
+            현재 접근할 수 없어 다시 읽을 수 없습니다.
+            {/* 시각은 campaigns 응답이 늦게 오므로 **한 줄을 미리 예약**한다 — 문장 안에
+                끼워 넣으면 도착 순간 줄이 늘며 아래 3부문이 통째로 밀린다(실측 CLS 0.087). */}
+            <span className={`${LINE} mt-0.5 block text-[11.5px] text-muted/80`}
+                  aria-hidden={qualCampaign?.lastPublishedAt ? undefined : true}>
+              {qualCampaign?.lastPublishedAt
+                ? `마지막 갱신 ${fmtSeoul(qualCampaign.lastPublishedAt)} (Asia/Seoul) 기준` : ""}
+            </span>
+          </p>
         {/* 혼동 방지 — 계층을 들여쓰기가 아니라 구분선으로 만든다. */}
         <p className="mt-2 border-l-2 border-border pl-3 text-sm leading-relaxed
                       text-muted">
@@ -562,8 +737,87 @@ export default function SingcupOfficial({ onRanking }: {
           )}
         </div>
       </div>
+      )}
 
-      {/* ── 부문 · 정렬 ── */}
+      {/* 현재 정렬 기준을 문장으로도 밝힌다 — 버튼 색만으로는 무엇이 적용됐는지
+          색각 이상 사용자에게 전달되지 않는다.
+
+          이 문장은 PIKU 응답이 도착해야 나온다. 조건부로 그리면 명단(`/qualifiers`)
+          보다 늦게 올 때 이 줄이 끼어들며 아래 전체가 한 줄만큼 밀린다(실측 47px).
+          그래서 **문장은 항상 그리고**, 아직일 때만 `invisible`로 숨긴다 —
+          `visibility: hidden`은 자리를 그대로 두면서 접근성 트리에서도 빠지므로
+          `role="status"`가 빈 문장을 먼저 읽어 버리는 일이 없다. `hidden`을 쓰면
+          자리까지 사라져 원래 문제로 돌아간다. 글줄 수는 실제 문장이 정하므로
+          320px에서 3줄, 1440px에서 1줄로 뷰포트마다 알아서 맞는다. */}
+      <div className={hasAnyRanking ? undefined : "invisible"}
+           aria-hidden={hasAnyRanking ? undefined : true}>
+        <p role="status" className="text-xs text-muted">
+          현재 <b className="text-fg">
+            {sortOptions.find((o) => o.key === sort)?.label ?? "우승 비율순"}
+          </b>으로 정렬했습니다. 기준을 바꾸면 순위를 1위부터 다시 계산합니다.
+          비율·승률 수치는 표시하지 않습니다.
+        </p>
+      </div>
+
+      {/* ── 본선 화면 ── */}
+      {stage === "final" && (
+        finalAvail.state === "error" ? (
+          <div role="alert" className="rounded-xl border border-red-500/40 bg-red-500/5 p-6">
+            <p className="flex items-center gap-2 text-sm font-semibold text-red-400">
+              <AlertCircle size={15} aria-hidden="true" /> 본선 순위를 불러오지 못했습니다.
+            </p>
+          </div>
+        ) : loading || finalAvail.state === "loading" ? (
+          <div className="space-y-8" aria-busy="true">
+            <p role="status" className="sr-only">본선 순위를 불러오는 중입니다.</p>
+            <DivisionSkeleton isGroup />
+          </div>
+        ) : !finalEntries ? (
+          <div className="rounded-xl border border-border bg-bg-card/60 p-6 text-center">
+            <p className="text-sm font-semibold text-fg">아직 공개된 본선 순위가 없습니다.</p>
+            <p className="mt-1 text-xs text-muted">
+              {finalAvail.state === "unsupported"
+                ? "서비스 갱신이 진행 중입니다. 잠시 뒤 다시 확인해 주세요. "
+                : "본선 PIKU 투표가 수집·검토되면 이 자리에 1위부터 표시됩니다. "}
+              예선 결과는{" "}
+              <button type="button" onClick={() => setStage("qualifier")}
+                      className="underline underline-offset-2 hover:text-fg">예선 탭</button>
+              에서 볼 수 있습니다.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="space-y-8">
+              <DivisionSection
+                division={FINAL}
+                label="파이널 본선"
+                rows={allOfficialRows}
+                ranking={finalEntries}
+                limit={finalEntries.length}
+                showAll
+                sort={sort}
+                onSort={setSort} />
+            </div>
+            <p className="border-t border-border/60 pt-3 text-[11px] leading-relaxed
+                          text-muted/80">
+              사용자 투표 순위 출처:{" "}
+              {finalRank?.divisions?.[FINAL]?.sourceUrl ? (
+                <a href={finalRank?.divisions[FINAL].sourceUrl} target="_blank"
+                   rel="noopener noreferrer nofollow"
+                   className="underline underline-offset-2 hover:text-fg">
+                  PIKU 파이널 본선
+                </a>
+              ) : "PIKU 파이널 본선"}
+              {finalRank?.divisions?.[FINAL]?.lastSuccessAt
+                ? ` (${fmtSeoul(finalRank!.divisions[FINAL].lastSuccessAt)} 기준, Asia/Seoul)` : ""}
+              . NexBot이 재계산한 순서이며 공식 결과가 아닙니다.
+            </p>
+          </>
+        )
+      )}
+
+      {/* ── 부문 · 정렬 (예선) ── */}
+      {stage === "qualifier" && (<>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div className="nb-tap-gap flex flex-wrap items-center gap-1.5"
              role="group" aria-label="부문 선택">
@@ -588,25 +842,6 @@ export default function SingcupOfficial({ onRanking }: {
             기준은 세 부문이 공유한다 — 부문을 바꿔도 고른 기준이 유지된다. */}
       </div>
 
-      {/* 현재 정렬 기준을 문장으로도 밝힌다 — 버튼 색만으로는 무엇이 적용됐는지
-          색각 이상 사용자에게 전달되지 않는다.
-
-          이 문장은 PIKU 응답이 도착해야 나온다. 조건부로 그리면 명단(`/qualifiers`)
-          보다 늦게 올 때 이 줄이 끼어들며 아래 전체가 한 줄만큼 밀린다(실측 47px).
-          그래서 **문장은 항상 그리고**, 아직일 때만 `invisible`로 숨긴다 —
-          `visibility: hidden`은 자리를 그대로 두면서 접근성 트리에서도 빠지므로
-          `role="status"`가 빈 문장을 먼저 읽어 버리는 일이 없다. `hidden`을 쓰면
-          자리까지 사라져 원래 문제로 돌아간다. 글줄 수는 실제 문장이 정하므로
-          320px에서 3줄, 1440px에서 1줄로 뷰포트마다 알아서 맞는다. */}
-      <div className={hasAnyRanking ? undefined : "invisible"}
-           aria-hidden={hasAnyRanking ? undefined : true}>
-        <p role="status" className="text-xs text-muted">
-          현재 <b className="text-fg">
-            {sortOptions.find((o) => o.key === sort)?.label ?? "우승 비율순"}
-          </b>으로 정렬했습니다. 기준을 바꾸면 순위를 1위부터 다시 계산합니다.
-          비율·승률 수치는 표시하지 않습니다.
-        </p>
-      </div>
 
       {/* ── 상태 ── */}
       {err ? (
@@ -669,6 +904,7 @@ export default function SingcupOfficial({ onRanking }: {
           . NexBot이 재계산한 순서이며 공식 결과가 아닙니다.
         </p>
       )}
+      </>)}
     </div>
   );
 }

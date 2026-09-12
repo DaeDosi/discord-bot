@@ -127,10 +127,17 @@ export function teamNumberByChannel(
   return m;
 }
 
-/** PIKU 순위 순서로 병합한다. `ranking`이 없으면 공지 순서(rank=null). */
+/** PIKU 순위 순서로 병합한다. `ranking`이 없으면 공지 순서(rank=null).
+ *
+ * `mixed`(본선)는 한 표에 솔로와 팀이 섞여 있다. 그때는 **PIKU가 준 `teamMembers`**
+ * 로 팀 여부를 정한다 — 공식 명단만 보면 그룹 예선에도 나온 솔로 참가자(겸업)가
+ * 본선에 솔로로 올라왔는데 팀 번호·팀원이 붙는다. 예선 부문 화면(`mixed=false`)은
+ * 기존 규칙 그대로다(1인 팀의 `N팀` 배지를 지키기 위해서).
+ */
 export function mergeRanking(
   rows: (QualifierRow | QualifierGroupRow)[],
   ranking: PikuEntry[] | null,
+  opts: { mixed?: boolean } = {},
 ): MergedRow[] {
   const byChannel = indexByChannel(rows);
   const teamOf = teamNumberByChannel(rows);
@@ -143,6 +150,7 @@ export function mergeRanking(
       const row = byChannel.get(e.channelId) ?? null;
       const displayName = clean(row?.channelName) || clean(row?.announcedName)
         || clean(e.name);
+      const isTeam = opts.mixed ? clean(e.teamMembers).length > 0 : true;
       return {
         channelId: e.channelId,
         rank: e.rank,
@@ -152,9 +160,10 @@ export function mergeRanking(
         songTitle: clean(row?.songTitle) || clean(e.songTitle),
         artistName: clean(row?.artistName) || clean(e.artistName),
         row,
-        teamNumber: teamOf.get(e.channelId),
-        memberNames: otherMembers(
-          teamMembers.get(e.channelId), e.channelId, displayName),
+        teamNumber: isTeam ? teamOf.get(e.channelId) : undefined,
+        memberNames: isTeam
+          ? otherMembers(teamMembers.get(e.channelId), e.channelId, displayName)
+          : [],
       };
     });
   }

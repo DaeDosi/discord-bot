@@ -34,6 +34,7 @@ import os
 import time
 from typing import Any
 
+import singcup_piku_campaigns as camps
 import singcup_piku_devices as devices
 
 from database import get_db
@@ -41,6 +42,10 @@ from database import get_db
 log = logging.getLogger(__name__)
 
 DIVISIONS = devices.DIVISIONS
+SOURCES = devices.SOURCES
+
+#: 한 장치가 한 시간에 보고할 수 있는 회차 수. 정상은 1~2회(alarm + 수동 테스트).
+RUN_REPORT_WINDOW_LIMIT = int(os.getenv("PIKU_RUN_REPORT_WINDOW_LIMIT", "12"))
 
 #: AUTO-3이 자동 공개를 구현하기 전까지 **항상 False**. 값을 바꿔 켜지 말 것 —
 #: 안전 게이트(64/64/32·전원 매핑 확정·변동량 임계값)가 아직 없다.
@@ -112,7 +117,7 @@ async def purge_attempts() -> int:
 
 
 async def guarded_challenge(device_id: Any, division: Any, *, ip: str = "",
-                            automation: bool = False) -> dict:
+                            automation: bool = False, protocol: int = 1) -> dict:
     """속도 제한을 거친 challenge 발급.
 
     순서가 중요하다:
@@ -122,7 +127,7 @@ async def guarded_challenge(device_id: Any, division: Any, *, ip: str = "",
       3. **속도 제한.** 여기서 막히면 challenge 행이 생기지 않는다.
       4. 통과한 것만 `devices.challenge_issue`로 넘긴다.
     """
-    if division not in DIVISIONS:
+    if division not in SOURCES:
         raise devices.DeviceError("bad_division", "알 수 없는 부문입니다.")
 
     row = await devices._device_row(device_id)
@@ -155,7 +160,8 @@ async def guarded_challenge(device_id: Any, division: Any, *, ip: str = "",
             "요청이 너무 잦습니다. 잠시 후 다시 시도해 주세요.")
 
     await _record_attempt(row["id"], ip_hash)
-    return await devices.challenge_issue(row["id"], division, automation=automation)
+    return await devices.challenge_issue(row["id"], division, automation=automation,
+                                         protocol=protocol)
 
 
 async def device_state(fingerprint: Any) -> dict:
@@ -174,6 +180,9 @@ async def device_state(fingerprint: Any) -> dict:
         # 확장이 "자동 공개가 곧 켜질 것"으로 오해하지 않게 명시한다.
         "autoPublishReady": AUTO_PUBLISH_READY,
         "periodMinutes": 60,
+        # **활성 collection plan.** 확장은 여기 적힌 source만 찾는다 — 예선 탭이
+        # 없다는 이유로 본선 회차가 실패하면 안 된다(SINGCUP-FINAL-1).
+        "plan": camps.plan(),
     }
 
 
@@ -187,69 +196,135 @@ async def publish_allowed() -> bool:
 
 
 # ── 회차 기록 ───────────────────────────────────────────────────────────────
+#
+# AUTO-2 시점에는 `run_start/run_division/run_finish`를 부르는 경로가 **없었다** —
+# 확장의 `report()`가 no-op이어서 `piku_auto_runs`는 운영에서 영원히 비어 있었고,
+# Nexadmin은 "회차가 돌았는지"를 알 길이 없었다(SINGCUP-FINAL-1 진단 결과 3번).
+# 이제 확장이 회차가 끝날 때 `report_run()`(장치 지문 인증)으로 결과를 보낸다.
+#
+# 부문 결과는 예선 3개 컬럼 대신 `piku_auto_run_sources` 행으로 둔다(본선은 source가
+# 하나라 컬럼에 자리가 없다). 예선 컬럼은 예선 source일 때 함께 채워 호환을 지킨다.
 _COLS = {"female_solo": "female", "male_solo": "male", "groups": "groups"}
+_TRIGGERS = ("alarm", "manual")
+#: 확장이 보고할 수 있는 실패 종류 — **이 목록 밖 문자열은 `other`로 접는다.**
+#: HTML·쿠키·토큰이 "종류" 자리에 실려 오는 것을 막는다.
+RUN_KINDS = frozenset({
+    "sent", "unchanged", "no_tab", "ambiguous_tab", "loading", "wrong_page",
+    "source_mismatch", "title_mismatch", "row_count", "rank_gap", "partial",
+    "not_rendered", "blocked", "parse_failed", "aborted", "token_failed",
+    "ingest_failed", "campaign_mismatch", "no_plan", "pager_failed",
+})
 
 
-async def run_start(device_id: Any, *, trigger: str = "alarm") -> int:
-    if trigger not in ("alarm", "manual"):
+def _kind(value: Any) -> str:
+    k = str(value or "")[:40]
+    return k if k in RUN_KINDS else ("" if not k else "other")
+
+
+async def run_start(device_id: Any, *, trigger: str = "alarm",
+                    campaign: str = "", scheduled_at: int = 0,
+                    started_at: int | None = None) -> int:
+    if trigger not in _TRIGGERS:
         raise devices.DeviceError("bad_trigger", "알 수 없는 실행 종류입니다.")
     db = await get_db()
     cur = await db.execute(
-        "INSERT INTO piku_auto_runs (device_id, trigger, started_at, outcome)"
-        " VALUES (?,?,?, 'running')",
-        (int(device_id or 0), trigger, int(time.time())))
+        "INSERT INTO piku_auto_runs (device_id, trigger, started_at, outcome,"
+        " campaign, scheduled_at) VALUES (?,?,?, 'running', ?, ?)",
+        (int(device_id or 0), trigger, int(started_at or time.time()),
+         str(campaign or "")[:40], int(scheduled_at or 0)))
     await db.commit()
-    _log("run_started", run_id=cur.lastrowid, trigger=trigger)
+    _log("run_started", run_id=cur.lastrowid, trigger=trigger, campaign=campaign)
     return cur.lastrowid
 
 
 async def run_division(run_id: int, division: str, *, ok: bool,
                        rows: int = 0, kind: str = "") -> None:
-    if division not in DIVISIONS:
+    """한 source의 결과. 예선 source는 기존 컬럼에도 함께 적는다."""
+    if division not in SOURCES:
         raise devices.DeviceError("bad_division", "알 수 없는 부문입니다.")
-    c = _COLS[division]
     db = await get_db()
     await db.execute(
-        f"UPDATE piku_auto_runs SET {c}_ok=?, {c}_kind=?, {c}_rows=? WHERE id=?",
-        (1 if ok else 0, str(kind or "")[:40], int(rows or 0), int(run_id)))
+        """INSERT INTO piku_auto_run_sources (run_id, campaign, source, ok, kind, row_count)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(run_id, campaign, source) DO UPDATE SET
+               ok=excluded.ok, kind=excluded.kind, row_count=excluded.row_count""",
+        (int(run_id), camps.campaign_of(division), division, 1 if ok else 0,
+         _kind(kind), int(rows or 0)))
+    if division in _COLS:
+        c = _COLS[division]
+        await db.execute(
+            f"UPDATE piku_auto_runs SET {c}_ok=?, {c}_kind=?, {c}_rows=? WHERE id=?",
+            (1 if ok else 0, _kind(kind), int(rows or 0), int(run_id)))
     await db.commit()
 
 
-def _outcome(row: dict) -> str:
-    oks = sum(1 for d in DIVISIONS if row[f"{_COLS[d]}_ok"])
-    if oks == len(DIVISIONS):
-        return "success"
-    return "failed" if oks == 0 else "partial"
+async def _source_rows(run_id: int) -> list[dict]:
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT campaign, source, ok, kind, row_count FROM piku_auto_run_sources"
+        " WHERE run_id=? ORDER BY source", (int(run_id),))
+    return [dict(r) for r in await cur.fetchall()]
 
 
-def _shape(row: Any) -> dict:
+def _outcome_of(sources: list[dict], expected: int) -> str:
+    """결과 요약 — 부분 성공을 성공으로 뭉치지 않는다.
+
+    `expected`는 plan이 요구한 source 수다. 하나라도 빠지면 success가 아니다.
+    전부 `unchanged`(같은 표)면 `unchanged`로 따로 표시한다 — "성공했는데 draft가
+    안 바뀐" 상태를 성공과 구분해야 운영자가 새 표가 없었음을 안다.
+    """
+    if expected <= 0:
+        return "failed"
+    oks = [r for r in sources if r["ok"]]
+    if len(oks) == expected and len(sources) >= expected:
+        return "unchanged" if all(r["kind"] == "unchanged" for r in oks) else "success"
+    return "failed" if not oks else "partial"
+
+
+def _shape(row: Any, sources: list[dict]) -> dict:
     r = dict(row)
+    src = {x["source"]: {"campaign": x["campaign"], "ok": bool(x["ok"]),
+                         "kind": x["kind"] or "", "rows": x["row_count"]}
+           for x in sources}
+    # 예선 회차(구 스키마)에는 source 행이 없을 수 있다 — 컬럼에서 복원한다.
+    if not src:
+        for d, c in _COLS.items():
+            if r.get(f"{c}_ok") or r.get(f"{c}_kind"):
+                src[d] = {"campaign": "qualifier", "ok": bool(r[f"{c}_ok"]),
+                          "kind": r[f"{c}_kind"] or "", "rows": r[f"{c}_rows"]}
     return {
         "id": r["id"], "deviceId": r["device_id"], "trigger": r["trigger"],
+        "campaign": r.get("campaign") or "",
+        "scheduledAt": r.get("scheduled_at") or 0,
         "startedAt": r["started_at"], "finishedAt": r["finished_at"],
         "outcome": r["outcome"],
-        "divisions": {d: {
-            "ok": bool(r[f"{_COLS[d]}_ok"]),
-            "kind": r[f"{_COLS[d]}_kind"] or "",
-            "rows": r[f"{_COLS[d]}_rows"],
-        } for d in DIVISIONS},
+        "sources": src,
+        # 예전 화면 호환 — 예선 세 부문 키는 그대로 둔다.
+        "divisions": {d: src.get(d, {"ok": False, "kind": "", "rows": 0})
+                      for d in DIVISIONS},
     }
 
 
-async def run_finish(run_id: int) -> dict:
+async def run_finish(run_id: int, *, expected_sources: int | None = None,
+                     finished_at: int | None = None) -> dict:
     """회차 마감. **부분 성공을 성공으로 뭉치지 않는다.**"""
     db = await get_db()
     cur = await db.execute("SELECT * FROM piku_auto_runs WHERE id=?", (int(run_id),))
     row = await cur.fetchone()
     if not row:
         raise devices.DeviceError("no_run", "회차를 찾을 수 없습니다.")
-    outcome = _outcome(dict(row))
+    sources = await _source_rows(run_id)
+    if expected_sources is None:
+        camp = dict(row).get("campaign") or ""
+        expected_sources = (len(camps.sources_of(camp)) if camp in camps.CAMPAIGNS
+                            else len(DIVISIONS))
+    outcome = _outcome_of(sources, expected_sources)
     await db.execute(
         "UPDATE piku_auto_runs SET finished_at=?, outcome=? WHERE id=?",
-        (int(time.time()), outcome, int(run_id)))
+        (int(finished_at or time.time()), outcome, int(run_id)))
     await db.commit()
     cur = await db.execute("SELECT * FROM piku_auto_runs WHERE id=?", (int(run_id),))
-    out = _shape(await cur.fetchone())
+    out = _shape(await cur.fetchone(), sources)
     _log("run_finished", run_id=run_id, outcome=outcome)
     return out
 
@@ -259,7 +334,71 @@ async def recent_runs(limit: int = 20) -> list[dict]:
     cur = await db.execute(
         "SELECT * FROM piku_auto_runs ORDER BY id DESC LIMIT ?",
         (max(1, min(100, int(limit))),))
-    return [_shape(r) for r in await cur.fetchall()]
+    rows = await cur.fetchall()
+    return [_shape(r, await _source_rows(r["id"])) for r in rows]
+
+
+def _ts(v: Any, now: int) -> int:
+    """확장이 보낸 시각(ms 또는 s). 미래·터무니없는 값은 0(= 서버 시각 사용)."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return 0
+    if n > 10**12:
+        n //= 1000
+    return n if 0 < n <= now + 300 else 0
+
+
+async def report_run(fingerprint: Any, body: Any) -> dict:
+    """확장이 회차가 끝날 때 보내는 결과 보고. **데이터가 아니라 종류만** 받는다.
+
+    인증은 장치 지문(active 장치여야 함)이다 — 이 경로는 draft를 만들지도 공개하지도
+    않으며, 남길 수 있는 것은 "언제 어떤 종류로 끝났는가"뿐이라 서명까지 요구하지
+    않는다. 대신 장치당 시간당 횟수를 제한해 지문을 아는 사람이 이력을 채우지 못하게 한다.
+    """
+    row = await devices.device_by_fingerprint(fingerprint)
+    if not row or row["status"] != "active":
+        raise devices.DeviceError("device_not_active", "등록되지 않았거나 폐기된 장치입니다.")
+    if not isinstance(body, dict):
+        raise devices.DeviceError("bad_report", "보고 형식이 올바르지 않습니다.")
+    trigger = body.get("trigger")
+    if trigger not in _TRIGGERS:
+        raise devices.DeviceError("bad_trigger", "알 수 없는 실행 종류입니다.")
+    campaign = body.get("campaign")
+    if campaign not in camps.CAMPAIGNS:
+        raise devices.DeviceError("bad_campaign", "알 수 없는 단계입니다.")
+    sources = body.get("sources")
+    if not isinstance(sources, dict) or not sources:
+        raise devices.DeviceError("bad_report", "source 결과가 없습니다.")
+    now = int(time.time())
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT count(*) FROM piku_auto_runs WHERE device_id=? AND started_at>=?",
+        (row["id"], now - 3600))
+    if (await cur.fetchone())[0] >= RUN_REPORT_WINDOW_LIMIT:
+        raise devices.DeviceError("rate_limited", "보고가 너무 잦습니다.")
+
+    run_id = await run_start(row["id"], trigger=trigger, campaign=campaign,
+                             scheduled_at=_ts(body.get("scheduledAt"), now),
+                             started_at=_ts(body.get("startedAt"), now) or now)
+    plan_sources = camps.sources_of(campaign)
+    for key, res in sources.items():
+        if key not in SOURCES or camps.campaign_of(key) != campaign:
+            continue
+        if not isinstance(res, dict):
+            continue
+        rows = res.get("rows")
+        ok_rows = int(rows) if isinstance(rows, int) and 0 <= rows <= 1000 else 0
+        await run_division(run_id, key, ok=bool(res.get("ok")), rows=ok_rows,
+                           kind=res.get("kind"))
+    out = await run_finish(run_id, expected_sources=len(plan_sources),
+                           finished_at=_ts(body.get("finishedAt"), now) or now)
+    if out["outcome"] in ("success", "unchanged"):
+        await devices.mark_success(row["id"])
+    else:
+        bad = [v["kind"] for v in out["sources"].values() if not v["ok"]]
+        await devices.mark_failure(row["id"], (bad or ["failed"])[0])
+    return out
 
 
 async def status() -> dict:
@@ -269,6 +408,7 @@ async def status() -> dict:
     runs = await recent_runs(limit=10)
     return {
         "mode": await devices.get_mode(),
+        "plan": camps.plan(),
         "activeDeviceCount": len(active),
         "activeDevices": [{"id": d["id"], "name": d["name"],
                            "fingerprint": d["fingerprint"],

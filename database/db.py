@@ -253,6 +253,42 @@ _PIKU_COLLECTOR_TABLES = (
        )""",
     """CREATE INDEX IF NOT EXISTS idx_piku_auto_runs_started
            ON piku_auto_runs (started_at DESC)""",
+    # ── SINGCUP-FINAL-1: campaign(예선/본선) 분리 ─────────────────────────
+    # `piku_auto_runs`는 부문 세 개를 **컬럼**으로 박아 두어 본선(source 하나)을
+    # 담을 자리가 없다. 컬럼을 늘리는 대신 회차 ↔ source 결과를 행으로 둔다.
+    # 예선 회차의 기존 컬럼은 그대로 남는다(읽는 코드도 그대로).
+    """CREATE TABLE IF NOT EXISTS piku_auto_run_sources (
+           run_id     INTEGER NOT NULL,
+           campaign   TEXT    NOT NULL,
+           source     TEXT    NOT NULL,
+           ok         INTEGER NOT NULL DEFAULT 0,
+           kind       TEXT    NOT NULL DEFAULT '',
+           row_count  INTEGER NOT NULL DEFAULT 0,
+           PRIMARY KEY (run_id, campaign, source)
+       )""",
+)
+
+# ── SINGCUP-FINAL-1: `campaign` 컬럼(append-only) ─────────────────────────
+# 저장소의 `division`은 이제 "source key"다. 예선은 female_solo/male_solo/groups,
+# 본선은 `final` — 키가 겹치지 않아 기존 `(division, …)` 기본키가 그대로 성립한다.
+# 기존 행은 기본값 `qualifier`를 받는다(한 바이트도 바뀌지 않는다).
+#
+# 여기 목록은 **이 strict migration이 만드는 Collector 테이블**만 담는다.
+# `piku_sources`·`piku_datasets`·`piku_mappings`는 legacy 루프가 만드는 테이블이라
+# 그쪽 목록 끝에 `ALTER TABLE … ADD COLUMN campaign …`으로 붙였다(같은 루프에서
+# 만들어진 뒤 실행되고, 이미 있으면 그 루프가 실패를 삼킨다). 두 곳으로 나눈 이유:
+# strict 함수는 단독으로도 돌아야 하고(`tests/test_db_strict_migration.py`) 자기가
+# 만들지 않은 테이블을 전제하면 안 된다.
+# `_migrate_piku_and_qualifier_schema`가 `PRAGMA table_info`로 없을 때만 ALTER한다.
+_PIKU_CAMPAIGN_COLUMNS: tuple[tuple[str, str, str], ...] = tuple(
+    (table, "campaign", "TEXT NOT NULL DEFAULT 'qualifier'")
+    for table in ("piku_collector_state", "piku_collector_teams",
+                  "piku_collector_tokens", "piku_collector_challenges")
+) + (
+    # 회차에 예정 시각과 campaign을 남긴다 — "언제 돌기로 했고 실제로 언제
+    # 시작했나"가 스케줄 오작동을 진단하는 핵심 근거다.
+    ("piku_auto_runs", "scheduled_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("piku_auto_runs", "campaign", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -313,6 +349,16 @@ async def _migrate_piku_and_qualifier_schema(db) -> None:
                 # 컬럼을 만들었을 수 있다. **메시지를 믿지 말고 다시 조회해서**
                 # 실제로 생겼을 때만 완료로 본다. 아니면 원래 예외를 그대로 올린다.
                 if column not in await _table_columns(db, "piku_entries"):
+                    raise
+
+        # campaign 컬럼(SINGCUP-FINAL-1) — 같은 규칙으로 테이블마다 없을 때만.
+        for table, column, decl in _PIKU_CAMPAIGN_COLUMNS:
+            if column in await _table_columns(db, table):
+                continue
+            try:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            except sqlite3.Error:
+                if column not in await _table_columns(db, table):
                     raise
 
         await db.commit()
@@ -1634,6 +1680,14 @@ async def init_db():
         # **별도 승인과 점검이 있을 때** 다룰 일이다(그때까지 쓰기 비용만 조금 더 든다).
         "CREATE INDEX IF NOT EXISTS idx_rising_roll_channel_cover "
         "ON rising_hourly_rollup(chzzk_channel_id, hour_ts, sum_viewers, snaps)",
+
+        # ── SINGCUP-FINAL-1: 예선/본선 campaign 분리 ────────────────────────
+        # `division`은 이제 source key(예선 3 + 본선 `final`)이고, campaign이 단계를
+        # 말한다. 기존 행은 기본값 `qualifier`. 이미 있으면 위 루프 규칙대로 무시된다.
+        # Collector 테이블의 같은 컬럼은 `_PIKU_CAMPAIGN_COLUMNS`(strict)가 맡는다.
+        "ALTER TABLE piku_sources ADD COLUMN campaign TEXT NOT NULL DEFAULT 'qualifier'",
+        "ALTER TABLE piku_datasets ADD COLUMN campaign TEXT NOT NULL DEFAULT 'qualifier'",
+        "ALTER TABLE piku_mappings ADD COLUMN campaign TEXT NOT NULL DEFAULT 'qualifier'",
     ]:
         try:
             await db.execute(sql)

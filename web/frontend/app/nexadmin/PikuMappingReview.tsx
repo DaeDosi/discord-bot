@@ -42,7 +42,9 @@ function StatePill({ row }: { row: PikuMappingRow }) {
   );
 }
 
-export default function PikuMappingReview({ division, label, onChanged }: {
+export default function PikuMappingReview({ division, label, onChanged, readOnly = false }: {
+  /** 동결된 단계(예선)에서 true — 서버가 거절하므로 버튼을 미리 잠근다(SINGCUP-FINAL-1). */
+  readOnly?: boolean;
   division: string;
   label: string;
   /** 확정 상태가 바뀌면 바깥 Collector 패널의 차단 사유를 다시 읽게 한다. */
@@ -141,7 +143,7 @@ export default function PikuMappingReview({ division, label, onChanged }: {
 
       {/* ── 일괄 확정 — 개수를 밝히고 누르게 한다 ── */}
       <div className="nb-tap-gap flex flex-wrap items-center gap-2">
-        <button type="button" disabled={!!busy || exact === 0}
+        <button type="button" disabled={readOnly || !!busy || exact === 0}
                 onClick={() => void run("confirm",
                   () => api.admin.pikuCollectorConfirmExact(division),
                   `정확히 일치한 ${exact}건을 확정했습니다.`)}
@@ -216,7 +218,7 @@ export default function PikuMappingReview({ division, label, onChanged }: {
                     {r.officialName || "없음"}
                   </b>
                 </span>
-                <button type="button" disabled={!!busy}
+                <button type="button" disabled={readOnly || !!busy}
                         onClick={() => {
                           setEditing(editing === r.pikuName ? null : r.pikuName);
                           setCandQ("");
@@ -227,7 +229,7 @@ export default function PikuMappingReview({ division, label, onChanged }: {
                   <Link2 size={12} aria-hidden="true" /> 변경
                 </button>
                 {r.channelId && (
-                  <button type="button" disabled={!!busy}
+                  <button type="button" disabled={readOnly || !!busy}
                           onClick={() => void run(`clear:${r.pikuName}`,
                             () => api.admin.pikuCollectorSetMapping({
                               division, pikuName: r.pikuName, channelId: null }),
@@ -249,7 +251,7 @@ export default function PikuMappingReview({ division, label, onChanged }: {
                   <ul className="max-h-48 space-y-0.5 overflow-y-auto">
                     {candidates.map((cd) => (
                       <li key={cd.channelId}>
-                        <button type="button" disabled={!!busy || cd.taken}
+                        <button type="button" disabled={readOnly || !!busy || cd.taken}
                                 onClick={() => void run(`set:${r.pikuName}`,
                                   () => api.admin.pikuCollectorSetMapping({
                                     division, pikuName: r.pikuName,

@@ -162,7 +162,7 @@ async function refreshDevice() {
     if (registered) {
       devShow("on", `등록됨 · ${d.deviceName || "이름 없음"}\n지문 ${d.fingerprint}\n`
         + "Nexadmin의 지문과 같은지 확인하세요.\n"
-        + "자동 수집(1시간 주기)은 아직 동작하지 않습니다 — 다음 단계에서 추가됩니다.");
+        + "자동 수집 상태는 아래 '자동 수집' 칸에서 확인합니다.");
     } else {
       devShow("off", "등록되지 않음 — 수동 토큰 경로만 쓸 수 있습니다.");
     }
@@ -207,13 +207,26 @@ $("forget").addEventListener("click", async () => {
 
 /** 등록된 장치로 **현재 탭 부문의** 토큰을 받아 입력란에 채운다.
  *  받은 토큰은 저장하지 않는다 — 이 입력란은 전송 후 비워진다. */
+/** 현재 탭 URL의 source id → 부문. 표를 읽지 않고 주소로 정한다 — 본선 페이지는
+ *  10행씩 보여 `readTable()`이 `partial`로 끝나기 때문이다(페이지 넘김은 서비스
+ *  워커의 자동 수집 경로가 한다). 값은 `scheduler.js`·서버 레지스트리와 같다. */
+const DIVISION_BY_SOURCE = {
+  "8jGsHE": "female_solo", "7PqH44": "male_solo", "7fXoNs": "groups", "2ut8Li": "final",
+};
+
+async function currentDivision() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const m = /^https:\/\/www\.piku\.co\.kr\/w\/rank\/([A-Za-z0-9_-]{1,32})\/?$/.exec(tab?.url || "");
+  const division = m && DIVISION_BY_SOURCE[m[1]];
+  if (!division) throw new Error("등록된 PIKU 랭킹 페이지가 아닙니다.");
+  return division;
+}
+
 $("gettok").addEventListener("click", async () => {
   $("gettok").disabled = true;
   devShow("", "부문 확인 중…");
   try {
-    const r = await readTable();
-    if (!r.ok) { devShow("err", `${r.message}\n(종류: ${r.kind})`); return; }
-    const division = r.payload.division;
+    const division = await currentDivision();
     devShow("", `${division} 토큰 요청 중…`);
     const t = await fetchCollectorToken($("base").value.trim(), division,
                                         { automation: false });
@@ -228,3 +241,95 @@ $("gettok").addEventListener("click", async () => {
 });
 
 refreshDevice();
+
+/* ── 자동 수집 상태·수동 1회 실행(SINGCUP-FINAL-1) ─────────────────────────
+ * 서비스 워커의 `state`/`run-now`/`pause` 메시지를 쓴다. 이 메시지가 잠든 워커를
+ * 깨우는 실제 경로다. 결과에는 **종류와 시각만** 있다 — 토큰·행 데이터는 없다. */
+const KIND_TEXT = {
+  sent: "전송함", unchanged: "표가 그대로(전송 생략)", no_tab: "plan의 PIKU 탭이 없음",
+  ambiguous_tab: "같은 페이지 탭이 2개 이상", loading: "탭이 로딩 중이라 포기",
+  wrong_page: "정본 주소가 아님", source_mismatch: "source id 불일치",
+  title_mismatch: "페이지 제목 불일치", campaign_mismatch: "단계(campaign) 불일치",
+  row_count: "행 수 불일치", rank_gap: "순위 공백·중복", partial: "행이 일부만 보임",
+  not_rendered: "표를 찾지 못함", blocked: "PIKU 확인 화면", parse_failed: "파싱 실패",
+  aborted: "중단됨", token_failed: "challenge/토큰 실패", ingest_failed: "전송 실패",
+  no_plan: "서버 plan 없음", pager_failed: "페이지 넘김 실패",
+};
+const SKIP_TEXT = {
+  manual_mode: "MANUAL 모드라 자동 실행 안 함", no_active_device: "활성 장치 아님",
+  paused: "일시 정지 중", too_soon: "아직 다음 예정 시각 전", locked: "다른 회차가 실행 중",
+  no_plan: "서버가 준 활성 plan이 없음",
+};
+const fmtT = (ms) => (ms ? new Date(ms).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }) : "-");
+
+function send(msg) {
+  return new Promise((res) => chrome.runtime.sendMessage(msg, (r) => res(r || { ok: false, error: "no reply" })));
+}
+
+function schedShow(kind, text) {
+  const el = $("schedstate");
+  el.className = kind;
+  el.textContent = text;
+}
+
+function describeRun(r) {
+  if (!r) return "아직 실행 기록 없음";
+  const lines = [`마지막 회차: ${r.outcome} (${r.trigger === "manual" ? "수동" : "alarm"}) · ${fmtT(r.finishedAt)}`];
+  for (const [k, v] of Object.entries(r.sources || r.divisions || {})) {
+    lines.push(`  ${k}: ${v.ok ? "✔" : "✖"} ${KIND_TEXT[v.kind] ?? v.kind}${v.rows ? ` · ${v.rows}행` : ""}`);
+  }
+  return lines.join("\n");
+}
+
+async function refreshSched() {
+  try {
+    const r = await send({ type: "state" });
+    if (!r.ok) { schedShow("err", r.error || "상태를 읽지 못했습니다."); return; }
+    const st = r.state || {};
+    const plan = r.plan;
+    const planText = plan
+      ? `plan: ${plan.campaign} · ${plan.sources.map((s) => `${s.key}(${s.sourceId}, ${s.expected}행)`).join(", ")}`
+      : "plan: 서버에서 못 받음(장치 미등록이거나 서버 미응답)";
+    const auto = r.mode && r.mode !== "MANUAL" && r.deviceActive;
+    const lines = [
+      `${auto ? "✔ 자동 수집 켜짐" : "⚠ 자동 수집 꺼짐"} · 모드 ${r.mode ?? "-"} · 장치 ${r.deviceActive ? "active" : "비활성"}`,
+      planText,
+      `다음 예정: ${fmtT(st.nextRunAt)}${st.paused ? " (일시 정지)" : ""} · alarm ${r.alarm ? "있음" : "없음"}`,
+      `마지막 성공: ${fmtT(st.lastSuccessAt)} · 마지막 실패: ${fmtT(st.lastFailureAt)}`,
+      describeRun(st.lastRun),
+    ];
+    schedShow(auto ? "on" : "off", lines.join("\n"));
+    $("pause").textContent = st.paused ? "자동 수집 다시 시작" : "자동 수집 일시 정지";
+    $("pause").dataset.paused = st.paused ? "1" : "";
+  } catch (e) {
+    schedShow("err", e.message || String(e));
+  }
+}
+
+$("runnow").addEventListener("click", async () => {
+  // 사용자가 명시적으로 누른 1회 실행. 중복 클릭은 버튼 비활성 + 워커 lock이 막는다.
+  $("runnow").disabled = true;
+  schedShow("", "테스트 수집 실행 중… (plan의 탭을 새로고침해 읽습니다. 공개하지 않습니다)");
+  try {
+    const r = await send({ type: "run-now" });
+    if (!r.ok && r.error) { schedShow("err", r.error); return; }
+    if (r.skipped) { schedShow("off", `실행 안 함: ${SKIP_TEXT[r.skipped] ?? r.skipped}`); return; }
+    await refreshSched();
+  } catch (e) {
+    schedShow("err", e.message || String(e));
+  } finally {
+    $("runnow").disabled = false;
+  }
+});
+
+$("pause").addEventListener("click", async () => {
+  $("pause").disabled = true;
+  try {
+    await send({ type: "pause", paused: !$("pause").dataset.paused });
+    await refreshSched();
+  } finally {
+    $("pause").disabled = false;
+  }
+});
+
+refreshSched();
