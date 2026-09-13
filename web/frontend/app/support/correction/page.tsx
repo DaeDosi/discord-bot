@@ -6,27 +6,33 @@
  *  · **검증은 서버가 한다.** 여기 검사는 사용자를 돕기 위한 것이고, 통과 여부의
  *    판정자가 아니다. 한도(길이)도 서버에서 받아 쓴다 — 프런트 상수로 두면 갈라진다.
  *  · **중복 제출 방지** — 전송 중에는 버튼이 잠기고, 성공하면 폼이 닫힌다.
- *  · **상태를 셋으로 나눈다**: 제출 중 / 성공 / 실패. 하나로 뭉치면 실패가
- *    제출 중으로 보인다.
+ *  · **상태를 나눈다**: 확인 중 / 접수 가능 / 설정 미완료 / 일시 장애 / 제출 중 / 성공 / 실패.
+ *    하나로 뭉치면 실패가 제출 중으로, 장애가 "영영 안 되는 기능"으로 보인다.
+ *  · 설정 미완료 안내에 **내부 설정 이름을 적지 않는다**(공개 화면이다).
  *  · 모바일에서 입력 영역이 잘리지 않게 한 열로 쌓고, 키보드가 올라와도 버튼에
  *    닿을 수 있도록 폼 하단에 둔다.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { AlertCircle, Check, Loader2, PencilLine } from "lucide-react";
+import { AlertCircle, Check, Loader2, PencilLine, RotateCw } from "lucide-react";
 import SiteHeader from "@/components/SiteHeader";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 import type { CorrectionMeta } from "@/lib/types";
+import { clipRefProblem, correctionErrorMessage } from "@/lib/correctionForm";
 
 const FALLBACK_LIMITS = {
   clipRef: 200, description: 2000, descriptionMin: 10,
   desiredFix: 1000, evidenceUrl: 300, email: 254,
 };
 
+type MetaState = "loading" | "ready" | "failed";
+
 export default function CorrectionPage() {
   const [meta, setMeta] = useState<CorrectionMeta | null>(null);
+  const [metaState, setMetaState] = useState<MetaState>("loading");
   const [category, setCategory] = useState("");
   const [clipRef, setClipRef] = useState("");
+  const [clipTouched, setClipTouched] = useState(false);
   const [description, setDescription] = useState("");
   const [desiredFix, setDesiredFix] = useState("");
   const [evidenceUrl, setEvidenceUrl] = useState("");
@@ -37,21 +43,37 @@ export default function CorrectionPage() {
   // 같은 tick의 두 번째 제출을 막는다 — state는 다음 렌더에야 반영된다.
   const inFlight = useRef(false);
   const errRef = useRef<HTMLDivElement>(null);
+  // 늦게 도착한 이전 메타 응답이 재시도 결과를 덮지 않게 한다.
+  const metaSeq = useRef(0);
 
-  useEffect(() => {
-    let alive = true;
+  const loadMeta = useCallback(() => {
+    const seq = ++metaSeq.current;
+    setMetaState("loading");
     api.support.correctionMeta()
-      .then((m) => { if (alive) { setMeta(m); setCategory(m.categories[0]?.key ?? ""); } })
-      .catch(() => { /* 한도는 폴백을 쓴다 — 메타 실패로 폼을 막지 않는다 */ });
-    return () => { alive = false; };
+      .then((m) => {
+        if (seq !== metaSeq.current) return;
+        setMeta(m);
+        setCategory((c) => c || (m.categories[0]?.key ?? ""));
+        setMetaState("ready");
+      })
+      // 메타를 못 받으면 접수 가능 여부를 알 수 없다 → **폼을 띄우지 않고** 재시도를 준다.
+      // 입력을 다 받은 뒤 실패하면 사용자는 적은 내용을 잃는다.
+      .catch(() => { if (seq === metaSeq.current) setMetaState("failed"); });
   }, []);
 
+  useEffect(() => {
+    loadMeta();
+    return () => { metaSeq.current += 1; };
+  }, [loadMeta]);
+
   const lim = meta?.limits ?? FALLBACK_LIMITS;
-  const canSubmit = !!category && clipRef.trim().length > 0
+  const clipProblem = clipRefProblem(clipRef);
+  const canSubmit = !!category && !clipProblem
     && description.trim().length >= lim.descriptionMin && !sending;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setClipTouched(true);
     if (!canSubmit || inFlight.current) return;
     inFlight.current = true;
     setSending(true); setErr(null);
@@ -64,8 +86,10 @@ export default function CorrectionPage() {
       });
       setDone(res.id);
     } catch (e2) {
-      // 실패를 성공으로 꾸미지 않는다. 서버 문구를 그대로 쓴다.
-      setErr(e2 instanceof Error ? e2.message : "접수에 실패했습니다.");
+      // 실패를 성공으로 꾸미지 않는다. 상태 코드별로 할 수 있는 일을 알려 준다.
+      setErr(correctionErrorMessage(
+        e2 instanceof ApiError ? e2.status : 0,
+        e2 instanceof ApiError ? e2.message : ""));
       // 오류로 포커스를 옮겨 스크린리더가 즉시 읽게 한다.
       requestAnimationFrame(() => errRef.current?.focus());
     } finally {
@@ -84,26 +108,53 @@ export default function CorrectionPage() {
       {/* 헤더 레이아웃은 **메인 통계 페이지(`/stats`)와 같은 계약**을 쓴다.
           예전에는 `maxWidth="3xl"`로 본문 폭(768px)에 맞췄는데, 그러면 `md`
           이상에서 헤더 3영역이 768px 안으로 압축돼 918px 부근부터 `NexBot`이
-          잘리고 `사용 방법`이 글자 단위로 세로로 쪼개졌다. 브랜드가 본문
-          왼쪽 끝과 딱 맞지 않게 되지만, 그 정렬을 지키려다 헤더가 페이지마다
-          다르게 깨지는 쪽이 더 나쁘다. */}
+          잘리고 `사용 방법`이 글자 단위로 세로로 쪼개졌다. */}
       <SiteHeader maxWidth="full" />
 
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-10 sm:px-5">
         <h1 className="flex items-center gap-2 text-2xl font-extrabold tracking-tight">
           <PencilLine size={22} className="text-accent" aria-hidden="true" /> 수정 요청
         </h1>
-        <p className="mt-3 text-sm leading-relaxed text-muted">
-          클립 정보나 순위 표시가 실제와 다르면 알려 주세요. 어떤 클립인지 특정할 수
-          있어야 확인이 가능하므로 클립 주소나 ID를 함께 적어 주시기 바랍니다.
-          일반 문의는{" "}
-          <Link href="/contact" className="underline underline-offset-2 hover:text-fg">
-            문의하기
-          </Link>
-          를 이용해 주세요.
-        </p>
+        {/* 목적 차이를 두 줄로 — 무엇을 어디로 보내야 하는지. */}
+        <ul className="mt-3 space-y-1 text-sm leading-relaxed text-muted">
+          <li>
+            <b className="text-fg">수정 요청</b> · 순위나 클립 정보가 실제와 다를 때 알려 주세요.
+            어떤 클립·페이지인지 주소나 ID가 꼭 필요합니다.
+          </li>
+          <li>
+            <b className="text-fg">그 밖의 문의</b> ·{" "}
+            <Link href="/contact" className="underline underline-offset-2 hover:text-fg">
+              문의하기
+            </Link>
+            를 이용해 주세요.
+          </li>
+        </ul>
 
-        {meta && meta.accepting === false ? (
+        {metaState === "loading" ? (
+          <p role="status" className="mt-8 flex min-h-[120px] items-start gap-2 text-sm text-muted">
+            <Loader2 size={14} className="mt-0.5 animate-spin" aria-hidden="true" />
+            접수 상태를 확인하는 중입니다.
+          </p>
+        ) : metaState === "failed" ? (
+          /* 일시 장애 — 다시 시도할 수 있다는 것을 분명히 한다. */
+          <div role="alert"
+               className="mt-8 rounded-xl border border-amber-500/40 bg-amber-500/5 p-6">
+            <p className="text-sm font-semibold text-amber-400">
+              접수 서버에 연결하지 못했습니다.
+            </p>
+            <p className="mt-2 text-sm leading-relaxed text-muted">
+              잠시 후 다시 시도해 주세요. 계속 안 되면{" "}
+              <Link href="/contact" className="underline underline-offset-2 hover:text-fg">
+                문의하기
+              </Link>
+              로 알려 주세요.
+            </p>
+            <button type="button" onClick={loadMeta}
+                    className="btn-secondary nb-tap mt-4 inline-flex items-center gap-1.5 text-sm">
+              <RotateCw size={13} aria-hidden="true" /> 다시 시도
+            </button>
+          </div>
+        ) : meta && meta.accepting === false ? (
           /* 접수가 설정되지 않은 배포 — **폼을 띄우지 않는다.** 입력을 다 받은 뒤
              503을 주면 사용자는 자기가 뭘 잘못 적었다고 읽는다. */
           <div role="status"
@@ -112,7 +163,7 @@ export default function CorrectionPage() {
               지금은 수정 요청을 접수할 수 없습니다.
             </p>
             <p className="mt-2 text-sm leading-relaxed text-muted">
-              접수 기능이 준비되지 않았습니다. 급한 정정이 필요하시면{" "}
+              접수 기능을 준비하고 있습니다. 급한 정정이 필요하시면{" "}
               <Link href="/contact" className="underline underline-offset-2 hover:text-fg">
                 문의하기
               </Link>
@@ -132,8 +183,8 @@ export default function CorrectionPage() {
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
               <Link href="/stats" className="btn-primary nb-tap text-sm">통계로</Link>
-              <button onClick={() => { setDone(null); setClipRef(""); setDescription("");
-                                       setDesiredFix(""); setEvidenceUrl(""); }}
+              <button onClick={() => { setDone(null); setClipRef(""); setClipTouched(false);
+                                       setDescription(""); setDesiredFix(""); setEvidenceUrl(""); }}
                       className="btn-secondary nb-tap text-sm">
                 다른 내용 더 알리기
               </button>
@@ -157,9 +208,17 @@ export default function CorrectionPage() {
               </label>
               <input id="cr-clip" value={clipRef} required maxLength={lim.clipRef}
                      onChange={(e) => setClipRef(e.target.value)}
+                     onBlur={() => setClipTouched(true)}
+                     aria-invalid={clipTouched && !!clipProblem}
+                     aria-describedby="cr-clip-hint"
                      placeholder="https://chzzk.naver.com/clips/… 또는 클립 ID"
-                     className={`${field} mt-1.5`} />
-              <span className={hint}>어떤 클립인지 특정할 수 있어야 확인이 가능합니다.</span>
+                     autoComplete="off" className={`${field} mt-1.5`} />
+              <span id="cr-clip-hint"
+                    className={`${hint} ${clipTouched && clipProblem ? "!text-red-400" : ""}`}>
+                {clipTouched && clipProblem
+                  ? clipProblem
+                  : "클립·페이지 주소(https://…) 또는 클립 ID를 적어 주세요."}
+              </span>
             </div>
 
             <div>

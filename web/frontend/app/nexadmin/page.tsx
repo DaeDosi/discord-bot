@@ -13,6 +13,7 @@ import PikuPanel from "./PikuPanel";
 import PikuCollectorPanel from "./PikuCollectorPanel";
 import PikuDevicePanel from "./PikuDevicePanel";
 import PikuAutomationPanel from "./PikuAutomationPanel";
+import SupportCorrectionsPanel from "./SupportCorrectionsPanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -710,7 +711,8 @@ export default function AdminPage() {
                                       | "streamer-tags" | "piku"
                                       | "piku_collector"
                                       | "piku_devices"
-                                      | "piku_automation">("guilds");
+                                      | "piku_automation"
+                                      | "support_corrections">("guilds");
   const [refreshing, setRefreshing]   = useState(false);
   const [selectedVerif, setSelectedVerif] = useState<VerifUser | null>(null);
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null);
@@ -868,6 +870,8 @@ export default function AdminPage() {
     // AUTO-2. 장치 등록은 처음 한 번 하는 일이고 자동화 상태는 매번 보는
     // 것이라 탭을 나눈다.
     { key: "piku_automation", label: "PIKU 자동 수집" },
+    // PUBLIC-UX-1. 공개 수정 요청 폼으로 접수된 건 — 접수만 되고 볼 곳이 없었다.
+    { key: "support_corrections", label: "수정 요청" },
   ] as const;
 
   return (
@@ -1159,6 +1163,7 @@ export default function AdminPage() {
         {activeTab === "piku_collector" && <PikuCollectorPanel />}
         {activeTab === "piku_devices" && <PikuDevicePanel />}
         {activeTab === "piku_automation" && <PikuAutomationPanel />}
+        {activeTab === "support_corrections" && <SupportCorrectionsPanel />}
 
       </main>
     </div>

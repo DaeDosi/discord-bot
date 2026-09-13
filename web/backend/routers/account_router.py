@@ -117,9 +117,14 @@ async def submit_correction(body: dict, request: Request):
     """
     try:
         res = await support.submit(body or {}, submitter=_submitter_key(request))
-    except support.SupportUnavailable as e:
-        # 설정 누락은 사용자 입력 오류가 아니다 — 503으로 구분한다.
+    except (support.SupportUnavailable, support.SupportTemporary) as e:
+        # 설정 누락·일시 장애는 사용자 입력 오류가 아니다 — 503으로 구분한다.
+        # 두 메시지 모두 모듈이 만든 고정 문구다(원인 문자열이 섞이지 않는다).
         raise HTTPException(status_code=503, detail=str(e)) from e
+    except support.SupportRateLimited as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
+    except support.SupportDuplicate as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except support.SupportError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     # 접수 번호(id)는 사용자가 문의할 때 쓸 수 있게 주되, 그 외 내부 정보는 없다.

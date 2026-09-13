@@ -1856,6 +1856,35 @@ async def piku_device_test_grant(body: DeviceTestGrantBody,
         raise _device_400(e) from e
 
 
+# ── 수정 요청 처리 (OWNER) ─────────────────────────────────────────────────
+# 공개 접수(`/api/support/correction`)는 익명이지만 **목록·처리는 OWNER만** 본다.
+# 이메일은 회신 목적으로 받은 값이라 여기서만 보인다.
+
+class CorrectionStatusBody(BaseModel):
+    status: str
+
+
+@router.get("/support/corrections")
+async def support_corrections(status: str = "", limit: int = 50, before: int = 0,
+                              user: dict = Depends(_require_owner)):
+    import support
+    try:
+        return {"ok": True, **await support.list_requests(
+            status=status, limit=limit, before_id=before)}
+    except support.SupportError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/support/corrections/{request_id}/status")
+async def support_correction_status(request_id: int, body: CorrectionStatusBody,
+                                    user: dict = Depends(_require_owner)):
+    import support
+    try:
+        return {"ok": True, **await support.set_status(request_id, body.status)}
+    except support.SupportError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @router.get("/piku/collector/automation")
 async def piku_automation_status(user: dict = Depends(_require_owner)):
     """자동화 패널 요약 — 모드·장치·최근 회차. **secret을 담지 않는다.**"""

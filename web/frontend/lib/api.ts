@@ -452,6 +452,16 @@ export const api = {
       request<{ ok: boolean; deviceId: number; status: string; revokedAt: number }>(
         "/api/admin/piku/collector/devices/revoke",
         { method: "POST", body: JSON.stringify({ deviceId }) }),
+    /** 수정 요청 처리 목록(OWNER). 이메일은 회신용이라 이 경로에서만 보인다. */
+    supportCorrections: (status = "", before = 0) =>
+      request<import("./types").CorrectionList>(
+        `/api/admin/support/corrections?limit=50${
+          status ? `&status=${encodeURIComponent(status)}` : ""}${
+          before ? `&before=${before}` : ""}`),
+    setCorrectionStatus: (id: number, status: string) =>
+      request<{ ok: boolean; id: number; status: string }>(
+        `/api/admin/support/corrections/${id}/status`,
+        { method: "POST", body: JSON.stringify({ status }) }),
     /** AUTO-2 자동화 요약 — 모드·장치·최근 회차. **secret 없음.** */
     pikuAutomation: () =>
       request<import("./types").PikuAutomationStatus>(

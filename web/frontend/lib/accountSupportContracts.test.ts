@@ -170,7 +170,8 @@ test("길이 한도는 서버가 준 값을 쓴다", () => {
   const s = FORM();
   assert.ok(s.includes("api.support.correctionMeta()"));
   assert.ok(s.includes("meta?.limits ?? FALLBACK_LIMITS"),
-    "메타 실패로 폼을 막지 않되 한도는 서버 값이 우선이다");
+    "한도는 서버 값이 우선이다(PUBLIC-UX-1: 메타 실패 때는 폼 대신 재시도 안내를 띄운다)");
+  assert.ok(s.includes('metaState === "failed"'), "메타 실패를 접수 가능으로 취급한다");
   assert.ok(s.includes("maxLength={lim.description}"));
 });
 

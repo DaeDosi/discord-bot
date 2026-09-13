@@ -220,9 +220,10 @@ def test_이메일은_선택_항목이다(adb):
     assert adb(support.submit(_body(email=""), submitter="s1"))["ok"]
 
 
-def test_HTML과_스크립트가_그대로_저장되지_않는다(adb):
+def test_HTML은_평문으로_저장되고_변형되지_않는다(adb):
+    """PUBLIC-UX-1a: 태그를 걷어내 문장을 다시 조립하지 않는다. 안전은 텍스트 렌더링이 지킨다."""
     adb(support.submit(_body(
-        description="<script>alert(1)</script> 하트 수가 이상합니다"), submitter="s1"))
+        description="<script>alert(1)</script> 하트 수가 a < b > c 로 이상합니다"), submitter="s1"))
 
     async def _row():
         c = await database.get_db()
@@ -230,9 +231,11 @@ def test_HTML과_스크립트가_그대로_저장되지_않는다(adb):
             "SELECT description FROM correction_requests ORDER BY id DESC LIMIT 1"
         )).fetchone())
     d = adb(_row())["description"]
-    assert "<script>" not in d and "</script>" not in d
-    # 이스케이프하지 않는다 — React가 텍스트로 렌더하므로 &lt;가 보이면 안 된다
+    assert d == "<script>alert(1)</script> 하트 수가 a < b > c 로 이상합니다"
+    # 이스케이프해 저장하지 않는다 — React가 텍스트로 렌더하므로 &lt;가 보이면 안 된다
     assert "&lt;" not in d
+    # 태그 제거 정규식이 되살아나지 않았다.
+    assert "_TAG_RE" not in inspect.getsource(support)
 
 
 def test_제로폭_문자와_제어문자를_걷어낸다(adb):

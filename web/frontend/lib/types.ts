@@ -450,6 +450,28 @@ export interface PikuSeason {
   campaigns: string[];
 }
 
+/** 수정 요청 처리 목록(OWNER) — `GET /api/admin/support/corrections`. */
+export interface CorrectionItem {
+  id: number;
+  createdAt: number;
+  category: string;
+  categoryLabel: string;
+  clipRef: string;
+  description: string;
+  desiredFix: string;
+  evidenceUrl: string;
+  contactEmail: string;
+  status: string;
+}
+
+export interface CorrectionList {
+  ok: boolean;
+  items: CorrectionItem[];
+  hasMore: boolean;
+  counts: Record<string, number>;
+  statuses: { key: string; label: string }[];
+}
+
 /** PIKU 관리 화면 타입 — **비율·승률 숫자는 여기에도 없다.** */
 export interface PikuSource {
   /** 정본과 어긋나게 배치됐으면 기대되는 부문 키, 아니면 빈 문자열.
