@@ -603,7 +603,9 @@ export const api = {
     // 단계(예선/본선) 상태 — 동결 여부·기간·마지막 수집/공개 시각(SINGCUP-FINAL-1).
     pikuCampaigns: () =>
       fetch(`${BASE}/api/singcup/piku/campaigns`)
-        .then(r => r.json()) as Promise<{ campaigns: import("./types").PikuCampaign[] }>,
+        .then(r => r.json()) as Promise<{ campaigns: import("./types").PikuCampaign[];
+                                          /** 구 백엔드에는 없다. */
+                                          seasons?: import("./types").PikuSeason[] }>,
 
     // #싱드컵 태그 클립 — 메인/랭킹의 근거.
     // 응답이 커서(참가자 전원) 중복 호출 비용이 크다. 공유 캐시 + in-flight 합류를

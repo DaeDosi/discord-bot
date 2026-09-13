@@ -56,6 +56,10 @@ AUTO_PUBLISH_READY = False
 #
 # 정상 사용량: 1시간에 부문 3개 = challenge 3회. 사람이 실패를 보고 몇 번 다시
 # 누르는 것까지 감안해 burst를 넉넉히 둔다. 자동화가 폭주해도 시간당 한도에서 걸린다.
+#: 확장 alarm 주기(분). 확장 `scheduler.js`와 같은 값이다.
+#: 공개 화면의 "약 1시간마다"도 이 값을 쓴다.
+PERIOD_MINUTES = 60
+
 BURST_SECONDS = int(os.getenv("PIKU_CHALLENGE_BURST_SECONDS", "60"))
 BURST_LIMIT = int(os.getenv("PIKU_CHALLENGE_BURST_LIMIT", "8"))
 WINDOW_SECONDS = int(os.getenv("PIKU_CHALLENGE_WINDOW_SECONDS", "3600"))
@@ -181,7 +185,7 @@ async def device_state(fingerprint: Any) -> dict:
         "mode": mode,
         # 확장이 "자동 공개가 곧 켜질 것"으로 오해하지 않게 명시한다.
         "autoPublishReady": AUTO_PUBLISH_READY,
-        "periodMinutes": 60,
+        "periodMinutes": PERIOD_MINUTES,
         # **활성 collection plan.** 확장은 여기 적힌 source만 찾는다 — 예선 탭이
         # 없다는 이유로 본선 회차가 실패하면 안 된다(SINGCUP-FINAL-1).
         "plan": camps.plan(),
@@ -485,7 +489,7 @@ async def status() -> dict:
                            "lastSeenAt": d["lastSeenAt"]} for d in active],
         # AUTO-3 전까지 이 값은 False로 고정이다. 화면이 이걸 보고 옵션을 막는다.
         "autoPublishReady": AUTO_PUBLISH_READY,
-        "periodMinutes": 60,
+        "periodMinutes": PERIOD_MINUTES,
         "burstLimit": BURST_LIMIT,
         "windowLimit": WINDOW_LIMIT,
         "lastRun": runs[0] if runs else None,

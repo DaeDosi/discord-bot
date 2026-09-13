@@ -426,6 +426,28 @@ export interface PikuCampaign {
   /** 활성본이 마지막으로 교체된 시각(unix s). 0이면 없음. */
   lastPublishedAt: number;
   lastResult: string;
+  /* ── PUBLIC-UX-1 추가 필드. 구 백엔드에는 없다(선택). ── */
+  /** 소속 시즌의 안정 키(예: `2026-galaxy`). 표시 이름이 아니다. */
+  season?: string;
+  /** 화면 단계 종류. campaign 키가 시즌마다 달라도 탭은 이 값으로 고른다. */
+  stage?: "final" | "qualifier" | string;
+  /** 방문자에게 보이는 진행 상태 — 서버 정본. 날짜로 추측하지 않는다. */
+  stageState?: "upcoming" | "in_progress" | "ended" | string;
+  /** 새 데이터를 확인하는 방식 — 서버의 **실제 운영 모드**에서 온다(PUBLIC-UX-1a).
+   *  auto=약 `collectionIntervalMinutes`마다 확인 · manual=운영자 확인 시 · none=종료·동결 단계. */
+  collectionMode?: "auto" | "manual" | "none" | string;
+  /** `auto`일 때만 수집 확인 주기(분). 공개 순위가 이 주기로 바뀐다는 뜻이 **아니다**. */
+  collectionIntervalMinutes?: number;
+  /** 공개 반영 방식. reviewed=운영자 검토 후 공개 · automatic=자동 공개 · none. */
+  publicUpdatePolicy?: "reviewed" | "automatic" | "none" | string;
+}
+
+/** 시즌 — `GET /api/singcup/piku/campaigns`의 `seasons` (PUBLIC-UX-1). */
+export interface PikuSeason {
+  season: string;
+  label: string;
+  /** 이 시즌에 속한 campaign 키. 본선이 먼저다. */
+  campaigns: string[];
 }
 
 /** PIKU 관리 화면 타입 — **비율·승률 숫자는 여기에도 없다.** */

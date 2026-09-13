@@ -107,9 +107,10 @@ test("LIVE 배지는 공식 참가자 카드 전용 클래스를 쓴다", () => 
 
 test("공식 결과와 재계산 순위를 문구로 구분한다", () => {
   const s = OFFICIAL();
-  assert.ok(s.includes("치지직이 공식 공지로 발표한 예선 참가자 명단입니다."));
-  assert.ok(s.includes("공식 심사 결과나 순위가 아닙니다."));
-  assert.ok(s.includes("다시 계산한 순서"));
+  // PUBLIC-UX-1: 문장은 짧아졌지만 구분은 그대로다.
+  assert.ok(s.includes("참가자 명단은 치지직 공식 공지 기준"));
+  assert.ok(s.includes("{UNOFFICIAL_NOTICE}") && readFileSync(
+    new URL("./singcupSeason.ts", import.meta.url), "utf8").includes("비공식 순위이며"));
   assert.ok(s.includes("공식 순위 아님"), "섹션마다 순서의 출처를 밝힌다");
   assert.ok(s.includes("순위 아님"), "PIKU 데이터가 없을 때도 밝힌다");
 });
@@ -165,17 +166,20 @@ test("공개 정렬 토큰에 내부 컬럼명이 없다", () => {
 
 test("정렬 버튼이 둘이고 서버가 기준을 준다", () => {
   const s = OFFICIAL();
-  assert.ok(s.includes("piku?.sortOptions"), "선택지는 서버가 정한다");
-  assert.ok(s.includes("우승 비율순") && s.includes("승률순"), "폴백 라벨");
+  // 탭 라벨은 **기준 이름**뿐이다(숫자 없음). 긴 정렬 안내 문장은 PUBLIC-UX-1에서 뺐다.
+  assert.ok(s.includes('label: "우승 비율"') && s.includes('label: "승률"'));
   assert.ok(s.includes("api.singcup.pikuRanking(sort)"),
     "정렬을 바꾸면 서버에 다시 물어 1위부터 다시 계산된다");
 });
 
 test("현재 정렬 기준을 색이 아니라 글자로도 밝힌다", () => {
   const s = OFFICIAL();
-  assert.ok(s.includes('role="status"'));
-  assert.ok(s.includes("으로 정렬했습니다"));
-  assert.ok(s.includes("비율·승률 수치는 표시하지 않습니다"));
+  // PUBLIC-UX-1: "현재 ○○순으로 정렬했습니다 … 수치는 표시하지 않습니다" 문장을 뺐다
+  // (운영 설명이 공개 화면에 길게 남아 있었다). 대신 선택 상태를 **탭 자체**가 전한다 —
+  // 보조기기에는 aria-selected, 눈에는 색이 아닌 굵기·밑줄.
+  assert.ok(s.includes("aria-selected={sort === o.key}"));
+  assert.ok(s.includes("underline decoration-2"), "선택 상태를 색으로만 전한다");
+  assert.ok(!s.includes("으로 정렬했습니다"), "긴 정렬 안내 문장이 되살아났다");
   assert.ok(s.includes("aria-pressed"), "버튼 상태를 보조기기에 알린다");
 });
 
@@ -188,9 +192,11 @@ test("PIKU 순위 실패가 명단을 가리지 않는다", () => {
 
 test("출처와 마지막 정상 갱신 시각을 표시한다", () => {
   const s = OFFICIAL();
-  assert.ok(s.includes("lastSuccessAt"));
-  assert.ok(s.includes("아직 수집된 데이터 없음"), "없을 때도 상태를 밝힌다");
-  assert.ok(s.includes("sourceUrl"), "PIKU 출처 링크");
+  // PUBLIC-UX-1: 부문별 출처·수집 시각 꼬리말을 없애고 **마지막 갱신 한 줄**로 합쳤다.
+  // PUBLIC-UX-1a: 갱신 방식 한 문장(본선) + 마지막 갱신(본선·예선).
+  assert.ok(s.includes("lastUpdatedText(finalCampaign)") && s.includes("lastUpdatedText(qualCampaign)"));
+  assert.ok(s.includes("collectionNotice(finalCampaign)"));
+  assert.ok(s.includes("finalSourceUrl"), "PIKU 출처 링크");
   assert.ok(s.includes('rel="noopener noreferrer nofollow"'));
 });
 

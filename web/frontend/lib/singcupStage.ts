@@ -29,11 +29,13 @@ export function classifyFinal(
   finalRank: PikuRankingResponse | null | undefined,
   failed: boolean,
   settled: boolean,
+  /** 본선 source key. 시즌마다 달라질 수 있어 서버 campaign 정의에서 받는다(기본 `final`). */
+  sourceKey = "final",
 ): FinalAvailability {
   if (failed) return { state: "error" };
   if (!settled) return { state: "loading" };
   if (!finalRank || typeof finalRank !== "object") return { state: "error" };
-  const div = finalRank.divisions?.final;
+  const div = finalRank.divisions?.[sourceKey];
   if (!div) return { state: "unsupported" };
   if (div.available && Array.isArray(div.entries) && div.entries.length > 0) {
     return { state: "published", entries: div.entries };

@@ -19,17 +19,24 @@ const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
 // **문구 계약은 그대로 옮겨 왔다** — 파일 이름이 바뀌었다고 계약을 버리지 않는다.
 const OFFICIAL = "app/stats/SingcupOfficial.tsx";
 
-test("요구2: 두 문단의 원문이 글자 그대로 유지된다", () => {
+// PUBLIC-UX-1: 긴 두 문단(공식 명단 설명 + "다시 계산한 순서" 설명)을 방문자용 한두 줄로
+// 줄였다. **뜻은 그대로 남긴다** — 명단은 공식 공지 기준, 순위는 비공식이다.
+test("요구2(PUBLIC-UX-1 정정): 공식 명단과 비공식 순위의 구분이 짧게 남아 있다", () => {
   const s = read(OFFICIAL);
-  assert.ok(s.includes("치지직이 공식 공지로 발표한 예선 참가자 명단입니다."));
-  assert.ok(s.includes("공식 심사 결과나 순위가 아닙니다."));
+  // 고지 문장 정본은 `lib/singcupSeason.ts`의 UNOFFICIAL_NOTICE 하나다(PUBLIC-UX-1a).
+  const notice = read("lib/singcupSeason.ts");
+  assert.ok(s.includes("참가자 명단은 치지직 공식 공지 기준"));
+  assert.ok(s.includes("{UNOFFICIAL_NOTICE}"));
+  assert.ok(notice.includes("비공식 순위이며, 대회 공식 결과와 다를 수 있습니다."));
 });
 
-test("요구2: 두 번째 문단은 들여쓰기가 아니라 의미 구조로 분리된다", () => {
+test("요구2(PUBLIC-UX-1 정정): 같은 뜻의 고지를 화면 여러 곳에 복제하지 않는다", () => {
   const s = read(OFFICIAL);
-  // 공백 들여쓰기(&nbsp; 등)가 아니라 테두리를 가진 별도 블록이어야 한다.
   assert.ok(!s.includes("&nbsp;"), "공백 문자로 계층을 만들지 않는다");
-  assert.ok(/border-l-2 border-border pl-3/.test(s), "구분선으로 하위 계층을 표시한다");
+  // 고지 문장은 상수 하나이고 본선·예선에서 한 번씩만 쓴다.
+  assert.equal((s.match(/대회 공식 (심사 )?결과와 다를 수 있습니다/g) ?? []).length, 0,
+    "고지 문장을 화면 파일에 복제했다 — 상수를 쓸 것");
+  assert.equal((s.match(/\{UNOFFICIAL_NOTICE\}/g) ?? []).length, 2);
 });
 
 test("요구1: 공식 공지 원문 링크가 상단 액션 영역에 있다", () => {

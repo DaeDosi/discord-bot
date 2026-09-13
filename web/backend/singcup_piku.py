@@ -1221,14 +1221,48 @@ async def public_status() -> dict:
     return out
 
 
-async def campaign_status() -> list[dict]:
+def _update_fields(c: dict, mode: str, policy: str, period: int, active: str) -> dict:
+    """campaign 하나의 갱신 안내 필드. 수집 대상은 **진행 중 + 쓰기 가능 + 활성 plan**뿐이다."""
+    collecting = (c["stageState"] == "in_progress" and c["status"] == "active"
+                  and c["campaign"] == active)
+    if not collecting:
+        coll = "none"
+    else:
+        coll = "manual" if mode == "MANUAL" else "auto"
+    return {
+        "collectionMode": coll,
+        "collectionIntervalMinutes": period if coll == "auto" else 0,
+        "publicUpdatePolicy": policy if collecting else "none",
+    }
+
+
+async def campaign_status(*, public_only: bool = False) -> list[dict]:
     """campaign(예선/본선)별 공개 상태 — 동결 여부·기간·마지막 수집·마지막 공개.
 
     `lastCollectedAt`은 draft가 마지막으로 **들어온** 시각(`piku_collector_state`),
     `lastPublishedAt`은 활성본이 마지막으로 **교체된** 시각(`piku_sources`)이다.
     둘을 합치면 "수집은 되는데 공개가 안 된" 상태가 보이지 않는다.
+
+    `public_only`면 공개하지 않는 시즌의 campaign을 뺀다(관리 화면은 전부 본다).
+
+    갱신 안내 필드(PUBLIC-UX-1a) — **수집 주기와 공개 반영을 따로 말한다**:
+
+    * `collectionMode` — 진행 중인 활성 단계에서 새 데이터를 확인하는 방식.
+      `auto`(운영 모드가 AUTO_COLLECT/AUTO_PUBLISH) · `manual`(MANUAL) · `none`(종료·동결 단계).
+    * `collectionIntervalMinutes` — `auto`일 때만 확장 alarm 주기(60), 아니면 0.
+    * `publicUpdatePolicy` — 공개 반영 방식.
+      `reviewed`(운영자 검토 후 Publish) · `automatic`(자동 공개 허용).
+      AUTO_PUBLISH는 아직 준비되지 않아(`AUTO_PUBLISH_READY=False`) 모드와 무관하게 `reviewed`다.
+
+    자동 수집은 draft까지만 만든다. 그래서 `auto`여도 "공개 순위가 매시간 바뀐다"가 아니라
+    "약 1시간마다 새 데이터를 확인하고 검토 후 반영"이 정확한 뜻이다.
+    문구는 화면이 이 필드로 고른다.
     """
     import singcup_piku_campaigns as camps
+    import singcup_piku_devices as devices
+    import singcup_piku_scheduler as sched
+    mode = await devices.get_mode()
+    policy = "automatic" if await sched.publish_allowed() else "reviewed"
     db = await get_db()
     state = {r["division"]: dict(r) for r in await (await db.execute(
         "SELECT division, last_result, last_error_kind, last_at"
@@ -1236,6 +1270,8 @@ async def campaign_status() -> list[dict]:
     src = {s["division"]: s for s in await list_sources(tuple(camps.SOURCES))}
     out: list[dict] = []
     for c in camps.public_meta():
+        if public_only and not camps.SEASONS.get(c["season"], {}).get("public"):
+            continue
         keys = [x["key"] for x in c["sources"]]
         ds = {k: await active_dataset(k) for k in keys}
         collected = [state[k]["last_at"] for k in keys if k in state]
@@ -1248,6 +1284,7 @@ async def campaign_status() -> list[dict]:
             "lastCollectedAt": max(collected) if collected else 0,
             "lastPublishedAt": max(published) if published else 0,
             "lastResult": (last_result[-1] if last_result else "") or "",
+            **_update_fields(c, mode, policy, sched.PERIOD_MINUTES, camps.ACTIVE_CAMPAIGN),
         })
     return out
 

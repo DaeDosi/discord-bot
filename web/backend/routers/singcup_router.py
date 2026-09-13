@@ -758,8 +758,13 @@ async def piku_campaigns():
     """단계(예선/본선) 공개 상태 — 동결 여부·기간·마지막 수집·마지막 공개 시각.
 
     본선 기간은 사용자 제공 정보라 `scheduleSource`로 그 사실을 함께 내보낸다.
+
+    `seasons`는 **추가 필드**다(PUBLIC-UX-1) — 기존 `campaigns` 형태는 그대로라 구 화면이
+    깨지지 않는다. 화면은 시즌을 먼저 고르고 그 시즌의 campaign 키만 읽는다.
     """
-    return {"campaigns": await piku.campaign_status()}
+    import singcup_piku_campaigns as camps
+    return {"campaigns": await piku.campaign_status(public_only=True),
+            "seasons": camps.public_seasons()}
 
 
 @router.get("/piku/ranking")

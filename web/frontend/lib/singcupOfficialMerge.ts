@@ -99,6 +99,24 @@ export function memberLine(row: { memberNames?: string[] }): string {
   return (row.memberNames || []).join(" · ");
 }
 
+/** 순위 행 이름 줄 — **대표자가 항상 첫 번째**, 이어서 팀원을 원본 순서대로(PUBLIC-UX-1).
+ *
+ * `memberNames`는 이미 대표자를 뺀 목록이지만, 입력이 어디서 오든(PIKU 표기·공식 명단)
+ * 대표자가 다시 섞여 들어올 수 있으므로 여기서도 이름 기준으로 한 번 더 걸러낸다.
+ * 빈 이름은 버리고, 대표자 이름이 비면 팀원만 남는다(행은 지우지 않는다).
+ */
+export function teamNames(row: { displayName: string; memberNames?: string[] }): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of [row.displayName, ...(row.memberNames || [])]) {
+    const name = clean(raw);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
 /** 대표자를 뺀 팀원 이름 목록. 빈 이름·중복 이름은 버린다. */
 function otherMembers(
   team: QualifierRow[] | undefined, leadChannelId: string, leadName: string,

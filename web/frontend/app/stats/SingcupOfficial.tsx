@@ -1,35 +1,39 @@
 "use client";
 /**
- * 싱드컵 **공식 예선 참가자** 화면.
+ * 싱드컵 **시즌 → 단계(본선/예선)** 순위 화면.
  *
- * 이 화면이 답하는 질문은 하나다 — "누가 공식 예선에 나왔고, 사용자 투표에서는
- * 어떤 순서인가."
+ * 이 화면이 답하는 질문은 하나다 — "이번 시즌 본선·예선에서 사용자 투표로는 어떤 순서인가."
  *
  * **두 가지를 절대 섞지 않는다.**
  *  · 공식 발표 명단  — 치지직 공지에서 온 확정 값. 순위가 아니다.
- *  · PIKU 재계산 순위 — 우리가 PIKU 공개 데이터로 다시 매긴 순서. 공식 결과가 아니다.
- * 두 문구를 화면에 모두 적고, 순위 배지에도 출처를 붙인다.
+ *  · PIKU 투표 순위  — PIKU 공개 투표 데이터로 정리한 순서. 공식 결과가 아니다.
+ * 방문자에게는 이 구분과 갱신 시각만 **짧게** 알린다. 수집 방식·자동화 대상·일정 출처 같은
+ * 운영 정보는 Nexadmin에만 둔다(PUBLIC-UX-1).
  *
  * 표시 계약(요구):
  *  · 우승 비율·승률 **숫자를 화면에 내보내지 않는다.** 서버 응답에 아예 없다.
  *  · 조회수·하트도 표시하지 않는다.
- *  · 정렬은 `우승 비율순` / `승률순` 두 버튼이고, 바꾸면 **1위부터 다시 계산**된다
+ *  · 정렬은 `우승 비율` / `승률` 두 탭이고, 바꾸면 **1위부터 다시 계산**된다
  *    (계산은 서버가 한다 — 프런트에서 다시 매기면 두 규칙이 갈라진다).
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle, BarChart3, ExternalLink, Radio, Trophy, User, Users,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
-  PikuCampaign, PikuEntry, PikuRankingResponse, QualifierGroupRow, QualifierRow,
+  PikuCampaign, PikuEntry, PikuRankingResponse, PikuSeason, QualifierGroupRow, QualifierRow,
   QualifiersResponse,
 } from "@/lib/types";
 import { SINGCUP_QUALIFIERS } from "@/lib/singcupQualifiers";
 import type { MergedRow } from "@/lib/singcupOfficialMerge";
-import { memberLine, mergeRanking, songLine } from "@/lib/singcupOfficialMerge";
+import { mergeRanking, songLine, teamNames } from "@/lib/singcupOfficialMerge";
 import type { Stage } from "@/lib/singcupStage";
-import { classifyFinal, finalHint, pickStage } from "@/lib/singcupStage";
+import { classifyFinal, pickStage } from "@/lib/singcupStage";
+import {
+  STAGE_LABEL, UNOFFICIAL_NOTICE, collectionNotice, lastUpdatedText, resolveSeasons, stageHint,
+  stagesOf,
+} from "@/lib/singcupSeason";
 import { GOLD, GREEN, hideBrokenImage, nf } from "./singcupShared";
 
 const DIVISIONS = ["female_solo", "male_solo", "groups"] as const;
@@ -37,25 +41,6 @@ type Division = (typeof DIVISIONS)[number];
 /** 본선 source key. 예선 부문이 아니라 별도 단계(campaign)다 — `DIVISIONS`에 넣지 않는다. */
 const FINAL = "final";
 type SectionKey = Division | typeof FINAL;
-
-/* ── 단계(예선/본선) ────────────────────────────────────────────────────────
- * 기본 탭은 **본선 공개본이 있을 때만 본선**이다(`lib/singcupStage`). 본선이 아직
- * 미공개이거나 백엔드가 구버전(배포 중간)이거나 요청이 실패하면 예선(기존 공개본)을
- * 기본으로 두고 본선 탭에 "준비 중"을 적는다 — 방문자가 빈 화면을 먼저 보지 않게.
- * 예선은 마지막 구간 수집이 빠졌고 소급 갱신은 보류 상태라, 그 사실을 화면이 그대로 적는다.
- * 두 단계의 데이터는 서버에서도 campaign으로 분리돼 있어 서로 덮어쓰지 않는다. */
-const STAGE_LABEL: Record<Stage, string> = { final: "본선", qualifier: "예선" };
-const STAGE_ORDER: Stage[] = ["final", "qualifier"];
-
-/** 날짜·시각은 **Asia/Seoul** 기준으로만 적는다(방문자 브라우저 시간대와 무관). */
-const fmtSeoul = (unixSec: number) => new Date(unixSec * 1000).toLocaleString("ko-KR", {
-  timeZone: "Asia/Seoul", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit",
-});
-const fmtSeoulDate = (iso: string) => {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso
-    : d.toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul", month: "long", day: "numeric" });
-};
 
 /** `전체` 화면에서 부문마다 보여 줄 수. 요구가 10·10·10이다. */
 const OVERVIEW_ROWS = 10;
@@ -70,22 +55,13 @@ const TABS: { k: Tab; label: string }[] = [
   { k: "groups",      label: "그룹" },
 ];
 
-const isGroupRow = (r: QualifierRow | QualifierGroupRow): r is QualifierGroupRow =>
-  "members" in r;
-
-/** 그룹은 팀 단위로 세지만 카드에는 대표 1명(첫 멤버)을 쓴다.
- *  팀 전체를 한 카드에 욱여넣으면 썸네일이 작아져 아무것도 안 보인다. */
-function groupLead(g: QualifierGroupRow): QualifierRow | null {
-  return g.members[0] ?? null;
-}
-
 /* ── 순위 배지 ───────────────────────────────────────────────────────────── */
 function RankBadge({ rank }: { rank: number }) {
   // TOP 3만 색으로 구분하고, 색만으로 뜻을 전하지 않도록 숫자를 함께 둔다.
   const color = rank === 1 ? GOLD : rank === 2 ? "#C0C6D4" : rank === 3 ? "#CD7F32" : null;
   return (
-    <span className="inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5
-                     text-[11px] font-extrabold tabular-nums leading-none"
+    <span className="inline-flex w-9 shrink-0 items-center justify-center rounded-md border
+                     px-1 py-0.5 text-[11px] font-extrabold tabular-nums leading-none"
           style={color
             ? { color, borderColor: `${color}66`, background: `${color}14` }
             : { color: "rgb(var(--color-muted-rgb))",
@@ -96,8 +72,8 @@ function RankBadge({ rank }: { rank: number }) {
 }
 
 /* ── TOP 카드 ────────────────────────────────────────────────────────────── */
-function TopCard({ item, isGroup }: { item: MergedRow; isGroup: boolean }) {
-  const { rank, teamNumber, displayName } = item;
+function TopCard({ item }: { item: MergedRow }) {
+  const { rank, teamNumber } = item;
   // 공식 명단에서 못 찾은 참가자도 **행은 남는다**(순위가 사라지는 편이 더 나쁘다).
   // 그때는 프로필·클립·LIVE만 없고 순위와 이름·곡은 그대로 보인다.
   const row = item.row;
@@ -126,8 +102,7 @@ function TopCard({ item, isGroup }: { item: MergedRow; isGroup: boolean }) {
       )}
       {/* LIVE 배지 — **공식 예선 참가자에게만** 나온다(서버가 그것만 내려준다).
           `.nb-live-badge`는 UI-P에서 이 카드 전용으로 만든 클래스다(색 대비와
-          `prefers-reduced-motion` 처리가 거기 들어 있다). 다른 화면의 LIVE 표현은
-          별도 마크업이라 이 값의 영향을 받지 않는다. */}
+          `prefers-reduced-motion` 처리가 거기 들어 있다). */}
       {live && (
         <span className="nb-live-badge absolute left-2 top-2 flex items-center gap-1
                          rounded px-1.5 py-0.5 text-[10px] font-bold">
@@ -163,19 +138,16 @@ function TopCard({ item, isGroup }: { item: MergedRow; isGroup: boolean }) {
           {thumb}
         </div>
       )}
-      {/* 하단 정보 — **1줄 닉네임 / 2줄 곡 - 가수**가 고정 구조다.
-          곡·가수를 닉네임 옆에 붙이지 않는다(둘의 위계가 같아 보인다).
+      {/* 하단 정보 — **1줄 이름(대표자 먼저, 팀원 포함) / 2줄 곡 - 가수**가 고정 구조다.
+          카드는 한 줄에 여러 장이 나란히 서므로 이름 줄을 말줄임으로 한 줄에 묶는다
+          (전체 이름은 title). 목록 행은 줄바꿈한다 — 아래 `ListRow`.
           LIVE·시청자는 **별도 행**으로 내려 두 줄과 겹치지 않게 한다.
 
           높이 통일은 `min-h`만으로는 안 된다 — LIVE 카드는 시청자 줄이 하나 더
-          붙어 68px가 아니라 87px가 된다(실측). 그래서 카드를 `flex h-full flex-col`,
-          이 블록을 `flex-1`로 두어 **그리드의 stretch가 하단까지 전달되게** 한다.
-          그러면 한 줄의 카드 5개가 가장 큰 것에 맞춰 같은 높이가 된다. */}
+          붙는다. 그래서 카드를 `flex h-full flex-col`, 이 블록을 `flex-1`로 두어
+          **그리드의 stretch가 하단까지 전달되게** 한다. */}
       <div className="flex min-h-[68px] flex-1 flex-col p-2.5">
-        <p className="truncate text-sm font-bold text-fg" title={displayName}>
-          {displayName}
-        </p>
-        <MemberLine item={item} reserve={isGroup} className="mt-0.5" />
+        <NameLine item={item} />
         <SongLine row={item} className="mt-0.5" />
         {/* 발표 시점 이름이 지금과 다르면 함께 보여 준다 — 공지와 대조할 수 있게. */}
         {row?.announcedName && row.announcedName !== row.channelName && (
@@ -196,7 +168,7 @@ function TopCard({ item, isGroup }: { item: MergedRow; isGroup: boolean }) {
 }
 
 /* ── 한 줄 보조 텍스트의 높이 계약 ───────────────────────────────────────
- * 카드·행의 보조 줄은 **값이 있든 없든 정확히 한 줄(16px)**을 차지한다.
+ * 곡 줄은 **값이 있든 없든 정확히 한 줄(16px)**을 차지한다.
  *
  * 조건부로 그리면 데이터가 도착할 때 행이 한 줄씩 자라고 그만큼 아래 내용이 통째로
  * 밀린다 — 뷰포트 안에서 일어나는 이동이라 그대로 CLS가 된다. 특히 곡·가수는
@@ -223,47 +195,62 @@ function SongLine({ row, className = "" }: {
   );
 }
 
-/* ── 그룹 멤버 보조 줄 ───────────────────────────────────────────────────
- * 대표자를 **제외한** 팀원 이름. 프로필·링크는 대표자 것 하나만 쓰고, 나머지 멤버는
- * 여기서 이름만 밝힌다 — 팀원이 화면에서 아예 사라져 있었다.
+/* ── 이름 줄 ─────────────────────────────────────────────────────────────
+ * **대표자가 항상 첫 번째**, 이어서 팀원 전원을 원본 순서대로 — 전부 굵게(PUBLIC-UX-1).
+ * 예전에는 대표자만 굵게, 팀원은 회색 `멤버` 줄로 곡 줄과 같은 위계에 섞여 있었다.
+ * 이름 순서·중복 제거는 `teamNames` 하나가 한다(화면에서 다시 조립하지 않는다).
  *
- * 자리를 예약할지는 **부문**이 정한다(그룹만 `reserve`). `memberNames`가 비었는지로
- * 판단하면 1인 팀(실측 32팀 중 1팀)만 행 높이가 달라지고, 정렬이 바뀌어 그 팀이
- * 화면에 들어왔다 나갈 때마다 목록 전체 높이가 흔들린다.
- * 솔로 부문은 `reserve=false`라 줄 자체가 생기지 않는다 — 빈 자리도 만들지 않는다. */
-function MemberLine({ item, reserve = false, className = "" }: {
-  item: { memberNames?: string[] }; reserve?: boolean; className?: string;
+ * 이름 줄은 **값이 항상 있다**(대표자 이름). 그래서 솔로·팀 행의 기본 높이가 같고,
+ * 예전처럼 부문에 따라 빈 멤버 줄을 예약할 필요가 없다.
+ *
+ * `wrap`(목록 행)이면 긴 팀 이름이 자연스럽게 줄바꿈되고, 카드는 한 줄 말줄임이다.
+ * 구분점은 장식이라 읽지 않게 하고, 화면 읽기용 쉼표를 따로 둔다. */
+function NameLine({ item, wrap = false, className = "" }: {
+  item: { displayName: string; memberNames?: string[] }; wrap?: boolean; className?: string;
 }) {
-  const text = memberLine(item);
-  if (!text && !reserve) return null;
+  const names = teamNames(item);
+  const full = names.join(" · ");
   return (
-    <p className={`${LINE} text-[11px] text-muted/85 ${className}`}
-       aria-hidden={text ? undefined : true}
-       title={text ? `멤버 ${text}` : undefined}>
-      {text ? <><span className="text-muted/60">멤버 </span>{text}</> : null}
+    <p className={`text-sm font-bold leading-5 text-fg ${wrap
+         ? "break-words [overflow-wrap:anywhere]" : "truncate"} ${className}`}
+       title={full || undefined}>
+      {names.map((n, i) => (
+        <Fragment key={`${i}-${n}`}>
+          {i > 0 && (
+            <>
+              <span aria-hidden="true" className="px-1 font-normal text-muted/60">·</span>
+              <span className="sr-only">, </span>
+            </>
+          )}
+          <span>{n}</span>
+        </Fragment>
+      ))}
     </p>
   );
 }
 
 /* ── 명단 행 ─────────────────────────────────────────────────────────────── */
-function ListRow({ item, isGroup }: { item: MergedRow; isGroup: boolean }) {
+function ListRow({ item }: { item: MergedRow }) {
   const { rank, displayName } = item;
   const row = item.row;   // 없을 수 있다 — 그래도 행은 지우지 않는다.
   const clipUrl = row?.clipUid
     ? `https://chzzk.naver.com/clips/${row.clipUid}` : null;
 
   /* 행에는 링크가 **둘**이고 서로 형제다.
-   *   · 프로필(아바타 + 이름) → 치지직 채널
-   *   · 나머지 넓은 영역(멤버 줄 + 곡 줄) → 대표 클립
+   *   · 프로필(아바타) → 대표자의 치지직 채널
+   *   · 콘텐츠 열(이름 줄 + 곡 줄) → 대표 클립
    * `<a>` 안에 `<a>`를 넣지 않는다 — 중첩 링크는 브라우저가 마크업을 다시 쓰고
-   * 스크린리더가 목적을 하나로 읽는다. 오른쪽 클립 아이콘은 제거했다(행 자체가
-   * 클립으로 가므로 같은 목적지가 두 번 있을 이유가 없다).
+   * 스크린리더가 목적을 하나로 읽는다. 팀원 이름은 링크가 아니다(팀원별 프로필을
+   * 한 줄에 여러 개 두면 44px 터치 영역을 지킬 수 없고, 클립 링크와 겹친다).
+   *
+   * 콘텐츠 열이 **아바타 오른쪽의 한 열**이라 곡 줄은 이름 줄 아래·같은 들여쓰기에 서고,
+   * 순위 배지·아바타 아래로 파고들지 않는다.
    * 클립이 없으면 링크를 만들지 않고 같은 자리를 평범한 블록으로 둔다 —
    * 빈 새 창을 여는 것보다 아무 일도 일어나지 않는 편이 정직하다. */
   const body = (
     <>
-      <MemberLine item={item} reserve={isGroup} />
-      <SongLine row={item} />
+      <NameLine item={item} wrap />
+      <SongLine row={item} className="mt-0.5" />
     </>
   );
 
@@ -271,16 +258,16 @@ function ListRow({ item, isGroup }: { item: MergedRow; isGroup: boolean }) {
     <li className="flex min-w-0 items-center gap-2 rounded-lg border border-border
                    bg-bg-card/60 px-2.5 py-2">
       {rank !== null ? <RankBadge rank={rank} />
-        : <span className="w-8 shrink-0 text-center text-[11px] tabular-nums text-muted">
+        : <span className="w-9 shrink-0 text-center text-[11px] tabular-nums text-muted">
             {row?.officialOrder ?? "-"}
           </span>}
 
-      {/* 프로필 링크 — 아바타와 이름이 한 덩어리다. */}
+      {/* 프로필 링크 — 대표자 아바타. 크기는 고정이라 이름 줄바꿈과 무관하게 흔들리지 않는다. */}
       <a href={`https://chzzk.naver.com/${item.channelId}`} target="_blank"
          rel="noopener noreferrer"
          aria-label={`${displayName} 치지직 프로필 보기`}
-         className="nb-tap group/prof flex min-w-0 max-w-[45%] shrink-0 items-center
-                    gap-2 rounded transition-colors hover:text-accent
+         className="nb-tap nb-tap-icon flex shrink-0 items-center justify-center rounded-full
+                    transition-opacity hover:opacity-80
                     focus-visible:outline focus-visible:outline-2
                     focus-visible:outline-offset-2 focus-visible:outline-accent">
         {/* 프로필을 못 찾아도 자리를 비우지 않는다 — 원형 기본 아바타를 둔다. */}
@@ -292,19 +279,16 @@ function ListRow({ item, isGroup }: { item: MergedRow; isGroup: boolean }) {
                    onError={hideBrokenImage} className="h-full w-full object-cover" />
             : <User size={13} aria-hidden="true" />}
         </span>
-        <span className="truncate text-sm font-semibold text-fg" title={displayName}>
-          {displayName}
-        </span>
       </a>
 
-      {/* 나머지 영역 = 대표 클립. 프로필과 형제이므로 클릭이 섞이지 않는다. */}
+      {/* 콘텐츠 열 = 대표 클립. 프로필과 형제이므로 클릭이 섞이지 않는다. */}
       {clipUrl ? (
         <a href={clipUrl} target="_blank" rel="noopener noreferrer"
-           aria-label={`${displayName} 대표 클립 보기`}
-           className="nb-tap min-w-0 flex-1 rounded transition-colors
+           className="nb-tap block min-w-0 flex-1 rounded transition-colors
                       hover:text-accent focus-visible:outline focus-visible:outline-2
                       focus-visible:outline-offset-2 focus-visible:outline-accent">
           {body}
+          <span className="sr-only"> 대표 클립 보기</span>
         </a>
       ) : (
         <div className="min-w-0 flex-1" data-clip="none">
@@ -326,13 +310,10 @@ function ListRow({ item, isGroup }: { item: MergedRow; isGroup: boolean }) {
  * 예전에는 이 자리에 스피너 한 줄(약 200px)만 있었다. 데이터가 도착하면 그 자리에
  * 3개 부문 × (카드 5 + 행 10)이 들어서며 화면이 2,700px 넘게 길어지고, **그 아래에
  * 있던 페이지 하단 고지가 통째로 화면 밖으로 밀려났다**(실측 1440px `v=0.0866`).
- * 뷰포트 안에서 일어나는 이동이라 그대로 CLS가 된다.
  *
  * 그래서 로딩 화면이 **최종 화면과 같은 구조**를 그린다. 부문 수·카드 수(`TOP_CARDS`)·
  * 행 수(`OVERVIEW_ROWS`)는 데이터가 아니라 상수라서 미리 알 수 있고, 카드와 행은
- * 최종본과 **같은 클래스·같은 높이 계약**을 쓴다. 열 수는 같은 grid 클래스가 정하므로
- * 320px부터 1440px까지 뷰포트마다 알아서 맞는다 — 고정 px 하나로 덮지 않는다.
- * (페이지 전체에 큰 `min-height`를 씌워 빈 공간을 만드는 방식은 쓰지 않는다.)
+ * 최종본과 **같은 클래스·같은 높이 계약**을 쓴다.
  *
  * 빈 껍데기는 읽을 내용이 없으므로 `aria-hidden`으로 접근성 트리에서 빼고, 상태는
  * `role="status"` 문장 하나로만 알린다. */
@@ -340,7 +321,7 @@ function SkeletonBar({ className = "" }: { className?: string }) {
   return <span className={`block animate-pulse rounded bg-bg-hover ${className}`} />;
 }
 
-function DivisionSkeleton({ isGroup }: { isGroup: boolean }) {
+function DivisionSkeleton() {
   return (
     <section className="space-y-3" aria-hidden="true">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -356,10 +337,9 @@ function DivisionSkeleton({ isGroup }: { isGroup: boolean }) {
         {Array.from({ length: TOP_CARDS }, (_, i) => (
           <div key={i} className="card !p-0 flex h-full flex-col overflow-hidden">
             <div className="aspect-video w-full animate-pulse bg-bg-hover" />
-            {/* 실제 카드 하단부와 **같은** `min-h-[68px] p-2.5`와 같은 줄 높이. */}
+            {/* 실제 카드 하단부와 **같은** `min-h-[68px] p-2.5`와 같은 줄 높이(이름 20 + 곡 16). */}
             <div className="flex min-h-[68px] flex-1 flex-col p-2.5">
               <SkeletonBar className="h-5 w-2/3" />
-              {isGroup && <SkeletonBar className="mt-0.5 h-4 w-5/6" />}
               <SkeletonBar className="mt-0.5 h-4 w-4/5" />
             </div>
           </div>
@@ -372,16 +352,14 @@ function DivisionSkeleton({ isGroup }: { isGroup: boolean }) {
                                  border-border bg-bg-card/60 px-2.5 py-2">
             <SkeletonBar className="h-[19px] w-9 shrink-0" />
             {/* `nb-tap`을 그대로 물려받는다 — 터치 뷰포트에서만 44px 바닥이 생기므로
-                (`@media (pointer: coarse)`) 스켈레톤에 빼 두면 390px에서만 행이
-                10.7px 낮아져 최종본과 높이가 어긋난다(실측). 고정 px 대신 같은
-                클래스를 쓰는 이유가 이것이다. */}
-            <span className="nb-tap flex min-w-0 max-w-[45%] shrink-0 items-center gap-2">
+                (`@media (pointer: coarse)`) 스켈레톤에 빼 두면 390px에서만 행 높이가
+                최종본과 어긋난다(실측). 고정 px 대신 같은 클래스를 쓰는 이유가 이것이다. */}
+            <span className="nb-tap nb-tap-icon flex shrink-0 items-center justify-center">
               <SkeletonBar className="h-7 w-7 shrink-0 rounded-full" />
-              <SkeletonBar className="h-5 w-24" />
             </span>
             <span className="nb-tap block min-w-0 flex-1">
-              {isGroup && <SkeletonBar className="h-4 w-1/2" />}
-              <SkeletonBar className="h-4 w-2/3" />
+              <SkeletonBar className="h-5 w-1/2" />
+              <SkeletonBar className="mt-0.5 h-4 w-2/3" />
             </span>
           </li>
         ))}
@@ -417,12 +395,10 @@ function DivisionSection({ division, label, rows, ranking, limit, showAll,
    * **프런트에서 순위를 다시 매기지 않는다** — 동점 규칙은 서버에 있다.
    *
    * 본선(`final`)은 한 표에 솔로와 팀이 섞여 있다(실측 팀 12 · 솔로 20). 팀 여부는
-   * PIKU가 준 `teamMembers`로 정하고(`mixed`), 멤버 줄은 **모든 행에 자리를 예약**한다 —
-   * 솔로·팀 행 높이가 달라 정렬을 바꿀 때마다 목록이 흔들리지 않게. */
+   * PIKU가 준 `teamMembers`로 정한다(`mixed`). */
   const mixed = division === FINAL;
   const ordered = useMemo(
     () => mergeRanking(rows, ranking, { mixed }), [rows, ranking, mixed]);
-  const reserveMembers = division === "groups" || mixed;
 
   const top = ordered.slice(0, TOP_CARDS);
   const list = ordered.slice(0, showAll ? ordered.length : limit);
@@ -469,12 +445,12 @@ function DivisionSection({ division, label, rows, ranking, limit, showAll,
                             `${division}-sort-${next.key}`)?.focus();
                         }}
                         /* 시각 크기는 텍스트 그대로 두고 **히트 영역만** 44px로
-                           넓힌다(UI-S 계약). 정렬 탭은 촘촘히 붙어 있어
-                           `nb-tap-gap`이 이웃과의 간격도 함께 벌린다. */
+                           넓힌다(UI-S 계약). 선택 상태는 색이 아니라 **굵기와 밑줄**로도
+                           드러낸다 — 예전의 긴 정렬 안내 문장을 대신한다. */
                         className={`nb-tap nb-tap-wide inline-flex items-center
                                     justify-center rounded px-2 py-1 transition-colors ${
                           sort === o.key
-                            ? "font-semibold text-fg"
+                            ? "font-semibold text-fg underline decoration-2 underline-offset-4"
                             : "text-muted/70 hover:text-muted"}`}>
                   {o.label}
                 </button>
@@ -494,14 +470,14 @@ function DivisionSection({ division, label, rows, ranking, limit, showAll,
       {top.length > 0 && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           {top.map((item) => (
-            <TopCard key={item.channelId} item={item} isGroup={reserveMembers} />
+            <TopCard key={item.channelId} item={item} />
           ))}
         </div>
       )}
 
       <ul className="flex flex-col gap-1.5">
         {list.map((item) => (
-          <ListRow key={item.channelId} item={item} isGroup={reserveMembers} />
+          <ListRow key={item.channelId} item={item} />
         ))}
       </ul>
       {!showAll && ordered.length > limit && (
@@ -525,6 +501,8 @@ export default function SingcupOfficial({ onRanking }: {
 } = {}) {
   // 사용자가 직접 고른 단계. null이면 데이터로 정한다(아래 `pickStage`).
   const [explicitStage, setStage] = useState<Stage | null>(null);
+  // 사용자가 고른 시즌. null이면 서버가 준 첫 시즌(가장 최근).
+  const [seasonKey, setSeasonKey] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("all");
   // 공개 정렬 토큰이다. **내부 컬럼명(win_rate 등)을 쓰지 않는다** —
   // 그 이름이 번들과 응답에 남으면 "어느 형태로도 노출 금지" 계약이 깨진다.
@@ -537,8 +515,20 @@ export default function SingcupOfficial({ onRanking }: {
   const [finalErr, setFinalErr] = useState(false);
   const [finalSettled, setFinalSettled] = useState(false);
   const [campaigns, setCampaigns] = useState<PikuCampaign[] | null>(null);
+  const [seasonList, setSeasonList] = useState<PikuSeason[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+
+  // 시즌 → 단계. 정본은 서버이고, 구 백엔드일 때만 `lib/singcupSeason`의 폴백을 쓴다.
+  const seasons = resolveSeasons(seasonList);
+  const season = seasons.find((s) => s.season === seasonKey) ?? seasons[0];
+  const stages = stagesOf(season, campaigns);
+  const finalInfo = stages.find((s) => s.stage === "final") ?? null;
+  const qualInfo = stages.find((s) => s.stage === "qualifier") ?? null;
+  const finalCampaign = campaigns?.find((c) => c.campaign === finalInfo?.campaign) ?? null;
+  const qualCampaign = campaigns?.find((c) => c.campaign === qualInfo?.campaign) ?? null;
+  const finalCampaignKey = finalInfo?.campaign ?? FINAL;
+  const finalSourceKey = finalCampaign?.sources?.[0]?.key ?? FINAL;
 
   useEffect(() => {
     let alive = true;
@@ -561,33 +551,35 @@ export default function SingcupOfficial({ onRanking }: {
     return () => { alive = false; };
   }, [sort]);
 
-  // 본선 순위(`campaign=final`). 예선 응답에 섞어 주지 않고 따로 받는다.
+  // 본선 순위. 예선 응답에 섞어 주지 않고 따로 받는다. campaign 키는 시즌 정의에서 온다.
   useEffect(() => {
     let alive = true;
     setFinalErr(false);
-    api.singcup.pikuRanking(sort, undefined, 0, "final")
+    api.singcup.pikuRanking(sort, undefined, 0, finalCampaignKey)
       .then((d) => { if (alive) setFinalRank(d); })
       .catch(() => { if (alive) { setFinalRank(null); setFinalErr(true); } })
       .finally(() => { if (alive) setFinalSettled(true); });
     return () => { alive = false; };
-  }, [sort]);
+  }, [sort, finalCampaignKey]);
 
-  // 단계 상태(동결 여부·기간·마지막 수집/공개). 실패해도 화면은 뜬다 — 시각 줄만 빈다.
+  // 시즌·단계 상태와 마지막 갱신 시각. 실패해도 화면은 뜬다 — 시각 줄만 빈다.
   useEffect(() => {
     let alive = true;
     api.singcup.pikuCampaigns()
-      .then((d) => { if (alive) setCampaigns(d.campaigns ?? null); })
+      .then((d) => {
+        if (!alive) return;
+        setCampaigns(d.campaigns ?? null);
+        setSeasonList(d.seasons ?? null);
+      })
       .catch(() => { if (alive) setCampaigns(null); });
     return () => { alive = false; };
   }, []);
 
   // 본선 가용성(공개본 / 미공개 / 구 백엔드 / 실패)과 그에 따른 기본 단계.
-  const finalAvail = classifyFinal(finalRank, finalErr, finalSettled);
+  const finalAvail = classifyFinal(finalRank, finalErr, finalSettled, finalSourceKey);
   const finalEntries: PikuEntry[] | null =
     finalAvail.state === "published" ? finalAvail.entries : null;
-  const stage = pickStage(finalAvail, explicitStage);
-  const finalCampaign = campaigns?.find((c) => c.campaign === "final") ?? null;
-  const qualCampaign = campaigns?.find((c) => c.campaign === "qualifier") ?? null;
+  const stage: Stage | null = finalInfo ? pickStage(finalAvail, explicitStage) : "qualifier";
   /** 본선 병합에 쓰는 공식 명단 — 세 부문 전체(본선은 여성·남성·그룹이 한 표에 섞여 있다). */
   const allOfficialRows = useMemo(
     () => DIVISIONS.flatMap((d) => (data?.divisions?.[d] ?? []) as (QualifierRow | QualifierGroupRow)[]),
@@ -598,46 +590,69 @@ export default function SingcupOfficial({ onRanking }: {
     return div && div.available && div.entries.length > 0 ? div.entries : null;
   }, [piku]);
 
-  // 정렬 안내 문장의 표시 여부 — 지금 보고 있는 단계에 순위가 있을 때만.
-  const hasAnyRanking = stage === "final"
-    ? !!finalEntries : DIVISIONS.some((d) => rankingOf(d));
-  const sortOptions = piku?.sortOptions ?? [
-    { key: "primary", label: "우승 비율순" },
-    { key: "secondary", label: "승률순" },
-  ];
+  // 갱신 안내 = [갱신 방식 한 문장] + [마지막 갱신]. 둘 다 서버 상태에서만 온다(모드 하드코딩 없음).
+  const finalPolicy = collectionNotice(finalCampaign);
+  const finalLast = lastUpdatedText(finalCampaign);
+  const qualLast = lastUpdatedText(qualCampaign);
+  const finalSourceUrl = finalRank?.divisions?.[finalSourceKey]?.sourceUrl ?? "";
 
   return (
     <div className="space-y-6">
-      {/* ── 단계 탭: 본선(진행 중, 기본) / 예선(과거 기록) ── */}
-      <div className="nb-tap-gap flex flex-wrap items-center gap-1.5" role="tablist"
-           aria-label="싱드컵 단계">
-        {STAGE_ORDER.map((k) => {
-          const on = stage === k;
-          const hint = k === "final" ? finalHint(finalAvail) : "과거 기록";
-          return (
-            <button key={k} type="button" role="tab" id={`stage-${k}`}
-                    aria-selected={on} tabIndex={on ? 0 : -1}
-                    onClick={() => setStage(k)}
-                    onKeyDown={(e) => {
-                      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-                      e.preventDefault();
-                      const cur = STAGE_ORDER.indexOf(stage ?? "qualifier");
-                      const next = STAGE_ORDER[(cur + (e.key === "ArrowRight" ? 1 : -1)
-                        + STAGE_ORDER.length) % STAGE_ORDER.length];
-                      setStage(next);
-                      document.getElementById(`stage-${next}`)?.focus();
-                    }}
-                    className="nb-tap rounded-lg border px-3 py-2 text-sm font-semibold
-                               transition-colors"
-                    style={{ background: on ? "rgba(250,204,21,0.10)" : "transparent",
-                             borderColor: on ? "rgba(250,204,21,0.40)"
-                               : "rgb(var(--color-border-rgb))",
-                             color: on ? GOLD : "rgb(var(--color-muted-rgb))" }}>
-              {STAGE_LABEL[k]}
-              <span className="ml-1.5 text-[11px] font-normal opacity-80">{hint}</span>
-            </button>
-          );
-        })}
+      {/* ── 시즌 · 단계 ──
+          시즌이 하나뿐이면 이름만 조용히 적고, 둘 이상이면 고를 수 있게 한다. */}
+      <div className="space-y-2">
+        {seasons.length > 1 ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <label htmlFor="singcup-season" className="text-xs font-semibold text-muted">
+              시즌
+            </label>
+            <select id="singcup-season" value={season.season}
+                    onChange={(e) => { setSeasonKey(e.target.value); setStage(null); }}
+                    className="nb-tap rounded-lg border border-border bg-bg px-2.5 py-1.5
+                               text-sm font-semibold text-fg focus:border-accent
+                               focus:outline-none">
+              {seasons.map((s) => <option key={s.season} value={s.season}>{s.label}</option>)}
+            </select>
+          </div>
+        ) : (
+          <p className="text-sm font-bold text-fg" data-testid="singcup-season">
+            {season.label}
+          </p>
+        )}
+
+        <div className="nb-tap-gap flex flex-wrap items-center gap-1.5" role="tablist"
+             aria-label={`${season.label} 단계`}>
+          {stages.map((info) => {
+            const on = stage === info.stage;
+            const hint = stageHint(info.state,
+              info.stage === "final" ? finalAvail.state : undefined);
+            return (
+              <button key={info.stage} type="button" role="tab" id={`stage-${info.stage}`}
+                      aria-selected={on} tabIndex={on ? 0 : -1}
+                      onClick={() => setStage(info.stage)}
+                      onKeyDown={(e) => {
+                        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                        e.preventDefault();
+                        const cur = Math.max(0, stages.findIndex((s) => s.stage === stage));
+                        const next = stages[(cur + (e.key === "ArrowRight" ? 1 : -1)
+                          + stages.length) % stages.length].stage;
+                        setStage(next);
+                        document.getElementById(`stage-${next}`)?.focus({ preventScroll: true });
+                      }}
+                      /* 선택 상태는 색만이 아니라 **굵기와 아래 테두리**로도 드러낸다. */
+                      className={`nb-tap rounded-lg border px-3 py-2 text-sm transition-colors ${
+                        on ? "font-bold" : "font-semibold"}`}
+                      style={{ background: on ? "rgba(250,204,21,0.10)" : "transparent",
+                               borderColor: on ? "rgba(250,204,21,0.40)"
+                                 : "rgb(var(--color-border-rgb))",
+                               boxShadow: on ? `inset 0 -2px 0 ${GOLD}` : undefined,
+                               color: on ? GOLD : "rgb(var(--color-muted-rgb))" }}>
+                {STAGE_LABEL[info.stage]}
+                <span className="ml-1.5 text-[11px] font-normal opacity-80">{hint}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {stage === null ? (
@@ -647,7 +662,7 @@ export default function SingcupOfficial({ onRanking }: {
            예선 골격이 두 경우의 CLS 합이 더 작았다. */
         <div className="space-y-8" aria-busy="true">
           <p role="status" className="sr-only">싱드컵 순위를 불러오는 중입니다.</p>
-          {DIVISIONS.map((d) => <DivisionSkeleton key={d} isGroup={d === "groups"} />)}
+          {DIVISIONS.map((d) => <DivisionSkeleton key={d} />)}
         </div>
       ) : stage === "final" ? (
         /* ── 본선 ── */
@@ -655,109 +670,71 @@ export default function SingcupOfficial({ onRanking }: {
           <h2 className="flex flex-wrap items-center gap-2 text-xl font-extrabold
                          tracking-tight md:text-2xl">
             <Trophy size={20} style={{ color: GOLD }} aria-hidden="true" />
-            싱드컵 파이널 본선
+            본선 순위
           </h2>
           <p className="mt-2 text-sm leading-relaxed text-muted">
-            {finalCampaign?.collectionStartAt && finalCampaign?.collectionEndAt
-              ? <>본선 기간 {fmtSeoulDate(finalCampaign.collectionStartAt)} ~ {fmtSeoulDate(finalCampaign.collectionEndAt)} (Asia/Seoul)
-                  {finalCampaign.scheduleSource === "user_provided"
-                    && <span className="text-muted/70"> · 일정은 운영자 제공 정보이며 공식 공지로 확인되지 않았습니다</span>}</>
-              : "본선 진행 중"}
+            {finalSourceUrl ? (
+              <a href={finalSourceUrl} target="_blank" rel="noopener noreferrer nofollow"
+                 className="underline underline-offset-2 hover:text-fg">PIKU</a>
+            ) : "PIKU"}{" "}
+            {UNOFFICIAL_NOTICE}
           </p>
-          <p className="mt-2 border-l-2 border-border pl-3 text-sm leading-relaxed
-                        text-muted">
-            공식 심사 결과나 순위가 아닙니다. 아래 순위는 NexBot이 PIKU 본선 페이지의 공개
-            사용자 투표 데이터를 내려받아 <b className="text-fg">다시 계산한 순서</b>이며,
-            대회 주최 측의 발표와 무관합니다.
-          </p>
-          {/* 수집 상태 — 없으면 없다고, 있으면 언제 것인지 적는다. */}
-          <p className="mt-2 text-[12px] text-muted/85" role="status">
-            {finalCampaign
-              ? (finalCampaign.lastPublishedAt
-                  ? `마지막 갱신 ${fmtSeoul(finalCampaign.lastPublishedAt)} (Asia/Seoul)`
-                  : "아직 공개된 본선 순위가 없습니다")
-                + (finalCampaign.lastCollectedAt
-                    ? ` · 마지막 수집 ${fmtSeoul(finalCampaign.lastCollectedAt)}` : "")
-                + (finalCampaign.status === "active" ? " · 자동 수집 대상" : "")
-              : "수집 상태를 불러오는 중"}
+          {/* 갱신 안내 — 갱신 방식(수집 주기와 공개 반영을 구분) + 마지막 갱신 한 번.
+              campaigns 응답이 늦게 오므로 자리를 미리 잡는다(좁은 화면 두 줄, 넓은 화면 한 줄). */}
+          <p className="mt-1.5 min-h-8 text-[12px] leading-4 text-muted/85 sm:min-h-4"
+             role="status" aria-hidden={finalPolicy || finalLast ? undefined : true}
+             data-testid="final-update">
+            {finalPolicy && <span>{finalPolicy}</span>}
+            {finalPolicy && finalLast && " "}
+            {finalLast && <span className="whitespace-nowrap">{finalLast}</span>}
           </p>
         </div>
       ) : (
-        /* ── 예선(과거 기록) ── */
+        /* ── 예선 ── */
         <div className="min-w-0 max-w-3xl">
           <h2 className="flex flex-wrap items-center gap-2 text-xl font-extrabold
                          tracking-tight md:text-2xl">
             <Trophy size={20} style={{ color: GOLD }} aria-hidden="true" />
-            싱드컵 공식 예선 참가자
+            예선 순위
           </h2>
           <p className="mt-2 text-sm leading-relaxed text-muted">
-            치지직이 공식 공지로 발표한 예선 참가자 명단입니다.
+            <b className="text-fg">
+              {STAGE_LABEL.qualifier} {stageHint(qualInfo?.state ?? "ended")}
+            </b>
+            {qualInfo?.state === "ended" ? " · 예선 결과는 기록으로 보관됩니다." : ""}
           </p>
-          {/* 본선이 아직 없을 때만 — 예선이 기본 화면인 이유를 방문자에게 밝힌다. */}
-          {finalAvail.state !== "published" && finalAvail.state !== "loading" && (
-            <p className="mt-2 text-[12px] text-muted/85" role="status" data-testid="final-pending">
+          {/* 본선이 아직 없을 때만 — 예선이 기본 화면인 이유를 짧게 밝힌다. */}
+          {finalInfo && finalAvail.state !== "published" && finalAvail.state !== "loading" && (
+            <p className="mt-1 text-[12px] text-muted/85" role="status" data-testid="final-pending">
               {finalAvail.state === "error"
-                ? "본선 순위를 불러오지 못했습니다. 예선 결과는 그대로 볼 수 있습니다."
-                : "본선 순위는 준비 중입니다(수집·검토 후 공개). 그때까지 예선 결과를 보여 드립니다."}
+                ? "본선 순위를 불러오지 못했습니다."
+                : "본선 순위는 준비 중입니다."}
             </p>
           )}
-          {/* 예선은 동결이다 — 마지막 구간 수집이 빠졌고 소급 갱신은 보류다. 숨기지 않는다. */}
-          <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2
-                        text-[12px] leading-relaxed text-muted" role="status">
-            <b className="text-fg">예선 순위 업데이트 보류.</b>{" "}
-            예선 마지막 구간 수집이 누락됐고 소급 갱신은 보류 상태입니다. 예선 PIKU 페이지는
-            현재 접근할 수 없어 다시 읽을 수 없습니다.
-            {/* 시각은 campaigns 응답이 늦게 오므로 **한 줄을 미리 예약**한다 — 문장 안에
-                끼워 넣으면 도착 순간 줄이 늘며 아래 3부문이 통째로 밀린다(실측 CLS 0.087). */}
-            <span className={`${LINE} mt-0.5 block text-[11.5px] text-muted/80`}
-                  aria-hidden={qualCampaign?.lastPublishedAt ? undefined : true}>
-              {qualCampaign?.lastPublishedAt
-                ? `마지막 갱신 ${fmtSeoul(qualCampaign.lastPublishedAt)} (Asia/Seoul) 기준` : ""}
-            </span>
+          <p className="mt-2 text-sm leading-relaxed text-muted">
+            참가자 명단은 치지직 공식 공지 기준입니다. PIKU {UNOFFICIAL_NOTICE}
           </p>
-        {/* 혼동 방지 — 계층을 들여쓰기가 아니라 구분선으로 만든다. */}
-        <p className="mt-2 border-l-2 border-border pl-3 text-sm leading-relaxed
-                      text-muted">
-          공식 심사 결과나 순위가 아닙니다. 아래 순위는 NexBot이 PIKU의 공개
-          사용자 투표 데이터를 내려받아 <b className="text-fg">다시 계산한 순서</b>이며,
-          대회 주최 측의 발표와 무관합니다.
-        </p>
-        <div className="nb-tap-gap mt-3 flex flex-wrap items-center gap-2">
-          {/* 원문으로 갈 수 있어야 한다 — 명단을 대조하려는 사람에게 유일한 근거다. */}
-          <a href={SINGCUP_QUALIFIERS.sourceUrl} target="_blank"
-             rel="noopener noreferrer nofollow"
-             className="btn-secondary nb-tap inline-flex items-center gap-1.5 text-sm">
-            공식 공지 원문 보기 <ExternalLink size={13} aria-hidden="true" />
-          </a>
-          {onRanking && (
-            <button type="button" onClick={onRanking}
-                    className="btn-secondary nb-tap inline-flex items-center gap-1.5 text-sm">
-              <BarChart3 size={13} aria-hidden="true" /> 비공식 인기점수 보기
-            </button>
-          )}
+          {/* 종료된 단계는 갱신 방식을 적지 않는다 — 마지막 갱신만. */}
+          <p className="mt-1.5 min-h-4 text-[12px] leading-4 text-muted/85" role="status"
+             aria-hidden={qualLast ? undefined : true} data-testid="qualifier-update">
+            {qualLast}
+          </p>
+          <div className="nb-tap-gap mt-3 flex flex-wrap items-center gap-2">
+            {/* 원문으로 갈 수 있어야 한다 — 명단을 대조하려는 사람에게 유일한 근거다. */}
+            <a href={SINGCUP_QUALIFIERS.sourceUrl} target="_blank"
+               rel="noopener noreferrer nofollow"
+               className="btn-secondary nb-tap inline-flex items-center gap-1.5 text-sm">
+              공식 공지 원문 보기 <ExternalLink size={13} aria-hidden="true" />
+            </a>
+            {onRanking && (
+              <button type="button" onClick={onRanking}
+                      className="btn-secondary nb-tap inline-flex items-center gap-1.5 text-sm">
+                <BarChart3 size={13} aria-hidden="true" /> 비공식 인기점수 보기
+              </button>
+            )}
+          </div>
         </div>
-      </div>
       )}
-
-      {/* 현재 정렬 기준을 문장으로도 밝힌다 — 버튼 색만으로는 무엇이 적용됐는지
-          색각 이상 사용자에게 전달되지 않는다.
-
-          이 문장은 PIKU 응답이 도착해야 나온다. 조건부로 그리면 명단(`/qualifiers`)
-          보다 늦게 올 때 이 줄이 끼어들며 아래 전체가 한 줄만큼 밀린다(실측 47px).
-          그래서 **문장은 항상 그리고**, 아직일 때만 `invisible`로 숨긴다 —
-          `visibility: hidden`은 자리를 그대로 두면서 접근성 트리에서도 빠지므로
-          `role="status"`가 빈 문장을 먼저 읽어 버리는 일이 없다. `hidden`을 쓰면
-          자리까지 사라져 원래 문제로 돌아간다. 글줄 수는 실제 문장이 정하므로
-          320px에서 3줄, 1440px에서 1줄로 뷰포트마다 알아서 맞는다. */}
-      <div className={hasAnyRanking ? undefined : "invisible"}
-           aria-hidden={hasAnyRanking ? undefined : true}>
-        <p role="status" className="text-xs text-muted">
-          현재 <b className="text-fg">
-            {sortOptions.find((o) => o.key === sort)?.label ?? "우승 비율순"}
-          </b>으로 정렬했습니다. 기준을 바꾸면 순위를 1위부터 다시 계산합니다.
-          비율·승률 수치는 표시하지 않습니다.
-        </p>
-      </div>
 
       {/* ── 본선 화면 ── */}
       {stage === "final" && (
@@ -770,7 +747,7 @@ export default function SingcupOfficial({ onRanking }: {
         ) : loading || finalAvail.state === "loading" ? (
           <div className="space-y-8" aria-busy="true">
             <p role="status" className="sr-only">본선 순위를 불러오는 중입니다.</p>
-            <DivisionSkeleton isGroup />
+            <DivisionSkeleton />
           </div>
         ) : !finalEntries ? (
           <div className="rounded-xl border border-border bg-bg-card/60 p-6 text-center">
@@ -778,7 +755,7 @@ export default function SingcupOfficial({ onRanking }: {
             <p className="mt-1 text-xs text-muted">
               {finalAvail.state === "unsupported"
                 ? "서비스 갱신이 진행 중입니다. 잠시 뒤 다시 확인해 주세요. "
-                : "본선 PIKU 투표가 수집·검토되면 이 자리에 1위부터 표시됩니다. "}
+                : "본선 순위가 공개되면 이 자리에 표시됩니다. "}
               예선 결과는{" "}
               <button type="button" onClick={() => setStage("qualifier")}
                       className="underline underline-offset-2 hover:text-fg">예선 탭</button>
@@ -786,33 +763,17 @@ export default function SingcupOfficial({ onRanking }: {
             </p>
           </div>
         ) : (
-          <>
-            <div className="space-y-8">
-              <DivisionSection
-                division={FINAL}
-                label="파이널 본선"
-                rows={allOfficialRows}
-                ranking={finalEntries}
-                limit={finalEntries.length}
-                showAll
-                sort={sort}
-                onSort={setSort} />
-            </div>
-            <p className="border-t border-border/60 pt-3 text-[11px] leading-relaxed
-                          text-muted/80">
-              사용자 투표 순위 출처:{" "}
-              {finalRank?.divisions?.[FINAL]?.sourceUrl ? (
-                <a href={finalRank?.divisions[FINAL].sourceUrl} target="_blank"
-                   rel="noopener noreferrer nofollow"
-                   className="underline underline-offset-2 hover:text-fg">
-                  PIKU 파이널 본선
-                </a>
-              ) : "PIKU 파이널 본선"}
-              {finalRank?.divisions?.[FINAL]?.lastSuccessAt
-                ? ` (${fmtSeoul(finalRank!.divisions[FINAL].lastSuccessAt)} 기준, Asia/Seoul)` : ""}
-              . NexBot이 재계산한 순서이며 공식 결과가 아닙니다.
-            </p>
-          </>
+          <div className="space-y-8">
+            <DivisionSection
+              division={FINAL}
+              label="파이널 본선"
+              rows={allOfficialRows}
+              ranking={finalEntries}
+              limit={finalEntries.length}
+              showAll
+              sort={sort}
+              onSort={setSort} />
+          </div>
         )
       )}
 
@@ -836,12 +797,8 @@ export default function SingcupOfficial({ onRanking }: {
             );
           })}
         </div>
-
-        {/* 정렬은 이제 **각 부문 제목 오른쪽**에 있다(요구). 여기 또 두면 한 화면에
-            같은 컨트롤이 둘이 되고, 부문마다 기준이 다른지 같은지도 모호해진다.
-            기준은 세 부문이 공유한다 — 부문을 바꿔도 고른 기준이 유지된다. */}
+        {/* 정렬은 **각 부문 제목 오른쪽**에 있다. 기준은 세 부문이 공유한다. */}
       </div>
-
 
       {/* ── 상태 ── */}
       {err ? (
@@ -859,7 +816,7 @@ export default function SingcupOfficial({ onRanking }: {
             공식 예선 참가자 명단을 불러오는 중입니다.
           </p>
           {DIVISIONS.map((d) => (
-            <DivisionSkeleton key={d} isGroup={d === "groups"} />
+            <DivisionSkeleton key={d} />
           ))}
         </div>
       ) : !data ? (
@@ -879,30 +836,6 @@ export default function SingcupOfficial({ onRanking }: {
               onSort={setSort} />
           ))}
         </div>
-      )}
-
-      {/* ── 출처 · 갱신 시각 ── */}
-      {piku && (
-        <p className="border-t border-border/60 pt-3 text-[11px] leading-relaxed
-                      text-muted/80">
-          사용자 투표 순위 출처:{" "}
-          {DIVISIONS.map((d) => piku.divisions?.[d]).filter(Boolean).map((v, i) => (
-            <span key={v!.division}>
-              {i > 0 && " · "}
-              {v!.sourceUrl ? (
-                <a href={v!.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"
-                   className="underline underline-offset-2 hover:text-fg">
-                  {v!.label}
-                </a>
-              ) : v!.label}
-              {v!.lastSuccessAt
-                ? ` (${new Date(v!.lastSuccessAt * 1000).toLocaleString("ko-KR", {
-                    month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })} 기준)`
-                : " (아직 수집된 데이터 없음)"}
-            </span>
-          ))}
-          . NexBot이 재계산한 순서이며 공식 결과가 아닙니다.
-        </p>
       )}
       </>)}
     </div>

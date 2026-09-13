@@ -44,6 +44,16 @@ FINAL_SOURCE = "final"
 CAMPAIGN_QUALIFIER = "qualifier"
 CAMPAIGN_FINAL = "final"
 
+#: 시즌 키. **표시 이름이 아니라 안정적인 내부 키**다 — 이름을 고쳐도 키는 그대로 둔다.
+SEASON_2026_GALAXY = "2026-galaxy"
+
+#: 공개 단계 상태. campaign `status`(frozen/active)는 **수집 쓰기 게이트**이고, 이것은
+#: 방문자에게 보이는 **대회 진행 상태**다. 둘을 섞지 않는다 — 수집을 잠갔다고 대회가
+#: 끝난 것은 아니고, 대회가 끝나도 마지막 결과를 한 번 더 받을 수 있다.
+#: 날짜 문자열로 판정하지 않는다(시간대·일정 변경이 화면마다 다르게 해석된다).
+STAGE_STATES: tuple[str, ...] = ("upcoming", "in_progress", "ended")
+STAGES: tuple[str, ...] = ("final", "qualifier")
+
 #: source key → 정의. **여기 없는 source key는 어디에서도 받지 않는다.**
 SOURCES: dict[str, dict[str, Any]] = {
     "female_solo": {
@@ -79,6 +89,11 @@ for _k, _v in SOURCES.items():
 CAMPAIGNS: dict[str, dict[str, Any]] = {
     CAMPAIGN_QUALIFIER: {
         "label": "예선",
+        "season": SEASON_2026_GALAXY,
+        #: 화면이 쓰는 단계 종류(본선/예선). 새 시즌의 campaign 키가 달라져도
+        #: 화면은 이 값으로 탭을 고른다.
+        "stage": "qualifier",
+        "stageState": "ended",
         "status": "frozen",
         "sources": list(QUALIFIER_SOURCES),
         # 일정은 예선 공지 기준. 마지막 수집·공개는 DB가 안다(`campaign_status`).
@@ -89,6 +104,10 @@ CAMPAIGNS: dict[str, dict[str, Any]] = {
     },
     CAMPAIGN_FINAL: {
         "label": "본선",
+        "season": SEASON_2026_GALAXY,
+        "stage": "final",
+        # 대회가 끝나면 이 값을 "ended"로 바꾼다(코드 변경 = 검토).
+        "stageState": "in_progress",
         "status": "active",
         "sources": [FINAL_SOURCE],
         # 사용자 제공 정보(2026-09-12). 공식 공지로 교차 확인하지 못했다 — 화면에
@@ -97,6 +116,26 @@ CAMPAIGNS: dict[str, dict[str, Any]] = {
         "collectionEndAt": "2026-09-16T23:59:59+09:00",
         "scheduleSource": "user_provided",
         "note": "",
+    },
+}
+
+#: 시즌 정의 — **싱드컵 → 시즌 → 단계(campaign)** 계층의 정본.
+#:
+#: 싱드컵은 한 해에 여러 번 열릴 수 있다. 본선·예선을 페이지 최상위 개념으로 두면
+#: 다음 시즌이 오는 순간 "어느 해의 본선인가"가 화면에서 사라진다. 그래서 campaign은
+#: 반드시 한 시즌에 속하고(`CAMPAIGNS[*]["season"]`), 화면은 시즌을 먼저 고른 뒤 그
+#: 시즌의 campaign만 읽는다 — 시즌끼리 데이터가 섞일 경로가 없다.
+#:
+#: 새 시즌 추가 = 여기 한 줄 + 그 시즌의 campaign·source 정의. **DB 스키마는 바뀌지 않는다**
+#: (source key가 campaign을 넘어 겹치지 않는다는 기존 계약이 그대로 격리를 보장한다).
+#: 기존 행에는 season 컬럼이 없다 — campaign이 곧 시즌을 결정하므로 필요 없다.
+SEASONS: dict[str, dict[str, Any]] = {
+    SEASON_2026_GALAXY: {
+        "label": "2026 싱드컵 갤럭시",
+        # 시즌 전체 공개 여부. False면 공개 목록에서 통째로 빠진다.
+        "public": True,
+        # 화면 기본 시즌을 고르는 데 쓴다(숫자가 클수록 최근).
+        "order": 202602,
     },
 }
 
@@ -168,6 +207,9 @@ def public_meta() -> list[dict[str, Any]]:
     return [{
         "campaign": k,
         "label": v["label"],
+        "season": v["season"],
+        "stage": v["stage"],
+        "stageState": v["stageState"],
         "status": v["status"],
         "sources": [{
             "key": s, "label": SOURCES[s]["label"], "sourceId": SOURCES[s]["sourceId"],
@@ -178,6 +220,31 @@ def public_meta() -> list[dict[str, Any]]:
         "scheduleSource": v.get("scheduleSource", ""),
         "note": v["note"],
     } for k, v in CAMPAIGNS.items()]
+
+
+def season_of(campaign: str) -> str:
+    if campaign not in CAMPAIGNS:
+        raise CampaignError("bad_campaign", "알 수 없는 단계입니다.")
+    return CAMPAIGNS[campaign]["season"]
+
+
+def public_seasons() -> list[dict[str, Any]]:
+    """공개 시즌 목록 — 최근 시즌이 먼저. 각 시즌은 **자기 campaign 키만** 담는다.
+
+    화면은 이 목록으로 시즌·단계 탭을 만든다. 공개하지 않는 시즌은 통째로 뺀다.
+    """
+    out = []
+    for key, s in sorted(SEASONS.items(), key=lambda kv: -int(kv[1]["order"])):
+        if not s.get("public"):
+            continue
+        camps = [c for c, v in CAMPAIGNS.items() if v["season"] == key]
+        out.append({
+            "season": key,
+            "label": s["label"],
+            # 본선이 앞 — 탭 순서가 곧 이 순서다.
+            "campaigns": sorted(camps, key=lambda c: STAGES.index(CAMPAIGNS[c]["stage"])),
+        })
+    return out
 
 
 # ── 테스트 전용 ─────────────────────────────────────────────────────────────
