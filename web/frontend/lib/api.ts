@@ -462,6 +462,10 @@ export const api = {
       request<{ ok: boolean; id: number; status: string }>(
         `/api/admin/support/corrections/${id}/status`,
         { method: "POST", body: JSON.stringify({ status }) }),
+    /** 수정 요청 삭제(OWNER, 되돌릴 수 없음). 응답에 삭제 전 내용은 없다. */
+    deleteCorrection: (id: number) =>
+      request<{ ok: boolean; id: number; deleted: boolean }>(
+        `/api/admin/support/corrections/${id}`, { method: "DELETE" }),
     /** AUTO-2 자동화 요약 — 모드·장치·최근 회차. **secret 없음.** */
     pikuAutomation: () =>
       request<import("./types").PikuAutomationStatus>(

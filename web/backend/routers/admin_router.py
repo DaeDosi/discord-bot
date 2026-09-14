@@ -1885,6 +1885,18 @@ async def support_correction_status(request_id: int, body: CorrectionStatusBody,
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+@router.delete("/support/corrections/{request_id}")
+async def support_correction_delete(request_id: int, user: dict = Depends(_require_owner)):
+    """OWNER 수동 삭제(되돌릴 수 없음). 이용자용 삭제 API는 두지 않는다 —
+    접수 번호는 순차라 번호만으로 지울 수 있게 하면 남의 요청을 지울 수 있다.
+    삭제 요청은 이메일로 받고 OWNER가 판단한 뒤 여기서 지운다."""
+    import support
+    try:
+        return {"ok": True, **await support.delete_request(request_id)}
+    except support.SupportNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
 @router.get("/piku/collector/automation")
 async def piku_automation_status(user: dict = Depends(_require_owner)):
     """자동화 패널 요약 — 모드·장치·최근 회차. **secret을 담지 않는다.**"""

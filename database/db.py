@@ -397,6 +397,57 @@ async def _migrate_piku_and_qualifier_schema(db) -> None:
                 await db.rollback()
 
 
+# ── 수정 요청 보관 정책 (SUPPORT-POLICY-1) ─────────────────────────────────
+# "처리 후 180일"·"처리 후 30일에 이메일 제거"를 계산하려면 **상태가 바뀐 시각**이 필요한데
+# 기존 스키마에는 `created_at`뿐이었다. 두 컬럼만 더한다.
+#   · status_changed_at        마지막으로 status가 실제로 바뀐 시각. 신규 행은 created_at.
+#   · contact_email_cleared_at 정책으로 이메일을 비운 시각. "처음부터 안 적음"과
+#                              "보관 기간이 지나 지움"을 운영 화면이 구분하는 유일한 근거다.
+# 둘 다 `NOT NULL DEFAULT 0`이라 구 코드의 INSERT(컬럼 미지정)와 호환된다.
+# legacy 루프(예외 삼킴)가 아니라 PIKU와 같은 **엄격 경로**로 적용한다 — 이 컬럼이 조용히
+# 빠진 채 기동하면 정리 작업이 매일 실패하는데 화면은 정상으로 보인다.
+_CORRECTION_RETENTION_COLUMNS = (
+    ("status_changed_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("contact_email_cleared_at", "INTEGER NOT NULL DEFAULT 0"),
+)
+# 기존 행(또는 배포가 겹친 동안 구 코드가 넣은 행)의 기준 시각을 접수 시각으로 채운다.
+# 조건부 UPDATE라 몇 번을 돌려도 결과가 같고, 이미 채워진 값은 건드리지 않는다.
+_CORRECTION_STATUS_BACKFILL = (
+    "UPDATE correction_requests SET status_changed_at = created_at"
+    " WHERE status_changed_at = 0 AND created_at > 0"
+)
+
+
+async def _migrate_correction_retention_schema(db) -> None:
+    """수정 요청 보관 컬럼을 **실패를 숨기지 않고** 적용한다(PIKU strict migration과 같은 규칙).
+
+    되돌릴 때 컬럼을 DROP하지 않는다 — 구 코드는 이 컬럼을 모르고 그대로 동작한다.
+    """
+    committed = False
+    try:
+        existing = await _table_columns(db, "correction_requests")
+        if not existing:
+            raise sqlite3.OperationalError(
+                "correction_requests 테이블이 없다 — 앞선 스키마 초기화가 실패했다")
+        for column, decl in _CORRECTION_RETENTION_COLUMNS:
+            if column in existing:
+                continue
+            try:
+                await db.execute(
+                    f"ALTER TABLE correction_requests ADD COLUMN {column} {decl}")
+            except sqlite3.Error:
+                # 봇·백엔드가 동시에 기동하며 같은 컬럼을 만들었을 수 있다 — 다시 조회해 확인한다.
+                if column not in await _table_columns(db, "correction_requests"):
+                    raise
+        await db.execute(_CORRECTION_STATUS_BACKFILL)
+        await db.commit()
+        committed = True
+    finally:
+        if not committed:
+            with contextlib.suppress(Exception):
+                await db.rollback()
+
+
 async def init_db():
     db = await get_db()
     await db.executescript("""
@@ -1722,3 +1773,4 @@ async def init_db():
 
     # 위 루프와 달리 **실패를 삼키지 않는다**. 아래 참조.
     await _migrate_piku_and_qualifier_schema(db)
+    await _migrate_correction_retention_schema(db)

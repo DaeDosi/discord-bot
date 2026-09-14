@@ -205,10 +205,13 @@ test("공개 화면에 내부 처리 상태를 노출하지 않는다", () => {
   }
 });
 
-test("보관 기간 문구를 임의로 만들지 않았다", () => {
+test("보관 기간 문구는 정본(lib/supportRetention.ts)에서만 가져온다", () => {
+  // SUPPORT-POLICY-1 이전에는 "보관 기간을 적지 않았다"를 막았다. 정책이 확정된 뒤에는
+  // 폼이 **숫자를 직접 적지 않고** 방침과 같은 문장을 가져오는지를 본다.
   const s = FORM();
-  for (const bad of ["6개월", "1년", "30일", "90일", "보관 기간"]) {
-    assert.ok(!s.includes(bad), `방침에 없는 보관 기간을 지어냈다: ${bad}`);
+  assert.ok(s.includes('from "@/lib/supportRetention"'));
+  for (const bad of ["6개월", "1년", "7일", "30일", "90일", "180일", "365일"]) {
+    assert.ok(!s.includes(bad), `폼에 보관 기간 숫자를 직접 적었다: ${bad}`);
   }
 });
 

@@ -15,8 +15,9 @@
    (`dangerouslySetInnerHTML` 금지, 계약 테스트). 이스케이프해 저장하지도 않는다
    (화면에 `&lt;`가 보인다).
 
-보관 기간은 **이 모듈이 정하지 않는다.** 개인정보처리방침의 결정 사항이고,
-지금 방침에는 '수정 요청'이라는 항목 자체가 없다. 임의 문구를 만들지 않는다.
+보관 기간은 **이 모듈이 정하지 않는다** — 정본은 `support_retention.py`(SUPPORT-POLICY-1)이고,
+개인정보처리방침·공개 폼 문구가 같은 숫자를 쓴다. 여기서는 상태가 **실제로 바뀐 시각**
+(`status_changed_at`)을 정확히 남기는 것까지만 책임진다.
 """
 from __future__ import annotations
 
@@ -26,6 +27,8 @@ import os
 import re
 import time
 import unicodedata
+
+import support_retention as retention
 
 from database import get_db
 
@@ -121,6 +124,10 @@ class SupportRateLimited(SupportError):
 
 class SupportDuplicate(SupportError):
     """같은 내용이 이미 접수됐다. 라우터가 409로 바꾼다."""
+
+
+class SupportNotFound(SupportError):
+    """없는 접수 번호. 삭제 라우트가 404로 바꾼다(상태 변경은 기존 계약대로 400)."""
 
 
 class SupportTemporary(RuntimeError):
@@ -281,14 +288,16 @@ async def submit(body: dict, *, submitter: str) -> dict:
     key = _dedupe_key(submitter, category, clip_ref, description)
 
     db = await get_db()
+    now = int(time.time())
     try:
+        # 신규 행의 보관 기준 시각은 접수 시각이다(`status_changed_at = created_at`).
         cur = await db.execute(
             """INSERT INTO correction_requests
                    (created_at, category, clip_ref, description, desired_fix,
-                    evidence_url, contact_email, dedupe_key, status)
-               VALUES (?,?,?,?,?,?,?,?,'received')""",
-            (int(time.time()), category, clip_ref, description, desired,
-             evidence, email, key))
+                    evidence_url, contact_email, dedupe_key, status, status_changed_at)
+               VALUES (?,?,?,?,?,?,?,?,'received',?)""",
+            (now, category, clip_ref, description, desired,
+             evidence, email, key, now))
         await db.commit()
     except Exception as e:
         try:
@@ -317,7 +326,8 @@ async def submit(body: dict, *, submitter: str) -> dict:
 # 소금 추측 재료만 늘린다.
 
 _LIST_COLUMNS = ("id, created_at, category, clip_ref, description, desired_fix,"
-                 " evidence_url, contact_email, status")
+                 " evidence_url, contact_email, status, status_changed_at,"
+                 " contact_email_cleared_at")
 
 
 async def list_requests(*, status: str = "", limit: int = 50,
@@ -344,28 +354,77 @@ async def list_requests(*, status: str = "", limit: int = 50,
             "SELECT status, COUNT(*) n FROM correction_requests GROUP BY status")).fetchall():
         if r["status"] in counts:
             counts[r["status"]] = int(r["n"])
-    items = [{
-        "id": int(r["id"]), "createdAt": int(r["created_at"]),
+    items = [_item(r) for r in rows[:limit]]
+    return {"items": items, "hasMore": len(rows) > limit, "counts": counts,
+            "statuses": [{"key": k, "label": v} for k, v in STATUSES.items()],
+            # 정리 작업이 실제로 켜져 있는지 화면이 **숨기지 않고** 보여 준다 —
+            # 방침은 삭제를 약속하는데 dry-run이면 운영자가 알아야 한다.
+            "retention": {"mode": retention.mode(), "policy": retention.policy(),
+                          "lastRun": retention.last_report()}}
+
+
+def _item(r) -> dict:
+    created = int(r["created_at"])
+    changed = int(r["status_changed_at"] or 0)
+    sched = retention.schedule(created, changed, r["status"])
+    cleared_at = int(r["contact_email_cleared_at"] or 0)
+    return {
+        "id": int(r["id"]), "createdAt": created,
+        # 구 코드가 넣은 행(0)은 접수 시각이 기준이다 — 정리 계산과 같은 규칙.
+        "statusChangedAt": max(created, changed),
         "category": r["category"], "categoryLabel": CATEGORIES.get(r["category"], r["category"]),
         "clipRef": r["clip_ref"], "description": r["description"],
         "desiredFix": r["desired_fix"], "evidenceUrl": r["evidence_url"],
         "contactEmail": r["contact_email"], "status": r["status"],
-    } for r in rows[:limit]]
-    return {"items": items, "hasMore": len(rows) > limit, "counts": counts,
-            "statuses": [{"key": k, "label": v} for k, v in STATUSES.items()]}
+        "emailClearedAt": cleared_at or None,
+        # 이메일이 남아 있을 때만 제거 예정일이 의미가 있다.
+        "emailRemovalDueAt": sched["emailRemovalAt"] if r["contact_email"] else None,
+        "deletionDueAt": sched["deletionAt"],
+    }
 
 
-async def set_status(request_id: int, status: str) -> dict:
+async def set_status(request_id: int, status: str, *, now: int | None = None) -> dict:
+    """상태 변경. **실제로 달라질 때만** `status_changed_at`을 옮긴다.
+
+    · 같은 상태를 다시 저장하면 시각을 바꾸지 않는다 — 그러지 않으면 선택 상자를 한 번
+      건드리는 것만으로 보관 기간이 다시 180일 늘어난다.
+    · 재오픈(resolved/rejected → received/in_review)도 실제 변경이라 시각이 재오픈 시점이 된다.
+      미처리 행의 절대 상한은 여전히 **접수 후 365일**이다(정리 조건이 created_at 기준).
+    · 이미 지운 이메일은 되살리지 않는다(지운 값을 보관하지 않으므로 되살릴 수도 없다).
+    · 한 문장 UPDATE라 동시 변경은 마지막 쓰기가 이기되, status와 시각이 어긋나지 않는다.
+    """
     if status not in STATUSES:
         raise SupportError("알 수 없는 처리 상태입니다.")
+    ts = int(time.time() if now is None else now)
     db = await get_db()
-    cur = await db.execute("UPDATE correction_requests SET status=? WHERE id=?",
-                           (status, int(request_id)))
+    cur = await db.execute(
+        "UPDATE correction_requests SET status=?, status_changed_at=?"
+        " WHERE id=? AND status<>?",
+        (status, ts, int(request_id), status))
     await db.commit()
     if not cur.rowcount:
-        raise SupportError("접수 건을 찾을 수 없습니다.")
+        row = await (await db.execute(
+            "SELECT 1 FROM correction_requests WHERE id=?", (int(request_id),))).fetchone()
+        if row is None:
+            raise SupportError("접수 건을 찾을 수 없습니다.")
+        return {"id": int(request_id), "status": status, "changed": False}
     _log("correction_status_changed", status=status)
-    return {"id": int(request_id), "status": status}
+    return {"id": int(request_id), "status": status, "changed": True}
+
+
+async def delete_request(request_id: int) -> dict:
+    """OWNER 수동 삭제. **삭제 전 내용을 돌려주지 않는다**(번호만).
+
+    되돌릴 수 없다. 없는 번호·이미 지운 번호는 `SupportNotFound`(404) — 두 번 눌러도
+    두 번째는 아무것도 지우지 않고 그 사실을 그대로 알린다.
+    """
+    db = await get_db()
+    cur = await db.execute("DELETE FROM correction_requests WHERE id=?", (int(request_id),))
+    await db.commit()
+    if not cur.rowcount:
+        raise SupportNotFound("접수 건을 찾을 수 없습니다.")
+    _log("correction_deleted")
+    return {"id": int(request_id), "deleted": True}
 
 
 def categories() -> list[dict]:

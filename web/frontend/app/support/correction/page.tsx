@@ -19,6 +19,7 @@ import SiteHeader from "@/components/SiteHeader";
 import { ApiError, api } from "@/lib/api";
 import type { CorrectionMeta } from "@/lib/types";
 import { clipRefProblem, correctionErrorMessage } from "@/lib/correctionForm";
+import { CORRECTION_RETENTION_COPY as RETENTION } from "@/lib/supportRetention";
 
 const FALLBACK_LIMITS = {
   clipRef: 200, description: 2000, descriptionMin: 10,
@@ -244,7 +245,7 @@ export default function CorrectionPage() {
                         placeholder="무엇이 어떻게 다른지 적어 주세요."
                         className={`${field} mt-1.5`} />
               <span className={hint}>
-                최소 {lim.descriptionMin}자 ·{" "}
+                {RETENTION.minimize} 최소 {lim.descriptionMin}자 ·{" "}
                 <span className="tabular-nums">{description.length}</span>/{lim.description}
               </span>
             </div>
@@ -281,6 +282,27 @@ export default function CorrectionPage() {
                 회신 목적으로만 사용합니다. 적지 않아도 접수됩니다.
               </span>
             </div>
+
+            {/* 보관 정책 안내 — 문장은 개인정보처리방침과 같은 정본(`lib/supportRetention.ts`)에서 온다.
+                숫자를 여기 직접 적지 않는다(서버 정리 기준과 갈라진다). */}
+            <section aria-labelledby="cr-retention"
+                     className="rounded-xl border border-border p-4 text-xs leading-relaxed text-muted">
+              <h2 id="cr-retention" className="text-sm font-semibold text-fg">입력 내용 보관 안내</h2>
+              <ul className="mt-2 list-disc space-y-1 pl-4">
+                <li>{RETENTION.purpose}</li>
+                <li>{RETENTION.email}</li>
+                <li>{RETENTION.open}</li>
+                <li>{RETENTION.closed}</li>
+                <li>{RETENTION.deletion}</li>
+              </ul>
+              <p className="mt-2">
+                자세한 내용은{" "}
+                <Link href="/privacy" className="underline underline-offset-2 hover:text-fg">
+                  개인정보처리방침
+                </Link>
+                을 확인해 주세요.
+              </p>
+            </section>
 
             <div className="flex flex-wrap items-center gap-3 pt-1">
               <button type="submit" disabled={!canSubmit} aria-busy={sending}

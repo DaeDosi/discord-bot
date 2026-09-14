@@ -462,6 +462,24 @@ export interface CorrectionItem {
   evidenceUrl: string;
   contactEmail: string;
   status: string;
+  /** 마지막으로 status가 실제로 바뀐 시각(구 행은 접수 시각). 보관 기간 기준. */
+  statusChangedAt: number;
+  /** 보관 정책으로 이메일을 지운 시각. null = 지운 적 없음(처음부터 안 적었을 수도 있다). */
+  emailClearedAt: number | null;
+  /** 이메일이 남아 있을 때만 값이 있다. */
+  emailRemovalDueAt: number | null;
+  /** 요청 자체가 자동 삭제될 예정 시각. 시각이 잘못된 행은 null(정리하지 않는다). */
+  deletionDueAt: number | null;
+}
+
+export interface CorrectionRetentionInfo {
+  /** `apply`만 실제로 지운다. `dry_run`은 건수만 센다. */
+  mode: "apply" | "dry_run";
+  policy: {
+    duplicateCheckClearDays: number; emailMaxDaysAfterCreated: number;
+    emailDaysAfterClosed: number; openMaxDays: number; closedDays: number;
+  };
+  lastRun: ({ ok: boolean; at: number } & Record<string, unknown>) | null;
 }
 
 export interface CorrectionList {
@@ -470,6 +488,7 @@ export interface CorrectionList {
   hasMore: boolean;
   counts: Record<string, number>;
   statuses: { key: string; label: string }[];
+  retention?: CorrectionRetentionInfo;
 }
 
 /** PIKU 관리 화면 타입 — **비율·승률 숫자는 여기에도 없다.** */

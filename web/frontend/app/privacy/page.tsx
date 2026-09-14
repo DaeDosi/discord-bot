@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 import SiteHeader from "@/components/SiteHeader";
+import { CORRECTION_RETENTION_COPY as RETENTION } from "@/lib/supportRetention";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
@@ -8,8 +9,9 @@ export const metadata: Metadata = {
   description: "NexBot 서비스의 개인정보 수집·이용·보호에 관한 방침입니다.",
 };
 
-// 이메일 문의 접수 구조를 반영해 개정. 이전 시행일 2026년 7월 14일.
-const EFFECTIVE_DATE = "2026년 8월 3일";
+// 수정 요청 폼의 보관 정책(SUPPORT-POLICY-1)을 반영해 개정. 이전 시행일 2026년 8월 3일(이메일 문의 구조),
+// 그 전 2026년 7월 14일.
+const EFFECTIVE_DATE = "2026년 9월 14일";
 
 const sections = [
   {
@@ -66,6 +68,18 @@ const sections = [
             등은 보내지 말아 주시기 바랍니다.
           </p>
         </div>
+        {/* 수정 요청 폼은 이메일 문의와 수집 경로·보관 기간이 다르다 — 섞지 않게 따로 적는다.
+            문장은 공개 폼과 같은 정본(lib/supportRetention.ts)에서 가져온다. */}
+        <div className="bg-bg rounded-xl border border-border p-4 space-y-2">
+          <p className="text-fg font-medium text-sm">수정 요청 폼을 이용하시는 경우</p>
+          <p className="text-sm text-muted leading-relaxed">
+            <Link href="/support/correction" className="text-accent hover:underline">수정 요청</Link>{" "}
+            폼에 직접 입력하신 <span className="text-fg">분류, 대상 클립 주소 또는 ID, 문제 설명,
+            원하는 수정 내용, 근거 자료 주소, 답변받을 이메일(선택)</span>을 저장합니다.
+            {" "}{RETENTION.purpose} {RETENTION.duplicateCheck}
+          </p>
+          <p className="text-sm text-muted leading-relaxed">{RETENTION.minimize}</p>
+        </div>
       </div>
     ),
   },
@@ -115,16 +129,30 @@ const sections = [
     content: (
       <div className="space-y-3 text-muted leading-relaxed">
         <p>
-          수집된 정보는 서비스 이용 중단 요청 시 즉시 삭제됩니다.
+          아래에 따로 적은 문의·수정 요청 자료를 제외하고, 수집된 정보는 서비스 이용 중단 요청 시
+          즉시 삭제됩니다.
         </p>
         <div className="bg-bg rounded-xl border border-border p-4 space-y-1.5">
-          <p className="text-fg font-medium text-sm">문의 이메일과 첨부 자료</p>
+          <p className="text-fg font-medium text-sm">이메일로 보내신 문의와 첨부 자료</p>
           <p className="text-sm">
             문의 처리가 끝난 후 6개월 보관 후 삭제하며, 법적 분쟁이나 권리 보호를 위해 필요한
             경우에만 필요한 기간 동안 보관합니다. 보관 기간 이전이라도 발신자가 삭제를 요청하면
             처리에 필요한 범위를 제외하고 삭제합니다. 삭제 요청 경로는 아래
             &lsquo;개인정보 삭제 요청&rsquo;과 같습니다.
           </p>
+        </div>
+        {/* 문의 이메일(처리 후 6개월)과 기간이 다르므로 별도 상자로 둔다. */}
+        <div className="bg-bg rounded-xl border border-border p-4 space-y-1.5">
+          <p className="text-fg font-medium text-sm">수정 요청 폼으로 접수된 내용</p>
+          <ul className="space-y-1.5 text-sm list-none">
+            {[RETENTION.open, RETENTION.closed, RETENTION.email, RETENTION.duplicateCheck,
+              RETENTION.timing, RETENTION.backup].map((item) => (
+              <li key={item} className="flex items-start gap-2">
+                <ChevronRight size={13} className="text-accent mt-0.5 flex-shrink-0" />
+                {item}
+              </li>
+            ))}
+          </ul>
         </div>
         <div className="bg-bg rounded-xl border border-border p-4 space-y-2">
           <p className="text-fg font-medium text-sm">자동 삭제 조건</p>
@@ -253,6 +281,10 @@ const sections = [
             {
               title: "수동 삭제 요청 (이메일)",
               desc: "특정 데이터의 삭제는 dnxodud5542@gmail.com 으로 요청해 주세요. 대상을 특정하기 위해 Discord 사용자 ID 또는 서버 ID가 필요할 수 있으며, 해당 식별자는 이메일로만 보내 주시기 바랍니다.",
+            },
+            {
+              title: "수정 요청 삭제 (이메일)",
+              desc: `${RETENTION.deletion} 수정 요청을 직접 삭제하는 화면은 따로 두지 않습니다.`,
             },
           ].map(({ title, desc }) => (
             /* `break-words` — 본문에 문의용 이메일 주소가 그대로 들어 있고,

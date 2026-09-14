@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import os
 import sys
@@ -61,6 +62,7 @@ from singcup_retention import start_retention_worker
 # 정확히 표시해 신규 유입을 0으로 유지한다(파일 전체 noqa는 쓰지 않는다).
 import chzzk_http  # noqa: E402
 import singcup_final  # noqa: E402
+import support_retention  # noqa: E402
 
 from database import close_db, get_db, init_db
 
@@ -118,7 +120,15 @@ async def lifespan(app: FastAPI):
         # 않는다. **수집은 멈추지 않는다** — 얼리는 것은 랭킹 화면이 받는 응답 하나뿐이고,
         # 공식 예선 참가자 화면은 계속 최신 지표를 쓴다.
         asyncio.create_task(_ensure_final_ranking())
+        # 수정 요청 보관 정책 — 기동 후 한 번, 이후 하루 1회. 기본은 dry-run(건수만 센다).
+        # 실제 정리는 SUPPORT_RETENTION_ENABLED=true + SUPPORT_RETENTION_DRY_RUN=false 일 때만.
+        # 이 task만 핸들을 쥐고 종료 시 취소한다(정리 도중 DB를 닫지 않게).
+        support_retention_task = asyncio.create_task(
+            support_retention.start_support_retention_worker())
         yield
+        support_retention_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await support_retention_task
         # 종료 훅 — 미커밋 트랜잭션을 남긴 채 프로세스가 사라지면 같은 파일을 쓰는
         # 봇 프로세스가 그 잠금에 걸린다. 되돌린 뒤 연결을 닫는다.
         try:
