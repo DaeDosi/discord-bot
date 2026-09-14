@@ -85,6 +85,16 @@ class SupportUnavailable(RuntimeError):
     """설정이 없어 접수를 받을 수 없다. 라우터가 503으로 바꾼다."""
 
 
+def accepting() -> bool:
+    """공개 접수를 열어도 되는가 — **소금 유효 + 보관 정책 정리 실제 가동**(SUPPORT-POLICY-1b).
+
+    소금만 실수로 설정되고 정리가 dry-run/비활성이면 열리지 않는다. 방침이 약속한 삭제가
+    돌지 않는 상태로 개인정보를 받기 시작하는 것을 막는다. 한 회차 실패는 여기서 보지 않는다
+    (`support_retention.intake_ready` 참고).
+    """
+    return salt_configured() and retention.intake_ready()
+
+
 def salt_configured() -> bool:
     try:
         _salt()
@@ -275,6 +285,11 @@ async def submit(body: dict, *, submitter: str) -> dict:
     먼저 확인해 입력이 조금이라도 처리되기 전에 끊는다.
     """
     _salt()                       # 미설정이면 여기서 SupportUnavailable
+    if not retention.intake_ready():
+        # 보관 정책 정리가 실제로 돌지 않는 배포 — 소금이 있어도 받지 않는다. 문구는 미설정과 같다
+        # (어느 설정이 빠졌는지 알리지 않는다).
+        raise SupportUnavailable(
+            "수정 요청 접수가 설정되지 않아 지금은 이용할 수 없습니다.")
     category = clean_category((body or {}).get("category"))
     clip_ref = clean_clip_ref((body or {}).get("clipRef"))
     description = clean_text((body or {}).get("description"), field="문제 설명",
@@ -359,8 +374,9 @@ async def list_requests(*, status: str = "", limit: int = 50,
             "statuses": [{"key": k, "label": v} for k, v in STATUSES.items()],
             # 정리 작업이 실제로 켜져 있는지 화면이 **숨기지 않고** 보여 준다 —
             # 방침은 삭제를 약속하는데 dry-run이면 운영자가 알아야 한다.
-            "retention": {"mode": retention.mode(), "policy": retention.policy(),
-                          "lastRun": retention.last_report()}}
+            "retention": {**retention.status(), "policy": retention.policy(),
+                          "saltConfigured": salt_configured(),
+                          "candidates": await retention.candidates(db, now=int(time.time()))}}
 
 
 def _item(r) -> dict:
@@ -380,6 +396,7 @@ def _item(r) -> dict:
         # 이메일이 남아 있을 때만 제거 예정일이 의미가 있다.
         "emailRemovalDueAt": sched["emailRemovalAt"] if r["contact_email"] else None,
         "deletionDueAt": sched["deletionAt"],
+        "deletionCapped": sched["deletionCapped"],
     }
 
 

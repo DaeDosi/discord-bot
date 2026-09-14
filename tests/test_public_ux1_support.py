@@ -31,6 +31,11 @@ def app(db, monkeypatch):
     db(_clear())
     support.reset_state()
     monkeypatch.setenv(support.SALT_ENV, TEST_SALT)
+    # SUPPORT-POLICY-1b: 접수는 보관 정책 정리가 실제로 가동 중일 때만 열린다.
+    import support_retention
+    monkeypatch.setenv("SUPPORT_RETENTION_ENABLED", "true")
+    monkeypatch.setenv("SUPPORT_RETENTION_DRY_RUN", "false")
+    monkeypatch.setattr(support_retention, "_worker_running", True)
 
     import routers.account_router as acr
     import routers.admin_router as ar

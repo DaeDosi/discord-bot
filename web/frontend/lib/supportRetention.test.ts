@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
-  CLOSED_DAYS, CORRECTION_RETENTION_COPY as COPY, DUPLICATE_CHECK_CLEAR_DAYS,
+  ABSOLUTE_MAX_DAYS, CLOSED_DAYS, CORRECTION_RETENTION_COPY as COPY, DUPLICATE_CHECK_CLEAR_DAYS,
   EMAIL_DAYS_AFTER_CLOSED, EMAIL_MAX_DAYS_AFTER_CREATED, OPEN_MAX_DAYS,
 } from "./supportRetention.ts";
 
@@ -31,6 +31,10 @@ test("공개 숫자는 서버 정본과 같다", () => {
   assert.equal(EMAIL_DAYS_AFTER_CLOSED, days("EMAIL_AFTER_CLOSED"));
   assert.equal(OPEN_MAX_DAYS, days("OPEN_MAX_RETENTION"));
   assert.equal(CLOSED_DAYS, days("CLOSED_RETENTION"));
+  // 절대 상한은 새 기간이 아니라 두 규칙의 합이다(서버도 같은 식으로 정의).
+  assert.ok(py.includes("ABSOLUTE_MAX_RETENTION = OPEN_MAX_RETENTION + CLOSED_RETENTION"));
+  assert.equal(ABSOLUTE_MAX_DAYS, OPEN_MAX_DAYS + CLOSED_DAYS);
+  assert.equal(ABSOLUTE_MAX_DAYS, 545);
   // 사용자 승인 정책(A 균형형 + 보정) 그대로
   assert.deepEqual([DUPLICATE_CHECK_CLEAR_DAYS, EMAIL_MAX_DAYS_AFTER_CREATED, EMAIL_DAYS_AFTER_CLOSED,
                     OPEN_MAX_DAYS, CLOSED_DAYS], [7, 180, 30, 365, 180]);
@@ -40,7 +44,8 @@ test("문장이 실제 정리 계산과 같은 기간을 말한다", () => {
   assert.match(COPY.email, /처리가 끝난 뒤 30일 또는 접수 후 180일 중 먼저 오는 때에 삭제/);
   assert.match(COPY.email, /선택 항목/);
   assert.match(COPY.email, /회신 목적으로만/);
-  assert.match(COPY.open, /접수 후 최대 365일/);
+  assert.match(COPY.open, /접수 후 최대 1년\(365일\)/);
+  assert.match(COPY.absoluteMax, /어떤 경우에도 요청은 접수 후 545일을 넘겨 보관하지 않습니다/);
   assert.match(COPY.closed, /처리 후 180일/);
   assert.match(COPY.duplicateCheck, /접수 후 7일/);
   assert.match(COPY.duplicateCheck, /IP 주소 원문은 저장하지 않습니다/);
@@ -57,7 +62,7 @@ test("문장이 실제 정리 계산과 같은 기간을 말한다", () => {
 test("공개 폼은 정본 문장을 보여 주고 숫자를 직접 적지 않는다", () => {
   const s = read("app/support/correction/page.tsx");
   const c = code(s);
-  for (const key of ["purpose", "email", "open", "closed", "deletion"]) {
+  for (const key of ["purpose", "email", "open", "closed", "absoluteMax", "deletion"]) {
     assert.ok(c.includes(`{RETENTION.${key}}`), `폼에 ${key} 안내가 없다`);
   }
   assert.ok(c.includes("{RETENTION.minimize}"), "개인정보를 적지 말라는 안내가 없다");
@@ -69,7 +74,8 @@ test("개인정보처리방침이 폼과 같은 문장을 쓰고 시행일을 �
   const s = read("app/privacy/page.tsx");
   const c = code(s);
   assert.ok(s.includes('from "@/lib/supportRetention"'));
-  for (const key of ["open", "closed", "email", "duplicateCheck", "timing", "backup", "deletion",
+  for (const key of ["open", "closed", "absoluteMax", "email", "duplicateCheck", "timing", "backup",
+                     "deletion",
                      "purpose", "minimize"]) {
     assert.ok(c.includes(`RETENTION.${key}`), `방침에 ${key}가 없다`);
   }
@@ -87,6 +93,14 @@ test("Nexadmin은 서버가 계산한 예정일과 정리 모드를 그대로 �
     assert.ok(p.includes(f), `${f}를 표시하지 않는다`);
   }
   assert.ok(p.includes("점검 모드"), "dry-run 상태를 숨긴다");
+  // 단계적 활성화 점검용 상태(SUPPORT-POLICY-1b)
+  for (const f of ["retention.enabled", "retention.dryRun", "retention.workerRunning",
+                   "retention.intakeReady", "retention.saltConfigured", "retention.lastRun",
+                   "retention.consecutiveFailures", "candidates.candidateDuplicateCheckClearCount",
+                   "candidates.candidateEmailClearCount", "candidates.candidateDeleteCount",
+                   "retention.policy.absoluteMaxDays", "item.deletionCapped"]) {
+    assert.ok(p.includes(f), `${f}를 표시하지 않는다`);
+  }
   assert.ok(p.includes("보관 기간이 지나 제거됨"));
   // 화면이 기간을 따로 계산하지 않는다(서버와 갈라진다).
   assert.ok(!/\*\s*86400|86400\s*\*/.test(p), "화면이 예정일을 직접 계산한다");

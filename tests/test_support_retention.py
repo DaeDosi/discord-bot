@@ -53,6 +53,13 @@ def _apply_mode(monkeypatch):
     monkeypatch.setenv("SUPPORT_RETENTION_DRY_RUN", "false")
 
 
+def _intake_ready(monkeypatch):
+    """접수 준비 완료 상태(1b): 소금 + apply + 워커 가동."""
+    monkeypatch.setenv(support.SALT_ENV, TEST_SALT)
+    _apply_mode(monkeypatch)
+    monkeypatch.setattr(ret, "_worker_running", True)
+
+
 async def _insert(created, status="received", changed=None, email="me@example.com",
                   dedupe=None, description="하트 수가 실제와 다릅니다 확인 부탁", url="https://ex.com/e"):
     c = await database.get_db()
@@ -217,7 +224,7 @@ def test_구_코드_INSERT와_호환되고_backfill_전에도_계산이_같다(a
 
 
 def test_새_접수는_status_changed_at이_created_at과_같다(adb, monkeypatch):
-    monkeypatch.setenv(support.SALT_ENV, TEST_SALT)
+    _intake_ready(monkeypatch)
     res = adb(support.submit({"category": "other", "clipRef": "abcDEF123",
                               "description": "새 접수 기준 시각 확인용입니다"}, submitter="h"))
     row = adb(_row(res["id"]))
@@ -581,14 +588,17 @@ def test_공개_문구가_쓰는_숫자와_정본이_같다():
     lib = Path(__file__).resolve().parents[1] / "web/frontend/lib/supportRetention.ts"
     ts = lib.read_text("utf-8")
     p = ret.policy()
-    for key, val in (("DUPLICATE_CHECK_CLEAR_DAYS", p["duplicateCheckClearDays"]),
+    for key, val in (("ABSOLUTE_MAX_DAYS", p["absoluteMaxDays"]),
+                     ("DUPLICATE_CHECK_CLEAR_DAYS", p["duplicateCheckClearDays"]),
                      ("EMAIL_MAX_DAYS_AFTER_CREATED", p["emailMaxDaysAfterCreated"]),
                      ("EMAIL_DAYS_AFTER_CLOSED", p["emailDaysAfterClosed"]),
                      ("OPEN_MAX_DAYS", p["openMaxDays"]),
                      ("CLOSED_DAYS", p["closedDays"])):
         assert f"export const {key} = {val};" in ts, key
     assert p == {"duplicateCheckClearDays": 7, "emailMaxDaysAfterCreated": 180,
-                 "emailDaysAfterClosed": 30, "openMaxDays": 365, "closedDays": 180}
+                 "emailDaysAfterClosed": 30, "openMaxDays": 365, "closedDays": 180,
+                 "absoluteMaxDays": 545}
+    assert p["absoluteMaxDays"] == p["openMaxDays"] + p["closedDays"], "새 기간이 아니라 최대 조합"
 
 
 # ── 워커 lifecycle ───────────────────────────────────────────────────────────
@@ -638,7 +648,7 @@ def test_워커는_취소되면_깔끔하게_끝난다(adb):
 
 def test_lifespan이_워커를_띄우고_종료_시_취소한다():
     src = (Path(__file__).resolve().parents[1] / "web/backend/main.py").read_text("utf-8")
-    assert "support_retention.start_support_retention_worker()" in src
+    assert "support_retention.launch_worker()" in src
     assert "support_retention_task.cancel()" in src
     assert src.index("support_retention_task.cancel()") < src.index("await close_db()")
 
@@ -647,7 +657,7 @@ def test_lifespan이_워커를_띄우고_종료_시_취소한다():
 
 @pytest.fixture
 def client(adb, monkeypatch):
-    monkeypatch.setenv(support.SALT_ENV, TEST_SALT)
+    _intake_ready(monkeypatch)
     import routers.account_router as acr
     import routers.admin_router as ar
     from deps import get_current_user
@@ -684,8 +694,14 @@ def test_목록에_예정일과_정리_모드가_나온다(client):
     assert row["emailRemovalDueAt"] == row["createdAt"] + 180 * DAY
     assert row["deletionDueAt"] == row["createdAt"] + 365 * DAY
     assert row["emailClearedAt"] is None
-    assert item["retention"]["mode"] == "dry_run"
-    assert item["retention"]["policy"]["closedDays"] == 180
+    assert row["deletionCapped"] is False
+    r = item["retention"]
+    assert (r["mode"], r["enabled"], r["dryRun"], r["workerRunning"], r["intakeReady"]) == (
+        "apply", True, False, True, True)
+    assert r["saltConfigured"] is True and r["lastRunAt"] is None
+    assert r["policy"]["closedDays"] == 180 and r["policy"]["absoluteMaxDays"] == 545
+    assert set(r["candidates"]) == {"candidateDuplicateCheckClearCount", "candidateEmailClearCount",
+                                    "candidateDeleteCount", "invalidTimestampCount"}
     assert "dedupe" not in json.dumps(item) and TEST_SALT not in json.dumps(item)
 
 
@@ -758,3 +774,270 @@ def test_삭제_라우트는_OWNER_의존성을_쓴다():
     import routers.admin_router as ar
     sig = inspect.signature(ar.support_correction_delete)
     assert sig.parameters["user"].default.dependency is ar._require_owner
+
+
+# ── SUPPORT-POLICY-1b: 접수 후 545일 절대 상한 ─────────────────────────────
+
+C = NOW - 700 * DAY          # 절대 상한 테스트용 접수 시각(모든 조작 시각이 NOW 이전이 되게)
+
+
+def _gone_at(adb, rid, when):
+    _cleanup(adb, when)
+    return adb(_row(rid)) is None
+
+
+def test_접수_364일에_처리하면_기본_만료는_544일(adb, monkeypatch):
+    rid = adb(_insert(C, status="resolved", changed=C + 364 * DAY))
+    s = ret.schedule(C, C + 364 * DAY, "resolved")
+    assert s["deletionAt"] == C + 544 * DAY and s["deletionCapped"] is False
+    _apply_mode(monkeypatch)
+    assert not _gone_at(adb, rid, C + 544 * DAY - 1)
+    assert _gone_at(adb, rid, C + 544 * DAY)
+
+
+@pytest.mark.parametrize("offset, gone", [(-1, False), (0, True), (1, True)])
+def test_늦게_처리된_행은_접수_후_545일_절대_상한(adb, monkeypatch, offset, gone):
+    rid = adb(_insert(C, status="resolved", changed=C + 500 * DAY))
+    s = ret.schedule(C, C + 500 * DAY, "resolved")
+    assert s["deletionAt"] == C + 545 * DAY and s["deletionCapped"] is True
+    _apply_mode(monkeypatch)
+    assert _gone_at(adb, rid, C + 545 * DAY + offset) is gone
+
+
+def test_resolved와_rejected를_반복해도_545일을_넘지_못한다(adb, monkeypatch):
+    rid = adb(_insert(C, status="received"))
+    for i, day in enumerate(range(100, 541, 40)):
+        adb(support.set_status(rid, "resolved" if i % 2 == 0 else "rejected", now=C + day * DAY))
+    row = adb(_row(rid))
+    assert row["status_changed_at"] >= C + 500 * DAY, "반복 변경마다 기준 시각은 옮겨진다"
+    assert ret.schedule(C, row["status_changed_at"], row["status"])["deletionAt"] == C + 545 * DAY
+    _apply_mode(monkeypatch)
+    assert not _gone_at(adb, rid, C + 545 * DAY - 1)
+    assert _gone_at(adb, rid, C + 545 * DAY)
+
+
+def test_재오픈과_재종료를_반복해도_545일을_넘지_못한다(adb, monkeypatch):
+    rid = adb(_insert(C, status="received"))
+    for status, day in (("resolved", 100), ("received", 200), ("resolved", 300),
+                        ("in_review", 340), ("rejected", 360), ("received", 362),
+                        ("resolved", 364), ("rejected", 520)):
+        adb(support.set_status(rid, status, now=C + day * DAY))
+    _apply_mode(monkeypatch)
+    assert not _gone_at(adb, rid, C + 545 * DAY - 1)
+    assert _gone_at(adb, rid, C + 545 * DAY)
+
+
+def test_재오픈된_미처리_행은_여전히_접수_후_365일(adb, monkeypatch):
+    rid = adb(_insert(C, status="resolved", changed=C + 100 * DAY))
+    adb(support.set_status(rid, "received", now=C + 300 * DAY))
+    _apply_mode(monkeypatch)
+    assert not _gone_at(adb, rid, C + 365 * DAY - 1)
+    assert _gone_at(adb, rid, C + 365 * DAY)
+
+
+def test_상태_변경_시각이_접수보다_이르면_접수_시각이_기준(adb, monkeypatch):
+    rid = adb(_insert(C, status="resolved", changed=C - 100 * DAY))
+    s = ret.schedule(C, C - 100 * DAY, "resolved")
+    assert s["deletionAt"] == C + 180 * DAY
+    _apply_mode(monkeypatch)
+    assert not _gone_at(adb, rid, C + 180 * DAY - 1)
+    assert _gone_at(adb, rid, C + 180 * DAY)
+
+
+def test_상태_변경_시각이_미래면_545일이_지나도_건드리지_않는다(adb, monkeypatch):
+    """기존 fail-safe 유지 — 시계가 어긋난 행은 지우지 않고 invalid로만 센다(운영자 확인 대상)."""
+    rid = adb(_insert(C, status="resolved", changed=NOW + 10 * DAY, dedupe="future"))
+    _apply_mode(monkeypatch)
+    rep = _cleanup(adb, NOW)
+    row = adb(_row(rid))
+    assert row is not None and row["contact_email"] and row["dedupe_key"] == "future"
+    assert rep["invalidSkipped"] == 1
+
+
+def test_이메일과_dedupe의_더_짧은_상한은_그대로다(adb, monkeypatch):
+    rid = adb(_insert(C, status="resolved", changed=C + 500 * DAY, dedupe="k545"))
+    s = ret.schedule(C, C + 500 * DAY, "resolved")
+    assert s["emailRemovalAt"] == C + 180 * DAY and s["duplicateCheckClearAt"] == C + 7 * DAY
+    _apply_mode(monkeypatch)
+    # 처리 시각 이후 — 이메일·dedupe는 이미 기한, 행은 545일까지 남는다.
+    _cleanup(adb, C + 500 * DAY)
+    row = adb(_row(rid))
+    assert row is not None and row["contact_email"] == "" and row["dedupe_key"] == ""
+
+
+def test_절대_상한_격자에서_화면_예정일과_실제_정리가_같다(adb, monkeypatch):
+    rows = []
+    for st in ("received", "in_review", "resolved", "rejected", "odd_status"):
+        for change_day in (0, 1, 180, 300, 364, 365, 400, 500, 540, 544, 545, 546):
+            changed = C + change_day * DAY
+            if changed > NOW:
+                continue
+            rows.append((adb(_insert(C, status=st, changed=changed)), changed, st))
+    probes = [C + d * DAY + o for d in (180, 364, 365, 544, 545, 546, 700) for o in (-1, 0, 1)]
+    for when in probes:
+        async def _snapshot():
+            return await ret.candidates(await database.get_db(), now=when)
+        cand = adb(_snapshot())
+        expected_delete = sum(
+            1 for _, changed, st in rows
+            if adb(_row(_)) is not None and changed <= when
+            and when >= ret.schedule(C, changed, st)["deletionAt"])
+        assert cand["candidateDeleteCount"] == expected_delete, when
+    _apply_mode(monkeypatch)
+    when = C + 545 * DAY - 1
+    _cleanup(adb, when)
+    for rid, changed, st in rows:
+        due = ret.schedule(C, changed, st)["deletionAt"]
+        # 상태 변경 시각이 정리 시각보다 뒤인 행은 fail-safe로 건너뛴다(기존 계약).
+        assert (adb(_row(rid)) is None) is (changed <= when and when >= due), (changed, st)
+    _cleanup(adb, C + 545 * DAY)
+    left = [(changed, st) for rid, changed, st in rows if adb(_row(rid)) is not None]
+    assert all(changed > C + 545 * DAY for changed, _ in left), (
+        "접수 후 545일에는 시각이 정상인 어떤 상태의 행도 남지 않는다", left)
+
+
+def test_dry_run_후보와_실제_처리_건수가_같다(adb, monkeypatch):
+    for st in ("received", "resolved", "rejected"):
+        for change_day in (0, 100, 364, 500):
+            adb(_insert(C, status=st, changed=C + change_day * DAY))
+    when = C + 545 * DAY - 1
+
+    async def _cand():
+        return await ret.candidates(await database.get_db(), now=when)
+    cand = adb(_cand())
+    dry = _cleanup(adb, when)
+    assert dry["mode"] == "dry_run"
+    _apply_mode(monkeypatch)
+    applied = _cleanup(adb, when)
+    assert (cand["candidateDuplicateCheckClearCount"], cand["candidateEmailClearCount"],
+            cand["candidateDeleteCount"]) == (dry["duplicateChecksCleared"], dry["emailCleared"],
+                                             dry["rowsDeleted"]) == (
+        applied["duplicateChecksCleared"], applied["emailCleared"], applied["rowsDeleted"])
+
+
+async def _total_changes():
+    c = await database.get_db()
+    return (await (await c.execute("SELECT total_changes()")).fetchone())[0]
+
+
+def test_dry_run과_후보_계산과_목록_조회는_DB_write가_0이다(adb, monkeypatch):
+    for age in (8, 31, 181, 366, 600):
+        adb(_insert(NOW - age * DAY, status="resolved", changed=NOW - (age // 2) * DAY))
+        adb(_insert(NOW - age * DAY, status="received"))
+    before_rows = adb(_dump())
+    before = adb(_total_changes())
+    monkeypatch.setenv("SUPPORT_RETENTION_ENABLED", "true")
+    monkeypatch.setenv("SUPPORT_RETENTION_DRY_RUN", "true")
+    rep = _cleanup(adb)
+    assert rep["mode"] == "dry_run" and rep["rowsDeleted"] > 0
+    adb(support.list_requests())
+    assert adb(_total_changes()) == before, "dry-run·후보 계산·목록 조회가 DB에 썼다"
+    assert adb(_dump()) == before_rows
+    assert ret.last_report()["mode"] == "dry_run", "마지막 실행 기록은 프로세스 메모리에만"
+
+
+# ── SUPPORT-POLICY-1b: 접수 준비 관문 ──────────────────────────────────────
+
+def _meta_and_post(client):
+    client.app.dependency_overrides.clear()
+    support.reset_state()
+    meta = client.get("/api/support/correction/meta").json()["accepting"]
+    r = client.post("/api/support/correction", json={
+        "category": "wrong_metric", "clipRef": f"gate{uuid.uuid4().hex[:8]}",
+        "description": "접수 준비 관문 확인용 요청입니다."})
+    return meta, r.status_code
+
+
+@pytest.mark.parametrize("salt, enabled, dry, worker, accepting", [
+    (False, None, None, False, False),        # 기본 설정
+    (True, None, None, True, False),          # 소금만 설정 + 정리 기본(dry-run)
+    (True, "false", "false", True, False),    # retention 비활성 + 소금
+    (True, "true", "true", True, False),      # enabled + dry-run
+    (False, "true", "false", True, False),    # 정리 가동 + 소금 없음
+    (True, "true", "false", False, False),    # 정리 설정됐지만 워커 미가동
+    (True, "true", "false", True, True),      # 전부 준비
+])
+def test_접수는_소금과_정리_가동이_모두_준비돼야_열린다(client, adb, monkeypatch,
+                                                  salt, enabled, dry, worker, accepting):
+    for name, val in ((support.SALT_ENV, TEST_SALT if salt else None),
+                      ("SUPPORT_RETENTION_ENABLED", enabled),
+                      ("SUPPORT_RETENTION_DRY_RUN", dry)):
+        if val is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, val)
+    monkeypatch.setattr(ret, "_worker_running", worker)
+    before = adb(_count_rows())
+    meta, code = _meta_and_post(client)
+    assert meta is accepting
+    assert code == (200 if accepting else 503)
+    assert adb(_count_rows()) == before + (1 if accepting else 0)
+
+
+def test_막힌_사유를_공개_응답에_드러내지_않는다(client, monkeypatch):
+    monkeypatch.setenv("SUPPORT_RETENTION_DRY_RUN", "true")
+    client.app.dependency_overrides.clear()
+    r = client.post("/api/support/correction", json={
+        "category": "wrong_metric", "clipRef": "abcDEF123",
+        "description": "사유 노출 확인용 요청입니다."})
+    assert r.status_code == 503
+    for bad in ("RETENTION", "retention", "dry", "worker", "salt", "SALT"):
+        assert bad not in r.text
+
+
+def test_정리_한_회차_실패는_접수를_닫지_않는다(client, adb, monkeypatch):
+    async def boom(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(ret, "cleanup_once", boom)
+    with pytest.raises(sqlite3.OperationalError):
+        _cleanup(adb)
+    st = ret.status()
+    assert st["consecutiveFailures"] == 1 and st["lastRun"]["ok"] is False
+    assert st["intakeReady"] is True
+    meta, code = _meta_and_post(client)
+    assert meta is True and code == 200
+    monkeypatch.undo()
+
+
+def test_성공하면_연속_실패가_초기화된다(adb, monkeypatch):
+    async def boom(*a, **k):
+        raise RuntimeError("x")
+    original = ret.cleanup_once
+    monkeypatch.setattr(ret, "cleanup_once", boom)
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            _cleanup(adb)
+    assert ret.status()["consecutiveFailures"] == 2
+    monkeypatch.setattr(ret, "cleanup_once", original)
+    _cleanup(adb)
+    assert ret.status()["consecutiveFailures"] == 0 and ret.status()["lastRunAt"] == NOW
+
+
+def test_워커가_멈추면_접수가_닫힌다(adb, monkeypatch):
+    _intake_ready(monkeypatch)
+    monkeypatch.setattr(ret, "_worker_running", False)
+
+    async def _life():
+        t = ret.launch_worker(start_delay=3600)
+        ready_before_first_tick = ret.intake_ready()
+        await asyncio.sleep(0)
+        running = ret.worker_running()
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        return ready_before_first_tick, running, ret.intake_ready(), support.accepting()
+    ready0, running, ready_after, accepting_after = adb(_life())
+    assert ready0 is True, "task가 첫 실행되기 전 요청에도 준비 상태가 흔들리지 않는다"
+    assert running is True
+    assert ready_after is False and accepting_after is False
+
+
+def test_상태_응답에_민감_정보가_없다(client, adb):
+    adb(_insert(NOW - 400 * DAY, email="secret.person@example.com", dedupe="hash-abc-123",
+                description="민감한 개인 설명 문장입니다", url="https://private.example.com/p"))
+    adb(ret.run_cleanup(now=NOW))
+    body = _as(client).get("/api/admin/support/corrections").json()
+    blob = json.dumps(body["retention"], ensure_ascii=False)
+    for bad in ("secret.person", "example.com", "민감한", "hash-abc-123", "private", TEST_SALT):
+        assert bad not in blob, bad
+    assert body["retention"]["lastRunAt"] == NOW

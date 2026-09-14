@@ -293,6 +293,7 @@ export default function CorrectionPage() {
                 <li>{RETENTION.email}</li>
                 <li>{RETENTION.open}</li>
                 <li>{RETENTION.closed}</li>
+                <li>{RETENTION.absoluteMax}</li>
                 <li>{RETENTION.deletion}</li>
               </ul>
               <p className="mt-2">

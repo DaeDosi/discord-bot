@@ -123,8 +123,8 @@ async def lifespan(app: FastAPI):
         # 수정 요청 보관 정책 — 기동 후 한 번, 이후 하루 1회. 기본은 dry-run(건수만 센다).
         # 실제 정리는 SUPPORT_RETENTION_ENABLED=true + SUPPORT_RETENTION_DRY_RUN=false 일 때만.
         # 이 task만 핸들을 쥐고 종료 시 취소한다(정리 도중 DB를 닫지 않게).
-        support_retention_task = asyncio.create_task(
-            support_retention.start_support_retention_worker())
+        # 워커가 살아 있어야 수정 요청 접수가 열린다(support.accepting).
+        support_retention_task = support_retention.launch_worker()
         yield
         support_retention_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):

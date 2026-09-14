@@ -86,7 +86,7 @@ async def correction_meta():
     입력했다고 읽는다.
     """
     return {"categories": support.categories(), "limits": support.limits(),
-            "accepting": support.salt_configured()}
+            "accepting": support.accepting()}
 
 
 def _submitter_key(request: Request) -> str:

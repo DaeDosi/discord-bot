@@ -28,6 +28,7 @@ def adb(db, monkeypatch):
 
     이 픽스처는 **정상 설정 상태**를 만든다. 미설정·잘못된 값의 동작은
     아래 `TestSalt`가 소금을 직접 지우고 확인한다.
+    SUPPORT-POLICY-1b부터 정상 상태에는 **보관 정책 정리 가동**(apply + 워커)도 포함된다.
     """
     async def _clear():
         c = await database.get_db()
@@ -40,6 +41,10 @@ def adb(db, monkeypatch):
     db(_clear())
     support.reset_state()
     monkeypatch.setenv(support.SALT_ENV, TEST_SALT)
+    import support_retention
+    monkeypatch.setenv("SUPPORT_RETENTION_ENABLED", "true")
+    monkeypatch.setenv("SUPPORT_RETENTION_DRY_RUN", "false")
+    monkeypatch.setattr(support_retention, "_worker_running", True)
     return db
 
 

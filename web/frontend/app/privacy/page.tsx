@@ -145,7 +145,8 @@ const sections = [
         <div className="bg-bg rounded-xl border border-border p-4 space-y-1.5">
           <p className="text-fg font-medium text-sm">수정 요청 폼으로 접수된 내용</p>
           <ul className="space-y-1.5 text-sm list-none">
-            {[RETENTION.open, RETENTION.closed, RETENTION.email, RETENTION.duplicateCheck,
+            {[RETENTION.open, RETENTION.closed, RETENTION.absoluteMax, RETENTION.email,
+              RETENTION.duplicateCheck,
               RETENTION.timing, RETENTION.backup].map((item) => (
               <li key={item} className="flex items-start gap-2">
                 <ChevronRight size={13} className="text-accent mt-0.5 flex-shrink-0" />

@@ -131,7 +131,8 @@ export default function SupportCorrectionsPanel() {
         <div className="rounded-xl border border-border p-3 text-xs leading-relaxed text-muted">
           <p>
             보관 정책: 미처리 요청은 접수 후 {retention.policy.openMaxDays}일, 처리한 요청은 처리 후{" "}
-            {retention.policy.closedDays}일에 자동 삭제됩니다. 이메일은 처리 후{" "}
+            {retention.policy.closedDays}일에 자동 삭제되며, 어떤 경우에도 접수 후{" "}
+            {retention.policy.absoluteMaxDays}일을 넘기지 않습니다. 이메일은 처리 후{" "}
             {retention.policy.emailDaysAfterClosed}일 또는 접수 후{" "}
             {retention.policy.emailMaxDaysAfterCreated}일 중 먼저 오는 때에 지워집니다.
           </p>
@@ -142,6 +143,41 @@ export default function SupportCorrectionsPanel() {
               자동 정리는 아직 점검 모드입니다 — 예정일이 지나도 지우지 않고 대상 건수만 셉니다.
             </p>
           )}
+          {/* 단계적 활성화 점검용 상태(값은 서버가 준다). 요청 내용·이메일·해시는 없다. */}
+          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+            <dt>정리 설정</dt>
+            <dd>
+              사용 {retention.enabled ? "켜짐" : "꺼짐"} · dry-run {retention.dryRun ? "켜짐" : "꺼짐"} ·
+              워커 {retention.workerRunning ? "가동 중" : "멈춤"}
+            </dd>
+            <dt>공개 접수</dt>
+            <dd>
+              {retention.intakeReady && retention.saltConfigured
+                ? "열림"
+                : `닫힘 (${[!retention.intakeReady && "정리 미가동",
+                           !retention.saltConfigured && "접수 설정 없음"].filter(Boolean).join(" · ")})`}
+            </dd>
+            <dt>마지막 정리</dt>
+            <dd className="tabular-nums">
+              {retention.lastRun === null
+                ? "이 서버가 시작된 뒤 아직 실행하지 않았습니다"
+                : retention.lastRun.ok
+                  ? `${fmt(retention.lastRun.at)} · ${retention.lastRun.mode === "apply" ? "처리" : "대상(점검)"} ` +
+                    `중복 확인값 ${retention.lastRun.duplicateChecksCleared} · 이메일 ${retention.lastRun.emailCleared} · ` +
+                    `삭제 ${retention.lastRun.rowsDeleted}`
+                  : `${fmt(retention.lastRun.at)} · 실패`}
+              {retention.consecutiveFailures > 0 && (
+                <span className="ml-1 text-amber-400">(연속 실패 {retention.consecutiveFailures}회)</span>
+              )}
+            </dd>
+            <dt>지금 정리 대상</dt>
+            <dd className="tabular-nums">
+              중복 확인값 {retention.candidates.candidateDuplicateCheckClearCount} · 이메일{" "}
+              {retention.candidates.candidateEmailClearCount} · 삭제 {retention.candidates.candidateDeleteCount}
+              {retention.candidates.invalidTimestampCount > 0 &&
+                ` · 시각 오류 ${retention.candidates.invalidTimestampCount}`}
+            </dd>
+          </dl>
         </div>
       )}
 
@@ -268,7 +304,7 @@ export default function SupportCorrectionsPanel() {
               <dt className="text-muted">자동 삭제</dt>
               <dd className="min-w-0 tabular-nums text-muted">
                 {item.deletionDueAt !== null
-                  ? `${fmt(item.deletionDueAt)} 예정`
+                  ? `${fmt(item.deletionDueAt)} 예정${item.deletionCapped ? " (접수 후 최대 보관 기간)" : ""}`
                   : "시각 정보가 올바르지 않아 자동 정리 대상이 아닙니다"}
               </dd>
             </dl>

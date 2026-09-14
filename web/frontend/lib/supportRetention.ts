@@ -14,6 +14,8 @@ export const EMAIL_MAX_DAYS_AFTER_CREATED = 180;
 export const EMAIL_DAYS_AFTER_CLOSED = 30;
 export const OPEN_MAX_DAYS = 365;
 export const CLOSED_DAYS = 180;
+/** 요청 행 절대 상한(SUPPORT-POLICY-1b) — 새 기간이 아니라 OPEN_MAX_DAYS + CLOSED_DAYS. */
+export const ABSOLUTE_MAX_DAYS = 545;
 
 export const DAY_SECONDS = 86400;
 
@@ -26,9 +28,11 @@ export const CORRECTION_RETENTION_COPY = {
     `처리가 끝난 뒤 ${EMAIL_DAYS_AFTER_CLOSED}일 또는 접수 후 ${EMAIL_MAX_DAYS_AFTER_CREATED}일 중 ` +
     `먼저 오는 때에 삭제합니다.`,
   open:
-    `처리되지 않은 요청은 접수 후 최대 ${OPEN_MAX_DAYS}일까지 보관한 뒤 삭제합니다.`,
+    `처리되지 않은 요청은 접수 후 최대 1년(${OPEN_MAX_DAYS}일)까지 보관한 뒤 삭제합니다.`,
   closed:
     `처리가 끝난 요청(반영 완료·반영 안 함)은 처리 후 ${CLOSED_DAYS}일이 지나면 삭제합니다.`,
+  absoluteMax:
+    `어떤 경우에도 요청은 접수 후 ${ABSOLUTE_MAX_DAYS}일을 넘겨 보관하지 않습니다.`,
   duplicateCheck:
     `같은 요청이 반복 접수되는지 확인하는 값(원문을 알 수 없는 해시)은 접수 후 ` +
     `${DUPLICATE_CHECK_CLEAR_DAYS}일이 지나면 지웁니다. IP 주소 원문은 저장하지 않습니다.`,

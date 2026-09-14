@@ -470,14 +470,31 @@ export interface CorrectionItem {
   emailRemovalDueAt: number | null;
   /** 요청 자체가 자동 삭제될 예정 시각. 시각이 잘못된 행은 null(정리하지 않는다). */
   deletionDueAt: number | null;
+  /** 처리 후 180일보다 접수 후 545일 절대 상한이 먼저 와서 예정일이 당겨진 행. */
+  deletionCapped: boolean;
 }
 
 export interface CorrectionRetentionInfo {
   /** `apply`만 실제로 지운다. `dry_run`은 건수만 센다. */
   mode: "apply" | "dry_run";
+  enabled: boolean;
+  dryRun: boolean;
+  /** 이 서버 프로세스에서 정리 워커가 가동 중인가. */
+  workerRunning: boolean;
+  /** 정리가 접수를 열 수 있는 상태인가(apply + 워커). 소금과 함께 공개 접수 조건. */
+  intakeReady: boolean;
+  saltConfigured: boolean;
+  lastRunAt: number | null;
+  consecutiveFailures: number;
   policy: {
     duplicateCheckClearDays: number; emailMaxDaysAfterCreated: number;
     emailDaysAfterClosed: number; openMaxDays: number; closedDays: number;
+    absoluteMaxDays: number;
+  };
+  /** 지금 기준 정리 후보 건수(읽기 전용 집계). 내용·이메일·해시는 없다. */
+  candidates: {
+    candidateDuplicateCheckClearCount: number; candidateEmailClearCount: number;
+    candidateDeleteCount: number; invalidTimestampCount: number;
   };
   lastRun: ({ ok: boolean; at: number } & Record<string, unknown>) | null;
 }
