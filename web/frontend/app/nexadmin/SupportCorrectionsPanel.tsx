@@ -30,6 +30,16 @@ const fmt = (unix: number) => new Date(unix * 1000).toLocaleString("ko-KR", {
 
 const isHttps = (v: string) => /^https:\/\/[^\s]+$/i.test(v);
 
+/** 정리 건강 상태(서버 `phase`) → 운영자 문구. 공개 화면에는 쓰지 않는다. */
+const PHASE_TEXT: Record<string, string> = {
+  ready: "정상 — 실제 정리가 최근에 성공했습니다",
+  awaiting_first_cleanup: "보관 정책 초기 점검 중이며 잠시 후 접수가 열립니다.",
+  stale: "마지막 성공한 정리가 너무 오래됐습니다 — 접수를 닫았습니다",
+  worker_stopped: "정리 워커가 멈췄습니다 — 접수를 닫았습니다",
+  dry_run: "점검 모드라 실제 정리 전입니다 — 접수를 닫아 둡니다",
+  disabled: "정리가 꺼져 있어 접수를 닫아 둡니다",
+};
+
 function MaybeLink({ value }: { value: string }) {
   if (!value) return <span className="text-muted">-</span>;
   return isHttps(value) ? (
@@ -150,12 +160,22 @@ export default function SupportCorrectionsPanel() {
               사용 {retention.enabled ? "켜짐" : "꺼짐"} · dry-run {retention.dryRun ? "켜짐" : "꺼짐"} ·
               워커 {retention.workerRunning ? "가동 중" : "멈춤"}
             </dd>
+            <dt>건강 상태</dt>
+            <dd className={retention.cleanupHealthy ? "" : "text-amber-400"}>
+              {PHASE_TEXT[retention.phase] ?? retention.phase}
+            </dd>
             <dt>공개 접수</dt>
             <dd>
               {retention.intakeReady && retention.saltConfigured
                 ? "열림"
-                : `닫힘 (${[!retention.intakeReady && "정리 미가동",
+                : `닫힘 (${[!retention.intakeReady && "정리 준비 안 됨",
                            !retention.saltConfigured && "접수 설정 없음"].filter(Boolean).join(" · ")})`}
+            </dd>
+            <dt>마지막 성공</dt>
+            <dd className="tabular-nums">
+              {retention.lastSuccessfulRunAt === null
+                ? "이 서버가 시작된 뒤 실제 정리 성공 없음"
+                : `${fmt(retention.lastSuccessfulRunAt)} (${retention.policy.healthFreshnessHours}시간 안에 다시 성공해야 접수 유지)`}
             </dd>
             <dt>마지막 정리</dt>
             <dd className="tabular-nums">
@@ -177,6 +197,13 @@ export default function SupportCorrectionsPanel() {
               {retention.candidates.invalidTimestampCount > 0 &&
                 ` · 시각 오류 ${retention.candidates.invalidTimestampCount}`}
             </dd>
+            {retention.candidates.invalidTimestampCount > 0 && (<>
+              <dt>시각 오류</dt>
+              <dd className="tabular-nums text-amber-400">
+                접수 시각 {retention.candidates.invalidCreatedAtCount}건(자동 정리 제외) · 상태 시각{" "}
+                {retention.candidates.invalidStatusChangedAtCount}건(접수 후 {retention.policy.absoluteMaxDays}일 상한은 적용)
+              </dd>
+            </>)}
           </dl>
         </div>
       )}

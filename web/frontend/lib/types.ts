@@ -481,20 +481,31 @@ export interface CorrectionRetentionInfo {
   dryRun: boolean;
   /** 이 서버 프로세스에서 정리 워커가 가동 중인가. */
   workerRunning: boolean;
-  /** 정리가 접수를 열 수 있는 상태인가(apply + 워커). 소금과 함께 공개 접수 조건. */
+  /** 정리가 접수를 열 수 있는 상태인가(apply + 워커 + 건강). 소금과 함께 공개 접수 조건. */
   intakeReady: boolean;
   saltConfigured: boolean;
   lastRunAt: number | null;
+  /** 이 서버 프로세스에서 **실제 정리(apply)**가 마지막으로 성공한 시각. dry-run 성공은 오지 않는다. */
+  lastSuccessfulRunAt: number | null;
+  /** 마지막 실제 정리 성공이 신선도 기준(26시간) 안인가. 접수 폐쇄의 기준. */
+  cleanupHealthy: boolean;
+  /** 우선순위대로 고른 한 단어 상태. */
+  phase: "disabled" | "dry_run" | "worker_stopped" | "awaiting_first_cleanup" | "stale" | "ready";
+  /** 관측용(폐쇄 기준 아님). */
   consecutiveFailures: number;
   policy: {
     duplicateCheckClearDays: number; emailMaxDaysAfterCreated: number;
     emailDaysAfterClosed: number; openMaxDays: number; closedDays: number;
-    absoluteMaxDays: number;
+    absoluteMaxDays: number; healthFreshnessHours: number;
   };
   /** 지금 기준 정리 후보 건수(읽기 전용 집계). 내용·이메일·해시는 없다. */
   candidates: {
     candidateDuplicateCheckClearCount: number; candidateEmailClearCount: number;
     candidateDeleteCount: number; invalidTimestampCount: number;
+    /** 접수 시각이 0 이하·미래 — 어떤 규칙으로도 자동 삭제하지 않는다. */
+    invalidCreatedAtCount: number;
+    /** 상태 변경 시각만 잘못됨 — 처리 기준 규칙만 건너뛰고 545일 상한은 적용. */
+    invalidStatusChangedAtCount: number;
   };
   lastRun: ({ ok: boolean; at: number } & Record<string, unknown>) | null;
 }

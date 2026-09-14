@@ -36,6 +36,9 @@ def app(db, monkeypatch):
     monkeypatch.setenv("SUPPORT_RETENTION_ENABLED", "true")
     monkeypatch.setenv("SUPPORT_RETENTION_DRY_RUN", "false")
     monkeypatch.setattr(support_retention, "_worker_running", True)
+    # SUPPORT-POLICY-1c: 워커 가동만으로는 부족하다 — 최근의 실제 정리 성공이 있어야 한다.
+    import time as _time
+    monkeypatch.setattr(support_retention, "_last_successful_apply_at", int(_time.time()))
 
     import routers.account_router as acr
     import routers.admin_router as ar

@@ -13,6 +13,7 @@ import asyncio
 import json
 import sqlite3
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -54,10 +55,11 @@ def _apply_mode(monkeypatch):
 
 
 def _intake_ready(monkeypatch):
-    """접수 준비 완료 상태(1b): 소금 + apply + 워커 가동."""
+    """접수 준비 완료 상태(1c): 소금 + apply + 워커 가동 + 최근 실제 정리 성공."""
     monkeypatch.setenv(support.SALT_ENV, TEST_SALT)
     _apply_mode(monkeypatch)
     monkeypatch.setattr(ret, "_worker_running", True)
+    monkeypatch.setattr(ret, "_last_successful_apply_at", int(time.time()))
 
 
 async def _insert(created, status="received", changed=None, email="me@example.com",
@@ -398,23 +400,29 @@ def test_늦게_처리된_요청은_처리_후_180일까지_남는다(adb, monke
     assert adb(_row(rid)) is None
 
 
-@pytest.mark.parametrize("created, changed", [
-    (NOW + 100, None),                    # 미래 접수
-    (NOW + 100, 0),                       # 미래 접수 + 구 행(기준 시각 0)
-    (NOW - 400 * DAY, NOW + 100),         # 미래 상태 변경
-    (-5, None),                           # 음수 접수
-    (0, None),                            # 0 접수
-    (NOW - 400 * DAY, -1),                # 음수 상태 변경
-])
-def test_잘못된_시각의_행은_건너뛴다(adb, monkeypatch, created, changed):
+@pytest.mark.parametrize("created", [NOW + 100, -5, 0])
+@pytest.mark.parametrize("changed", [None, 0, NOW - 10 * DAY])
+def test_접수_시각이_잘못된_행은_어떤_규칙으로도_지우지_않는다(adb, monkeypatch, created, changed):
     rid = adb(_insert(created, status="resolved", changed=changed, dedupe="bad"))
     _apply_mode(monkeypatch)
     rep = _cleanup(adb)
     row = adb(_row(rid))
     assert row is not None and row["contact_email"] and row["dedupe_key"] == "bad"
-    assert rep["invalidSkipped"] == 1
-    assert ret.schedule(created, changed if changed is not None else created,
-                        "resolved")["valid"] is (created > 0 and (changed is None or changed >= 0))
+    assert rep["invalidCreatedAtCount"] == 1 and rep["invalidTimestampCount"] == 1
+    if created <= 0:
+        assert ret.schedule(created, changed or 0, "resolved")["deletionAt"] is None
+
+
+@pytest.mark.parametrize("changed", [NOW + 100, -1])
+def test_상태_시각이_잘못돼도_접수_기준_규칙은_적용한다(adb, monkeypatch, changed):
+    """처리 기준(180일·30일)만 빠지고 dedupe 7일·이메일 180일은 그대로, 행은 545일까지."""
+    rid = adb(_insert(NOW - 400 * DAY, status="resolved", changed=changed, dedupe="bad"))
+    _apply_mode(monkeypatch)
+    rep = _cleanup(adb)
+    row = adb(_row(rid))
+    assert row is not None, "545일 전에는 남는다(처리 후 180일 규칙은 상태 시각이 잘못돼 건너뜀)"
+    assert row["contact_email"] == "" and row["dedupe_key"] == ""
+    assert rep["invalidStatusChangedAtCount"] == 1 and rep["invalidCreatedAtCount"] == 0
 
 
 def test_반복_정리는_멱등이다(adb, monkeypatch):
@@ -556,7 +564,8 @@ def test_실패_로그에는_예외_종류만_남는다(adb, monkeypatch, capsys
         _cleanup(adb)
     out = capsys.readouterr().out
     assert "OperationalError" in out and "me@x.com" not in out and "SELECT" not in out
-    assert ret.last_report() == {"ok": False, "at": NOW, "error": "OperationalError"}
+    assert ret.last_report() == {"ok": False, "at": NOW, "mode": "dry_run",
+                                 "error": "OperationalError"}
 
 
 # ── Python 예정일 ↔ SQL 정리 패리티 ──────────────────────────────────────────
@@ -597,7 +606,7 @@ def test_공개_문구가_쓰는_숫자와_정본이_같다():
         assert f"export const {key} = {val};" in ts, key
     assert p == {"duplicateCheckClearDays": 7, "emailMaxDaysAfterCreated": 180,
                  "emailDaysAfterClosed": 30, "openMaxDays": 365, "closedDays": 180,
-                 "absoluteMaxDays": 545}
+                 "absoluteMaxDays": 545, "healthFreshnessHours": 26}
     assert p["absoluteMaxDays"] == p["openMaxDays"] + p["closedDays"], "새 기간이 아니라 최대 조합"
 
 
@@ -698,10 +707,13 @@ def test_목록에_예정일과_정리_모드가_나온다(client):
     r = item["retention"]
     assert (r["mode"], r["enabled"], r["dryRun"], r["workerRunning"], r["intakeReady"]) == (
         "apply", True, False, True, True)
+    assert r["cleanupHealthy"] is True and r["phase"] == "ready"
+    assert r["lastSuccessfulRunAt"] is not None and r["consecutiveFailures"] == 0
     assert r["saltConfigured"] is True and r["lastRunAt"] is None
     assert r["policy"]["closedDays"] == 180 and r["policy"]["absoluteMaxDays"] == 545
     assert set(r["candidates"]) == {"candidateDuplicateCheckClearCount", "candidateEmailClearCount",
-                                    "candidateDeleteCount", "invalidTimestampCount"}
+                                    "candidateDeleteCount", "invalidTimestampCount",
+                                    "invalidCreatedAtCount", "invalidStatusChangedAtCount"}
     assert "dedupe" not in json.dumps(item) and TEST_SALT not in json.dumps(item)
 
 
@@ -844,14 +856,50 @@ def test_상태_변경_시각이_접수보다_이르면_접수_시각이_기준(
     assert _gone_at(adb, rid, C + 180 * DAY)
 
 
-def test_상태_변경_시각이_미래면_545일이_지나도_건드리지_않는다(adb, monkeypatch):
-    """기존 fail-safe 유지 — 시계가 어긋난 행은 지우지 않고 invalid로만 센다(운영자 확인 대상)."""
-    rid = adb(_insert(C, status="resolved", changed=NOW + 10 * DAY, dedupe="future"))
+@pytest.mark.parametrize("day, offset, gone", [
+    (544, 0, False), (545, -1, False), (545, 0, True), (545, 1, True), (546, 0, True)])
+def test_상태_시각이_미래여도_접수_후_545일에_삭제한다(adb, monkeypatch, day, offset, gone):
+    """최상위 계약(1c): 접수 시각이 유효하면 상태 시각이 어떻든 545일을 넘겨 남지 않는다."""
+    far_future = C + 5000 * DAY
+    rid = adb(_insert(C, status="resolved", changed=far_future, dedupe="future"))
     _apply_mode(monkeypatch)
-    rep = _cleanup(adb, NOW)
-    row = adb(_row(rid))
-    assert row is not None and row["contact_email"] and row["dedupe_key"] == "future"
-    assert rep["invalidSkipped"] == 1
+    rep = _cleanup(adb, C + day * DAY + offset)
+    assert (adb(_row(rid)) is None) is gone
+    if not gone:
+        assert rep["invalidStatusChangedAtCount"] == 1
+
+
+@pytest.mark.parametrize("day, offset, gone", [(545, -1, False), (545, 0, True), (546, 0, True)])
+def test_상태_시각이_음수여도_접수_후_545일에_삭제한다(adb, monkeypatch, day, offset, gone):
+    rid = adb(_insert(C, status="rejected", changed=-1))
+    s = ret.schedule(C, -1, "rejected")
+    assert s["deletionAt"] == C + 545 * DAY and s["deletionCapped"] is True
+    assert s["statusTimeValid"] is False and s["emailRemovalAt"] == C + 180 * DAY
+    _apply_mode(monkeypatch)
+    assert _gone_at(adb, rid, C + day * DAY + offset) is gone
+
+
+def test_알_수_없는_상태는_미처리_365일(adb, monkeypatch):
+    rid = adb(_insert(C, status="mystery", changed=C + 5000 * DAY))
+    assert ret.schedule(C, C + 5000 * DAY, "mystery")["deletionAt"] == C + 365 * DAY
+    _apply_mode(monkeypatch)
+    assert not _gone_at(adb, rid, C + 365 * DAY - 1)
+    assert _gone_at(adb, rid, C + 365 * DAY)
+
+
+@pytest.mark.parametrize("change_day, due_day, capped", [
+    (100, 280, False),      # 처리 후 180일이 먼저
+    (364, 544, False),      # 거의 같지만 여전히 180일이 먼저
+    (365, 545, False),      # 동률 — 상한과 같은 날(상한이 "먼저"는 아님)
+    (366, 545, True),       # 상한이 먼저
+])
+def test_절대_상한과_처리_후_180일_중_빠른_값(adb, monkeypatch, change_day, due_day, capped):
+    s = ret.schedule(C, C + change_day * DAY, "resolved")
+    assert s["deletionAt"] == C + due_day * DAY and s["deletionCapped"] is capped
+    rid = adb(_insert(C, status="resolved", changed=C + change_day * DAY))
+    _apply_mode(monkeypatch)
+    assert not _gone_at(adb, rid, C + due_day * DAY - 1)
+    assert _gone_at(adb, rid, C + due_day * DAY)
 
 
 def test_이메일과_dedupe의_더_짧은_상한은_그대로다(adb, monkeypatch):
@@ -873,6 +921,10 @@ def test_절대_상한_격자에서_화면_예정일과_실제_정리가_같다(
             if changed > NOW:
                 continue
             rows.append((adb(_insert(C, status=st, changed=changed)), changed, st))
+    # 상태 시각이 정리 시각보다 미래·음수인 행도 격자에 넣는다(1c: 상한은 그래도 적용).
+    for st in ("resolved", "rejected", "received"):
+        for bad in (-1, C + 5000 * DAY):
+            rows.append((adb(_insert(C, status=st, changed=bad)), bad, st))
     probes = [C + d * DAY + o for d in (180, 364, 365, 544, 545, 546, 700) for o in (-1, 0, 1)]
     for when in probes:
         async def _snapshot():
@@ -880,20 +932,16 @@ def test_절대_상한_격자에서_화면_예정일과_실제_정리가_같다(
         cand = adb(_snapshot())
         expected_delete = sum(
             1 for _, changed, st in rows
-            if adb(_row(_)) is not None and changed <= when
-            and when >= ret.schedule(C, changed, st)["deletionAt"])
+            if when >= ret.schedule(C, changed, st)["deletionAt"])
         assert cand["candidateDeleteCount"] == expected_delete, when
     _apply_mode(monkeypatch)
     when = C + 545 * DAY - 1
     _cleanup(adb, when)
     for rid, changed, st in rows:
         due = ret.schedule(C, changed, st)["deletionAt"]
-        # 상태 변경 시각이 정리 시각보다 뒤인 행은 fail-safe로 건너뛴다(기존 계약).
-        assert (adb(_row(rid)) is None) is (changed <= when and when >= due), (changed, st)
+        assert (adb(_row(rid)) is None) is (when >= due), (changed, st)
     _cleanup(adb, C + 545 * DAY)
-    left = [(changed, st) for rid, changed, st in rows if adb(_row(rid)) is not None]
-    assert all(changed > C + 545 * DAY for changed, _ in left), (
-        "접수 후 545일에는 시각이 정상인 어떤 상태의 행도 남지 않는다", left)
+    assert adb(_count_rows()) == 0, "접수 시각이 유효하면 545일에 어떤 행도 남지 않는다"
 
 
 def test_dry_run_후보와_실제_처리_건수가_같다(adb, monkeypatch):
@@ -967,6 +1015,7 @@ def test_접수는_소금과_정리_가동이_모두_준비돼야_열린다(clie
         else:
             monkeypatch.setenv(name, val)
     monkeypatch.setattr(ret, "_worker_running", worker)
+    monkeypatch.setattr(ret, "_last_successful_apply_at", int(time.time()))
     before = adb(_count_rows())
     meta, code = _meta_and_post(client)
     assert meta is accepting
@@ -985,18 +1034,20 @@ def test_막힌_사유를_공개_응답에_드러내지_않는다(client, monkey
         assert bad not in r.text
 
 
-def test_정리_한_회차_실패는_접수를_닫지_않는다(client, adb, monkeypatch):
+def test_정리_한_회차_실패는_마지막_성공이_신선하면_접수를_닫지_않는다(client, adb, monkeypatch):
     async def boom(*a, **k):
         raise sqlite3.OperationalError("database is locked")
+    t0 = int(time.time())
+    monkeypatch.setattr(ret, "_last_successful_apply_at", t0 - 3600)
     monkeypatch.setattr(ret, "cleanup_once", boom)
     with pytest.raises(sqlite3.OperationalError):
-        _cleanup(adb)
+        _cleanup(adb, t0)
     st = ret.status()
     assert st["consecutiveFailures"] == 1 and st["lastRun"]["ok"] is False
-    assert st["intakeReady"] is True
+    assert st["lastSuccessfulRunAt"] == t0 - 3600, "실패는 성공 시각을 바꾸지 않는다"
+    assert st["intakeReady"] is True and st["cleanupHealthy"] is True
     meta, code = _meta_and_post(client)
     assert meta is True and code == 200
-    monkeypatch.undo()
 
 
 def test_성공하면_연속_실패가_초기화된다(adb, monkeypatch):
@@ -1019,6 +1070,7 @@ def test_워커가_멈추면_접수가_닫힌다(adb, monkeypatch):
 
     async def _life():
         t = ret.launch_worker(start_delay=3600)
+        # 이미 신선한 성공이 있는 상태에서 워커를 다시 띄운 경우(같은 프로세스)
         ready_before_first_tick = ret.intake_ready()
         await asyncio.sleep(0)
         running = ret.worker_running()
@@ -1041,3 +1093,216 @@ def test_상태_응답에_민감_정보가_없다(client, adb):
     for bad in ("secret.person", "example.com", "민감한", "hash-abc-123", "private", TEST_SALT):
         assert bad not in blob, bad
     assert body["retention"]["lastRunAt"] == NOW
+
+
+# ── SUPPORT-POLICY-1c: 건강 상태 기반 접수 게이트 (fake clock) ─────────────
+
+T0 = 1_900_000_000
+H = 3600
+
+
+class _Clock:
+    def __init__(self, t):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+@pytest.fixture
+def gate(adb, monkeypatch):
+    """새 프로세스(메모리 초기화) + 접수 설정 완료 + 워커 가동. 성공 기록은 없다."""
+    ret.reset_state()
+    clock = _Clock(T0)
+    monkeypatch.setattr(ret, "_clock", clock)
+    monkeypatch.setenv(support.SALT_ENV, TEST_SALT)
+    _apply_mode(monkeypatch)
+    monkeypatch.setattr(ret, "_worker_running", True)
+    return clock
+
+
+def _fail_once(monkeypatch, adb, when):
+    original = ret.cleanup_once
+
+    async def boom(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(ret, "cleanup_once", boom)
+    with pytest.raises(sqlite3.OperationalError):
+        _cleanup(adb, when)
+    monkeypatch.setattr(ret, "cleanup_once", original)
+
+
+def test_기동_직후_첫_정리_성공_전에는_닫혀_있다(gate):
+    assert ret.phase() == "awaiting_first_cleanup"
+    assert ret.intake_ready() is False and support.accepting() is False
+
+
+def test_첫_실제_정리가_성공하면_열린다(gate, adb):
+    _cleanup(adb, T0)
+    assert ret.cleanup_healthy() is True and ret.intake_ready() is True
+    assert support.accepting() is True and ret.phase() == "ready"
+    assert ret.status()["lastSuccessfulRunAt"] == T0
+
+
+def test_dry_run_성공만으로는_열리지_않는다(gate, adb, monkeypatch):
+    monkeypatch.setenv("SUPPORT_RETENTION_DRY_RUN", "true")
+    _cleanup(adb, T0)
+    assert ret.last_report()["ok"] is True and ret.status()["lastSuccessfulRunAt"] is None
+    monkeypatch.setenv("SUPPORT_RETENTION_DRY_RUN", "false")          # 설정만 바꿔도
+    assert ret.intake_ready() is False, "dry-run 성공은 실제 정리 성공이 아니다"
+    _cleanup(adb, T0)
+    assert ret.intake_ready() is True
+
+
+def test_성공_직후_한_번_실패해도_열려_있다(gate, adb, monkeypatch):
+    _cleanup(adb, T0)
+    gate.t = T0 + H
+    _fail_once(monkeypatch, adb, T0 + H)
+    st = ret.status()
+    assert st["consecutiveFailures"] == 1 and st["lastSuccessfulRunAt"] == T0
+    assert ret.intake_ready() is True
+
+
+@pytest.mark.parametrize("age, healthy", [
+    (25 * H + 59 * 60, True), (26 * H - 1, True), (26 * H, True), (26 * H + 1, False)])
+def test_마지막_성공_신선도_26시간_경계(gate, adb, age, healthy):
+    _cleanup(adb, T0)
+    gate.t = T0 + age
+    assert ret.cleanup_healthy() is healthy
+    assert ret.intake_ready() is healthy and support.accepting() is healthy
+    assert ret.phase() == ("ready" if healthy else "stale")
+
+
+def test_연속_실패로_마지막_성공이_만료되면_닫힌다(gate, adb, monkeypatch):
+    _cleanup(adb, T0)
+    for i, hours in enumerate((24, 25, 26)):
+        gate.t = T0 + hours * H
+        _fail_once(monkeypatch, adb, gate.t)
+        assert ret.status()["consecutiveFailures"] == i + 1
+        assert ret.intake_ready() is True
+    gate.t = T0 + 26 * H + 1
+    assert ret.intake_ready() is False and ret.phase() == "stale"
+
+
+def test_실패_후_다음_주기에_성공하면_다시_열린다(gate, adb, monkeypatch):
+    _cleanup(adb, T0)
+    gate.t = T0 + 27 * H
+    _fail_once(monkeypatch, adb, gate.t)
+    assert ret.intake_ready() is False
+    _cleanup(adb, gate.t)
+    assert ret.intake_ready() is True and ret.status()["consecutiveFailures"] == 0
+
+
+def test_일부_문장만_성공한_실제_정리는_성공으로_기록하지_않는다(gate, adb, monkeypatch):
+    """후보 계산·앞 UPDATE가 성공해도 DELETE가 실패하면 성공 시각을 갱신하지 않는다."""
+    adb(_insert(T0 - 600 * DAY, status="resolved"))
+    real_get_db = database.get_db
+
+    class DeleteFails:
+        def __init__(self, conn):
+            self.conn = conn
+
+        async def execute(self, sql, *a):
+            if sql.startswith("DELETE FROM correction_requests"):
+                raise sqlite3.OperationalError("disk I/O error")
+            return await self.conn.execute(sql, *a)
+
+        def __getattr__(self, name):
+            return getattr(self.conn, name)
+
+    async def flaky_get_db():
+        return DeleteFails(await real_get_db())
+    monkeypatch.setattr(ret, "get_db", flaky_get_db)
+    with pytest.raises(sqlite3.OperationalError):
+        _cleanup(adb, T0)
+    assert ret.status()["lastSuccessfulRunAt"] is None and ret.intake_ready() is False
+    assert ret.last_report()["ok"] is False
+
+
+def test_워커_task가_끝나면_닫힌다(gate, adb):
+    async def _ends():
+        await ret.start_support_retention_worker(
+            clock=lambda: T0, sleep=_nosleep, start_delay=0, max_runs=1)
+    adb(_ends())
+    assert ret.status()["lastSuccessfulRunAt"] == T0, "워커 회차가 성공을 남겼다"
+    assert ret.worker_running() is False and ret.intake_ready() is False
+    assert ret.phase() == "worker_stopped"
+
+
+async def _nosleep(_sec):
+    return None
+
+
+def test_워커_task를_취소하면_닫힌다(gate, adb):
+    _cleanup(adb, T0)
+
+    async def _cancel():
+        t = ret.launch_worker(start_delay=3600)
+        await asyncio.sleep(0)
+        opened = ret.intake_ready()
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        return opened, ret.intake_ready()
+    opened, after = adb(_cancel())
+    assert opened is True and after is False
+
+
+def test_프로세스_재기동_후_첫_성공_전에는_닫혀_있다(gate, adb):
+    _cleanup(adb, T0)
+    assert ret.intake_ready() is True
+    ret.reset_state()                              # 재기동 — 메모리 상태 초기화
+    ret._worker_running = True                     # 새 프로세스의 lifespan이 워커를 띄움
+    assert ret.intake_ready() is False and ret.phase() == "awaiting_first_cleanup"
+    gate.t = T0 + 120
+    _cleanup(adb, T0 + 120)
+    assert ret.intake_ready() is True
+
+
+@pytest.mark.parametrize("case", ["no_salt", "disabled", "dry_run", "worker_only"])
+def test_설정이_하나라도_빠지면_닫힌다(gate, adb, monkeypatch, case):
+    _cleanup(adb, T0)
+    if case == "no_salt":
+        monkeypatch.delenv(support.SALT_ENV, raising=False)
+        assert ret.intake_ready() is True, "정리 쪽은 준비됨"
+    elif case == "disabled":
+        monkeypatch.setenv("SUPPORT_RETENTION_ENABLED", "false")
+    elif case == "dry_run":
+        monkeypatch.setenv("SUPPORT_RETENTION_DRY_RUN", "true")
+    elif case == "worker_only":            # 실제 정리 설정 없음 + 워커만 가동
+        monkeypatch.delenv("SUPPORT_RETENTION_ENABLED", raising=False)
+        monkeypatch.delenv("SUPPORT_RETENTION_DRY_RUN", raising=False)
+    assert support.accepting() is False
+    if case in ("disabled", "dry_run", "worker_only"):
+        # 예전 apply 성공 기록이 남아 있어도 지금 실제 정리 모드가 아니면 건강하지 않다.
+        assert ret.cleanup_healthy() is False and ret.status()["cleanupHealthy"] is False
+
+
+def test_미래의_성공_시각은_건강하지_않다(gate):
+    ret._last_successful_apply_at = T0 + 3600
+    assert ret.cleanup_healthy() is False
+
+
+def test_단계별_phase(gate, adb, monkeypatch):
+    monkeypatch.setenv("SUPPORT_RETENTION_ENABLED", "false")
+    assert ret.phase() == "disabled"
+    monkeypatch.setenv("SUPPORT_RETENTION_ENABLED", "true")
+    monkeypatch.setenv("SUPPORT_RETENTION_DRY_RUN", "true")
+    assert ret.phase() == "dry_run"
+    monkeypatch.setenv("SUPPORT_RETENTION_DRY_RUN", "false")
+    monkeypatch.setattr(ret, "_worker_running", False)
+    assert ret.phase() == "worker_stopped"
+    monkeypatch.setattr(ret, "_worker_running", True)
+    assert ret.phase() == "awaiting_first_cleanup"
+
+
+def test_공개_meta는_내부_상태를_싣지_않는다(client, monkeypatch):
+    monkeypatch.setattr(ret, "_last_successful_apply_at", None)
+    client.app.dependency_overrides.clear()
+    body = client.get("/api/support/correction/meta").json()
+    assert body["accepting"] is False
+    assert set(body) == {"categories", "limits", "accepting"}
+    text = json.dumps(body, ensure_ascii=False)
+    for bad in ("retention", "worker", "candidate", "consecutive", "healthy", "phase", "SUPPORT_",
+                "salt", "dry"):
+        assert bad not in text, bad

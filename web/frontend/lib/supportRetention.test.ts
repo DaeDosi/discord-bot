@@ -93,15 +93,31 @@ test("Nexadmin은 서버가 계산한 예정일과 정리 모드를 그대로 �
     assert.ok(p.includes(f), `${f}를 표시하지 않는다`);
   }
   assert.ok(p.includes("점검 모드"), "dry-run 상태를 숨긴다");
+  assert.ok(p.includes("자동 정리는 아직 점검 모드입니다 — 예정일이 지나도 지우지 않고 대상 건수만 셉니다."),
+            "dry-run 배너 문구가 사라졌다");
   // 단계적 활성화 점검용 상태(SUPPORT-POLICY-1b)
   for (const f of ["retention.enabled", "retention.dryRun", "retention.workerRunning",
                    "retention.intakeReady", "retention.saltConfigured", "retention.lastRun",
                    "retention.consecutiveFailures", "candidates.candidateDuplicateCheckClearCount",
                    "candidates.candidateEmailClearCount", "candidates.candidateDeleteCount",
-                   "retention.policy.absoluteMaxDays", "item.deletionCapped"]) {
+                   "retention.policy.absoluteMaxDays", "item.deletionCapped",
+                   // SUPPORT-POLICY-1c 건강 상태
+                   "retention.lastSuccessfulRunAt", "retention.cleanupHealthy", "retention.phase",
+                   "retention.policy.healthFreshnessHours", "candidates.invalidCreatedAtCount",
+                   "candidates.invalidStatusChangedAtCount"]) {
     assert.ok(p.includes(f), `${f}를 표시하지 않는다`);
   }
   assert.ok(p.includes("보관 기간이 지나 제거됨"));
+  for (const ph of ["ready", "awaiting_first_cleanup", "stale", "worker_stopped", "dry_run", "disabled"]) {
+    assert.ok(p.includes(`${ph}: "`), `phase ${ph} 문구가 없다`);
+  }
+  assert.ok(p.includes("보관 정책 초기 점검 중이며 잠시 후 접수가 열립니다."));
+  // 공개 수정 요청 화면은 내부 정리 상태를 모른다(서버 accepting만 본다).
+  const pub = read("app/support/correction/page.tsx");
+  for (const bad of ["phase", "cleanupHealthy", "workerRunning", "candidate", "consecutiveFailures",
+                     "초기 점검", ".retention", "intakeReady"]) {
+    assert.ok(!pub.includes(bad), `공개 화면에 내부 상태가 있다: ${bad}`);
+  }
   // 화면이 기간을 따로 계산하지 않는다(서버와 갈라진다).
   assert.ok(!/\*\s*86400|86400\s*\*/.test(p), "화면이 예정일을 직접 계산한다");
   const types = read("lib/types.ts");
